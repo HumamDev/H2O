@@ -61,6 +61,12 @@ const PROXY_PACK_FILE =
 const STRICT_WARN = hasFlag("--strict-warn");
 const REPORT_RUNTIME = hasFlag("--report-runtime");
 const THEME_CORE_FILE = path.join(SRC_DIR, "src-runtime-base", "8A1a.🟪🎨 Theme Core 🎨.js");
+const THEMES_PANEL_FILE = path.join(SRC_DIR, "src-runtime-base", "8A1b.🟪🎨 Themes Panel 🎨.js");
+const APPEARANCE_TAB_FILE = path.join(
+  SRC_DIR,
+  "src-runtime-base",
+  "0Z1k.⚫️🎨🕹️ Appearance Tab (Control Hub 🔌 Plugin) 🕹️.js",
+);
 const CHROME_LIVE_LOADER_FILE = path.join(
   SRC_DIR,
   "tools",
@@ -575,6 +581,8 @@ function createThemeFixtureDom({ withHead = true } = {}) {
     appendChild,
     setAttribute(name, value) { attributes.set(String(name), String(value)); },
     getAttribute(name) { return attributes.has(String(name)) ? attributes.get(String(name)) : null; },
+    hasAttribute(name) { return attributes.has(String(name)); },
+    removeAttribute(name) { attributes.delete(String(name)); },
   };
   const head = withHead ? { appendChild } : null;
   const document = {
@@ -631,7 +639,7 @@ function makeThemePrepaintFixtureLoader(errors) {
   return loaderJs.replace(bootNeedle, `  return;\n${bootNeedle}`);
 }
 
-function runThemePrepaintLoaderFixture(loaderJs, { rawState, systemLight = false, evaluations = 1 } = {}) {
+function runThemePrepaintLoaderFixture(loaderJs, { rawState, systemLight = false, evaluations = 1, panelSettings = null } = {}) {
   const dom = createThemeFixtureDom();
   const marks = [];
   const listeners = new Map();
@@ -653,7 +661,11 @@ function runThemePrepaintLoaderFixture(loaderJs, { rawState, systemLight = false
     location: { href: "https://chatgpt.com/" },
     localStorage: {
       getItem(key) {
-        return key === "h2o:prm:cgx:theme:state:v1" ? (rawState ?? null) : null;
+        if (key === "h2o:prm:cgx:theme:state:v1") return rawState ?? null;
+        if (key === "h2o:prm:cgx:thmspnl:ui:settings:v2") {
+          return panelSettings === null ? null : JSON.stringify(panelSettings);
+        }
+        return null;
       },
       setItem: noop,
       removeItem: noop,
@@ -695,30 +707,56 @@ function runThemePrepaintLoaderFixture(loaderJs, { rawState, systemLight = false
   return { context, dom, marks, listeners };
 }
 
-function runThemeCoreReconciliationFixture(themeCoreSource, { withHead = true } = {}) {
+function runThemeCoreReconciliationFixture(
+  themeCoreSource,
+  { withHead = true, state, systemLight = false, panelSettings } = {},
+) {
   const dom = createThemeFixtureDom({ withHead });
   dom.appendStyle("h2o-theme-prepaint", "temporary");
   const requestedKeys = [];
+  const writes = [];
   const noop = () => {};
+  const listeners = new Map();
+  const mediaListeners = [];
+  // Mutable so a fixture can simulate another surface writing the blob.
+  const store = {
+    "h2o:prm:cgx:theme:state:v1": JSON.stringify(
+      state || { mode: "dark", palette: "soft-charcoal", accent: "gold" },
+    ),
+    "h2o:prm:cgx:thmspnl:ui:settings:v2":
+      panelSettings === undefined ? null : JSON.stringify(panelSettings),
+  };
   class FixtureEvent {
     constructor(type, init = {}) { this.type = String(type || ""); this.detail = init.detail; }
   }
+  let systemIsLight = !!systemLight;
   const context = {
     document: dom.document,
     localStorage: {
       getItem(key) {
         requestedKeys.push(String(key));
-        return key === "h2o:prm:cgx:theme:state:v1"
-          ? JSON.stringify({ mode: "dark", palette: "soft-charcoal", accent: "gold" })
-          : null;
+        return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null;
       },
-      setItem: noop,
+      setItem(key, value) { writes.push({ key: String(key), value: String(value) }); store[String(key)] = String(value); },
     },
-    matchMedia: () => ({ matches: false }),
-    addEventListener: noop,
+    matchMedia: () => ({
+      get matches() { return systemIsLight; },
+      addEventListener(_t, fn) { if (typeof fn === "function") mediaListeners.push(fn); },
+      addListener(fn) { if (typeof fn === "function") mediaListeners.push(fn); },
+    }),
+    addEventListener(type, fn) {
+      if (typeof fn !== "function") return;
+      const key = String(type || "");
+      if (!listeners.has(key)) listeners.set(key, []);
+      listeners.get(key).push(fn);
+    },
     removeEventListener: noop,
-    dispatchEvent: noop,
+    dispatchEvent(event) {
+      for (const fn of listeners.get(String(event?.type || "")) || []) fn.call(context, event);
+      return true;
+    },
     CustomEvent: FixtureEvent,
+    Event: FixtureEvent,
     console: { debug: noop, info: noop, log: noop, warn: noop, error: noop },
     setTimeout: noop,
     clearTimeout: noop,
@@ -726,7 +764,40 @@ function runThemeCoreReconciliationFixture(themeCoreSource, { withHead = true } 
   context.window = context;
   context.self = context;
   vm.runInNewContext(themeCoreSource, context, { timeout: 5000 });
-  return { context, dom, requestedKeys };
+  return {
+    context,
+    dom,
+    requestedKeys,
+    writes,
+    theme: context.H2O && context.H2O.theme,
+    mediaListenerCount: () => mediaListeners.length,
+    // Replay the Themes Panel settings broadcast (carries only the Panel-
+    // representable mode enum, so it can never express canonical 'oled').
+    emitPanelSettings(detail) {
+      if (detail && typeof detail === "object") {
+        store["h2o:prm:cgx:thmspnl:ui:settings:v2"] = JSON.stringify(detail);
+      }
+      context.dispatchEvent(new FixtureEvent("evt:h2o:themes:settings_changed", { detail }));
+    },
+    setPanelSettings(next) {
+      store["h2o:prm:cgx:thmspnl:ui:settings:v2"] = next === null ? null : JSON.stringify(next);
+    },
+    emitStorage(key) {
+      const ev = new FixtureEvent("storage", {});
+      ev.key = key;
+      ev.newValue = store[key] ?? null;
+      context.dispatchEvent(ev);
+    },
+    setSystemLight(next) { systemIsLight = !!next; },
+    fireSystemSchemeChange() { for (const fn of mediaListeners) fn.call(context, { matches: systemIsLight }); },
+    modeAttrs() {
+      return {
+        canonical: dom.html.getAttribute("data-h2o-mode"),
+        effective: dom.html.getAttribute("data-h2o-effective-mode"),
+        compat: dom.html.getAttribute("data-ho-mode"),
+      };
+    },
+  };
 }
 
 function checkThemePrepaintContract(errors) {
@@ -741,6 +812,12 @@ function checkThemePrepaintContract(errors) {
   const sharedLiterals = [
     "data-h2o-mode",
     "data-h2o-effective-mode",
+    // Panel compatibility attribute — prepaint and Theme Core must agree, or the
+    // Themes Panel restyles at document-idle instead of on the first frame.
+    "data-ho-mode",
+    // Canonical website-theme enabled flag — both layers must read the same key,
+    // or prepaint and runtime disagree about whether the theme is on.
+    "h2o:prm:cgx:thmspnl:ui:settings:v2",
     "h2o-theme-prepaint",
     "#fbf7ee",
     "#3a3429",
@@ -796,6 +873,9 @@ function checkThemePrepaintContract(errors) {
       }
       if (result.dom.html.getAttribute("data-h2o-effective-mode") !== expectedEffective) {
         errors.push(`theme prepaint fixture ${name}: effective mode mismatch.`);
+      }
+      if (result.dom.html.getAttribute("data-ho-mode") !== expectedEffective) {
+        errors.push(`theme prepaint fixture ${name}: Panel compatibility mode mismatch (expected "${expectedEffective}").`);
       }
       if (result.dom.countId("h2o-theme-prepaint") !== 1) {
         errors.push(`theme prepaint fixture ${name}: expected exactly one prepaint style.`);
@@ -878,8 +958,309 @@ function checkThemePrepaintContract(errors) {
   } catch (err) {
     errors.push(`Theme Core failed-install reconciliation fixture threw: ${String((err && err.message) || err)}`);
   }
+  // Prepaint must respect the canonical website-theme enabled flag, or a
+  // theme-off page would flash the Panel canvas until Theme Core boots.
+  for (const [name, panelSettings, expectCompat] of [
+    ["theme enabled", { enabled: true }, "dark"],
+    ["theme flag absent", null, "dark"],
+    ["theme disabled", { enabled: false }, null],
+  ]) {
+    try {
+      const result = runThemePrepaintLoaderFixture(fixtureLoader, {
+        rawState: JSON.stringify({ mode: "dark" }),
+        panelSettings,
+      });
+      if (result.dom.html.getAttribute("data-ho-mode") !== expectCompat) {
+        errors.push(`theme prepaint gate ${name}: expected data-ho-mode ${JSON.stringify(expectCompat)} got ${JSON.stringify(result.dom.html.getAttribute("data-ho-mode"))}.`);
+      }
+      if (result.dom.html.getAttribute("data-h2o-mode") !== "dark") {
+        errors.push(`theme prepaint gate ${name}: canonical attribute must be unaffected by the gate.`);
+      }
+    } catch (err) {
+      errors.push(`theme prepaint gate ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  checkModeAuthorityContract(errors, themeCoreSource, loaderSource);
+
   if (errors.length === initialErrorCount) {
-    console.log("[validate-loader-order] theme prepaint: parity + 12 fixtures OK");
+    console.log(`[validate-loader-order] theme prepaint: parity + ${15 + themeModeAuthorityFixtures} fixtures OK`);
+  }
+}
+
+let themeModeAuthorityFixtures = 0;
+
+/* Strip // and /* *​/ comments so ownership checks match EXECUTABLE code only.
+ * Without this a check is trippable by prose — including the comments that
+ * explain the very coupling being asserted gone. Quote and template states are
+ * tracked so a `//` inside a string is not mistaken for a comment. */
+function stripJsComments(source) {
+  let out = "";
+  let i = 0;
+  let quote = null;      // "'" | '"' | "`"
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (quote) {
+      if (ch === "\\") { out += "  "; i += 2; continue; }
+      if (ch === quote) quote = null;
+      out += ch; i += 1; continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") { quote = ch; out += ch; i += 1; continue; }
+    if (ch === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") { out += " "; i += 1; }
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      i += 2; out += "  ";
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/")) {
+        out += source[i] === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      i += 2; out += "  ";
+      continue;
+    }
+    out += ch; i += 1;
+  }
+  return out;
+}
+
+/* ═══════════════ SINGLE MODE AUTHORITY CONTRACT ═══════════════
+ * Theme Core (8A1a) is the sole runtime writer of data-h2o-mode,
+ * data-h2o-effective-mode and data-ho-mode. Themes Panel (8A1b) and the Control
+ * Hub Appearance mirror (0Z1k) write none of them. Canonical 'oled' survives
+ * every surface that can only observe its effective projection, while genuine
+ * user intent can still replace it. Website-theme activation comes from the
+ * canonical enabled flag alone — never from controller visibility.
+ * ══════════════════════════════════════════════════════════════ */
+function checkModeAuthorityContract(errors, themeCoreSource, loaderSource) {
+  const before = errors.length;
+  let fixtures = 0;
+  const panelRaw = readTextIfExists(THEMES_PANEL_FILE);
+  const appearanceRaw = readTextIfExists(APPEARANCE_TAB_FILE);
+  if (!panelRaw || !appearanceRaw) {
+    errors.push("mode authority: Themes Panel or Appearance Tab source is missing.");
+    return;
+  }
+  // Ownership assertions run against code with comments removed.
+  const panelSource = stripJsComments(panelRaw);
+  const appearanceSource = stripJsComments(appearanceRaw);
+  const themeCoreCode = stripJsComments(themeCoreSource);
+  const loaderCode = stripJsComments(loaderSource);
+
+  /* ── static ownership ───────────────────────────────────────── */
+  const MODE_ATTR_WRITE_RE =
+    /(?:set|remove)Attribute\(\s*(?:ATTR_HO_MODE|ATTR_MODE_[A-Z_]+|['"`]data-ho-mode['"`]|['"`]data-h2o-mode['"`]|['"`]data-h2o-effective-mode['"`])/g;
+  const DATASET_WRITE_RE = /dataset\.\s*(?:hoMode|h2oMode|h2oEffectiveMode)\s*=/g;
+  for (const [label, source] of [
+    ["Themes Panel (8A1b)", panelSource],
+    ["Appearance Tab (0Z1k)", appearanceSource],
+  ]) {
+    const hits = (source.match(MODE_ATTR_WRITE_RE) || []).length
+      + (source.match(DATASET_WRITE_RE) || []).length;
+    if (hits !== 0) {
+      errors.push(`mode authority: ${label} still writes ${hits} global mode attribute(s); Theme Core owns them.`);
+    }
+  }
+  if (!/setAttribute\(ATTR_MODE_PANEL_COMPAT/.test(themeCoreCode)) {
+    errors.push("mode authority: Theme Core does not write the Panel compatibility attribute.");
+  }
+  if (/const\s+m\s*=\s*normalizeMode\(d\.mode\)/.test(themeCoreCode)) {
+    errors.push("mode authority: Theme Core still adopts mode from the Themes Panel settings broadcast.");
+  }
+
+  /* ── static: visibility is not activation ──────────────────── */
+  if (/isAppearanceVisible/.test(appearanceSource)) {
+    errors.push("mode authority: Appearance Tab still reads tab visibility for theme application.");
+  }
+  if (/enabled:\s*false/.test(appearanceSource)) {
+    errors.push("mode authority: Appearance Tab still overlays enabled:false (visibility coupled to theme activation).");
+  }
+
+  /* ── static: OLED stays out of the UI ──────────────────────── */
+  const modePresets = panelSource.match(/const MODE_PRESETS = Object\.freeze\(\[[\s\S]*?\]\);/);
+  if (!modePresets) errors.push("mode authority: Themes Panel MODE_PRESETS block not found.");
+  else if (/oled/i.test(modePresets[0])) errors.push("mode authority: OLED must not be exposed in MODE_PRESETS.");
+  if (!/kind === 'mode'\) \? CORE_TP_nativeModeFor/.test(panelSource)) {
+    errors.push("mode authority: Themes Panel does not project queued native modes onto a ChatGPT-supported value.");
+  }
+  if (!/readThemePrepaintEnabled/.test(loaderCode)) {
+    errors.push("mode authority: loader prepaint does not consult the canonical website-theme enabled flag.");
+  }
+
+  /* ── behavioural: required APIs really exist ───────────────── */
+  let api;
+  try {
+    api = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: "dark" } });
+    for (const fn of ["requestMode", "adoptCompatibilityMode", "compatMode", "nativeMode", "isCanonicalOnlyMode", "isPageThemeEnabled"]) {
+      if (typeof api.theme?.[fn] !== "function") {
+        errors.push(`mode authority: H2O.theme.${fn} is missing or not a function.`);
+      }
+    }
+    fixtures += 1;
+  } catch (err) {
+    errors.push(`mode authority API fixture threw: ${String((err && err.message) || err)}`);
+    return;
+  }
+
+  /* ── behavioural: canonical → (canonical, effective, compat) ─ */
+  for (const [name, state, systemLight, canonical, effective, compat] of [
+    ["light", { mode: "light" }, false, "light", "light", "light"],
+    ["dark", { mode: "dark" }, false, "dark", "dark", "dark"],
+    ["oled", { mode: "oled" }, false, "oled", "dark", "dark"],
+    ["system light OS", { mode: "system" }, true, "system", "light", "light"],
+    ["system dark OS", { mode: "system" }, false, "system", "dark", "dark"],
+  ]) {
+    try {
+      const got = runThemeCoreReconciliationFixture(themeCoreSource, { state, systemLight }).modeAttrs();
+      if (got.canonical !== canonical || got.effective !== effective || got.compat !== compat) {
+        errors.push(`mode authority mapping ${name}: expected (${canonical}, ${effective}, ${compat}) got (${got.canonical}, ${got.effective}, ${got.compat}).`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority mapping ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── behavioural: genuine intent always wins ───────────────── */
+  for (const [name, startMode, intent, expected] of [
+    ["oled → dark", "oled", "dark", "dark"],
+    ["oled → light", "oled", "light", "light"],
+    ["oled → system", "oled", "system", "system"],
+    ["system(dark OS) → dark", "system", "dark", "dark"],
+  ]) {
+    try {
+      const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: startMode } });
+      run.theme.requestMode(intent);
+      if (run.theme.get().mode !== expected) {
+        errors.push(`mode authority intent ${name}: expected "${expected}" got "${run.theme.get().mode}".`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority intent ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── behavioural: echoes never overwrite a projection ──────── */
+  for (const [name, startMode, echo, expected] of [
+    ["oled ← dark echo", "oled", "dark", "oled"],
+    ["system(dark OS) ← dark echo", "system", "dark", "system"],
+    ["oled ← light echo (real divergence)", "oled", "light", "light"],
+  ]) {
+    try {
+      const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: startMode } });
+      run.theme.adoptCompatibilityMode(echo, "validator");
+      if (run.theme.get().mode !== expected) {
+        errors.push(`mode authority echo ${name}: expected "${expected}" got "${run.theme.get().mode}".`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority echo ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── behavioural: OLED survives the Panel settings broadcast ─ */
+  for (const broadcastMode of ["system", "light", "dark"]) {
+    try {
+      const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: "oled" } });
+      run.emitPanelSettings({ mode: broadcastMode, enabled: true, accentLight: "", accentDark: "" });
+      if (run.theme.get().mode !== "oled") {
+        errors.push(`mode authority broadcast "${broadcastMode}": canonical mode was overwritten.`);
+      }
+      if (run.writes.some((w) => w.key === "h2o:prm:cgx:theme:state:v1" && !/"mode":"oled"/.test(w.value))) {
+        errors.push(`mode authority broadcast "${broadcastMode}": a non-OLED state was persisted.`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority broadcast "${broadcastMode}" threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── behavioural: website-theme activation gate ────────────── */
+  for (const [name, panelSettings, expectCompat] of [
+    ["enabled absent (default on)", undefined, "dark"],
+    ["enabled true", { enabled: true }, "dark"],
+    ["enabled false", { enabled: false }, null],
+  ]) {
+    try {
+      const got = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: "dark" }, panelSettings }).modeAttrs();
+      if (got.compat !== expectCompat) {
+        errors.push(`mode authority gate ${name}: expected compat ${JSON.stringify(expectCompat)} got ${JSON.stringify(got.compat)}.`);
+      }
+      if (got.canonical !== "dark") {
+        errors.push(`mode authority gate ${name}: canonical attribute must be unaffected by the gate.`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority gate ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── behavioural: OFF → ON restores the compat value ───────── */
+  try {
+    const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: "oled" }, panelSettings: { enabled: false } });
+    if (run.modeAttrs().compat !== null) errors.push("mode authority gate OFF→ON: compat present while theme was off.");
+    run.emitPanelSettings({ enabled: true, mode: "dark" });
+    if (run.modeAttrs().compat !== "dark") {
+      errors.push(`mode authority gate OFF→ON: expected compat "dark" got ${JSON.stringify(run.modeAttrs().compat)}.`);
+    }
+    if (run.theme.get().mode !== "oled") errors.push("mode authority gate OFF→ON: re-enabling must not change canonical mode.");
+    fixtures += 1;
+  } catch (err) {
+    errors.push(`mode authority gate OFF→ON threw: ${String((err && err.message) || err)}`);
+  }
+
+  /* ── behavioural: OS preference listener ───────────────────── */
+  for (const [name, startMode, expectEffectiveAfter] of [
+    ["system reacts", "system", "light"],
+    ["explicit dark does not react", "dark", "dark"],
+    ["explicit light does not react", "light", "light"],
+    ["oled does not react", "oled", "dark"],
+  ]) {
+    try {
+      const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: startMode }, systemLight: false });
+      if (run.mediaListenerCount() !== 1) {
+        errors.push(`mode authority OS listener ${name}: expected exactly 1 registration, got ${run.mediaListenerCount()}.`);
+      }
+      const writesBefore = run.writes.length;
+      run.setSystemLight(true);
+      run.fireSystemSchemeChange();
+      if (run.modeAttrs().effective !== expectEffectiveAfter) {
+        errors.push(`mode authority OS listener ${name}: expected effective "${expectEffectiveAfter}" got "${run.modeAttrs().effective}".`);
+      }
+      if (run.theme.get().mode !== startMode) {
+        errors.push(`mode authority OS listener ${name}: canonical mode must not change on an OS switch.`);
+      }
+      if (run.writes.length !== writesBefore) {
+        errors.push(`mode authority OS listener ${name}: an OS switch must not rewrite storage.`);
+      }
+      fixtures += 1;
+    } catch (err) {
+      errors.push(`mode authority OS listener ${name} threw: ${String((err && err.message) || err)}`);
+    }
+  }
+
+  /* ── negative control: the harness can actually fail ───────── */
+  try {
+    const run = runThemeCoreReconciliationFixture(themeCoreSource, { state: { mode: "oled" } });
+    if (run.modeAttrs().compat === "oled") {
+      errors.push("mode authority negative control: data-ho-mode must never be \"oled\".");
+    }
+    const sentinel = [];
+    if (run.modeAttrs().compat !== "dark") sentinel.push("compat-not-dark");
+    run.theme.requestMode("light");
+    if (run.theme.get().mode !== "light") sentinel.push("intent-ignored");
+    if (sentinel.length) {
+      errors.push(`mode authority negative control tripped: ${sentinel.join(", ")}.`);
+    }
+    fixtures += 1;
+  } catch (err) {
+    errors.push(`mode authority negative control threw: ${String((err && err.message) || err)}`);
+  }
+
+  themeModeAuthorityFixtures = fixtures;
+  if (errors.length === before) {
+    console.log(`[validate-loader-order] mode authority: ownership + intent/echo + gate + OS listener, ${fixtures} fixtures OK`);
   }
 }
 

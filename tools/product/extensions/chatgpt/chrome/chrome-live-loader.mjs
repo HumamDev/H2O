@@ -111,6 +111,14 @@ ${titleContractBridgePrelude}
   // loader work. Theme Core remains the full authority and removes this
   // temporary style after h2o-theme-surface is installed successfully.
   const THEME_PREPAINT_STORAGE_KEY = "h2o:prm:cgx:theme:state:v1";
+  // Website-theme enabled flag lives in the Themes Panel settings blob. Mirrors
+  // Theme Core's readPageThemeEnabled() so prepaint and runtime agree on whether
+  // data-ho-mode should exist at all. Tab-visibility state is deliberately not
+  // consulted — see 0Z1k CHUB_THEME_applyVisibilityState.
+  const THEME_PREPAINT_ENABLED_KEYS = Object.freeze([
+    "h2o:prm:cgx:thmspnl:ui:settings:v2",
+    "ho:gpthemeSettings",
+  ]);
   const THEME_PREPAINT_STYLE_ID = "h2o-theme-prepaint";
   const THEME_PREPAINT_MODES = Object.freeze(["system", "light", "dark", "oled"]);
   const THEME_PREPAINT_CSS = [
@@ -118,6 +126,17 @@ ${titleContractBridgePrelude}
     'html[data-h2o-effective-mode="dark"] body{background:#1a1a1c;color:rgba(231, 226, 217, 0.92);}',
     'html[data-h2o-mode="oled"] body{background:#000000;color:rgba(231, 226, 217, 0.84);}',
   ].join("");
+
+  function readThemePrepaintEnabled() {
+    for (const key of THEME_PREPAINT_ENABLED_KEYS) {
+      let parsed = null;
+      try { parsed = JSON.parse(localStorage.getItem(key)); } catch { parsed = null; }
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed.enabled !== false;
+      }
+    }
+    return true;
+  }
 
   function applyThemePrepaint() {
     try {
@@ -146,6 +165,17 @@ ${titleContractBridgePrelude}
       }
       html.setAttribute("data-h2o-mode", mode);
       html.setAttribute("data-h2o-effective-mode", effectiveMode);
+      // Panel compatibility attribute — same effective value Theme Core writes
+      // once it boots (8A1a applyMode), so the Themes Panel stylesheet has a
+      // matching html[data-ho-mode="light"|"dark"] branch from the first frame
+      // instead of restyling at document-idle. Never "oled"/"system": the Panel
+      // has no branch for either. Absent entirely when the website theme is off,
+      // because html[data-ho-mode]{background:… !important} is what paints it.
+      if (readThemePrepaintEnabled()) {
+        html.setAttribute("data-ho-mode", effectiveMode);
+      } else {
+        html.removeAttribute("data-ho-mode");
+      }
       try { performance.mark("h2o:theme:prepaint:applied"); } catch {}
       return true;
     } catch {

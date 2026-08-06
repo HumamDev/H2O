@@ -532,10 +532,74 @@
     UTIL_dispatchEvt(EV_TPANEL_SETTINGS_CHANGED, { ...STATE.settings });
   }
 
+  /* ─────────────────── 🎨 THEME CORE BRIDGE — mode ownership ───────────────────
+   * Theme Core (8A1a) is the sole runtime writer of data-h2o-mode,
+   * data-h2o-effective-mode and data-ho-mode. This Panel writes none of them.
+   *
+   * Two distinct directions, never conflated:
+   *   CORE_TP_requestMode(v)  the user picked v here  → always adopted
+   *   CORE_TP_echoMode(v,src) a surface reported v back → adopted only if it
+   *                           would actually change what the user sees
+   *
+   * `STATE.settings.mode` is still persisted for blob compatibility, but it is a
+   * MIRROR of Theme Core's projection, not the authority — it cannot express
+   * canonical 'oled', which is exactly why Theme Core stopped reading it back off
+   * the settings broadcast.
+   *
+   * The Panel does NOT declare the website-theme enabled state to Theme Core:
+   * Theme Core reads `enabled` from the canonical settings blob itself, so the
+   * theme survives this Panel being closed, unmounted or absent entirely.
+   * ──────────────────────────────────────────────────────────────────────────── */
+
+  function CORE_TP_themeCore() {
+    const t = W.H2O?.theme;
+    return (t && typeof t.get === 'function') ? t : null;
+  }
+
+  function CORE_TP_requestMode(value) {
+    const next = CORE_TP_normalizeMode(value);
+    STATE.settings.mode = next;
+    try { CORE_TP_themeCore()?.requestMode?.(next); } catch {}
+    return next;
+  }
+
+  function CORE_TP_echoMode(value, source) {
+    const next = CORE_TP_normalizeMode(value);
+    STATE.settings.mode = next;
+    try { CORE_TP_themeCore()?.adoptCompatibilityMode?.(next, source || 'themes-panel'); } catch {}
+    return next;
+  }
+
+  // What the chips/selects should show as selected. Canonical-only modes ('oled')
+  // surface as their effective projection, keeping OLED out of this vocabulary.
+  function CORE_TP_displayMode() {
+    const core = CORE_TP_themeCore();
+    try {
+      const canonical = core?.get?.()?.mode;
+      if (canonical) {
+        return CORE_TP_normalizeMode(
+          core?.isCanonicalOnlyMode?.(canonical) ? core.compatMode?.() : canonical
+        );
+      }
+    } catch {}
+    return CORE_TP_normalizeMode(STATE.settings?.mode);
+  }
+
+  // Value safe for ChatGPT's own Appearance picker (System / Light / Dark only).
+  function CORE_TP_nativeModeFor(value) {
+    try {
+      const projected = CORE_TP_themeCore()?.nativeMode?.(value);
+      if (projected === 'system' || projected === 'light' || projected === 'dark') return projected;
+    } catch {}
+    const raw = String(value || '').trim().toLowerCase();
+    return (raw === 'system' || raw === 'light' || raw === 'dark') ? raw : 'dark';
+  }
+
   function CORE_TP_resetSection(section) {
     const S = STATE.settings;
     if (section === 'color') {
-      S.mode = DEFAULT_SETTINGS.mode;
+      // Explicit user action — genuine intent, routed so canonical follows.
+      CORE_TP_requestMode(DEFAULT_SETTINGS.mode);
       CORE_TP_applyThemePreset(S, DEFAULT_SETTINGS.themePreset);
       S.nativeAccent = DEFAULT_SETTINGS.nativeAccent;
     } else if (section === 'font') {
@@ -733,7 +797,11 @@
     const accent = NATIVE_readSetting(root, 'accent color', NATIVE_ACCENT_ALIASES);
     let changed = false;
     if (mode && STATE.settings.mode !== mode) {
-      STATE.settings.mode = mode;
+      // ECHO, not intent: this is ChatGPT's dialog reporting its own Appearance
+      // value, which is also what we project INTO it. Adopting it blindly would
+      // convert canonical 'oled' → 'dark' and canonical 'system' → its current
+      // resolution, just because the user opened Settings.
+      CORE_TP_echoMode(mode, 'chatgpt-settings-dialog');
       changed = true;
     }
     if (accent && STATE.settings.nativeAccent !== accent) {
@@ -789,7 +857,12 @@
   }
 
   function NATIVE_queueSetting(kind, value) {
-    STATE.nativePending = { ...(STATE.nativePending || {}), [kind]: value };
+    // Modes are projected onto what ChatGPT's picker can actually select. An
+    // unsupported value ('oled') would match no option, so NATIVE_applySetting
+    // would never register a hit, never clear the pending entry, and would retry
+    // on every DOM mutation for the rest of the session.
+    const queued = (kind === 'mode') ? CORE_TP_nativeModeFor(value) : value;
+    STATE.nativePending = { ...(STATE.nativePending || {}), [kind]: queued };
     NATIVE_scheduleApply();
   }
 
@@ -1638,7 +1711,9 @@
       DOM_TP_scheduleHydrationSafeHtmlMutation(() => {
         const root = D.documentElement;
         if (!root) return;
-        root.removeAttribute(ATTR_HO_MODE);
+        // data-ho-mode is NOT removed here. Theme Core owns it and drops it on
+        // its own once it observes `enabled:false` in the canonical settings blob
+        // (which CORE_TP_saveSettings has already written by this point).
 
         const el = root.style;
         el.removeProperty('--ho-accent-light-hsl');
@@ -1693,7 +1768,9 @@
     D.body.setAttribute(ATTR_HO_FONT_TUNED, String(fontTuned));
     D.body.setAttribute(ATTR_HO_LAYOUT_TUNED, String(layoutTuned));
 
-    const htmlMode = S.mode;
+    // No mode attribute is captured here — data-ho-mode is written by Theme Core
+    // (8A1a applyMode) from the resolved effective mode. This function owns only
+    // the accent / font / layout custom properties below.
     const accentLight = S.accentLight;
     const accentDark = S.accentDark;
     const fontSize = S.fontSize;
@@ -1705,7 +1782,6 @@
     DOM_TP_scheduleHydrationSafeHtmlMutation(() => {
       const root = D.documentElement;
       if (!root) return;
-      root.setAttribute(ATTR_HO_MODE, htmlMode);
 
       const el = root.style;
       el.setProperty('--ho-accent-light-hsl', accentLight);
@@ -2616,6 +2692,12 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
   }
 
   function UI_TP_panelTone() {
+    // Follow Theme Core's resolved effective mode so the panel chrome matches
+    // canonical state (including 'oled', which resolves to 'dark').
+    try {
+      const eff = CORE_TP_themeCore()?.compatMode?.();
+      if (eff === 'light' || eff === 'dark') return eff;
+    } catch {}
     if (STATE.settings?.mode === 'light') return 'light';
     if (STATE.settings?.mode === 'system') {
       return W.matchMedia?.('(prefers-color-scheme: light)')?.matches ? 'light' : 'dark';
@@ -2963,10 +3045,12 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     });
 
     const modeCards = modeCard.querySelectorAll('[data-mode]');
+    const activeMode = CORE_TP_displayMode();
     modeCards.forEach(mc => {
-      mc.setAttribute(ATTR_CGXUI_STATE, (mc.dataset.mode === STATE.settings.mode) ? 'on' : '');
+      mc.setAttribute(ATTR_CGXUI_STATE, (mc.dataset.mode === activeMode) ? 'on' : '');
       mc.addEventListener('click', () => {
-        STATE.settings.mode = CORE_TP_normalizeMode(mc.dataset.mode);
+        // Explicit chip click — genuine intent. May legitimately leave 'oled'.
+        CORE_TP_requestMode(mc.dataset.mode);
         CORE_TP_saveSettings();
         DOM_TP_applySettings();
         NATIVE_queueSetting('mode', STATE.settings.mode);
@@ -3016,8 +3100,8 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     }
 
     if (Object.prototype.hasOwnProperty.call(patch, 'mode')) {
-      S.mode = CORE_TP_normalizeMode(patch.mode);
-      modeToSync = S.mode;
+      // Public settings API — treated as caller intent.
+      modeToSync = CORE_TP_requestMode(patch.mode);
       colorChanged = true;
     }
 
@@ -3122,8 +3206,8 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
   }
 
   function API_TP_setMode(value) {
-    const next = CORE_TP_normalizeMode(value);
-    STATE.settings.mode = next;
+    // Public setter — treated as caller intent, same as a chip click.
+    const next = CORE_TP_requestMode(value);
     CORE_TP_saveSettings();
     DOM_TP_applySettings();
     UI_TP_refreshColorPaneIfOpen();
@@ -3527,7 +3611,7 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
         <section class="cgxui-${SkID}-docksec">
           <h3 class="cgxui-${SkID}-dockttl">Theme</h3>
           ${UI_TP_dockToggleRow('enabled', 'GPThemes Enabled', S.enabled !== false)}
-          ${UI_TP_dockSelectRow('mode', 'Mode', CORE_TP_normalizeMode(S.mode), MODE_PRESETS)}
+          ${UI_TP_dockSelectRow('mode', 'Mode', CORE_TP_displayMode(), MODE_PRESETS)}
           ${UI_TP_dockSelectRow('themePreset', 'Theme', CORE_TP_normalizeThemePreset(S.themePreset), THEME_PRESETS)}
           ${UI_TP_dockSelectRow('nativeAccent', 'Accent', CORE_TP_normalizeNativeAccent(S.nativeAccent), NATIVE_ACCENT_PRESETS)}
         </section>
@@ -3963,6 +4047,13 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     API_TP_installPublicApi();
 
     STATE.settings = CORE_TP_loadSettings();
+
+    // Boot is an ECHO, never intent. Pushing the stored blob's mode into canonical
+    // state is exactly what used to convert a persisted 'oled' the moment this
+    // module initialised. Adopt Theme Core's projection into the local mirror
+    // instead; it persists on the next ordinary save.
+    STATE.settings.mode = CORE_TP_displayMode();
+
     DOM_TP_applySettings();
     DOM_TP_deferChatTargetResolve();
     NATIVE_bootSyncObserver();
