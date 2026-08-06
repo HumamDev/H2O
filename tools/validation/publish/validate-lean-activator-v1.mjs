@@ -91,6 +91,15 @@ const P3C_A3_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
 const ACCEPTED_P3C_A3A_HEAD = "6d48185b0601c16ca82c09813ef435a05f5f63a9";
+// P3C main synchronization: an explicit merge of the advanced main tip into the
+// P3C branch, followed by a narrow two-validator authority bridge.
+const P3C_SYNC_MERGE_HEAD = "26de895d5b6755c5d75b93b185a81247978c5816";
+const P3C_SYNC_MAIN_TIP = "a90e5d988b531e471fbee8abd65c62b24306ce7b";
+const P3C_SYNC_FIRST_PARENT = "6f4ca4d29866a3d102e7b80d372f96827e28c0d0";
+const P3C_SYNC_SUBJECT = "test(publish): authorize synchronized P3C history";
+const P3C_SYNC_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
@@ -224,6 +233,12 @@ function currentScopeState() {
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
+    // Ordered parents of HEAD and of HEAD^, so a merge's shape is authority
+    // rather than something inferred from a single hash.
+    headParents: (git(ROOT, ["rev-parse", "HEAD^@"], { allowFailure: true }) || "")
+      .split("\n").filter(Boolean),
+    parentParents: (git(ROOT, ["rev-parse", "HEAD^^@"], { allowFailure: true }) || "")
+      .split("\n").filter(Boolean),
     branch: git(ROOT, ["branch", "--show-current"]),
     subject: git(ROOT, ["log", "-1", "--format=%s"]),
     acceptedP1Ancestor: git(ROOT, ["merge-base", "--is-ancestor", ACCEPTED_P1_HEAD, "HEAD"],
@@ -443,6 +458,26 @@ function classifyScope(state) {
     value.committedPaths.length > 0 &&
     value.committedPaths.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry));
   if (p3cA3bClean) return "p3c-a3b-committed";
+  // P3C main synchronization. The merge's SHAPE is the authority: exactly two
+  // parents, the A3b tip first and the exact committed main tip second. A wrong
+  // parent, wrong subject, extra/missing path, staged path or untracked file all
+  // reject. No descendant allowance, no minimum-path tolerance.
+  const syncMergeShapeOk = (parents) => parents.length === 2 &&
+    parents[0] === P3C_SYNC_FIRST_PARENT && parents[1] === P3C_SYNC_MAIN_TIP;
+  const p3cSyncBase = value.head === P3C_SYNC_MERGE_HEAD &&
+    syncMergeShapeOk(value.headParents ?? []) &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (p3cSyncBase &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify(P3C_SYNC_AUTHORIZED_PATHS)) {
+    return "p3c-main-sync-uncommitted";
+  }
+  const p3cSyncClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === P3C_SYNC_MERGE_HEAD &&
+    syncMergeShapeOk(value.parentParents ?? []) &&
+    value.subject === P3C_SYNC_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_SYNC_AUTHORIZED_PATHS);
+  if (p3cSyncClean) return "p3c-main-sync-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -994,7 +1029,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-a2-1-uncommitted", "p3c-a2-1-committed",
     "p3c-b1-uncommitted", "p3c-b1-committed",
     "p3c-a3-uncommitted", "p3c-a3-committed",
-    "p3c-a3b-uncommitted", "p3c-a3b-committed"]
+    "p3c-a3b-uncommitted", "p3c-a3b-committed",
+    "p3c-main-sync-uncommitted", "p3c-main-sync-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
