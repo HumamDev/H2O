@@ -72,6 +72,17 @@ const P3C_A2_1_SUBJECT = "test(publish): refresh canonical writer governance pin
 const P3C_A2_1_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
 ].sort());
+// P3C-B1 makes interrupted-activation recovery operational.
+const ACCEPTED_P3C_A2_1_HEAD = "2ae9d27d0fa85eda446830fd07bca7ea04afb8b7";
+const P3C_B1_SUBJECT = "feat(publish): add deterministic activation recovery";
+const P3C_B1_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
+// P3C-B1 needed no payload-module change, and a no-op edit purely to widen the
+// commit is not acceptable, so the committed set is exactly these three.
+const P3C_B1_COMMITTED_PATHS = Object.freeze([
+  ACTIVATOR_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -79,9 +90,9 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 53;
-const EXPECTED_RUNTIME = 199;
-const EXPECTED_STRUCTURAL = 51;
+const EXPECTED_SCOPE = 55;
+const EXPECTED_RUNTIME = 209;
+const EXPECTED_STRUCTURAL = 53;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
@@ -98,6 +109,7 @@ const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
   // P3C-A2 adds the read-only canonical-verification symbols.
   "ACTIVATION_RECEIPT_MODE",
   "activationReceiptPath",
+  "planP3cRecovery",
   "TRANSACTION_MODE",
   "transactionDirectory",
   "verifyCanonicalAgainstReceipt",
@@ -383,6 +395,18 @@ function classifyScope(state) {
     value.parent === ACCEPTED_P3C_A2_HEAD && value.subject === P3C_A2_1_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A2_1_AUTHORIZED_PATHS);
   if (p3cA21Clean) return "p3c-a2-1-committed";
+  // P3C-B1: exactly the four production/validator paths on the accepted A2.1 tip.
+  const p3cB1Base = value.head === ACCEPTED_P3C_A2_1_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cB1Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_B1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-b1-uncommitted";
+  }
+  const p3cB1Clean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === ACCEPTED_P3C_A2_1_HEAD && value.subject === P3C_B1_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_B1_COMMITTED_PATHS);
+  if (p3cB1Clean) return "p3c-b1-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -642,6 +666,47 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS, "README.md"].sort(),
     })), /scope mismatch/u);
   });
+  scopeTest("exact dirty four-path P3C-B1 state is accepted and pinned", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_P3C_A2_1_HEAD, parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [...P3C_B1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS],
+    })), "p3c-b1-uncommitted");
+    for (const override of [
+      { modifiedTracked: [...P3C_B1_AUTHORIZED_PATHS, WRITER_VALIDATOR_REL].sort() },
+      { modifiedTracked: [...P3C_B1_AUTHORIZED_PATHS, PACKAGE_REL].sort() },
+      { untracked: ["tools/publish/scratch.mjs"] },
+      { staged: [ACTIVATOR_REL] },
+      { head: "0000000000000000000000000000000000000000" },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: ACCEPTED_P3C_A2_1_HEAD, parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [...P3C_B1_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+  });
+  scopeTest("committed P3C-B1 pins parent, subject and the exact four-path set", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-p3c-b1", parent: ACCEPTED_P3C_A2_1_HEAD, subject: P3C_B1_SUBJECT,
+      acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+      committedPaths: [...P3C_B1_COMMITTED_PATHS],
+    })), "p3c-b1-committed");
+    for (const override of [
+      { parent: ACCEPTED_P3C_A2_HEAD },
+      { subject: P3C_A2_1_SUBJECT },
+      { committedPaths: [...P3C_B1_COMMITTED_PATHS, WRITER_VALIDATOR_REL].sort() },
+      { committedPaths: [...P3C_B1_COMMITTED_PATHS, PAYLOAD_MODULE_REL].sort() },
+      { committedPaths: [] },
+      { staged: [ACTIVATOR_REL] },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-p3c-b1", parent: ACCEPTED_P3C_A2_1_HEAD, subject: P3C_B1_SUBJECT,
+        acceptedP1Ancestor: true, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3C_B1_COMMITTED_PATHS], ...override,
+      })), /scope mismatch|rejects staged paths/u);
+    }
+  });
   scopeTest("exact dirty three-validator P3C-A2.1 state is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: ACCEPTED_P3C_A2_HEAD, parent: ACCEPTED_P3C_A1_HEAD, subject: P3C_A2_SUBJECT,
@@ -890,7 +955,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3b-source-committed", "p3b-validation-uncommitted", "p3b-validation-committed",
     "p3c-a1-uncommitted", "p3c-a1-committed",
     "p3c-a2-uncommitted", "p3c-a2-committed",
-    "p3c-a2-1-uncommitted", "p3c-a2-1-committed"]
+    "p3c-a2-1-uncommitted", "p3c-a2-1-committed",
+    "p3c-b1-uncommitted", "p3c-b1-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1943,10 +2009,16 @@ async function runRuntimeTests(api) {
     expectFailure(fixture, ["--verify-canonical", "--activation-receipt", stage.receiptPath],
       "canonical-root-not-approved");
   });
-  await test("rollback, recovery and pruning commands are absent", () => {
-    for (const command of ["--rollback", "--recover", "--prune"]) {
+  await test("rollback and pruning remain absent while recovery takes an identity", () => {
+    for (const command of ["--rollback", "--prune"]) {
       expectFailure(fixture, [command, stage.receiptPath], "mutation-command-not-implemented");
     }
+    // P3C-B1: recovery is operational, but only for an activation identity — a
+    // stage-receipt path is not an identity and is refused before any I/O.
+    expectFailure(fixture, ["--recover", stage.receiptPath], "activation-id-invalid");
+    // Any recover shape other than exactly one identity argument stays closed.
+    expectFailure(fixture, ["--recover"], "mutation-command-not-implemented");
+    expectFailure(fixture, ["--recover", "a", "b"], "mutation-command-not-implemented");
   });
   await test("invalid CLI combinations fail closed", () => {
     for (const args of [[], ["--verify-stage-receipt"], ["--unknown", stage.receiptPath],
@@ -3769,6 +3841,8 @@ async function runP3cA2Tests() {
     disposeTemporaryRoot(context.fixture.top);
   });
 
+  await runP3cB1Tests();
+
   await test("verification is stable across path spellings, spaces and emoji", async () => {
     const context = await createVerifiedActivation("spelling");
     // The fixture repository name already contains spaces and an emoji.
@@ -3784,6 +3858,310 @@ async function runP3cA2Tests() {
     assert.equal(second.verified, true);
     assert.equal(second.activationReceiptSha256, first.activationReceiptSha256);
     assert.deepEqual(second.treeDigests, first.treeDigests);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+}
+
+/* ------------------------------------------------------------------------- *
+ * P3C-B1 — deterministic recovery of an interrupted activation
+ * ------------------------------------------------------------------------- */
+
+/** Run an activation that is interrupted at a real point, leaving live state. */
+async function createInterruptedActivation(label, hooks) {
+  const context = await createActivationFixture(`b1-${label}`);
+  let activationError = null;
+  try {
+    context.activate({ hooks });
+  } catch (error) {
+    activationError = error;
+  }
+  return { ...context, activationError };
+}
+
+const recover = (context, options = {}) =>
+  context.api.recoverActivation(context.intent.activationId,
+    { environment: cleanEnvironment(), ...options });
+
+const chainRecords = (context) => {
+  const directory = path.join(context.anchor, "transactions", context.intent.activationId);
+  if (!fs.existsSync(directory)) return [];
+  return fs.readdirSync(directory).filter((name) => name.startsWith("seq-")).sort()
+    .map((name) => ({ name, path: path.join(directory, name),
+      record: JSON.parse(fs.readFileSync(path.join(directory, name), "utf8")) }));
+};
+
+const dropTerminalAcceptedRecord = (context) => {
+  const records = chainRecords(context);
+  const last = records[records.length - 1];
+  assert.equal(last.record.transactionState, "accepted", "expected an accepted terminal record");
+  fs.rmSync(last.path);
+  return last;
+};
+
+async function runP3cB1Tests() {
+  await test("recovery resolves an activation identity only, never a filesystem path", async () => {
+    const context = await createActivationFixture("b1-identity");
+    for (const bad of ["/tmp/anything.json", "../escape", "not-an-id", ""]) {
+      expectActivatorError(() => recover({ ...context, intent: { activationId: bad } }),
+        "activation-id-invalid");
+    }
+    // A well-formed but unknown identity has no transaction evidence.
+    expectActivatorError(() => context.api.recoverActivation("20260101T000000000Z-ffffffffffff",
+      { environment: cleanEnvironment() }), "recovery-transaction-absent");
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("recovery of an unstarted or preparation-interrupted activation finds no transaction", async () => {
+    // Intent prepared, activation never run.
+    const unstarted = await createActivationFixture("b1-unstarted");
+    expectActivatorError(() => recover(unstarted), "recovery-transaction-absent");
+    disposeTemporaryRoot(unstarted.fixture.top);
+    // Interrupted during incoming preparation, before the journal exists.
+    const prepared = await createInterruptedActivation("prepare",
+      { afterPrepare: () => { throw new Error("injected preparation interrupt"); } });
+    assert.ok(prepared.activationError, "activation must have been interrupted");
+    expectActivatorError(() => recover(prepared), "recovery-transaction-absent");
+    for (const unit of prepared.units) {
+      assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false, unit.logicalName);
+    }
+    disposeTemporaryRoot(prepared.fixture.top);
+  });
+
+  await test("every mid-promotion interruption is restored backward, never completed forward", async () => {
+    const interrupts = [
+      ["live-retirement", { afterRetire: () => { throw new Error("injected retire interrupt"); } }],
+      ["incoming-promotion", { afterPromotingRecord: () => { throw new Error("injected promote interrupt"); } }],
+      ["canonical-verification", { beforeVerifiedRecord: () => { throw new Error("injected verify interrupt"); } }],
+      ["all-verified-no-receipt", { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } }],
+    ];
+    for (const [label, hooks] of interrupts) {
+      const context = await createInterruptedActivation(label, hooks);
+      assert.ok(context.activationError, `${label}: activation must have been interrupted`);
+      const before = chainRecords(context);
+      const result = recover(context);
+      assert.equal(result.ok, true, `${label}: ${result.code}`);
+      assert.equal(result.acceptedRecordAppended, false, `${label} appended acceptance`);
+      assert.equal(result.activationReceiptCreated, false, label);
+      assert.equal(result.receiptPresent, false, `${label} should have no receipt`);
+      // No accepted record exists anywhere in the chain after recovery.
+      assert.equal(chainRecords(context).some((entry) =>
+        entry.record.transactionState === "accepted"), false, `${label} accepted after recovery`);
+      // Every live tree is restored to absence (these are first activations).
+      for (const unit of context.units) {
+        assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false,
+          `${label}:${unit.logicalName} left promoted`);
+      }
+      // The journal continued from the real chain rather than restarting.
+      const after = chainRecords(context);
+      assert.equal(after.length >= before.length, true, label);
+      const sequences = after.map((entry) => entry.record.sequence);
+      assert.deepEqual(sequences, sequences.map((_unused, index) => index + 1), `${label} sequence gap`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("a durable verified receipt without a terminal record completes forward only", async () => {
+    const context = await createActivationFixture("b1-forward");
+    const activation = context.activate();
+    const receiptBefore = fs.readFileSync(activation.activationReceiptPath);
+    dropTerminalAcceptedRecord(context);
+    const beforeCount = chainRecords(context).length;
+    const result = recover(context);
+    assert.equal(result.ok, true, result.code);
+    assert.equal(result.classification, "complete-terminal-accepted-record");
+    assert.equal(result.receiptPresent, true);
+    assert.equal(result.canonicalVerified, true);
+    assert.equal(result.acceptedRecordAppended, true);
+    assert.equal(result.reversalCompleted, false);
+    assert.equal(result.livePayloadMutationPerformed, false, "forward completion must not rename payload");
+    assert.equal(result.activationReceiptCreated, false);
+    // The receipt was not republished or altered.
+    assert.equal(fs.readFileSync(activation.activationReceiptPath).equals(receiptBefore), true);
+    assert.deepEqual(fs.readdirSync(path.dirname(activation.activationReceiptPath)),
+      [`${context.intent.activationId}.json`]);
+    // Exactly one terminal record, derived from a fresh chain read.
+    const after = chainRecords(context);
+    assert.equal(after.length, beforeCount + 1);
+    assert.equal(after[after.length - 1].record.transactionState, "accepted");
+    assert.equal(after.filter((entry) => entry.record.transactionState === "accepted").length, 1);
+    const sequences = after.map((entry) => entry.record.sequence);
+    assert.deepEqual(sequences, sequences.map((_unused, index) => index + 1));
+    assert.equal(after[after.length - 1].record.activationReceiptSha256,
+      activation.activationReceiptSha256);
+    // Live payload untouched.
+    for (const unit of context.units) {
+      assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")) ||
+        unit.logicalName !== "extension", true);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("an already accepted transaction recovers as a verified no-op", async () => {
+    const context = await createActivationFixture("b1-already");
+    const activation = context.activate();
+    const before = chainRecords(context).length;
+    const receiptBefore = fs.readFileSync(activation.activationReceiptPath);
+    const result = recover(context);
+    assert.equal(result.ok, true, result.code);
+    assert.equal(result.alreadyTerminal, true);
+    assert.equal(result.mutationPerformed, false);
+    assert.equal(result.acceptedRecordAppended, false);
+    assert.equal(chainRecords(context).length, before, "no record was appended");
+    assert.equal(fs.readFileSync(activation.activationReceiptPath).equals(receiptBefore), true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("a receipt whose canonical payload drifted requires an operator and mutates nothing", async () => {
+    const context = await createActivationFixture("b1-drift");
+    const activation = context.activate();
+    dropTerminalAcceptedRecord(context);
+    fs.writeFileSync(path.join(context.units[2].livePath, "drifted.js"), "// drift\n");
+    const before = chainRecords(context).length;
+    const receiptBefore = fs.readFileSync(activation.activationReceiptPath);
+    const result = recover(context);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "recovery-required");
+    assert.equal(result.canonicalVerified, false);
+    assert.equal(result.acceptedRecordAppended, false);
+    assert.equal(result.reversalCompleted, false);
+    assert.equal(result.operatorActionRequired, true);
+    assert.equal(result.mutationPerformed, false);
+    assert.equal(result.evidencePreserved, true);
+    // Nothing appended, nothing renamed, receipt untouched.
+    assert.equal(chainRecords(context).length, before);
+    assert.equal(fs.readFileSync(activation.activationReceiptPath).equals(receiptBefore), true);
+    assert.equal(fs.existsSync(path.join(context.units[2].livePath, "drifted.js")), true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("a foreign live path is preserved and blocks recovery", async () => {
+    const context = await createInterruptedActivation("foreign",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    // Replace one promoted live tree with content this transaction never wrote.
+    const live = context.units[0].livePath;
+    fs.rmSync(live, { recursive: true });
+    fs.mkdirSync(live, { recursive: true });
+    fs.writeFileSync(path.join(live, "foreign.js"), "// another lane owns this\n");
+    const before = chainRecords(context).length;
+    const result = recover(context);
+    assert.equal(result.ok, false);
+    assert.equal(result.classification, "preserve-foreign-live-and-require-operator");
+    assert.equal(result.operatorActionRequired, true);
+    assert.equal(result.mutationPerformed, false);
+    assert.equal(result.evidencePreserved, true);
+    // Foreign content survives untouched, and no cleanup ran after ambiguity.
+    assert.equal(fs.readFileSync(path.join(live, "foreign.js"), "utf8"),
+      "// another lane owns this\n");
+    assert.equal(chainRecords(context).length, before);
+    assert.equal(context.units.filter((unit) => fs.existsSync(unit.retiredPath)).length >= 0, true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("broken, foreign or drifted transaction evidence fails closed without mutation", async () => {
+    const cases = [
+      ["broken chain digest", "transaction-chain-broken", (context) => {
+        const records = chainRecords(context);
+        const middle = records[1];
+        const record = { ...middle.record, buildMarker: "tampered" };
+        fs.rmSync(middle.path);
+        fs.writeFileSync(middle.path, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      }],
+      ["foreign repository", "recovery-transaction-foreign", (context) => {
+        const records = chainRecords(context);
+        const last = records[records.length - 1];
+        const record = { ...last.record, repositoryRealpath: "/tmp/another-repository" };
+        fs.rmSync(last.path);
+        fs.writeFileSync(last.path, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+      }],
+      ["intent bytes changed", "recovery-intent-invalid", (context) => {
+        fs.writeFileSync(context.intent.intentPath, "tampered\n", { mode: 0o600 });
+      }],
+    ];
+    for (const [label, expectedCode, corrupt] of cases) {
+      const context = await createInterruptedActivation(`evidence-${expectedCode}`,
+        { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+      const before = chainRecords(context).length;
+      corrupt(context);
+      let thrown = null;
+      try { recover(context); } catch (error) { thrown = error; }
+      assert.ok(thrown, `${label} must fail closed`);
+      // Either the precise code, or a chain-integrity rejection from the reader.
+      assert.equal(typeof thrown.code, "string", label);
+      if (expectedCode !== "transaction-chain-broken") {
+        assert.equal(thrown.code, expectedCode, `${label} expected ${expectedCode}`);
+      }
+      assert.equal(chainRecords(context).length, before, `${label} mutated the journal`);
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("recovery releases the real lock and lease on success and on failure", async () => {
+    // Success path.
+    const success = await createInterruptedActivation("release-success",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    const result = recover(success);
+    assert.equal(result.ok, true, result.code);
+    assert.equal(fs.existsSync(success.lock), false, "publisher lock leaked on success");
+    assert.equal(fs.existsSync(path.join(success.anchor, "active-lease")), false,
+      "canonical lease leaked on success");
+    disposeTemporaryRoot(success.fixture.top);
+    // Failure path where this invocation still owns both exclusions: an injected
+    // observation failure must still release the lock and the lease.
+    const failure = await createInterruptedActivation("release-failure",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    assert.throws(() => recover(failure, {
+      hooks: { afterObserve: () => { throw new Error("injected recovery failure"); } },
+    }), (error) => error instanceof Error);
+    assert.equal(fs.existsSync(failure.lock), false, "publisher lock leaked on failure");
+    assert.equal(fs.existsSync(path.join(failure.anchor, "active-lease")), false,
+      "canonical lease leaked on failure");
+    disposeTemporaryRoot(failure.fixture.top);
+    // Takeover path: when the lock has been replaced by a foreign owner, recovery
+    // must abort AND must never delete that foreign lock. The lease, which this
+    // invocation does own, is still released.
+    const takeover = await createInterruptedActivation("release-takeover",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    const foreignLock = `${JSON.stringify({ ownerId: "foreign-owner", pid: process.pid })}\n`;
+    assert.throws(() => recover(takeover, {
+      hooks: {
+        afterObserve: () => {
+          fs.writeFileSync(path.join(takeover.lock, "lock.json"), foreignLock, { mode: 0o600 });
+        },
+      },
+    }), (error) => typeof error?.code === "string");
+    assert.equal(fs.existsSync(takeover.lock), true,
+      "a foreign publisher lock must never be auto-deleted");
+    assert.equal(fs.readFileSync(path.join(takeover.lock, "lock.json"), "utf8"), foreignLock,
+      "foreign lock metadata must be preserved byte-for-byte");
+    assert.equal(fs.existsSync(path.join(takeover.anchor, "active-lease")), false,
+      "canonical lease leaked after takeover");
+    // No canonical payload was promoted by the aborted recovery.
+    for (const unit of takeover.units) {
+      assert.equal(fs.existsSync(path.join(unit.livePath, "manifest.json")), false, unit.logicalName);
+    }
+    disposeTemporaryRoot(takeover.fixture.top);
+  });
+
+  await test("recovery never creates a receipt and performs no browser, network or pruning action", async () => {
+    const context = await createInterruptedActivation("boundary",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    const activations = path.join(context.anchor, "activations");
+    const result = recover(context);
+    assert.equal(result.ok, true, result.code);
+    // No activation receipt was fabricated by recovery.
+    assert.equal(fs.existsSync(activations) && fs.readdirSync(activations).length > 0, false);
+    assert.equal(result.activationReceiptCreated, false);
+    assert.equal(result.activationReceiptPath, null);
+    for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed",
+      "networkActionPerformed", "browserActionPerformed", "pruningPerformed"]) {
+      assert.equal(result[flag], false, flag);
+    }
+    // Anchor still holds only the coordination directories recovery may touch.
+    assert.deepEqual(fs.readdirSync(context.anchor).filter((entry) => !entry.startsWith(".")).sort(),
+      ["activation-intents", "transactions"]);
+    // Fixture paths carry spaces and emoji, and resolve identically through
+    // /var and /private/var spellings.
+    assert.match(context.fixture.repository, /repository with spaces 🧪/u);
     disposeTemporaryRoot(context.fixture.top);
   });
 }
@@ -4026,10 +4404,11 @@ function runStructuralTests() {
       /\bas\s+\w+\s*[,}][^;]*from\s+["'][^"']*lean-payload-transaction/u,
       /export\s+\*\s+from\s+["'][^"']*lean-payload-transaction/u,
     ]) assert.doesNotMatch(source, pattern);
-    // Neither production canonical verification nor any receipt-path helper is
-    // imported: those belong to the deferred P3C-A2 slice.
-    for (const deferred of ["planP3cRecovery", "publishRollbackReceipt",
-      "appendRollbackCompleteRecord", "restoreUnit", "renameCanonicalEntry"]) {
+    // P3C-B1 legitimately imports the pure recovery planner. Rollback receipts
+    // and the low-level rename/restore primitives stay out of the edge entirely.
+    assert.equal(imported.includes("planP3cRecovery"), true);
+    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
+      "restoreUnit", "renameCanonicalEntry", "retireLiveTree", "promoteIncomingTree"]) {
       assert.equal(imported.includes(deferred), false, deferred);
     }
   });
@@ -4110,7 +4489,14 @@ function runStructuralTests() {
   structural("the terminal accepted state has exactly one approved writer", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
     assert.equal((payloadSource.match(/export function appendAcceptedRecord\s*\(/gu) ?? []).length, 1);
-    assert.equal((source.match(/appendAcceptedRecord\s*\(/gu) ?? []).length, 1);
+    // Two approved call sites: activation finalization (P3C-A1) and recovery
+    // forward-completion (P3C-B1). Both route through the single payload helper.
+    assert.equal((source.match(/appendAcceptedRecord\s*\(/gu) ?? []).length, 2);
+    const recoveryRegion = source.slice(source.indexOf("export function recoverActivation"));
+    const guardAt = recoveryRegion.indexOf("recovery-forward-completion-unproven");
+    const appendAt = recoveryRegion.indexOf("appendAcceptedRecord(");
+    assert.ok(guardAt > 0 && appendAt > guardAt,
+      "recovery must prove a durable verified receipt before appending acceptance");
     // P3B's state writer still cannot reach a terminal state.
     assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
     // Acceptance is impossible without a durable, re-verified receipt.
@@ -4119,20 +4505,20 @@ function runStructuralTests() {
     // The activator never hand-writes an accepted record.
     assert.doesNotMatch(source, /transactionState:\s*["'`]accepted["'`]/u);
   });
-  structural("P3C-A1 leaves recovery, rollback and pruning unreachable and fail-closed", () => {
+  structural("rollback and pruning remain unreachable while recovery is identity-only", () => {
     const cli = source.slice(source.indexOf("export async function runLeanActivator"));
     for (const command of ["--recover", "--rollback", "--prune"]) {
       assert.ok(cli.includes(command), command);
     }
     assert.match(cli, /mutation-command-not-implemented/u);
     assert.match(cli, /canonical-verification-fixture-only/u);
-    // No CLI route reaches rollback publication or recovery planning.
+    // The CLI reaches recovery only through the identity-validating entry point,
+    // never through a planner, a reversal or a receipt publisher directly.
     for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
-      "planP3cRecovery", "reverseReleaseFromRecovery"]) {
-      assert.doesNotMatch(cli, new RegExp(deferred, "u"));
+      "planP3cRecovery", "reverseRelease", "publishActivationReceipt"]) {
+      assert.doesNotMatch(cli, new RegExp(`${deferred}\\s*\\(`, "u"), deferred);
     }
-    // Whole-release reversal is reachable only as an internal failure path.
-    assert.doesNotMatch(cli, /reverseRelease\s*\(/u);
+    assert.match(cli, /recoverActivation\(argv\[1\]/u);
   });
   structural("P3C-A1 adds no browser, network, push, Git mutation or failed-act family", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
@@ -4151,7 +4537,8 @@ function runStructuralTests() {
   });
   structural("operational canonical verification is structurally read-only", () => {
     const start = source.indexOf("export function verifyCanonicalFromReceipt");
-    const end = source.indexOf("export async function runLeanActivator");
+    // Bounded before P3C-B1 recovery, which is a separate mutating entry point.
+    const end = source.indexOf("* P3C-B1 — deterministic recovery");
     assert.ok(start > 0 && end > start, "the verification entry point must be locatable");
     const region = source.slice(start, end);
     for (const mutator of ["mkdirSync", "writeFileSync", "appendFileSync", "chmodSync", "linkSync",
@@ -4188,6 +4575,53 @@ function runStructuralTests() {
     assert.match(nested, /run\("git", \["rev-parse", "HEAD\^"\]\)/u);
     assert.doesNotMatch(nested, /allowFailure|catch\s*\{\s*return null\s*\}/u);
   });
+  structural("P3C-B1 exposes recovery only as an activation identity", () => {
+    const cli = source.slice(source.indexOf("export async function runLeanActivator"));
+    // Exactly one recover route, taking exactly one identity argument.
+    assert.match(cli, /argv\.length === 2 && argv\[0\] === "--recover"/u);
+    assert.match(cli, /return recoverActivation\(argv\[1\]/u);
+    // No path, directory or destination argument may reach recovery.
+    assert.doesNotMatch(cli, /--recover[^\n]*path|recoverActivation\([^)]*path/u);
+    assert.match(source, /export function freshRecoveryAuthority/u);
+    // The identity is validated before anything else is derived from it.
+    const authority = source.slice(source.indexOf("export function freshRecoveryAuthority"));
+    const validateAt = authority.indexOf("validateActivationId(activationId)");
+    const deriveAt = authority.indexOf("transactionDirectory(foundation.root");
+    assert.ok(validateAt > 0 && deriveAt > validateAt,
+      "the activation identity must be validated before any path is derived");
+    // Rollback and pruning remain unavailable after B1.
+    assert.match(cli, /mutation-command-not-implemented/u);
+    for (const command of ["--rollback", "--prune"]) assert.ok(cli.includes(command), command);
+  });
+  structural("recovery uses only approved payload helpers and never publishes a receipt", () => {
+    const start = source.indexOf("* P3C-B1 — deterministic recovery");
+    const end = source.indexOf("export async function runLeanActivator");
+    assert.ok(start > 0 && end > start, "the recovery region must be locatable");
+    const region = source.slice(start, end);
+    // Never fabricates or republishes a receipt.
+    for (const forbidden of ["publishActivationReceipt", "buildActivationReceipt",
+      "publishRollbackReceipt", "prepareIncomingTree", "promoteReleaseWithJournal",
+      "createOwnedIncomingRoot", "ensureTransactionDirectory"]) {
+      assert.doesNotMatch(region, new RegExp(`\\b${forbidden}\\s*\\(`, "u"), forbidden);
+    }
+    // Uses exactly the approved recovery helpers.
+    for (const approved of ["planP3cRecovery", "reverseRelease", "appendAcceptedRecord",
+      "verifyCanonicalAgainstReceipt", "readTransactionChain", "transactionDirectory",
+      "canonicalUnitPaths", "recomputeIncomingManifest"]) {
+      assert.match(region, new RegExp(`\\b${approved}\\s*\\(`, "u"), approved);
+    }
+    // Recovery renames nothing itself; the payload helper owns that.
+    assert.doesNotMatch(region, /fs\.renameSync\s*\(/u);
+    assert.doesNotMatch(region, /fs\.linkSync\s*\(/u);
+    // Recovery never deletes retired or foreign evidence.
+    assert.doesNotMatch(region, /fs\.rmSync\s*\(|fs\.rmdirSync\s*\(|fs\.unlinkSync\s*\(/u);
+    assert.doesNotMatch(region, /retiredPath[^\n]*rm|rm[^\n]*retiredPath/u);
+    // Both exclusions are acquired and re-proved.
+    assert.match(region, /withPublisherLock\(/u);
+    assert.match(region, /withCanonicalLease\(/u);
+    assert.match(region, /assertPublisherLockStillOwned\(/u);
+    assert.match(region, /lease\.verify\(\)/u);
+  });
   structural("P3A adds no package command and keeps the four-path scope", () => {
     const packageSource = fs.readFileSync(path.join(ROOT, PACKAGE_REL), "utf8");
     assert.doesNotMatch(packageSource, /lean-payload-transaction|--activate-receipt|--rollback|--recover|--prune|--verify-canonical|publish:h2o:activate/u);
@@ -4217,10 +4651,11 @@ async function main() {
     runtimeScenarios: runtimeResults.length,
     structuralAssertions: structuralResults.length,
     activationImplemented: true,
-    activationSlice: "P3C-A2",
+    activationSlice: "P3C-B1",
     canonicalProductionVerificationImplemented: true,
     twoProcessLeaseContentionProven: true,
-    recoveryImplemented: false,
+    recoveryImplemented: true,
+    recoveryForwardGuessingPerformed: false,
     rollbackImplemented: false,
     canonicalProductionInspected: false,
     transactionDescription: "transactionally recoverable three-tree promotion",

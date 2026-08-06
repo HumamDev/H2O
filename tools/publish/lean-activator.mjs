@@ -40,6 +40,7 @@ import {
   prepareIncomingTree,
   promoteReleaseWithJournal,
   publishActivationReceipt,
+  planP3cRecovery,
   readTransactionChain,
   recomputeIncomingManifest,
   releaseIncomingOwnership,
@@ -1662,6 +1663,8 @@ export function activateReceipt(receiptPath, intentPath, {
         Object.entries(prepared).map(([name, value]) => [name, value.promotionIdentity]));
       const release = promoteReleaseWithJournal({
         units, activationId, directory, baseRecord, ownerId: lock.ownerId, guards, expectedDigests,
+        // Fixture-only interruption points; production callers pass no hooks.
+        hooks,
       });
       if (!release.released) {
         fail("activation-release-failed", "Three-tree promotion did not complete; the release was reversed.", {
@@ -1915,6 +1918,387 @@ export function verifyCanonicalFromReceipt(receiptPath, {
   });
 }
 
+/* ------------------------------------------------------------------------- *
+ * P3C-B1 — deterministic recovery of an interrupted activation
+ *
+ * Recovery never guesses forward. It completes forward in exactly one case: a
+ * durable activation receipt already proves acceptance AND the live canonical
+ * payload independently verifies against it. Everything else either restores
+ * backward or stops and preserves evidence.
+ * ------------------------------------------------------------------------- */
+
+/** Read-only lstat that reports absence rather than throwing. */
+function safeLstat(target) {
+  try { return fs.lstatSync(target); } catch { return null; }
+}
+
+/**
+ * Observe one unit's live, incoming and retired state without mutating.
+ *
+ * `foreignLivePresent` is decided against the identities this transaction
+ * itself recorded: a live tree that matches neither what this transaction
+ * promoted nor what it captured as previous is not ours to touch.
+ */
+export function observeUnitRecoveryState(unit, tree) {
+  const live = safeLstat(unit.livePath);
+  const observation = {
+    logicalName: unit.logicalName,
+    livePresent: Boolean(live),
+    incomingPresent: Boolean(safeLstat(unit.incomingPath)),
+    retiredPresent: Boolean(safeLstat(unit.retiredPath)),
+    liveTreeDigest: null,
+    foreignLivePresent: false,
+  };
+  if (!live) return Object.freeze(observation);
+  if (live.isSymbolicLink() || !live.isDirectory()) {
+    // A live entry that is not a real directory is never something recovery
+    // may replace on its own authority.
+    observation.foreignLivePresent = true;
+    return Object.freeze(observation);
+  }
+  observation.liveTreeDigest = recomputeIncomingManifest(unit.livePath, "").treeDigest;
+  const known = [tree?.promotedIdentity ?? null, tree?.previousIdentity ?? null].filter(Boolean);
+  observation.foreignLivePresent = known.length > 0 && !known.includes(observation.liveTreeDigest);
+  return Object.freeze(observation);
+}
+
+/**
+ * Fold the whole journal into the true per-unit state.
+ *
+ * Each promotion record decorates only the unit it acted on and re-emits the
+ * other two from the untouched base, so the head record alone under-reports
+ * what happened. Recovery must read the entire chain or it would mistake a
+ * promoted tree for an untouched one — and therefore miss foreign content.
+ */
+export function foldChainTreeStates(chain) {
+  const latest = {};
+  for (const entry of chain?.records ?? []) {
+    for (const tree of entry?.record?.trees ?? []) {
+      if (!tree?.logicalName) continue;
+      const merged = { ...(latest[tree.logicalName] ?? {}), logicalName: tree.logicalName };
+      if (tree.state && tree.state !== "untouched") merged.state = tree.state;
+      for (const key of ["previousState", "previousIdentity", "restorationMode",
+        "promotedIdentity", "retired", "verified", "restorationOutcome"]) {
+        if (tree[key] !== undefined) merged[key] = tree[key];
+      }
+      latest[tree.logicalName] = merged;
+    }
+  }
+  return latest;
+}
+
+/** Full read-only observation set for one transaction. */
+export function observeRecoveryState(units, treeStates) {
+  const observations = {};
+  for (const unit of units) {
+    observations[unit.logicalName] = observeUnitRecoveryState(unit, treeStates[unit.logicalName]);
+  }
+  return Object.freeze(observations);
+}
+
+/**
+ * Reconstruct the reversal input from disk evidence rather than from journal
+ * state alone: a unit is reversible only when this transaction demonstrably
+ * moved it (its retired sibling exists, or the live tree is what it promoted).
+ */
+function reconstructChangedUnits(units, treeStates, observations) {
+  const changed = [];
+  for (const unit of units) {
+    const tree = treeStates[unit.logicalName];
+    const observation = observations[unit.logicalName];
+    if (!tree || !observation) continue;
+    const promotedHere = typeof tree.promotedIdentity === "string" &&
+      tree.promotedIdentity.length > 0 &&
+      observation.liveTreeDigest === tree.promotedIdentity;
+    if (!observation.retiredPresent && !promotedHere) continue;
+    changed.push({
+      unit,
+      previous: {
+        state: tree.previousState ?? "absent",
+        treeDigest: tree.previousIdentity ?? null,
+        restorationMode: tree.previousState === "absent"
+          ? "remove-promoted-to-absent" : "restore-previous",
+      },
+      promotedTreeDigest: tree.promotedIdentity ?? null,
+    });
+  }
+  return changed;
+}
+
+/**
+ * Fresh recovery authority. Re-establishes every source, coordination and
+ * transaction identity from the filesystem and executable Git, and resolves the
+ * activation only through internally derived canonical coordination paths.
+ */
+export function freshRecoveryAuthority(activationId, { environment = process.env } = {}) {
+  assertNoDestinationOverrides(environment);
+  // The argument is an activation identity, never a filesystem path.
+  validateActivationId(activationId);
+  const source = collectSourcePreflight(REPOSITORY_ROOT);
+  const foundation = deriveCanonicalFoundation(source.repository);
+  assertApprovedProductionRoot({
+    repository: source.repository, cockpitProRoot: path.dirname(source.repository),
+    anchorRoot: foundation.root,
+  });
+  const directory = transactionDirectory(foundation.root, activationId);
+  const chain = readTransactionChain(directory);
+  if (chain.present !== true || chain.records.length === 0) {
+    fail("recovery-transaction-absent", "No transaction evidence exists for this activation.", {
+      activationId,
+    });
+  }
+  const head = chain.records[chain.records.length - 1]?.record;
+  if (!head || head.mode !== TRANSACTION_MODE || head.activationId !== activationId) {
+    fail("recovery-transaction-foreign", "Transaction evidence is foreign to this activation.");
+  }
+  if (realAware(head.repositoryRealpath ?? "") !== source.repository ||
+      realAware(head.authorizedWorktreeRealpath ?? "") !== source.repository) {
+    fail("recovery-transaction-foreign", "Transaction evidence belongs to another repository.");
+  }
+  if (head.branch !== source.branch || head.approvedHead !== source.approvedHead ||
+      head.sourceTree !== source.sourceTree) {
+    fail("recovery-source-mismatch", "Transaction source authority differs from the fresh verification.");
+  }
+  if (!sameJson(head.stableGitIdentity, source.gitExecutable)) {
+    fail("recovery-git-identity", "Transaction Git identity differs from the current attestation.");
+  }
+  if (head.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+    fail("recovery-extension-variant", "Transaction variant is not the independently pinned variant.");
+  }
+  // The immutable intent and the stage receipt must still be exactly what this
+  // transaction bound. The intent remains a proposal and authorizes nothing.
+  for (const [pathKey, digestKey, code] of [
+    ["intentPath", "intentSha256", "recovery-intent-invalid"],
+    ["stageReceiptPath", "stageReceiptSha256", "recovery-stage-invalid"],
+  ]) {
+    assertRegularFile(head[pathKey], code);
+    if (sha256File(head[pathKey]) !== head[digestKey]) {
+      fail(code, "Bound evidence bytes no longer match the transaction.", { pathKey });
+    }
+  }
+  // An activation receipt is optional at recovery time, but when present it must
+  // be exactly the receipt this activation would have published.
+  const receiptPath = activationReceiptPath(foundation.root, activationId);
+  let receipt = null;
+  const receiptStat = safeLstat(receiptPath);
+  if (receiptStat) {
+    if (receiptStat.isSymbolicLink() || !receiptStat.isFile()) {
+      fail("recovery-receipt-not-regular", "An activation receipt must be a regular file.");
+    }
+    const bytes = fs.readFileSync(receiptPath);
+    let parsed;
+    try { parsed = JSON.parse(bytes.toString("utf8")); } catch {
+      fail("recovery-receipt-malformed", "Activation receipt is not valid JSON.");
+    }
+    if (parsed?.mode !== ACTIVATION_RECEIPT_MODE || parsed?.activationId !== activationId) {
+      fail("recovery-receipt-mismatch", "Activation receipt does not describe this activation.");
+    }
+    const sha256 = sha256Bytes(bytes);
+    if (typeof head.activationReceiptSha256 === "string" && head.activationReceiptSha256.length > 0 &&
+        head.activationReceiptSha256 !== sha256) {
+      fail("recovery-receipt-mismatch", "Terminal record does not bind these receipt bytes.");
+    }
+    receipt = Object.freeze({ path: receiptPath, sha256, receipt: parsed, durable: true });
+  }
+  return Object.freeze({
+    activationId, source, foundation, directory, chain, head, receipt,
+    units: canonicalUnitPaths(source.repository, activationId),
+  });
+}
+
+/** Production deterministic recovery for one interrupted activation. */
+export function recoverActivation(activationId, {
+  environment = process.env, leaseApi = null, hooks = {},
+} = {}) {
+  const authority = freshRecoveryAuthority(activationId, { environment });
+  const { source, foundation, directory, units } = authority;
+
+  return withPublisherLock(foundation, source, (lock) => withCanonicalLease(
+    { foundation, source, activationId, leaseApi, buildTs: authority.head.buildMarker },
+    (lease) => {
+      // Re-establish everything under both exclusions before deciding anything.
+      const revalidated = freshRecoveryAuthority(activationId, { environment });
+      if (revalidated.chain.headSha256 !== authority.chain.headSha256 ||
+          (revalidated.receipt?.sha256 ?? null) !== (authority.receipt?.sha256 ?? null)) {
+        fail("recovery-revalidation-changed", "Transaction or receipt changed after exclusion was acquired.");
+      }
+      lease.verify();
+      const head = revalidated.head;
+      const receipt = revalidated.receipt;
+      const guards = {
+        verifyLock: () => assertPublisherLockStillOwned(foundation.publisherLock, lock),
+        verifyLease: () => lease.verify(),
+        leaseSessionId: lease.sessionId,
+      };
+      // The true per-unit state comes from the whole chain, not the head record.
+      const treeStates = foldChainTreeStates(revalidated.chain);
+      // Overlay the folded state on the head record's tree entries so the
+      // schema-required derived paths are preserved.
+      const foldedTrees = (head.trees ?? []).map((tree) => ({
+        ...tree, ...(treeStates[tree.logicalName] ?? {}),
+      }));
+      const observations = observeRecoveryState(units, treeStates);
+      if (hooks.afterObserve) hooks.afterObserve(observations);
+
+      // Canonical verification is attempted only when a durable receipt exists.
+      let canonicalVerified = false;
+      let canonicalVerification = null;
+      if (receipt) {
+        try {
+          canonicalVerification = verifyCanonicalAgainstReceipt(units, receipt.receipt, {
+            expectedBuildMarker: receipt.receipt.buildMarker,
+            repository: source.repository,
+            requiredFiles: REQUIRED_EXTENSION_FILES,
+            extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+          });
+          canonicalVerified = canonicalVerification.ok === true;
+        } catch (error) {
+          canonicalVerification = Object.freeze({ ok: false, code: error?.code ?? null });
+        }
+      }
+      // Hand the planner a chain whose head reflects the folded per-unit state,
+      // so its restoring/restored/previous-absent logic sees the real picture.
+      const foldedChain = Object.freeze({
+        ...revalidated.chain,
+        records: [
+          ...revalidated.chain.records.slice(0, -1),
+          {
+            ...revalidated.chain.records[revalidated.chain.records.length - 1],
+            record: { ...head, trees: foldedTrees },
+          },
+        ],
+      });
+      const plan = planP3cRecovery({
+        chain: foldedChain,
+        observations: { ...observations, canonicalVerified },
+        receipt,
+        expected: {
+          repositoryRealpath: source.repository,
+          authorizedWorktreeRealpath: source.repository,
+        },
+      });
+      if (hooks.afterPlan) hooks.afterPlan(plan);
+
+      const base = Object.freeze({
+        ok: true, mode: "recover", activationId,
+        transactionDirectory: directory,
+        transactionHeadSha256: revalidated.chain.headSha256,
+        transactionState: head.transactionState,
+        classification: plan.classification,
+        receiptPresent: Boolean(receipt),
+        receiptVerified: Boolean(receipt),
+        activationReceiptPath: receipt?.path ?? null,
+        activationReceiptSha256: receipt?.sha256 ?? null,
+        canonicalVerified,
+        canonicalVerification,
+        units: Object.fromEntries(units.map((unit) => [unit.logicalName, observations[unit.logicalName]])),
+        activationReceiptCreated: false,
+        reloadPerformed: false, canaryPerformed: false, pushPerformed: false,
+        networkActionPerformed: false, browserActionPerformed: false,
+        pruningPerformed: false,
+      });
+
+      // Fail-closed classifications: no mutation, all evidence preserved.
+      if (["preserve-foreign-live-and-require-operator", "recovery-required"].includes(plan.classification)) {
+        return Object.freeze({
+          ...base, ok: false, acceptedRecordAppended: false, reversalCompleted: false,
+          operatorActionRequired: true, mutationPerformed: false, evidencePreserved: true,
+          code: plan.code ?? "recovery-required",
+        });
+      }
+      if (["no-transaction", "contradictory-transaction", "foreign-or-unowned-transaction"]
+        .includes(plan.classification)) {
+        fail(plan.code ?? plan.classification, "Recovery cannot proceed from this transaction evidence.", {
+          classification: plan.classification,
+        });
+      }
+
+      // The single forward-completion case: already proven accepted and verified.
+      if (plan.classification === "complete-terminal-accepted-record") {
+        if (plan.alreadyTerminal === true) {
+          return Object.freeze({
+            ...base, acceptedRecordAppended: false, reversalCompleted: false,
+            operatorActionRequired: false, mutationPerformed: false, alreadyTerminal: true,
+            acceptedRelease: true,
+          });
+        }
+        if (!receipt || !canonicalVerified) {
+          fail("recovery-forward-completion-unproven",
+            "Forward completion requires a durable receipt and verified canonical payload.");
+        }
+        guards.verifyLock();
+        guards.verifyLease();
+        // Derive the terminal sequence from a fresh chain read, never a stale one.
+        const current = readTransactionChain(directory);
+        const accepted = appendAcceptedRecord({
+          directory,
+          baseRecord: recoveryBaseRecord(head, lock.ownerId),
+          sequence: current.records.length + 1,
+          previousRecordSha256: current.headSha256,
+          ownerId: lock.ownerId,
+          receipt: { path: receipt.path, sha256: receipt.sha256 },
+          trees: foldedTrees.map((tree) => ({ ...tree, state: "accepted" })),
+        });
+        return Object.freeze({
+          ...base, acceptedRecordAppended: true, terminalRecordPath: accepted.path,
+          reversalCompleted: false, operatorActionRequired: false,
+          mutationPerformed: true, livePayloadMutationPerformed: false, acceptedRelease: true,
+        });
+      }
+
+      // Everything else restores backward. Never synthesize a receipt.
+      const changed = reconstructChangedUnits(units, treeStates, observations);
+      if (changed.length === 0) {
+        return Object.freeze({
+          ...base, acceptedRecordAppended: false, reversalCompleted: true,
+          operatorActionRequired: false, mutationPerformed: false,
+          nothingToRestore: true,
+        });
+      }
+      const current = readTransactionChain(directory);
+      const reversal = reverseRelease({
+        changed, activationId, directory,
+        baseRecord: recoveryBaseRecord(head, lock.ownerId),
+        ownerId: lock.ownerId, guards,
+        sequence: current.records.length + 1,
+        previousRecordSha256: current.headSha256,
+        hooks,
+      });
+      return Object.freeze({
+        ...base,
+        ok: reversal.reversed === true,
+        acceptedRecordAppended: false,
+        reversalCompleted: reversal.reversed === true,
+        reversalClassification: reversal.classification,
+        restored: reversal.restored,
+        operatorActionRequired: reversal.reversed !== true,
+        mutationPerformed: true,
+        livePayloadMutationPerformed: true,
+        evidencePreserved: true,
+        code: reversal.code ?? null,
+      });
+    }));
+}
+
+/** The journal base record recovery continues from, re-owned by this lock. */
+function recoveryBaseRecord(head, lockOwnerId) {
+  return {
+    activationId: head.activationId, sequence: 1, previousRecordSha256: null,
+    createdAt: head.createdAt,
+    intentPath: head.intentPath, intentSha256: head.intentSha256,
+    stageReceiptPath: head.stageReceiptPath, stageReceiptSha256: head.stageReceiptSha256,
+    repositoryRealpath: head.repositoryRealpath,
+    authorizedWorktreeRealpath: head.authorizedWorktreeRealpath,
+    branch: head.branch, approvedHead: head.approvedHead, sourceTree: head.sourceTree,
+    stableGitIdentity: head.stableGitIdentity,
+    acceptedExtensionVariant: head.acceptedExtensionVariant,
+    buildMarker: head.buildMarker,
+    owner: { ownerId: lockOwnerId, pid: process.pid },
+    transactionState: head.transactionState,
+    trees: (head.trees ?? []).map((tree) => ({ ...tree })),
+  };
+}
+
 export async function runLeanActivator({ argv = process.argv.slice(2), environment = process.env } = {}) {
   if (argv.length === 4 && argv[0] === "--activate-receipt" && argv[2] === "--activation-intent") {
     return activateReceipt(argv[1], argv[3], { environment });
@@ -1923,8 +2307,12 @@ export async function runLeanActivator({ argv = process.argv.slice(2), environme
     fail("activation-intent-required",
       "Activation requires explicit stage-receipt and activation-intent evidence.");
   }
+  // P3C-B1: recovery resolves an activation IDENTITY only, never a path.
+  if (argv.length === 2 && argv[0] === "--recover") {
+    return recoverActivation(argv[1], { environment });
+  }
   if (argv.length >= 1 && ["--rollback", "--recover", "--prune"].includes(argv[0])) {
-    fail("mutation-command-not-implemented", "Mutation commands are intentionally absent in Batch 2 P0/P1.");
+    fail("mutation-command-not-implemented", "Rollback and pruning remain intentionally absent.");
   }
   if (argv.length === 3 && argv[0] === "--verify-canonical" && argv[1] === "--activation-receipt") {
     return verifyCanonicalFromReceipt(argv[2], { environment });

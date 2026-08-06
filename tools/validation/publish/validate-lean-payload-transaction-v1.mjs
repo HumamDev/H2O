@@ -57,7 +57,17 @@ const P3C_A2_1_SUBJECT = "test(publish): refresh canonical writer governance pin
 const P3C_A2_1_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL,
 ].sort());
-const EXPECTED_SCOPE = 15;
+const ACCEPTED_P3C_A2_1_HEAD = "2ae9d27d0fa85eda446830fd07bca7ea04afb8b7";
+const P3C_B1_SUBJECT = "feat(publish): add deterministic activation recovery";
+const P3C_B1_AUTHORIZED_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
+// P3C-B1 needed no payload-module change, and a no-op edit purely to widen the
+// commit is not acceptable, so the committed set is exactly these three.
+const P3C_B1_COMMITTED_PATHS = Object.freeze([
+  ACTIVATOR_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
+const EXPECTED_SCOPE = 16;
 const EXPECTED_RUNTIME = 130;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -220,6 +230,18 @@ function classifyPayloadScope(state) {
       JSON.stringify(value.committedPaths) === JSON.stringify(P3C_A2_1_AUTHORIZED_PATHS)) {
     return "p3c-a2-1-committed";
   }
+  const p3cB1Base = value.head === ACCEPTED_P3C_A2_1_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cB1Base && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_B1_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-b1-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.staged.length === 0 &&
+      value.parent === ACCEPTED_P3C_A2_1_HEAD && value.subject === P3C_B1_SUBJECT &&
+      JSON.stringify(value.committedPaths) === JSON.stringify(P3C_B1_COMMITTED_PATHS)) {
+    return "p3c-b1-committed";
+  }
   throw new Error("P3A source scope mismatch");
 }
 
@@ -263,6 +285,29 @@ function runScopeTests() {
       head: "future", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
       committedPaths: [...P3A_AUTHORIZED_PATHS],
     })), "p3a-committed");
+  });
+  scopeTest("exact dirty four-path P3C-B1 state is accepted and pinned", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: ACCEPTED_P3C_A2_1_HEAD, parent: ACCEPTED_P3C_A2_HEAD, subject: P3C_A2_1_SUBJECT,
+      modifiedTracked: [...P3C_B1_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_A2_1_AUTHORIZED_PATHS],
+    })), "p3c-b1-uncommitted");
+    assert.equal(classifyPayloadScope(baseScope({
+      head: "future-p3c-b1", parent: ACCEPTED_P3C_A2_1_HEAD, subject: P3C_B1_SUBJECT,
+      modifiedTracked: [], untracked: [], committedPaths: [...P3C_B1_COMMITTED_PATHS],
+    })), "p3c-b1-committed");
+    for (const override of [
+      { parent: ACCEPTED_P3C_A2_HEAD },
+      { subject: P3C_A2_1_SUBJECT },
+      { committedPaths: [...P3C_B1_COMMITTED_PATHS, WRITER_VALIDATOR_REL].sort() },
+      { committedPaths: [ACTIVATOR_REL] },
+      { staged: [ACTIVATOR_REL] },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: "future-p3c-b1", parent: ACCEPTED_P3C_A2_1_HEAD, subject: P3C_B1_SUBJECT,
+        modifiedTracked: [], untracked: [], committedPaths: [...P3C_B1_COMMITTED_PATHS], ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
   });
   scopeTest("exact dirty three-validator P3C-A2.1 state is accepted", () => {
     assert.equal(classifyPayloadScope(baseScope({
@@ -2456,18 +2501,33 @@ function runStructuralTests() {
     assert.match(payloadSource, /transaction-state-reserved-for-p3c/u);
     // The activator never constructs a terminal record by hand.
     assert.doesNotMatch(activatorSource, /transactionState:\s*["'`]accepted["'`]/u);
-    assert.equal((activatorSource.match(/appendAcceptedRecord\s*\(/gu) || []).length, 1);
+    // Exactly two approved call sites: activation finalization (P3C-A1) and
+    // recovery forward-completion (P3C-B1). Both go through the one helper.
+    assert.equal((activatorSource.match(/appendAcceptedRecord\s*\(/gu) || []).length, 2);
+    // Recovery may only append after proving a durable, verified receipt.
+    const recovery = activatorSource.slice(activatorSource.indexOf("export function recoverActivation"));
+    const guardIndex = recovery.indexOf("recovery-forward-completion-unproven");
+    const appendIndex = recovery.indexOf("appendAcceptedRecord(");
+    assert.ok(guardIndex > 0 && appendIndex > guardIndex,
+      "recovery must prove forward completion before appending the terminal record");
+    assert.match(recovery.slice(0, appendIndex), /if \(!receipt \|\| !canonicalVerified\)/u);
   });
   structural("P3C-A1 keeps rollback, recovery and pruning out of any production route", () => {
     // The helpers may exist as tested foundations, but the activator must not
     // import or call them, and no CLI route may reach them.
-    // P3C-A2 makes canonical verification operational, so it is now imported.
-    // Rollback and recovery remain exported foundations with no activator edge.
-    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
-      "planP3cRecovery"]) {
+    // P3C-A2 made canonical verification operational; P3C-B1 makes deterministic
+    // recovery operational. Rollback alone remains without an activator edge.
+    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord"]) {
       assert.match(payloadSource, new RegExp(`export function ${deferred}`, "u"));
       assert.doesNotMatch(activatorSource, new RegExp(`\\b${deferred}\\b`, "u"));
     }
+    assert.match(payloadSource, /export function planP3cRecovery/u);
+    assert.match(activatorSource, /planP3cRecovery\(/u);
+    // The recovery planner stays pure: recovery never publishes a receipt.
+    const recoveryRegion = activatorSource.slice(
+      activatorSource.indexOf("export function recoverActivation"),
+      activatorSource.indexOf("function recoveryBaseRecord"));
+    assert.doesNotMatch(recoveryRegion, /publishActivationReceipt|buildActivationReceipt/u);
     assert.match(payloadSource, /export function verifyCanonicalAgainstReceipt/u);
     assert.match(activatorSource, /verifyCanonicalAgainstReceipt/u);
     assert.doesNotMatch(payloadSource, /failed-act-/u);
@@ -2494,7 +2554,10 @@ function runStructuralTests() {
     assert.match(region, /mutationPerformed: false/u);
     // The activator's production entry point is equally read-only.
     const activatorStart = activatorSource.indexOf("export function verifyCanonicalFromReceipt");
-    const activatorEnd = activatorSource.indexOf("export async function runLeanActivator");
+    // The verification region ends where P3C-B1 recovery begins; recovery is a
+    // separate, deliberately mutating entry point with its own pins.
+    const activatorEnd = activatorSource.indexOf("* P3C-B1 — deterministic recovery");
+    assert.ok(activatorEnd > activatorStart, "the verification region must be bounded before recovery");
     assert.ok(activatorStart > 0 && activatorEnd > activatorStart);
     const activatorRegion = activatorSource.slice(activatorStart, activatorEnd);
     for (const mutator of ["mkdirSync", "writeFileSync", "linkSync", "unlinkSync", "renameSync",
