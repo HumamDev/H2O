@@ -1197,6 +1197,35 @@ ${S_BTN}[${ATTR_.CGXUI_STATE}~="noanswer"] .cgxui-mm-num{
   animation: cgxui-mnmp-noanswer-num-breathe 2.8s ease-in-out infinite;
 }
 
+/* Branch position/total for a turn that has more than one question or answer
+   variant. Pinned under the turn number so it never covers it, and it never
+   takes pointer events away from the box. */
+${S_BTN} .cgxui-mm-branch{
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  display: block;
+  max-width: 100%;
+  font-size: 7px;
+  line-height: 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  opacity: 0.72;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+${S_BTN} .cgxui-mm-branch[data-branch-parts="2"]{
+  font-size: 6px;
+  letter-spacing: 0;
+}
+
 ${S_BTN} .cgxui-mm-num{
   position: absolute;
   left: 50%;

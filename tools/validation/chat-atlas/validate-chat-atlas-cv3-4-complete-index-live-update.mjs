@@ -652,7 +652,8 @@ await fixture('cache and diagnostics remain IDs-only and content-free', () => {
   // screen unchanged so raw token/authorization VALUES remain forbidden.
   const combined = `${cacheBytes(runtime)}${JSON.stringify(status)}`
     .replaceAll('trustedSelectionLastCaptureTokenHash', 'trustedSelectionLastCaptureHashedField')
-    .replaceAll('"tokenHash"', '"hashedField"');
+    .replaceAll('"tokenHash"', '"hashedField"')
+    .replaceAll('revealTransactionTokenHash', 'revealTransactionHashedField');
   equal(/authorization|token|rawPayload|mapping|messageText|attachment|toolOutput/i.test(combined), false);
   equal(status.trustedSelectionLastCaptureTokenHash === null
     || /^djb2:[a-z0-9]+$/.test(status.trustedSelectionLastCaptureTokenHash), true);

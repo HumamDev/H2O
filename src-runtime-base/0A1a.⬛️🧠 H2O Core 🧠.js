@@ -7051,6 +7051,21 @@
       'reason',
       'source',
     ];
+    // The default origin carries the same proof shape plus the facts that
+    // stand in for a user capture. Both lists stay EXACT: an unrecognised key
+    // is still an invalid proof.
+    const expectedDefaultProofKeys = [
+      ...expectedProofKeys,
+      'defaultOrigin',
+      'defaultTerminalNodeId',
+      'defaultTerminalCreateTime',
+      'defaultPathFingerprint',
+      'graphCaptureIdentity',
+      'manualOverrideRevision',
+      'defaultDivergenceKind',
+      'defaultAnswerOnlyProven',
+      'defaultResolutionSource',
+    ];
     const expectedPathKeys = [
       'order',
       'qId',
@@ -7080,7 +7095,13 @@
     if (
       !proof
       || !Object.isFrozen(proof)
-      || !chatAtlasCompleteIndexExactKeys(proof, expectedProofKeys)
+      || !(
+        chatAtlasCompleteIndexExactKeys(proof, expectedProofKeys)
+        || (
+          proof.defaultOrigin === true
+          && chatAtlasCompleteIndexExactKeys(proof, expectedDefaultProofKeys)
+        )
+      )
       || proof.reason !== 'selected-path-proven'
       || proof.source !== 'host-identity-graph'
       || !chatAtlasCompleteIndexIdentity(proof.rootNodeId)
@@ -7112,8 +7133,13 @@
       || Number(acquisition?.generation || 0) !== Number(proof.generation || 0)
       || Number(acquisition?.staleRevision || 0) !== Number(proof.staleRevision || 0)
     ) return fail('acquisition-ownership-mismatch');
-    if (!intent || String(intent.token || '') !== String(proof.token || '')) {
-      return fail(intent ? 'token-mismatch' : 'trusted-intent-missing');
+    // Two admission paths, branched explicitly by origin. The manual path is
+    // unchanged: a trusted user capture, its token, and the stale checkpoint
+    // it opened. The default path never fabricates any of that — it proves a
+    // different, equally exact set of facts about the graph it came from.
+    const origin = String(ownership.origin || 'manual-native-selection');
+    if (origin !== 'manual-native-selection' && origin !== 'default-latest-created') {
+      return fail('overlay-origin-unknown');
     }
     if (
       String(ownership.chatId || '') !== String(ownership.routeChatId || '')
@@ -7121,26 +7147,52 @@
     ) return fail('route-mismatch');
     if (
       String(proof.chatId || '') !== String(ownership.chatId || '')
-      || String(intent.chatId || '') !== String(ownership.chatId || '')
       || chatAtlasCompleteIndexIdentity(canonical.chatId) !== String(ownership.chatId || '')
     ) return fail('chat-mismatch');
-    if (
-      String(proof.routeKey || '') !== String(ownership.routeKey || '')
-      || String(intent.routeKey || '') !== String(ownership.routeKey || '')
-    ) return fail('route-mismatch');
-    if (
-      Number(proof.generation || 0) !== Number(ownership.generation || 0)
-      || Number(intent.generation || 0) !== Number(ownership.generation || 0)
-    ) return fail('generation-mismatch');
-    if (ownership.stale !== true) return fail('stale-inactive');
-    if (
-      String(proof.anchorQId || '') !== String(ownership.staleQId || '')
-      || String(intent.qId || '') !== String(ownership.staleQId || '')
-    ) return fail('stale-qid-mismatch');
-    if (
-      Number(proof.staleRevision || 0) !== Number(ownership.staleRevision || 0)
-      || Number(intent.staleRevision || 0) !== Number(ownership.staleRevision || 0)
-    ) return fail('stale-revision-mismatch');
+    if (String(proof.routeKey || '') !== String(ownership.routeKey || '')) return fail('route-mismatch');
+    if (Number(proof.generation || 0) !== Number(ownership.generation || 0)) {
+      return fail('generation-mismatch');
+    }
+    if (origin === 'manual-native-selection') {
+      if (!intent || String(intent.token || '') !== String(proof.token || '')) {
+        return fail(intent ? 'token-mismatch' : 'trusted-intent-missing');
+      }
+      if (String(intent.chatId || '') !== String(ownership.chatId || '')) return fail('chat-mismatch');
+      if (String(intent.routeKey || '') !== String(ownership.routeKey || '')) return fail('route-mismatch');
+      if (Number(intent.generation || 0) !== Number(ownership.generation || 0)) {
+        return fail('generation-mismatch');
+      }
+      if (ownership.stale !== true) return fail('stale-inactive');
+      if (
+        String(proof.anchorQId || '') !== String(ownership.staleQId || '')
+        || String(intent.qId || '') !== String(ownership.staleQId || '')
+      ) return fail('stale-qid-mismatch');
+      if (
+        Number(proof.staleRevision || 0) !== Number(ownership.staleRevision || 0)
+        || Number(intent.staleRevision || 0) !== Number(ownership.staleRevision || 0)
+      ) return fail('stale-revision-mismatch');
+    } else {
+      // default-latest-created. No user acted, so there is nothing to own the
+      // publication except the graph itself: the exact capture it came from,
+      // a unique newest terminal with a trustworthy creation time, and the
+      // absence of any manual selection in this page session.
+      if (proof.defaultOrigin !== true) return fail('default-origin-unproven');
+      if (!chatAtlasCompleteIndexIdentity(proof.defaultTerminalNodeId)) {
+        return fail('default-terminal-unproven');
+      }
+      const created = Number(proof.defaultTerminalCreateTime || 0);
+      if (!Number.isFinite(created) || created <= 0) return fail('default-terminal-create-time-invalid');
+      if (!String(proof.defaultPathFingerprint || '')) return fail('default-fingerprint-missing');
+      if (!String(proof.graphCaptureIdentity || '')) return fail('default-graph-capture-unproven');
+      if (
+        String(proof.graphCaptureIdentity || '')
+        !== String(selectedPathAcquisitionState.graph?.captureIdentity || '')
+      ) return fail('default-graph-capture-drift');
+      if (ownership.manualOverrideActive === true) return fail('default-superseded-by-manual');
+      if (Number(ownership.manualOverrideRevision || 0) !== Number(proof.manualOverrideRevision || 0)) {
+        return fail('default-superseded-by-manual');
+      }
+    }
     if (
       String(proof.canonicalFingerprint || '') !== String(canonical.sourceFingerprint || '')
       || String(canonical.sourceFingerprint || '') !== chatAtlasCompleteIndexFingerprint(canonical.turns)
@@ -7253,11 +7305,52 @@
     if (!canonicalAnchor.answerVariants.includes(proofAnchorAId)) {
       return fail('anchor-answer-not-variant');
     }
-    if (canonicalAnchor.primaryAId === proofAnchorAId) return fail('anchor-does-not-diverge');
+    // Divergence proof, by origin. A manual selection switches the ANSWER at
+    // the anchor turn itself. A default path shares the anchor turn exactly and
+    // diverges strictly BELOW it — by a different question variant, a different
+    // answer variant, or a different length. Both must genuinely differ from
+    // the canonical path; neither may publish a copy of it.
+    if (origin === 'manual-native-selection') {
+      if (canonicalAnchor.primaryAId === proofAnchorAId) return fail('anchor-does-not-diverge');
+    } else {
+      // An ANSWER divergence is anchored ON the turn whose answer differs:
+      // same question, different selected answer — the same shape a manual
+      // regeneration switch has. A QUESTION divergence is anchored on the last
+      // shared turn and must diverge strictly BELOW it.
+      if (proof.defaultDivergenceKind === 'assistant-regeneration') {
+        if (canonicalAnchor.primaryAId === proofAnchorAId) return fail('anchor-does-not-diverge');
+      } else if (proof.defaultDivergenceKind === 'question-edit') {
+        if (canonicalAnchor.primaryAId !== proofAnchorAId) return fail('default-anchor-not-shared');
+        const nextPath = path[anchorIndex + 1] || null;
+        const nextCanonical = canonical.turns[anchorIndex + 1] || null;
+        const divergesBelow = !nextPath
+          ? !!nextCanonical
+          : (
+            !nextCanonical
+            || chatAtlasCompleteIndexIdentity(nextPath.qId) !== chatAtlasCompleteIndexIdentity(nextCanonical.qId)
+            || chatAtlasCompleteIndexIdentity(nextPath.primaryAId) !== chatAtlasCompleteIndexIdentity(nextCanonical.primaryAId)
+          );
+        if (!divergesBelow) return fail('anchor-does-not-diverge');
+      } else {
+        return fail('default-divergence-kind-unproven');
+      }
+    }
     const canonicalQIds = new Set(canonical.turns.map((turn) => turn.qId));
     for (let index = anchorIndex + 1; index < path.length; index += 1) {
       if (path[index].provenance !== 'graph-descent') return fail('path-invalid');
-      if (canonicalQIds.has(rows[index].qId)) return fail('duplicate-qid');
+      // A reused canonical question below the anchor is a foreign append —
+      // EXCEPT for a default route that differs from the host by answer
+      // selection only. That path adds, removes and reorders nothing: every
+      // row keeps its order and question, and only graph-proven answer
+      // variants differ. The exception is unavailable to every other origin
+      // and to every other divergence kind.
+      const answerOnlyReuse = origin === 'default-latest-created'
+        && proof.defaultDivergenceKind === 'assistant-regeneration'
+        && proof.defaultAnswerOnlyProven === true
+        && !!canonical.turns[index]
+        && chatAtlasCompleteIndexIdentity(canonical.turns[index].qId) === rows[index].qId
+        && Number(canonical.turns[index].order || 0) === Number(rows[index].order || 0);
+      if (canonicalQIds.has(rows[index].qId) && !answerOnlyReuse) return fail('duplicate-qid');
     }
 
     const activatedAt = String(ownership.activatedAt || '').slice(0, 64);
@@ -7493,6 +7586,9 @@
       staleRevision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
       routeChatId: String(route?.chatId || ''),
       routeRouteKey: String(route?.routeKey || ''),
+      origin: String(acquisition?.origin || 'manual-native-selection'),
+      manualOverrideActive: completeTurnIndexAuthorityState.manualOverrideActive === true,
+      manualOverrideRevision: Number(completeTurnIndexAuthorityState.manualOverrideRevision || 0),
       activatedAt: new Date().toISOString(),
     });
     if (!candidate.ok) {
@@ -7550,6 +7646,32 @@
             'branchShellAlias',
             'stopped',
           ])
+          // Stage 2C-2r: the host's message creation time travels with the
+          // node so branches can be ordered by when they were created. The
+          // key set stays EXACT — an unknown key is still a rejected graph.
+          || chatAtlasCompleteIndexExactKeys(node, [
+            'nodeId',
+            'parentId',
+            'childIds',
+            'role',
+            'messageId',
+            'productUser',
+            'productAnswer',
+            'stopped',
+            'createTime',
+          ])
+          || chatAtlasCompleteIndexExactKeys(node, [
+            'nodeId',
+            'parentId',
+            'childIds',
+            'role',
+            'messageId',
+            'productUser',
+            'productAnswer',
+            'branchShellAlias',
+            'stopped',
+            'createTime',
+          ])
         )
       ) return false;
       const nodeId = chatAtlasCompleteIndexIdentity(node.nodeId);
@@ -7558,6 +7680,11 @@
         !nodeId
         || nodeIds.has(nodeId)
         || !messageId
+        || (
+          Object.hasOwn(node, 'createTime')
+          && node.createTime !== null
+          && !(typeof node.createTime === 'number' && Number.isFinite(node.createTime) && node.createTime > 0)
+        )
         || (node.parentId != null && !chatAtlasCompleteIndexIdentity(node.parentId))
         || !Array.isArray(node.childIds)
         || node.childIds.some((childId) => !chatAtlasCompleteIndexIdentity(childId))
@@ -8584,6 +8711,7 @@
       selectedPathAcquisitionState.evaluationKey === evaluationKey
       && ['proven', 'failed'].includes(selectedPathAcquisitionState.status)
     ) return getSelectedPathAcquisitionStatus();
+    selectedPathAcquisitionState.origin = 'manual-native-selection';
     selectedPathAcquisitionState.token = intent.token;
     selectedPathAcquisitionState.anchorQId = intent.qId;
     selectedPathAcquisitionState.anchorSelectedAId = selectedAnswerId;
@@ -9855,6 +9983,3656 @@
     });
   }
 
+  // ── Default path: the newest-created terminal ─────────────────────────────
+  // The default branch is the complete root-to-leaf path whose eligible
+  // terminal message was created last. Never the longest path, never the
+  // mounted DOM order, never a branch number, never graph array order.
+
+  function chatAtlasGraphCreateTime(node) {
+    const value = node?.createTime;
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+  }
+
+  function chatAtlasGraphIsProductNode(node) {
+    return node?.productUser === true || node?.productAnswer === true;
+  }
+
+  // Every distinct conversation endpoint. A graph leaf that is a structural
+  // tool/system wrapper is NOT an endpoint: the endpoint is the nearest
+  // product message above it.
+  function chatAtlasEligibleTerminalNodes(graph, byId) {
+    const out = [];
+    const seen = new Set();
+    for (const node of graph.nodes) {
+      if ((node?.childIds || []).length) continue;
+      let cursor = node;
+      const guard = new Set();
+      while (cursor && !chatAtlasGraphIsProductNode(cursor)) {
+        if (guard.has(cursor.nodeId)) { cursor = null; break; }
+        guard.add(cursor.nodeId);
+        cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+      }
+      if (!cursor || seen.has(cursor.nodeId)) continue;
+      seen.add(cursor.nodeId);
+      out.push(cursor);
+    }
+    return out;
+  }
+
+  function chatAtlasSelectLatestCreatedTerminal(graph, byId) {
+    const fail = (reason) => Object.freeze({ ok: false, reason, node: null, createTime: null });
+    const terminals = chatAtlasEligibleTerminalNodes(graph, byId);
+    if (!terminals.length) return fail('terminal-unavailable');
+    // A terminal without a trustworthy creation time could be the newest one.
+    // Comparing the rest would be a guess, so the whole selection fails closed.
+    if (terminals.some((node) => chatAtlasGraphCreateTime(node) === null)) {
+      return fail('terminal-create-time-incomplete');
+    }
+    let best = null;
+    let tied = false;
+    for (const node of terminals) {
+      const created = chatAtlasGraphCreateTime(node);
+      if (!best || created > chatAtlasGraphCreateTime(best)) { best = node; tied = false; continue; }
+      if (created === chatAtlasGraphCreateTime(best)) tied = true;
+    }
+    if (!best) return fail('terminal-unavailable');
+    if (tied) return fail('terminal-create-time-tie');
+    return Object.freeze({
+      ok: true,
+      reason: 'latest-created-terminal',
+      node: best,
+      createTime: chatAtlasGraphCreateTime(best),
+    });
+  }
+
+  // The root-to-node chain. In a tree every node has one parent, so the path
+  // to a chosen terminal is unique — no fork resolution is involved.
+  function chatAtlasChainToRoot(byId, node) {
+    const chain = [];
+    const guard = new Set();
+    let cursor = node;
+    while (cursor) {
+      if (guard.has(cursor.nodeId)) return null;
+      guard.add(cursor.nodeId);
+      chain.push(cursor);
+      if (chain.length > 4096) return null;
+      cursor = cursor.parentId ? byId.get(cursor.parentId) : null;
+    }
+    chain.reverse();
+    return chain;
+  }
+
+  // The identity a native answer pager moves to for one answer-branch root.
+  function chatAtlasAnswerIdentityForRoot(root, byId) {
+    if (!root) return '';
+    if (root.branchShellAlias === true || root.productAnswer === true) {
+      return chatAtlasCompleteIndexIdentity(root.messageId) || '';
+    }
+    const queue = [root];
+    const guard = new Set();
+    while (queue.length) {
+      const node = queue.shift();
+      if (!node || guard.has(node.nodeId)) continue;
+      guard.add(node.nodeId);
+      if (guard.size > 512) break;
+      if (node.productAnswer === true) return chatAtlasCompleteIndexIdentity(node.messageId) || '';
+      if (node.productUser === true && node !== root) continue;
+      for (const childId of node.childIds || []) queue.push(byId.get(childId));
+    }
+    return '';
+  }
+
+  // Turn records for one chain, in the shape the effective index publishes.
+  // Two identities per turn, deliberately separate (Stage 2C-2ai1):
+  //
+  //   BRANCH ROOT  — the first product answer or branch-shell alias below the
+  //                  question on this chain. Branch authority: variant sets,
+  //                  sibling proofs, selected branch index.
+  //   DISPLAY      — the LAST eligible product answer before the next
+  //                  product-user node. Presentation identity: primaryAId.
+  //
+  // The display rule mirrors the canonical host-payload projection in 0D3a
+  // (`selectedProductAssistantKeys[...length - 1]`, window closed by the next
+  // product-user node, eligibility = role assistant AND productAnswer). One
+  // graph chain therefore projects to ONE row set whichever module walks it.
+  // branchRootId may differ from primaryAId without implying any divergence.
+  function chatAtlasTurnsFromChain(chain, byId, collect = null) {
+    const turns = [];
+    let open = null;
+    const close = () => {
+      if (!open) return;
+      const roots = chatAtlasConvergenceAnswerVariantRoots(open.questionNode, byId);
+      const branchRootAId = open.branchRootNode
+        ? (chatAtlasCompleteIndexIdentity(open.branchRootNode.messageId) || null)
+        : null;
+      const answerVariants = roots
+        .map((root) => chatAtlasAnswerIdentityForRoot(root, byId))
+        .filter(Boolean);
+      let primaryAId = open.displayNode
+        ? (chatAtlasCompleteIndexIdentity(open.displayNode.messageId) || null)
+        : branchRootAId;
+      // Canonical system-branch-root promotion, mirroring 0D3a:1013-1021. A
+      // SYSTEM branch root that is itself an owned variant identity IS the
+      // displayed answer — that is the identity the native pager moves to. An
+      // ASSISTANT root is preserved instead ('branch-root-assistant-preserved')
+      // and the last eligible product answer stands. A hidden alias is never
+      // displayed on any other ground.
+      if (
+        branchRootAId
+        && branchRootAId !== primaryAId
+        && String(open.branchRootNode?.role || '').trim().toLowerCase() === 'system'
+        && answerVariants.includes(branchRootAId)
+      ) primaryAId = branchRootAId;
+      if (primaryAId) {
+        const at = answerVariants.indexOf(primaryAId);
+        if (at >= 0) answerVariants.splice(at, 1);
+        answerVariants.push(primaryAId);
+      }
+      if (collect) {
+        collect.push(Object.freeze({
+          order: turns.length + 1,
+          qId: open.qId,
+          branchRootAId,
+          primaryAId,
+          branchRootIsPrimary: !!branchRootAId && branchRootAId === primaryAId,
+          displayResolvedFromBranchRoot: !!open.displayNode && !!open.branchRootNode
+            && chatAtlasConvergenceBranchRoot(open.questionNode, open.displayNode, byId)?.nodeId
+              === chatAtlasConvergenceBranchRoot(open.questionNode, open.branchRootNode, byId)?.nodeId,
+        }));
+      }
+      turns.push(chatAtlasFreeze({
+        order: turns.length + 1,
+        qId: open.qId,
+        turnId: `turn:${open.qId}`,
+        primaryAId,
+        answerVariants,
+        noAnswer: !primaryAId,
+        stopped: open.stopped === true,
+        // Same tag the manual resolver uses for rows walked from the graph.
+        provenance: 'graph-descent',
+        confirmedByNativeEvidence: false,
+      }));
+      open = null;
+    };
+    for (const node of chain) {
+      if (node?.productUser === true) {
+        close();
+        const qId = chatAtlasCompleteIndexIdentity(node.messageId);
+        if (!qId) return null;
+        open = {
+          qId,
+          questionNode: node,
+          branchRootNode: null,
+          displayNode: null,
+          stopped: node.stopped === true,
+        };
+        continue;
+      }
+      if (!open) continue;
+      // The first product answer or branch-shell alias below the question on
+      // this chain IS the selected answer-branch root for that turn.
+      if (!open.branchRootNode && (node?.productAnswer === true || node?.branchShellAlias === true)) {
+        open.branchRootNode = node;
+      }
+      // Canonical display window: keep the LAST eligible product answer, and
+      // inherit stopped from any assistant inside the window.
+      if (String(node?.role || '').trim().toLowerCase() === 'assistant') {
+        if (node.stopped === true) open.stopped = true;
+        if (node.productAnswer === true) open.displayNode = node;
+      }
+    }
+    close();
+    if (!turns.length) return null;
+    if (new Set(turns.map((turn) => turn.qId)).size !== turns.length) return null;
+    return turns;
+  }
+
+  // The active choice at every branch point along the chain: which question
+  // variant and which answer variant this path actually takes.
+  function chatAtlasBranchVectorForChain(chain, byId) {
+    const onChain = new Set(chain.map((node) => node.nodeId));
+    const vector = [];
+    let order = 0;
+    for (const node of chain) {
+      if (node?.productUser !== true) continue;
+      order += 1;
+      const questionVariants = chatAtlasConvergenceQuestionVariants(node, byId);
+      if (questionVariants.length > 1) {
+        vector.push(Object.freeze({
+          order,
+          kind: 'question-edit',
+          ownerMessageId: chatAtlasCompleteIndexIdentity(byId.get(node.parentId)?.messageId) || '',
+          ownerRole: 'user',
+          variantIds: Object.freeze(questionVariants.map((entry) => entry.nodeId)),
+          variantCreateTimes: Object.freeze(questionVariants.map(chatAtlasGraphCreateTime)),
+          selectedIndex: questionVariants.findIndex((entry) => entry.nodeId === node.nodeId),
+          variantCount: questionVariants.length,
+          selectedMessageId: chatAtlasCompleteIndexIdentity(node.messageId) || '',
+        }));
+      }
+      const answerRoots = chatAtlasConvergenceAnswerVariantRoots(node, byId);
+      if (answerRoots.length > 1) {
+        const selected = answerRoots.findIndex((root) => onChain.has(root.nodeId));
+        vector.push(Object.freeze({
+          order,
+          kind: 'assistant-regeneration',
+          ownerMessageId: chatAtlasCompleteIndexIdentity(node.messageId) || '',
+          ownerRole: 'assistant',
+          variantIds: Object.freeze(answerRoots.map((entry) => entry.nodeId)),
+          variantCreateTimes: Object.freeze(answerRoots.map(chatAtlasGraphCreateTime)),
+          selectedIndex: selected,
+          variantCount: answerRoots.length,
+          selectedMessageId: selected >= 0
+            ? chatAtlasAnswerIdentityForRoot(answerRoots[selected], byId)
+            : '',
+        }));
+      }
+    }
+    return vector;
+  }
+
+  function chatAtlasComputeDefaultLatestCreatedPath() {
+    const fail = (reason) => Object.freeze({
+      ok: false, reason, terminalNodeId: null, rootNodeId: null, terminalMessageId: null,
+      terminalCreateTime: null, turns: Object.freeze([]), branchVector: Object.freeze([]),
+      branchRoots: Object.freeze([]),
+      count: 0, fingerprint: '', source: 'latest-created-terminal',
+    });
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return fail(scope.reason);
+    const chosen = chatAtlasSelectLatestCreatedTerminal(scope.graph, scope.byId);
+    if (!chosen.ok) return fail(chosen.reason);
+    const chain = chatAtlasChainToRoot(scope.byId, chosen.node);
+    if (!chain) return fail('terminal-chain-unresolved');
+    const branchRoots = [];
+    const turns = chatAtlasTurnsFromChain(chain, scope.byId, branchRoots);
+    if (!turns) return fail('terminal-chain-not-a-path');
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      terminalNodeId: chosen.node.nodeId,
+      rootNodeId: chain[0]?.nodeId || null,
+      terminalMessageId: chatAtlasCompleteIndexIdentity(chosen.node.messageId) || null,
+      terminalCreateTime: chosen.createTime,
+      turns: Object.freeze(turns),
+      branchRoots: Object.freeze(branchRoots),
+      branchVector: Object.freeze(chatAtlasBranchVectorForChain(chain, scope.byId)),
+      count: turns.length,
+      fingerprint: chatAtlasCompleteIndexFingerprint(turns),
+      source: 'latest-created-terminal',
+    });
+  }
+
+  // ── Default-origin publication ────────────────────────────────────────────
+  // Publishes the newest-created path through the SAME overlay installation
+  // the manual origin uses. It never fabricates a trusted intent: the overlay
+  // admits it under origin 'default-latest-created', proving graph capture,
+  // terminal identity and the absence of a manual override instead.
+  // ── Reveal safety framework (Stage 2C-2ag1) ──────────────────────────────
+  // Everything here is READ-ONLY with respect to the page. The one-shot reveal
+  // action is deliberately disabled: this stage builds the container proof,
+  // the transaction pinning, the viewport bookmark, the restoration and the
+  // user-supersession detection, and proves them with the action stubbed.
+
+  const CHAT_ATLAS_REVEAL_SCROLLABLE_OVERFLOW = /^(auto|scroll|overlay)$/;
+
+  function chatAtlasRevealIsScrollable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+      const overflowY = String(W.getComputedStyle?.(el)?.overflowY || '');
+      if (!CHAT_ATLAS_REVEAL_SCROLLABLE_OVERFLOW.test(overflowY)) return false;
+      return Number(el.scrollHeight || 0) > Number(el.clientHeight || 0) + 4;
+    } catch { return false; }
+  }
+
+  // The scroll container that GOVERNS the mounted conversation turns. Anchored
+  // on turn identity and walked upward — never chosen by being the biggest
+  // scrollable thing on the page, which would happily pick a side panel. Two
+  // existing modules already resolve the conversation scroller this way
+  // (0D3c resolveChatScrollHost, 1A1c MINI_completeIndexScrollRoot); this adds
+  // the ambiguity proof neither of them makes: EVERY mounted turn must resolve
+  // to the SAME governing element, and there is no fallback to the document.
+  function chatAtlasResolveConversationScrollContainer() {
+    const fail = (reason, candidates = 0) => Object.freeze({
+      ok: false, reason, element: null, candidateCount: candidates,
+    });
+    let sections = [];
+    try {
+      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+    } catch { return fail('reveal-container-query-failed'); }
+    if (!sections.length) return fail('reveal-container-no-mounted-turns');
+    const governing = new Map();
+    for (const section of sections) {
+      let cursor = section;
+      let found = null;
+      let hops = 0;
+      while (cursor && hops < 64) {
+        hops += 1;
+        cursor = cursor.parentElement;
+        if (!cursor) break;
+        // The document scroller is never the conversation container.
+        if (cursor === D.body || cursor === D.documentElement) break;
+        if (chatAtlasRevealIsScrollable(cursor)) { found = cursor; break; }
+      }
+      if (!found) continue;
+      const entry = governing.get(found) || { element: found, turns: 0 };
+      entry.turns += 1;
+      governing.set(found, entry);
+    }
+    const candidates = Array.from(governing.values());
+    if (!candidates.length) return fail('reveal-container-unresolved');
+    // Ambiguity is a refusal, not a tie-break: two governing scrollers means
+    // the conversation subtree is not what we think it is.
+    if (candidates.length > 1) return fail('reveal-container-ambiguous', candidates.length);
+    const winner = candidates[0];
+    if (winner.element === D.scrollingElement) return fail('reveal-container-is-document', 1);
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      element: winner.element,
+      candidateCount: 1,
+      governedTurns: winner.turns,
+    });
+  }
+
+  function chatAtlasRevealContainerDiagnostics() {
+    const resolved = chatAtlasResolveConversationScrollContainer();
+    const el = resolved.ok ? resolved.element : null;
+    return Object.freeze({
+      revealContainerState: resolved.ok ? 'resolved' : 'unresolved',
+      revealContainerReason: resolved.reason,
+      revealContainerCandidateCount: Number(resolved.candidateCount || 0),
+      revealContainerGovernedTurns: Number(resolved.governedTurns || 0),
+      // Content-free by construction: the tag comes from a fixed vocabulary and
+      // the test id is reduced to a stable hash. Diagnostics never carry raw
+      // page strings, so container identity stays comparable across reloads
+      // without leaking anything from the conversation.
+      revealContainerTag: el ? String(el.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') : null,
+      revealContainerTestIdHash: el && el.getAttribute?.('data-testid')
+        ? `djb2:${chatAtlasCompleteIndexStableHash(String(el.getAttribute('data-testid')))}`
+        : null,
+      revealContainerClientHeight: el ? Number(el.clientHeight || 0) : 0,
+      revealContainerScrollHeight: el ? Number(el.scrollHeight || 0) : 0,
+      revealContainerScrollTop: el ? Number(el.scrollTop || 0) : 0,
+    });
+  }
+
+  const chatAtlasRevealState = {
+    transactionState: 'idle',
+    token: '',
+    reason: null,
+    superseded: false,
+    supersededBy: null,
+    attempts: 0,
+    topScrollExecuted: false,
+    internalDepth: 0,
+    listeners: [],
+    pin: null,
+    bookmark: null,
+    restoreState: 'idle',
+    restoreReason: null,
+    restoreMethod: null,
+    restoreTargetId: null,
+    restoreOffset: 0,
+    restoreFinalScrollTop: 0,
+    restoreRequestedScrollTop: 0,
+    restoreFirstMeasuredScrollTop: 0,
+    restoreMeasuredOffset: 0,
+    restoreOffsetError: 0,
+    restoreCorrectionAttempts: 0,
+    restoreCorrectionReason: null,
+    pagerAudit: null,
+    pagerLocator: null,
+    container: null,
+    ticks: 0,
+    readinessState: 'idle',
+    readinessReason: null,
+    readinessAttempts: 0,
+    readinessTarget: null,
+    readinessRetryTask: null,
+    readinessRetryPending: false,
+    readinessRetryScheduled: 0,
+    readinessRetryDelayMs: 0,
+    readinessRetryGeneration: 0,
+    readinessStartedAtNavigationMs: 0,
+    readinessFirstResolvedAtNavigationMs: 0,
+    readinessTerminalElapsedMs: 0,
+    readinessTerminalState: null,
+    readinessReadyElapsedMs: 0,
+    movementPhase: null,
+    movementExpectedTop: 0,
+    movementFromTop: 0,
+    movementActivatedAtMs: 0,
+    movementToken: '',
+    movementConsumed: true,
+    movementConsumedBy: null,
+    supersessionSource: null,
+    supersessionEventType: null,
+    supersessionEventTrusted: false,
+    supersessionPhase: null,
+    supersessionInternalDepth: 0,
+    supersessionInternalExpectationActive: false,
+    supersessionPointerScrollArmed: false,
+    supersessionMsAfterTopScroll: 0,
+    supersessionScrollTopBefore: 0,
+    supersessionScrollTopAfter: 0,
+    supersessionExpectedInternalTop: 0,
+    supersessionReason: null,
+    reconcileState: 'idle',
+    reconcileReason: null,
+    reconcileAuthorityProbes: 0,
+    reconcileScrollWakeups: 0,
+    reconcileScheduledProbes: 0,
+    reconcileStartedAtNavigationMs: 0,
+    reconcileLastProbeAtNavigationMs: 0,
+    reconcileTerminalElapsedMs: 0,
+    reconcileRetryTask: null,
+    reconcileRetryPending: false,
+    reconcileRetryGeneration: 0,
+    readinessAuthorityProbes: 0,
+    readinessScheduledProbes: 0,
+    restoreRan: false,
+    driftField: null,
+    driftHard: false,
+    mountedQId: null,
+    mountedAId: null,
+    pagerPresent: false,
+  };
+
+  // Scope pin. Every asynchronous continuation re-checks this before acting.
+  function chatAtlasRevealCurrentPin(target) {
+    return Object.freeze({
+      chatId: String(completeTurnIndexAuthorityState.chatId || ''),
+      routeKey: String(completeTurnIndexAuthorityState.routeKey || ''),
+      generation: Number(completeTurnIndexAuthorityState.generation || 0),
+      graphCaptureIdentity: String(selectedPathAcquisitionState.graph?.captureIdentity || ''),
+      defaultTerminalId: chatAtlasDefaultOverlayState.terminalNodeId || null,
+      targetOrder: Number(target?.order || 0),
+      targetQId: target?.qId || null,
+      targetCurrentAId: target?.currentAId || null,
+      targetExpectedAId: target?.expectedAId || null,
+      divergenceFingerprint: `${Number(target?.order || 0)}:${target?.qId || ''}:${target?.currentAId || ''}:${target?.expectedAId || ''}`,
+    });
+  }
+
+  // Scope drift, classified. Scrolling to reveal a virtualized turn MOUNTS
+  // turns, which re-captures the graph and moves the divergence projection —
+  // churn we caused ourselves. Treating that as invalidation aborted the
+  // transaction between the scroll and its compensating restore. Only page
+  // identity is hard.
+  function chatAtlasRevealScopeDrift() {
+    const pin = chatAtlasRevealState.pin;
+    const none = Object.freeze({ hard: false, soft: false, field: null });
+    if (!pin) return Object.freeze({ hard: true, soft: false, field: 'transaction-missing' });
+    if (chatAtlasRevealState.superseded === true) {
+      return Object.freeze({ hard: true, soft: false, field: 'user-superseded' });
+    }
+    const now = chatAtlasRevealCurrentPin({
+      order: pin.targetOrder,
+      qId: pin.targetQId,
+      currentAId: pin.targetCurrentAId,
+      expectedAId: pin.targetExpectedAId,
+    });
+    if (now.chatId !== pin.chatId) return Object.freeze({ hard: true, soft: false, field: 'chatId' });
+    if (now.routeKey !== pin.routeKey) return Object.freeze({ hard: true, soft: false, field: 'routeKey' });
+    if (now.generation !== pin.generation) return Object.freeze({ hard: true, soft: false, field: 'generation' });
+    // Soft: a direct consequence of the reveal itself. The pinned target
+    // identities are retained and measurement continues.
+    if (now.graphCaptureIdentity !== pin.graphCaptureIdentity) {
+      return Object.freeze({ hard: false, soft: true, field: 'graphCaptureIdentity' });
+    }
+    if (now.defaultTerminalId !== pin.defaultTerminalId) {
+      return Object.freeze({ hard: false, soft: true, field: 'defaultTerminalId' });
+    }
+    // The LIVE first-divergence projection, not a rebuild of the pin's own
+    // values. Mounting the target moves this projection, which is soft churn:
+    // the transaction keeps its original pinned identities.
+    const liveFingerprint = `${Number(chatAtlasDefaultOverlayState.revealTargetOrder || 0)}:${chatAtlasDefaultOverlayState.revealTargetQId || ''}:${chatAtlasDefaultOverlayState.revealTargetCurrentAId || ''}:${chatAtlasDefaultOverlayState.revealTargetExpectedAId || ''}`;
+    if (liveFingerprint !== pin.divergenceFingerprint) {
+      return Object.freeze({ hard: false, soft: true, field: 'divergenceFingerprint' });
+    }
+    return none;
+  }
+
+  function chatAtlasRevealScopeValid() {
+    const drift = chatAtlasRevealScopeDrift();
+    return drift.hard !== true;
+  }
+
+  // Restoration is permitted whenever we moved the page and it is still safe
+  // and meaningful to move it back.
+  function chatAtlasRevealRestorePermitted() {
+    if (chatAtlasRevealState.topScrollExecuted !== true) return false;
+    if (chatAtlasRevealState.restoreRan === true) return false;
+    if (chatAtlasRevealState.superseded === true) return false;
+    const drift = chatAtlasRevealScopeDrift();
+    if (drift.hard === true) return false;
+    const container = chatAtlasRevealState.container || null;
+    if (!container) return false;
+    if (container.isConnected === false) return false;
+    return true;
+  }
+
+  // Terminal exit. The compensating restore ALWAYS runs first when permitted:
+  // no terminal state may be written while the page is still where our scroll
+  // left it.
+  function chatAtlasRevealTerminate(state, reason) {
+    if (chatAtlasRevealRestorePermitted()) {
+      chatAtlasRevealState.restoreRan = true;
+      chatAtlasRevealRestore(chatAtlasRevealState.container);
+    } else if (chatAtlasRevealState.topScrollExecuted === true
+      && chatAtlasRevealState.restoreState === 'idle') {
+      const drift = chatAtlasRevealScopeDrift();
+      chatAtlasRevealState.restoreState = 'skipped';
+      chatAtlasRevealState.restoreReason = chatAtlasRevealState.superseded === true
+        ? 'restore-superseded'
+        : (drift.hard === true ? `restore-unsafe:${drift.field}` : 'restore-container-unavailable');
+    }
+    return chatAtlasRevealFinish(state, reason);
+  }
+
+  function chatAtlasRevealClearListeners() {
+    for (const entry of chatAtlasRevealState.listeners.splice(0)) {
+      try { entry.target?.removeEventListener?.(entry.type, entry.handler, entry.options); } catch {}
+    }
+  }
+
+  // ONLY these prove a human moved the page. A bare movement signal — a
+  // `scroll` event, a virtualization relayout, our own programmatic scroll —
+  // is never intent, however trusted the event object says it is.
+  const CHAT_ATLAS_REVEAL_GENUINE_INTENT = Object.freeze([
+    'wheel', 'touchstart', 'touchmove', 'user-key', 'scrollbar-pointer',
+    'manual-branch-selection', 'minimap-navigation',
+  ]);
+
+  function chatAtlasRevealIsGenuineIntent(source) {
+    return CHAT_ATLAS_REVEAL_GENUINE_INTENT.includes(String(source || ''));
+  }
+
+  function chatAtlasRevealRecordSupersessionAttempt(source, detail = {}) {
+    const st = chatAtlasRevealState;
+    const container = st.container || null;
+    st.supersessionSource = String(source || '');
+    st.supersessionEventType = String(detail.eventType || '') || null;
+    st.supersessionEventTrusted = detail.trusted === true;
+    st.supersessionPhase = String(st.movementPhase || st.transactionState || 'idle');
+    st.supersessionInternalDepth = Number(st.internalDepth || 0);
+    st.supersessionInternalExpectationActive = chatAtlasRevealInternalMovementActive();
+    st.supersessionPointerScrollArmed = detail.pointerScrollArmed === true;
+    st.supersessionScrollTopBefore = Number(st.movementFromTop || 0);
+    st.supersessionScrollTopAfter = container ? Number(container.scrollTop || 0) : 0;
+    st.supersessionExpectedInternalTop = Number(st.movementExpectedTop || 0);
+    const activatedAt = Number(st.movementActivatedAtMs || 0);
+    st.supersessionMsAfterTopScroll = activatedAt
+      ? Math.max(0, chatAtlasRevealNavigationMs() - activatedAt)
+      : 0;
+  }
+
+  function chatAtlasRevealSupersede(by = 'user-action', detail = {}) {
+    if (chatAtlasRevealState.transactionState === 'idle') return false;
+    if (chatAtlasRevealIsGenuineIntent(by)) chatAtlasRevealCancelReconcileRetry();
+    chatAtlasRevealRecordSupersessionAttempt(by, detail);
+    if (!chatAtlasRevealIsGenuineIntent(by)) {
+      // Recorded for diagnostics, but it does not end the transaction.
+      chatAtlasRevealState.supersessionReason = 'ignored-not-user-intent';
+      return false;
+    }
+    chatAtlasRevealState.supersessionReason = 'genuine-user-intent';
+    chatAtlasRevealCancelReadinessRetry();
+    chatAtlasRevealState.superseded = true;
+    chatAtlasRevealState.supersededBy = by;
+    chatAtlasRevealState.transactionState = 'superseded';
+    chatAtlasRevealState.reason = 'reveal-superseded-by-user-scroll';
+    chatAtlasRevealClearListeners();
+    return true;
+  }
+
+  // A bounded, transaction-scoped expectation that OUR movement is about to
+  // land. The old synchronous flag cleared before the browser delivered the
+  // asynchronous scroll signal, so our own scroll looked like the user's.
+  function chatAtlasRevealArmInternalMovement(phase, expectedTop, fromTop) {
+    const st = chatAtlasRevealState;
+    st.movementPhase = String(phase || '');
+    st.movementExpectedTop = Number(expectedTop || 0);
+    st.movementFromTop = Number(fromTop || 0);
+    st.movementActivatedAtMs = chatAtlasRevealNavigationMs();
+    st.movementToken = String(st.token || '');
+    st.movementConsumed = false;
+    return st.movementPhase;
+  }
+
+  function chatAtlasRevealInternalMovementActive() {
+    const st = chatAtlasRevealState;
+    if (!st.movementPhase) return false;
+    if (st.movementConsumed === true) return false;
+    if (String(st.movementToken || '') !== String(st.token || '')) return false;
+    // Bounded by the existing reconciliation, never by a timer.
+    return Number(st.ticks || 0) <= CHAT_ATLAS_REVEAL_RECONCILE_TICKS;
+  }
+
+  function chatAtlasRevealConsumeInternalMovement(source = 'scroll') {
+    const st = chatAtlasRevealState;
+    if (!chatAtlasRevealInternalMovementActive()) return false;
+    st.movementConsumed = true;
+    st.movementConsumedBy = String(source || '');
+    return true;
+  }
+
+  function chatAtlasRevealClearInternalMovement() {
+    const st = chatAtlasRevealState;
+    st.movementPhase = null;
+    st.movementConsumed = true;
+    st.movementToken = '';
+  }
+
+  function chatAtlasRevealFreezeReconcile(terminalState) {
+    const st = chatAtlasRevealState;
+    if (Number(st.reconcileTerminalElapsedMs || 0) > 0) return false;
+    const started = Number(st.reconcileStartedAtNavigationMs || 0);
+    st.reconcileTerminalElapsedMs = started
+      ? Math.max(1, chatAtlasRevealNavigationMs() - started)
+      : 1;
+    st.reconcileState = 'terminal';
+    st.reconcileReason = String(terminalState || '') || null;
+    return true;
+  }
+
+  function chatAtlasRevealFinish(state, reason) {
+    chatAtlasRevealCancelReadinessRetry();
+    chatAtlasRevealCancelReconcileRetry();
+    if (chatAtlasRevealState.topScrollExecuted === true) chatAtlasRevealFreezeReconcile(state);
+    chatAtlasRevealClearInternalMovement();
+    chatAtlasRevealState.transactionState = state;
+    chatAtlasRevealState.reason = reason;
+    chatAtlasRevealClearListeners();
+    return Object.freeze({ ok: state === 'target-mounted', state, reason });
+  }
+
+  // Our own scroll and restore movements must not look like the user's.
+  function chatAtlasRevealInternal(run) {
+    chatAtlasRevealState.internalDepth += 1;
+    try { return run(); } finally {
+      chatAtlasRevealState.internalDepth = Math.max(0, chatAtlasRevealState.internalDepth - 1);
+    }
+  }
+
+  function chatAtlasRevealInstallUserListeners(container) {
+    chatAtlasRevealClearListeners();
+    // Each event is classified on its own terms; only proven intent supersedes.
+    const onIntent = (type) => (event) => {
+      chatAtlasRevealSupersede(type, { eventType: type, trusted: event?.isTrusted === true });
+    };
+    // A bare scroll signal only CONSUMES our pending internal movement. It can
+    // never supersede — this is the exact false positive being removed.
+    const onScroll = (event) => {
+      chatAtlasRevealConsumeInternalMovement('scroll');
+      chatAtlasRevealRecordSupersessionAttempt('scroll-observed', {
+        eventType: 'scroll', trusted: event?.isTrusted === true,
+      });
+      chatAtlasRevealState.supersessionReason = 'ignored-not-user-intent';
+      // A movement signal is not intent, but it IS a reason to look again.
+      try { chatAtlasRevealReconcileTick('scroll'); } catch {}
+    };
+    // A pointer press is scrollbar intent only in the gutter, not anywhere in
+    // the conversation body.
+    const onPointer = (event) => {
+      let armed = false;
+      try {
+        const rect = container.getBoundingClientRect?.();
+        const x = Number(event?.clientX);
+        armed = !!rect && Number.isFinite(x)
+          && (x - Number(rect.left || 0)) > Number(container.clientWidth || 0);
+      } catch { armed = false; }
+      if (!armed) {
+        chatAtlasRevealRecordSupersessionAttempt('pointer-in-content', {
+          eventType: 'pointerdown', trusted: event?.isTrusted === true, pointerScrollArmed: false,
+        });
+        chatAtlasRevealState.supersessionReason = 'ignored-not-user-intent';
+        return;
+      }
+      chatAtlasRevealSupersede('scrollbar-pointer', {
+        eventType: 'pointerdown', trusted: event?.isTrusted === true, pointerScrollArmed: true,
+      });
+    };
+    const onKey = (event) => {
+      const key = String(event?.key || '');
+      if (![
+        'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar',
+      ].includes(key)) return;
+      chatAtlasRevealSupersede('user-key', { eventType: 'keydown', trusted: event?.isTrusted === true });
+    };
+    const add = (target, type, handler, options) => {
+      if (!target?.addEventListener) return;
+      try {
+        target.addEventListener(type, handler, options);
+        chatAtlasRevealState.listeners.push({ target, type, handler, options });
+      } catch {}
+    };
+    const passive = { passive: true };
+    add(container, 'wheel', onIntent('wheel'), passive);
+    add(container, 'touchstart', onIntent('touchstart'), passive);
+    add(container, 'touchmove', onIntent('touchmove'), passive);
+    add(container, 'pointerdown', onPointer, passive);
+    add(container, 'scroll', onScroll, passive);
+    add(W, 'keydown', onKey, true);
+    return chatAtlasRevealState.listeners.length;
+  }
+
+  function chatAtlasRevealOpenTransaction(target) {
+    chatAtlasRevealClearListeners();
+    const container = chatAtlasResolveConversationScrollContainer();
+    if (!container.ok) {
+      // The CALLER decides whether this is terminal or merely early: at boot
+      // the conversation has not mounted yet, and that is not a failure.
+      chatAtlasRevealState.reason = container.reason;
+      return Object.freeze({ ok: false, reason: container.reason, container: null });
+    }
+    const token = `reveal:${String(completeTurnIndexAuthorityState.chatId || '')}:${Number(completeTurnIndexAuthorityState.generation || 0)}:${target?.qId || ''}`;
+    chatAtlasRevealState.token = token;
+    chatAtlasRevealState.pin = chatAtlasRevealCurrentPin(target);
+    chatAtlasRevealState.superseded = false;
+    chatAtlasRevealState.supersededBy = null;
+    chatAtlasRevealState.attempts = 0;
+    chatAtlasRevealState.topScrollExecuted = false;
+    chatAtlasRevealState.restoreState = 'idle';
+    chatAtlasRevealState.restoreReason = null;
+    chatAtlasRevealState.transactionState = 'open';
+    chatAtlasRevealState.reason = null;
+    chatAtlasRevealInstallUserListeners(container.element);
+    return Object.freeze({ ok: true, reason: null, token, container: container.element });
+  }
+
+  // Bookmark: canonical identity first, container scrollTop only as a fallback.
+  function chatAtlasRevealCaptureBookmark(container) {
+    const scrollTop = Number(container?.scrollTop || 0);
+    const base = { kind: 'scroll-top', turnId: null, offset: 0, scrollTop, captured: true };
+    let sections = [];
+    try {
+      sections = Array.from(container?.querySelectorAll?.('[data-testid^="conversation-turn-"]') || []);
+    } catch { sections = []; }
+    let containerTop = 0;
+    try { containerTop = Number(container?.getBoundingClientRect?.().top || 0); } catch {}
+    for (const section of sections) {
+      let qEl = null;
+      try { qEl = section.querySelector?.('[data-message-author-role="user"][data-message-id]') || null; } catch {}
+      const qId = chatAtlasCompleteIndexIdentity(qEl?.getAttribute?.('data-message-id'));
+      if (!qId) continue;
+      // Measure the SAME element restoration resolves. Capturing the turn
+      // section while restoring the inner message element made them disagree
+      // by the section's leading layout — the observed 998 px miss.
+      let top = null;
+      try { top = Number(qEl.getBoundingClientRect?.().top); } catch { top = null; }
+      if (!Number.isFinite(top)) continue;
+      if (top - containerTop < -1) continue;
+      base.kind = 'canonical-turn';
+      base.turnId = qId;
+      base.offset = Math.round(top - containerTop);
+      break;
+    }
+    chatAtlasRevealState.bookmark = chatAtlasFreeze(base);
+    return chatAtlasRevealState.bookmark;
+  }
+
+  const CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX = 2;
+
+  function chatAtlasRevealRestore(container) {
+    const record = (state, reason, method = null, targetId = null, offset = 0) => {
+      chatAtlasRevealState.restoreState = state;
+      chatAtlasRevealState.restoreReason = reason;
+      chatAtlasRevealState.restoreMethod = method;
+      chatAtlasRevealState.restoreTargetId = targetId;
+      chatAtlasRevealState.restoreOffset = offset;
+      return Object.freeze({ ok: state === 'restored', state, reason, method });
+    };
+    const bookmark = chatAtlasRevealState.bookmark;
+    if (!bookmark) return record('skipped', 'reveal-bookmark-missing');
+    if (chatAtlasRevealState.superseded === true) return record('skipped', 'restore-superseded');
+    if (!chatAtlasRevealScopeValid()) return record('skipped', 'reveal-scope-drift');
+    if (!container) return record('failed', 'reveal-container-unavailable');
+    // Restoration is a viewport movement only: it never touches branch
+    // authority, MiniMap navigation, flashing or manual-override state.
+    chatAtlasRevealArmInternalMovement('restore-bookmark',
+      Number(bookmark.scrollTop || 0), Number(container.scrollTop || 0));
+    return chatAtlasRevealInternal(() => {
+      if (bookmark.kind === 'canonical-turn' && bookmark.turnId) {
+        const wanted = Number(bookmark.offset || 0);
+        const resolve = () => {
+          try {
+            const all = Array.from(container.querySelectorAll?.(
+              `[data-message-author-role="user"][data-message-id="${bookmark.turnId}"]`,
+            ) || []);
+            if (all.length > 1) return 'ambiguous';
+            return all[0] || null;
+          } catch { return null; }
+        };
+        const offsetOf = (el) => Number(el.getBoundingClientRect?.().top || 0)
+          - Number(container.getBoundingClientRect?.().top || 0);
+        const first = resolve();
+        if (first === 'ambiguous') {
+          chatAtlasRevealState.restoreCorrectionReason = 'canonical-anchor-ambiguous';
+        } else if (first) {
+          try {
+            const requested = Number(container.scrollTop || 0) + (offsetOf(first) - wanted);
+            chatAtlasRevealState.restoreRequestedScrollTop = requested;
+            container.scrollTop = requested;
+            chatAtlasRevealState.restoreFirstMeasuredScrollTop = Number(container.scrollTop || 0);
+            // Verify against the ORIGINAL bookmark: layout may have shifted or
+            // the browser's scroll anchoring may have moved the position.
+            const again = resolve();
+            const settled = again && again !== 'ambiguous' ? again : first;
+            let measured = offsetOf(settled);
+            let error = Math.round(measured - wanted);
+            if (Math.abs(error) > CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX) {
+              chatAtlasRevealState.restoreCorrectionAttempts = 1;
+              chatAtlasRevealState.restoreCorrectionReason = 'offset-error-corrected';
+              container.scrollTop = Number(container.scrollTop || 0) + error;
+              measured = offsetOf(settled);
+              error = Math.round(measured - wanted);
+            }
+            chatAtlasRevealState.restoreMeasuredOffset = Math.round(measured);
+            chatAtlasRevealState.restoreOffsetError = error;
+            chatAtlasRevealState.restoreFinalScrollTop = Number(container.scrollTop || 0);
+            if (Math.abs(error) > CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX) {
+              return record('failed', 'reveal-restore-failed', 'canonical-turn', bookmark.turnId, wanted);
+            }
+            return record('restored', null, 'canonical-turn', bookmark.turnId, wanted);
+          } catch {
+            return record('failed', 'reveal-restore-failed', 'canonical-turn', bookmark.turnId, wanted);
+          }
+        } else {
+          chatAtlasRevealState.restoreCorrectionReason = 'canonical-anchor-missing';
+        }
+      }
+      const wantedTop = Number(bookmark.scrollTop || 0);
+      try {
+        chatAtlasRevealState.restoreRequestedScrollTop = wantedTop;
+        container.scrollTop = wantedTop;
+        chatAtlasRevealState.restoreFirstMeasuredScrollTop = Number(container.scrollTop || 0);
+        let error = Math.round(Number(container.scrollTop || 0) - wantedTop);
+        if (Math.abs(error) > CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX) {
+          chatAtlasRevealState.restoreCorrectionAttempts = 1;
+          chatAtlasRevealState.restoreCorrectionReason = 'scroll-top-error-corrected';
+          container.scrollTop = Number(container.scrollTop || 0) - error;
+          error = Math.round(Number(container.scrollTop || 0) - wantedTop);
+        }
+        chatAtlasRevealState.restoreOffsetError = error;
+        if (Math.abs(error) > CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX) {
+          chatAtlasRevealState.restoreFinalScrollTop = Number(container.scrollTop || 0);
+          return record('failed', 'reveal-restore-failed', 'scroll-top', null, wantedTop);
+        }
+      } catch {
+        return record('failed', 'reveal-restore-failed', 'scroll-top', null, wantedTop);
+      }
+      chatAtlasRevealState.restoreFinalScrollTop = Number(container.scrollTop || 0);
+      return record('restored', null, 'scroll-top', null, wantedTop);
+    });
+  }
+
+  // Exact mounted-target proof. Requires the target question, a paired
+  // assistant identity and an unambiguous regeneration pager owned by that
+  // exact pair. Mounting some other early turn is never success.
+  // ── Passive pager audit (Stage 2C-2ah3) ───────────────────────────────────
+  // Read-only structural capture. It never activates anything and never keeps
+  // a DOM reference: only content-free counts, enums and hashes survive, so
+  // the picture stays readable after restoration re-virtualizes the turn.
+  const CHAT_ATLAS_PAGER_AUDIT_MAX_CANDIDATES = 24;
+  const CHAT_ATLAS_PAGER_AUDIT_DIRECTION_WORDS = Object.freeze(['previous', 'next', 'left', 'right']);
+  // How far above an exact indicator we will look for controls before calling
+  // them adjacent. A toolbar seven hops away is not a pager.
+  const CHAT_ATLAS_PAGER_AUDIT_ADJACENCY_HOPS = 3;
+
+  function chatAtlasPagerAuditHash(value) {
+    const text = String(value == null ? '' : value).trim();
+    if (!text) return null;
+    return `djb2:${chatAtlasCompleteIndexStableHash(text)}`;
+  }
+
+  function chatAtlasPagerAuditRegions(answerSection) {
+    const regions = [];
+    const push = (region, el) => regions.push({ region, el: el || null });
+    push('answer-section', answerSection);
+    push('answer-section-parent', answerSection?.parentElement || null);
+    push('previous-sibling-section', answerSection?.previousElementSibling || null);
+    push('following-sibling-section', answerSection?.nextElementSibling || null);
+    let wrapper = null;
+    try {
+      wrapper = answerSection?.parentElement?.closest?.('[data-testid^="conversation-turn-"]') || null;
+    } catch { wrapper = null; }
+    if (wrapper && wrapper !== answerSection) push('conversation-turn-wrapper', wrapper);
+    return regions;
+  }
+
+  function chatAtlasPagerAuditCandidate(node, region, targetAId, root) {
+    const label = String(node?.getAttribute?.('aria-label') || '').trim().toLowerCase();
+    const exactPrevious = label === 'previous response';
+    const exactNext = label === 'next response';
+    const directions = CHAT_ATLAS_PAGER_AUDIT_DIRECTION_WORDS.filter((word) => label.includes(word));
+    let indicatorHops = -1;
+    let group = node;
+    for (let hop = 0; hop < 8 && group; hop += 1) {
+      if (chatAtlasConvergenceExactIndicator(group)) { indicatorHops = hop; break; }
+      group = group.parentElement || null;
+    }
+    let owner = null;
+    let ownerMethod = 'none';
+    try { owner = node.closest?.('[data-message-id]') || null; } catch {}
+    if (owner) ownerMethod = 'closest-message-id';
+    if (!owner && root) {
+      let ordered = [];
+      try { ordered = Array.from(root.querySelectorAll?.('[data-message-id], button') || []); } catch {}
+      let last = null;
+      for (const entry of ordered) {
+        if (entry === node) break;
+        if (chatAtlasCompleteIndexIdentity(entry?.getAttribute?.('data-message-id'))) last = entry;
+      }
+      if (last) { owner = last; ownerMethod = 'section-document-order'; }
+    }
+    if (!owner) {
+      let sibling = null;
+      try {
+        sibling = node.closest?.('[data-testid^="conversation-turn-"]')
+          ?.querySelector?.('[data-message-author-role="assistant"][data-message-id]') || null;
+      } catch { sibling = null; }
+      if (sibling) { owner = sibling; ownerMethod = 'sibling-assistant'; }
+    }
+    const ownerId = chatAtlasCompleteIndexIdentity(owner?.getAttribute?.('data-message-id')) || '';
+    const ownerRole = String(owner?.getAttribute?.('data-message-author-role') || '').trim().toLowerCase() || 'unknown';
+    const ownerMatch = !owner
+      ? 'unknown'
+      : (ownerId === chatAtlasCompleteIndexIdentity(targetAId)
+        ? 'target-answer'
+        : (ownerRole === 'user' ? 'question' : 'other-answer'));
+    let rejection = 'accepted-current-contract';
+    if (!exactPrevious && !exactNext) rejection = 'label-not-recognized';
+    else if (region !== 'answer-section') rejection = 'outside-current-search-root';
+    else if (indicatorHops < 0) rejection = 'indicator-not-found';
+    else if (!owner) rejection = 'owner-not-found';
+    else if (ownerRole !== 'assistant') rejection = 'owner-role-not-assistant';
+    else if (ownerMatch !== 'target-answer') rejection = 'owner-id-mismatch';
+    return Object.freeze({
+      region,
+      tag: String(node?.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null,
+      ariaLabelHash: chatAtlasPagerAuditHash(node?.getAttribute?.('aria-label')),
+      testIdHash: chatAtlasPagerAuditHash(node?.getAttribute?.('data-testid')),
+      role: String(node?.getAttribute?.('role') || '').trim().toLowerCase() || null,
+      exactPrevious,
+      exactNext,
+      directionWords: Object.freeze(directions),
+      indicatorFound: indicatorHops >= 0,
+      indicatorHops,
+      disabled: node?.disabled === true || node?.getAttribute?.('aria-disabled') === 'true',
+      ownerMethod,
+      ownerMatch,
+      ownerRole,
+      rejection,
+    });
+  }
+
+  function chatAtlasPagerAuditButtonLike(node) {
+    if (!node || node.nodeType !== 1) return false;
+    if (String(node.tagName || '').toUpperCase() === 'BUTTON') return true;
+    return String(node.getAttribute?.('role') || '').trim().toLowerCase() === 'button';
+  }
+
+  // Content-free structural summary of ONE unique control. Every button-like
+  // node is recorded, including ones with no aria-label, title, test id or
+  // role — an unlabelled icon control must never silently disappear.
+  function chatAtlasPagerAuditControl(node, ordinal, regions, targetAId, root) {
+    const label = String(node?.getAttribute?.('aria-label') || '').trim();
+    const title = String(node?.getAttribute?.('title') || '').trim();
+    const testId = String(node?.getAttribute?.('data-testid') || '').trim();
+    const lower = label.toLowerCase();
+    const exactPrevious = lower === 'previous response';
+    const exactNext = lower === 'next response';
+    let svg = false;
+    let childCount = 0;
+    try {
+      childCount = Number(node?.children?.length || 0);
+      svg = Array.from(node?.querySelectorAll?.('*') || [])
+        .some((n) => String(n?.tagName || '').toLowerCase() === 'svg');
+    } catch {}
+    let indicatorHops = -1;
+    let group = node;
+    for (let hop = 0; hop < 8 && group; hop += 1) {
+      if (chatAtlasConvergenceExactIndicator(group)) { indicatorHops = hop; break; }
+      group = group.parentElement || null;
+    }
+    let owner = null;
+    let ownerMethod = 'none';
+    try { owner = node.closest?.('[data-message-id]') || null; } catch {}
+    if (owner) ownerMethod = 'closest-message-id';
+    if (!owner && root) {
+      let ordered = [];
+      try { ordered = Array.from(root.querySelectorAll?.('[data-message-id], button, [role="button"]') || []); } catch {}
+      let last = null;
+      for (const entry of ordered) {
+        if (entry === node) break;
+        if (chatAtlasCompleteIndexIdentity(entry?.getAttribute?.('data-message-id'))) last = entry;
+      }
+      if (last) { owner = last; ownerMethod = 'section-document-order'; }
+    }
+    if (!owner) {
+      try {
+        owner = node.closest?.('[data-testid^="conversation-turn-"]')
+          ?.querySelector?.('[data-message-author-role="assistant"][data-message-id]') || null;
+      } catch { owner = null; }
+      if (owner) ownerMethod = 'sibling-assistant';
+    }
+    const ownerId = chatAtlasCompleteIndexIdentity(owner?.getAttribute?.('data-message-id')) || '';
+    const ownerRole = String(owner?.getAttribute?.('data-message-author-role') || '').trim().toLowerCase() || 'unknown';
+    const ownerMatch = !owner
+      ? 'unknown'
+      : (ownerId === chatAtlasCompleteIndexIdentity(targetAId)
+        ? 'target-answer'
+        : (ownerRole === 'user' ? 'question' : 'other-answer'));
+    return Object.freeze({
+      ordinal,
+      regions: Object.freeze(regions.slice()),
+      tag: String(node?.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null,
+      disabled: node?.disabled === true || node?.getAttribute?.('aria-disabled') === 'true',
+      ariaLabelPresent: !!label,
+      ariaLabelHash: chatAtlasPagerAuditHash(label),
+      titlePresent: !!title,
+      titleHash: chatAtlasPagerAuditHash(title),
+      testIdPresent: !!testId,
+      testIdHash: chatAtlasPagerAuditHash(testId),
+      role: String(node?.getAttribute?.('role') || '').trim().toLowerCase() || null,
+      svgChild: svg,
+      childCount,
+      exactPrevious,
+      exactNext,
+      directionWords: Object.freeze(CHAT_ATLAS_PAGER_AUDIT_DIRECTION_WORDS.filter((w) => lower.includes(w))),
+      indicatorFound: indicatorHops >= 0,
+      indicatorHops,
+      ownerMethod,
+      ownerMatch,
+      ownerRole,
+      hasAnyLabelSignal: !!(label || title || testId),
+    });
+  }
+
+  function chatAtlasPagerAuditStructuralTag(node) {
+    if (!node) return null;
+    return String(node.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null;
+  }
+
+  function chatAtlasRevealAuditPager(row) {
+    const targetAId = chatAtlasCompleteIndexIdentity(row?.mountedAId);
+    const answerSection = row?.answerSection || row?.section || null;
+    if (!answerSection || !targetAId) {
+      chatAtlasRevealState.pagerAudit = chatAtlasFreeze({
+        state: 'skipped', reason: 'audit-target-unavailable',
+        targetMounted: !!row?.mountedQId, assistantMounted: !!targetAId,
+        regions: [], controls: [], indicators: [], adjacent: [], totals: {},
+        failureClass: 'insufficient-pager-structure',
+      });
+      return chatAtlasRevealState.pagerAudit;
+    }
+    // ── Deduplicate by DOM node identity across overlapping regions ────────
+    const byNode = new Map();
+    const regions = [];
+    let rawOccurrences = 0;
+    for (const { region, el } of chatAtlasPagerAuditRegions(answerSection)) {
+      let buttons = [];
+      let indicators = 0;
+      if (el) {
+        try { buttons = Array.from(el.querySelectorAll?.('*') || []).filter(chatAtlasPagerAuditButtonLike); } catch { buttons = []; }
+        try {
+          indicators = Array.from(el.querySelectorAll?.('*') || [])
+            .filter((n) => /^\d+\s*\/\s*\d+$/.test(String(n?.textContent || '').trim())).length;
+        } catch { indicators = 0; }
+      }
+      for (const node of buttons) {
+        rawOccurrences += 1;
+        const entry = byNode.get(node) || { node, regions: [], root: el };
+        if (!entry.regions.includes(region)) entry.regions.push(region);
+        if (region === 'answer-section') entry.root = el;
+        byNode.set(node, entry);
+      }
+      regions.push(Object.freeze({
+        region, present: !!el, buttonCount: buttons.length, indicatorCount: indicators,
+      }));
+    }
+    const uniqueNodes = Array.from(byNode.values()).slice(0, CHAT_ATLAS_PAGER_AUDIT_MAX_CANDIDATES);
+    const ordinalOf = new Map();
+    const controls = uniqueNodes.map((entry, index) => {
+      ordinalOf.set(entry.node, index);
+      return chatAtlasPagerAuditControl(entry.node, index, entry.regions, targetAId, entry.root || answerSection);
+    });
+
+    // ── Exact indicators and the controls genuinely grouped with them ──────
+    const indicatorNodes = [];
+    const seenIndicator = new Set();
+    for (const { region, el } of chatAtlasPagerAuditRegions(answerSection)) {
+      if (!el) continue;
+      let all = [];
+      try { all = Array.from(el.querySelectorAll?.('*') || []); } catch { all = []; }
+      for (const n of all) {
+        if (seenIndicator.has(n)) continue;
+        if (!/^\d+\s*\/\s*\d+$/.test(String(n?.textContent || '').trim())) continue;
+        if (Number(n?.children?.length || 0) > 0) continue;   // innermost only
+        seenIndicator.add(n);
+        indicatorNodes.push({ node: n, region });
+      }
+    }
+    const adjacent = [];
+    const adjacentNodes = new Set();
+    const indicators = indicatorNodes.map((entry, index) => {
+      const node = entry.node;
+      const parent = node.parentElement || null;
+      const siblings = parent?.children || [];
+      const indexInParent = Array.prototype.indexOf.call(siblings, node);
+      // Smallest ancestor, within a bounded hop count, that actually contains
+      // button-like controls. A numeric element seven hops from a toolbar is
+      // NOT adjacency.
+      let group = parent;
+      let groupHops = 1;
+      let groupButtons = [];
+      for (let hop = 0; hop < CHAT_ATLAS_PAGER_AUDIT_ADJACENCY_HOPS && group; hop += 1) {
+        let found = [];
+        try { found = Array.from(group.querySelectorAll?.('*') || []).filter(chatAtlasPagerAuditButtonLike); } catch { found = []; }
+        if (found.length) { groupButtons = found; groupHops = hop + 1; break; }
+        group = group.parentElement || null;
+      }
+      let parentButtons = [];
+      try { parentButtons = Array.from(parent?.querySelectorAll?.('*') || []).filter(chatAtlasPagerAuditButtonLike); } catch {}
+      let resolverHops = -1;
+      let probe = node;
+      for (let hop = 0; hop < 8 && probe; hop += 1) {
+        if (chatAtlasConvergenceExactIndicator(probe)) { resolverHops = hop; break; }
+        probe = probe.parentElement || null;
+      }
+      for (const btn of groupButtons) {
+        if (adjacentNodes.has(btn)) continue;
+        adjacentNodes.add(btn);
+        const btnIndex = Array.prototype.indexOf.call(siblings, btn);
+        let position = 'other';
+        try {
+          if (node.contains?.(btn)) position = 'descendant';
+          else if (btnIndex >= 0 && indexInParent >= 0) position = btnIndex < indexInParent ? 'before-indicator' : 'after-indicator';
+        } catch {}
+        const control = controls.find((c) => c.ordinal === ordinalOf.get(btn)) || null;
+        const label = String(btn?.getAttribute?.('aria-label') || '').trim().toLowerCase();
+        adjacent.push(Object.freeze({
+          indicatorOrdinal: index,
+          buttonOrdinal: ordinalOf.has(btn) ? ordinalOf.get(btn) : -1,
+          position,
+          ariaLabelHash: chatAtlasPagerAuditHash(btn?.getAttribute?.('aria-label')),
+          titleHash: chatAtlasPagerAuditHash(btn?.getAttribute?.('title')),
+          testIdHash: chatAtlasPagerAuditHash(btn?.getAttribute?.('data-testid')),
+          hasAnyLabelSignal: !!(btn?.getAttribute?.('aria-label') || btn?.getAttribute?.('title') || btn?.getAttribute?.('data-testid')),
+          exactContractLabel: label === 'previous response' || label === 'next response',
+          disabled: btn?.disabled === true,
+          svgChild: control ? control.svgChild : false,
+          ownerMatch: control ? control.ownerMatch : 'unknown',
+          region: control && control.regions.includes('answer-section') ? 'answer-section' : (control?.regions?.[0] || entry.region),
+          resolverRecognized: label === 'previous response' || label === 'next response',
+        }));
+      }
+      return Object.freeze({
+        ordinal: index,
+        region: entry.region,
+        tag: chatAtlasPagerAuditStructuralTag(node),
+        parentTag: chatAtlasPagerAuditStructuralTag(parent),
+        exactPattern: true,
+        resolverHops,
+        siblingCount: siblings.length,
+        indexInParent,
+        previousSiblingTag: chatAtlasPagerAuditStructuralTag(siblings[indexInParent - 1] || null),
+        nextSiblingTag: chatAtlasPagerAuditStructuralTag(siblings[indexInParent + 1] || null),
+        previousButtonOrdinal: (() => {
+          for (let i = indexInParent - 1; i >= 0; i -= 1) {
+            if (chatAtlasPagerAuditButtonLike(siblings[i]) && ordinalOf.has(siblings[i])) return ordinalOf.get(siblings[i]);
+          }
+          return -1;
+        })(),
+        nextButtonOrdinal: (() => {
+          for (let i = indexInParent + 1; i < siblings.length; i += 1) {
+            if (chatAtlasPagerAuditButtonLike(siblings[i]) && ordinalOf.has(siblings[i])) return ordinalOf.get(siblings[i]);
+          }
+          return -1;
+        })(),
+        parentButtonCount: parentButtons.length,
+        groupButtonCount: groupButtons.length,
+        groupHops,
+      });
+    });
+
+    // The UNCHANGED resolver, for comparison only.
+    let entries = [];
+    try { entries = chatAtlasNativeVariantPagers(answerSection) || []; } catch { entries = []; }
+    const owned = entries.filter((e) => e.kind === 'assistant-regeneration' && e.ownerId === targetAId);
+    const distinctOwners = new Set(entries.map((e) => String(e.ownerId || ''))).size;
+
+    // ── Aggregates on RAW structural evidence ─────────────────────────────
+    const recognized = controls.filter((c) => c.exactPrevious || c.exactNext);
+    const ownerMatched = controls.filter((c) => c.ownerMatch === 'target-answer');
+    const adjacentLabelled = adjacent.filter((a) => a.hasAnyLabelSignal);
+    const adjacentContract = adjacent.filter((a) => a.exactContractLabel);
+    const adjacentInRoot = adjacent.filter((a) => a.region === 'answer-section');
+    const adjacentOwned = adjacent.filter((a) => a.ownerMatch === 'target-answer');
+
+    // ── Evidence-based classification, anchored on the INDICATOR ──────────
+    // Generic toolbar buttons that merely share a distant ancestor with a
+    // number are never treated as relabelled pager controls.
+    let failureClass = 'insufficient-pager-structure';
+    if (owned.length === 1) failureClass = 'pager-resolver-should-have-succeeded';
+    else if (!indicators.length) failureClass = 'pager-indicator-absent';
+    else if (!adjacent.length) failureClass = 'pager-controls-absent';
+    else if (!adjacentLabelled.length) failureClass = 'pager-controls-unlabeled';
+    else if (!adjacentInRoot.length) failureClass = 'pager-outside-answer-section';
+    else if (!adjacentContract.length) failureClass = 'pager-label-contract-mismatch';
+    else if (!adjacentOwned.length) failureClass = 'pager-ownership-contract-mismatch';
+    else if (owned.length > 1 || distinctOwners > 1) failureClass = 'pager-resolver-ambiguity';
+
+    chatAtlasRevealState.pagerAudit = chatAtlasFreeze({
+      state: 'captured',
+      reason: null,
+      targetMounted: true,
+      assistantMounted: true,
+      regions: regions.slice(),
+      controls: controls.slice(),
+      indicators: indicators.slice(),
+      adjacent: adjacent.slice(),
+      totals: {
+        regionCount: regions.length,
+        rawButtonOccurrences: rawOccurrences,
+        uniqueButtonCount: byNode.size,
+        duplicateOccurrenceCount: Math.max(0, rawOccurrences - byNode.size),
+        uniqueCandidateCount: controls.length,
+        totalButtons: rawOccurrences,
+        candidateCount: controls.length,
+        recognizedLabelCount: recognized.length,
+        indicatorCount: indicators.length,
+        ownerMatchCount: ownerMatched.length,
+        adjacentControlCount: adjacent.length,
+        adjacentLabelledCount: adjacentLabelled.length,
+        adjacentContractCount: adjacentContract.length,
+        resolverEntryCount: entries.length,
+        resolverOwnedCount: owned.length,
+        resolverDistinctOwners: distinctOwners,
+      },
+      failureClass,
+    });
+    return chatAtlasRevealState.pagerAudit;
+  }
+
+  // ── Container-wide passive pager locator (Stage 2C-2ah5) ─────────────────
+  // Widens the search from one section to the PROVEN conversation container
+  // plus bounded overlay roots, and calibrates against any genuine pager that
+  // exists elsewhere. Read-only: no clicks, focus, hover or scrolling.
+  const CHAT_ATLAS_PAGER_LOCATOR_MAX_ITEMS = 40;
+  const CHAT_ATLAS_PAGER_LOCATOR_NEAR_PX = 400;
+
+  function chatAtlasPagerLocatorRect(el) {
+    try {
+      const r = el?.getBoundingClientRect?.();
+      if (!r) return null;
+      return {
+        top: Math.round(Number(r.top || 0)),
+        left: Math.round(Number(r.left || 0)),
+        width: Math.round(Number(r.width || 0)),
+        height: Math.round(Number(r.height || 0)),
+      };
+    } catch { return null; }
+  }
+
+  // Content-free shape of an icon: viewBox and ordered path hashes only.
+  function chatAtlasPagerLocatorSvgSignature(node) {
+    let svgs = [];
+    try { svgs = Array.from(node?.querySelectorAll?.('*') || []).filter((n) => String(n?.tagName || '').toLowerCase() === 'svg'); } catch {}
+    if (!svgs.length) return Object.freeze({ svgCount: 0, viewBoxHash: null, pathCount: 0, pathHashes: Object.freeze([]) });
+    const svg = svgs[0];
+    let paths = [];
+    try { paths = Array.from(svg.querySelectorAll?.('*') || []).filter((n) => String(n?.tagName || '').toLowerCase() === 'path'); } catch {}
+    return Object.freeze({
+      svgCount: svgs.length,
+      viewBoxHash: chatAtlasPagerAuditHash(svg.getAttribute?.('viewBox')),
+      pathCount: paths.length,
+      pathHashes: Object.freeze(paths.slice(0, 6).map((n) => chatAtlasPagerAuditHash(n.getAttribute?.('d')))),
+    });
+  }
+
+  function chatAtlasPagerLocatorSignatureKey(sig) {
+    return `${sig.viewBoxHash || ''}|${sig.pathCount}|${(sig.pathHashes || []).join(',')}`;
+  }
+
+  function chatAtlasPagerLocatorOwner(node, targetAId) {
+    let owner = null;
+    let method = 'none';
+    try { owner = node.closest?.('[data-message-id]') || null; } catch {}
+    if (owner) method = 'closest-message-id';
+    if (!owner) {
+      try {
+        owner = node.closest?.('[data-testid^="conversation-turn-"]')
+          ?.querySelector?.('[data-message-author-role="assistant"][data-message-id]') || null;
+      } catch { owner = null; }
+      if (owner) method = 'sibling-assistant';
+    }
+    const id = chatAtlasCompleteIndexIdentity(owner?.getAttribute?.('data-message-id')) || '';
+    const role = String(owner?.getAttribute?.('data-message-author-role') || '').trim().toLowerCase() || 'unknown';
+    return Object.freeze({
+      method,
+      role,
+      match: !owner ? 'unknown'
+        : (id === chatAtlasCompleteIndexIdentity(targetAId) ? 'target-answer'
+          : (role === 'user' ? 'question' : 'other-answer')),
+    });
+  }
+
+  function chatAtlasPagerLocatorControl(node, ordinal, region, targetAId, targetRect) {
+    const label = String(node?.getAttribute?.('aria-label') || '').trim();
+    const lower = label.toLowerCase();
+    const title = String(node?.getAttribute?.('title') || '').trim();
+    const testId = String(node?.getAttribute?.('data-testid') || '').trim();
+    const rect = chatAtlasPagerLocatorRect(node);
+    const sig = chatAtlasPagerLocatorSvgSignature(node);
+    const owner = chatAtlasPagerLocatorOwner(node, targetAId);
+    return Object.freeze({
+      ordinal,
+      region,
+      tag: String(node?.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null,
+      ariaLabelPresent: !!label,
+      ariaLabelHash: chatAtlasPagerAuditHash(label),
+      titlePresent: !!title,
+      titleHash: chatAtlasPagerAuditHash(title),
+      testIdPresent: !!testId,
+      testIdHash: chatAtlasPagerAuditHash(testId),
+      exactContractLabel: lower === 'previous response' || lower === 'next response',
+      directionWords: Object.freeze(CHAT_ATLAS_PAGER_AUDIT_DIRECTION_WORDS.filter((w) => lower.includes(w))),
+      disabled: node?.disabled === true,
+      svg: sig,
+      signatureKey: sig.svgCount ? chatAtlasPagerLocatorSignatureKey(sig) : null,
+      width: rect ? rect.width : 0,
+      height: rect ? rect.height : 0,
+      distanceFromTargetPx: rect && targetRect ? Math.abs(rect.top - targetRect.top) : -1,
+      ownerMethod: owner.method,
+      ownerRole: owner.role,
+      ownerMatch: owner.match,
+      resolverAccepts: lower === 'previous response' || lower === 'next response',
+    });
+  }
+
+  function chatAtlasPagerLocatorCapture(row) {
+    const targetAId = chatAtlasCompleteIndexIdentity(row?.mountedAId);
+    const answerSection = row?.answerSection || row?.section || null;
+    const resolved = chatAtlasResolveConversationScrollContainer();
+    const container = resolved.ok ? resolved.element : null;
+    const store = (payload) => {
+      chatAtlasRevealState.pagerLocator = chatAtlasFreeze(payload);
+      return chatAtlasRevealState.pagerLocator;
+    };
+    if (!container || !targetAId || !answerSection) {
+      return store({
+        state: 'skipped', reason: 'locator-scope-unavailable', conclusion: 'insufficient-live-evidence',
+        controls: [], indicators: [], knownPagerSignatures: [], overlayCandidates: [], totals: {}, visibility: {},
+      });
+    }
+    let targetAnswerEl = null;
+    try { targetAnswerEl = answerSection.querySelector?.(`[data-message-author-role="assistant"][data-message-id="${targetAId}"]`) || null; } catch {}
+    const targetRect = chatAtlasPagerLocatorRect(targetAnswerEl || answerSection);
+
+    // ── Container-wide census, deduplicated by DOM node ───────────────────
+    const byNode = new Map();
+    const addNode = (node, region) => {
+      const entry = byNode.get(node) || { node, region };
+      byNode.set(node, entry);
+      return entry;
+    };
+    let all = [];
+    try { all = Array.from(container.querySelectorAll?.('*') || []); } catch { all = []; }
+    const indicators = [];
+    let occurrences = 0;
+    for (const node of all) {
+      if (chatAtlasPagerAuditButtonLike(node)) {
+        occurrences += 1;
+        addNode(node, answerSection.contains?.(node) ? 'answer-section' : 'conversation-container');
+        continue;
+      }
+      if (Number(node?.children?.length || 0) > 0) continue;
+      if (!/^\d+\s*\/\s*\d+$/.test(String(node?.textContent || '').trim())) continue;
+      if (indicators.length >= CHAT_ATLAS_PAGER_LOCATOR_MAX_ITEMS) continue;
+      const rect = chatAtlasPagerLocatorRect(node);
+      const owner = chatAtlasPagerLocatorOwner(node, targetAId);
+      indicators.push(Object.freeze({
+        ordinal: indicators.length,
+        region: answerSection.contains?.(node) ? 'answer-section' : 'conversation-container',
+        tag: String(node?.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null,
+        parentTag: String(node?.parentElement?.tagName || '').toLowerCase().replace(/[^a-z0-9-]/g, '') || null,
+        ownerMatch: owner.match,
+        ownerRole: owner.role,
+        distanceFromTargetPx: rect && targetRect ? Math.abs(rect.top - targetRect.top) : -1,
+      }));
+    }
+    // ── Calibration: any pager the UNCHANGED resolver accepts anywhere ─────
+    const knownSignatures = [];
+    let knownPagerCount = 0;
+    let knownAssistantPagerCount = 0;
+    let resolverButtonOccurrences = 0;
+    let sections = [];
+    try { sections = Array.from(container.querySelectorAll?.('[data-testid^="conversation-turn-"]') || []); } catch {}
+    for (const section of sections) {
+      let entries = [];
+      try { entries = chatAtlasNativeVariantPagers(section) || []; } catch { entries = []; }
+      for (const entry of entries) {
+        // Any genuine pager calibrates the icon contract — a question-edit
+        // pager carries the same chevrons as a regeneration pager. Recording
+        // the kind keeps the two distinguishable without narrowing the sample.
+        if (!entry.previous && !entry.next) continue;
+        knownPagerCount += 1;
+        if (entry.kind === 'assistant-regeneration') knownAssistantPagerCount += 1;
+        const btn = entry.previous || entry.next;
+        // Mission B item 6: every resolver entry feeds the one census. These
+        // buttons were already seen by the container sweep, so the DOM-node
+        // dedupe is what keeps each of them a single record.
+        for (const node of [entry.previous, entry.next]) {
+          if (!node) continue;
+          resolverButtonOccurrences += 1;
+          addNode(node, answerSection.contains?.(node) ? 'answer-section' : 'conversation-container');
+        }
+        const sig = chatAtlasPagerLocatorSvgSignature(btn);
+        const rect = chatAtlasPagerLocatorRect(btn);
+        if (knownSignatures.length >= CHAT_ATLAS_PAGER_LOCATOR_MAX_ITEMS) continue;
+        knownSignatures.push(Object.freeze({
+          ordinal: knownSignatures.length,
+          kind: String(entry.kind || 'unknown'),
+          ownerIsTarget: entry.ownerId === targetAId,
+          labelHash: chatAtlasPagerAuditHash(btn?.getAttribute?.('aria-label')),
+          svg: sig,
+          signatureKey: sig.svgCount ? chatAtlasPagerLocatorSignatureKey(sig) : null,
+          width: rect ? rect.width : 0,
+          height: rect ? rect.height : 0,
+          distanceFromTargetPx: rect && targetRect ? Math.abs(rect.top - targetRect.top) : -1,
+        }));
+      }
+    }
+    const controls = Array.from(byNode.values())
+      .slice(0, CHAT_ATLAS_PAGER_LOCATOR_MAX_ITEMS)
+      .map((e, i) => chatAtlasPagerLocatorControl(e.node, i, e.region, targetAId, targetRect));
+
+    const knownKeys = new Set(knownSignatures.map((k) => k.signatureKey).filter(Boolean));
+    const signatureMatches = controls.filter((c) => c.signatureKey && knownKeys.has(c.signatureKey));
+    const unlabelledTarget = controls.filter((c) => !c.ariaLabelPresent && !c.titlePresent
+      && !c.testIdPresent && c.svg.svgCount > 0 && c.ownerMatch === 'target-answer');
+    const unlabelledMatch = unlabelledTarget.some((c) => c.signatureKey && knownKeys.has(c.signatureKey));
+    const nearestKnown = knownSignatures.reduce((best, k) => (
+      k.distanceFromTargetPx >= 0 && (best < 0 || k.distanceFromTargetPx < best) ? k.distanceFromTargetPx : best
+    ), -1);
+
+    // ── Bounded overlay roots only: parent and its direct siblings ─────────
+    const overlayCandidates = [];
+    const overlayRoots = [];
+    const parent = container.parentElement || null;
+    // Sibling roots first, each including itself: the most specific bounded
+    // root wins, so a sibling overlay layer is never reported as the parent's.
+    for (const sib of Array.from(parent?.children || [])) {
+      if (sib === container) continue;
+      if (overlayRoots.length >= 6) break;
+      overlayRoots.push({ root: 'container-sibling', el: sib, self: true });
+    }
+    if (parent) overlayRoots.push({ root: 'container-parent', el: parent, self: false });
+    const overlaySeen = new Set();
+    for (const { root, el, self } of overlayRoots) {
+      let nodes = [];
+      try { nodes = Array.from(el.querySelectorAll?.('*') || []); } catch { nodes = []; }
+      if (self) nodes = [el].concat(nodes);
+      for (const node of nodes) {
+        if (overlayCandidates.length >= CHAT_ATLAS_PAGER_LOCATOR_MAX_ITEMS) break;
+        if (overlaySeen.has(node)) continue;
+        overlaySeen.add(node);
+        if (container.contains?.(node)) continue;
+        let position = '';
+        try { position = String(W.getComputedStyle?.(node)?.position || ''); } catch {}
+        if (position !== 'fixed' && position !== 'absolute') continue;
+        let indicatorCount = 0;
+        let directional = 0;
+        try {
+          const inner = Array.from(node.querySelectorAll?.('*') || []);
+          indicatorCount = inner.filter((n) => /^\d+\s*\/\s*\d+$/.test(String(n?.textContent || '').trim())).length;
+          directional = inner.filter((n) => chatAtlasPagerAuditButtonLike(n)
+            && CHAT_ATLAS_PAGER_AUDIT_DIRECTION_WORDS.some((w) => String(n.getAttribute?.('aria-label') || '').toLowerCase().includes(w))).length;
+        } catch {}
+        if (!indicatorCount && !directional) continue;
+        const rect = chatAtlasPagerLocatorRect(node);
+        const distance = rect && targetRect ? Math.abs(rect.top - targetRect.top) : -1;
+        overlayCandidates.push(Object.freeze({
+          ordinal: overlayCandidates.length,
+          root,
+          proximity: distance >= 0 && distance <= CHAT_ATLAS_PAGER_LOCATOR_NEAR_PX ? 'near-target' : 'far',
+          indicatorCount,
+          directionalCount: directional,
+          ownerMatch: chatAtlasPagerLocatorOwner(node, targetAId).match,
+          distanceFromTargetPx: distance,
+        }));
+      }
+    }
+
+    // ── Visibility / conditional-UI signals (read-only) ────────────────────
+    const containerRect = chatAtlasPagerLocatorRect(container);
+    const visible = targetRect && containerRect
+      ? Math.max(0, Math.min(targetRect.top + targetRect.height, containerRect.top + containerRect.height)
+        - Math.max(targetRect.top, containerRect.top))
+      : 0;
+    const matchesState = (el, sel) => { try { return el?.matches?.(sel) === true; } catch { return false; } };
+    const visibility = Object.freeze({
+      intersectsViewport: visible > 0,
+      visiblePercent: targetRect && targetRect.height
+        ? Math.max(0, Math.min(100, Math.round((visible / targetRect.height) * 100))) : 0,
+      hovered: matchesState(targetAnswerEl, ':hover'),
+      focusWithin: matchesState(targetAnswerEl, ':focus-within'),
+      targetWidth: targetRect ? targetRect.width : 0,
+      targetHeight: targetRect ? targetRect.height : 0,
+      distanceFromViewportTopPx: targetRect && containerRect ? targetRect.top - containerRect.top : -1,
+    });
+
+    const targetControls = controls.filter((c) => c.ownerMatch === 'target-answer');
+    const containerExactLabels = controls.filter((c) => c.exactContractLabel);
+    const containerDirectional = controls.filter((c) => c.directionWords.length || c.exactContractLabel);
+    const containerUnlabelledSvg = controls.filter((c) => !c.ariaLabelPresent && !c.titlePresent
+      && !c.testIdPresent && c.svg.svgCount > 0);
+    // Pager-shaped and BELONGS to the target, but sits outside the answer root
+    // the resolver searches — the resolver would never see it.
+    const targetPagerOutsideRoot = containerDirectional.filter((c) => c.ownerMatch === 'target-answer'
+      && c.region !== 'answer-section');
+    const overlayNearTarget = overlayCandidates.filter((o) => o.proximity === 'near-target'
+      && (o.ownerMatch === 'target-answer' || o.ownerMatch === 'unknown'));
+    // Pager-shaped and INSIDE the target's own answer section, yet ownership
+    // resolution attributes it to some other message — a resolver mismatch.
+    const misownedInsideRoot = containerDirectional.filter((c) => c.region === 'answer-section'
+      && c.ownerMatch !== 'target-answer');
+    // The unlabelled target button carries the exact icon geometry of a pager
+    // the UNCHANGED resolver already accepts elsewhere: same control, wrong
+    // (or absent) label contract. Never inferred from "has an SVG" alone.
+    const signatureMismatch = knownKeys.size > 0 && unlabelledMatch;
+
+    let conclusion = 'insufficient-live-evidence';
+    if (targetPagerOutsideRoot.length || overlayNearTarget.length) {
+      conclusion = 'pager-found-outside-target-root';
+    } else if (misownedInsideRoot.length) {
+      conclusion = 'pager-owner-resolution-mismatch';
+    } else if (signatureMismatch) {
+      conclusion = 'pager-contract-signature-mismatch';
+    } else if (knownPagerCount > 0) {
+      conclusion = 'pager-dom-absent-for-target';
+    } else if (!containerExactLabels.length && !indicators.length) {
+      conclusion = 'no-native-pager-calibration-available';
+    }
+    return store({
+      state: 'captured',
+      reason: null,
+      conclusion,
+      controls: controls.slice(),
+      indicators: indicators.slice(),
+      knownPagerSignatures: knownSignatures.slice(),
+      overlayCandidates: overlayCandidates.slice(),
+      visibility,
+      totals: {
+        rawButtonOccurrences: occurrences + resolverButtonOccurrences,
+        resolverButtonOccurrences,
+        uniqueButtonCount: byNode.size,
+        containerIndicatorCount: indicators.length,
+        containerExactLabelCount: containerExactLabels.length,
+        containerDirectionalCount: containerDirectional.length,
+        containerUnlabelledSvgCount: containerUnlabelledSvg.length,
+        knownPagerCount,
+        knownAssistantPagerCount,
+        knownPagerSignatureCount: knownSignatures.length,
+        targetNearbyControlCount: targetControls.length,
+        targetOwnerMatchCount: targetControls.length,
+        targetSignatureMatches: signatureMatches.length,
+        unlabelledTargetSignatureMatch: unlabelledMatch,
+        nearestKnownSignatureDistancePx: nearestKnown,
+        overlayCandidateCount: overlayCandidates.length,
+      },
+    });
+  }
+
+  // ── Turn-2 graph eligibility audit (Stage 2C-2ah7) ───────────────────────
+  // Publishes the sibling proof H2O ALREADY computes and discards. Read-only
+  // with respect to the graph, the traversal, the branch vector and the
+  // newest-created policy: every helper below is called, never redefined.
+  const CHAT_ATLAS_TURN2_AUDIT_MAX_CHILDREN = 32;
+  const CHAT_ATLAS_TURN2_AUDIT_MAX_POINTS = 32;
+
+  let chatAtlasTurn2GraphAudit = null;
+
+  // Distinguishes "absent" from "duplicated": the unique-node helper answers
+  // null for both, and only one of them is an ambiguity.
+  function chatAtlasTurn2AuditMatchCount(graph, id, productKey) {
+    const wanted = chatAtlasCompleteIndexIdentity(id);
+    if (!wanted) return 0;
+    let count = 0;
+    for (const node of graph?.nodes || []) {
+      if (productKey && node?.[productKey] !== true) continue;
+      if (chatAtlasCompleteIndexIdentity(node?.messageId) === wanted) count += 1;
+    }
+    return count;
+  }
+
+  function chatAtlasTurn2AuditNodeByMessageId(graph, id) {
+    const wanted = chatAtlasCompleteIndexIdentity(id);
+    if (!wanted) return null;
+    const found = (graph?.nodes || [])
+      .filter((node) => chatAtlasCompleteIndexIdentity(node?.messageId) === wanted);
+    return found.length === 1 ? found[0] : null;
+  }
+
+  function chatAtlasTurn2AuditRole(node) {
+    const role = String(node?.role || '').trim().toLowerCase();
+    return ['user', 'assistant', 'system', 'tool'].includes(role) ? role : 'unknown';
+  }
+
+  // One assistant identity, described only by its relationship to the target
+  // question. Nothing here re-implements traversal: branch-root resolution is
+  // the existing chatAtlasConvergenceBranchRoot.
+  function chatAtlasTurn2AuditAssistant(graph, byId, questionNode, answerRoots, id, chainNodeIds) {
+    const matchCount = chatAtlasTurn2AuditMatchCount(graph, id, null);
+    const node = chatAtlasTurn2AuditNodeByMessageId(graph, id);
+    if (!node) {
+      return Object.freeze({
+        found: false, ambiguous: matchCount > 1, role: 'unknown',
+        productAnswer: false, branchShellAlias: false, stopped: false, createTimePresent: false,
+        parentIsTargetQuestion: false, directChildIndex: -1, reachableFromAnswerRoot: false,
+        answerRootOrdinal: -1, graphPathContainsTargetQuestion: false,
+        intermediateNodeBetweenQuestionAndIdentity: false, onCurrentNodeChain: false,
+      });
+    }
+    const root = questionNode ? chatAtlasConvergenceBranchRoot(questionNode, node, byId) : null;
+    const rootOrdinal = root ? answerRoots.findIndex((entry) => entry.nodeId === root.nodeId) : -1;
+    const directChildIndex = questionNode
+      ? (questionNode.childIds || []).indexOf(node.nodeId)
+      : -1;
+    let chain = [];
+    try { chain = chatAtlasChainToRoot(byId, node) || []; } catch { chain = []; }
+    const chainIds = new Set(chain.map((entry) => entry.nodeId));
+    return Object.freeze({
+      found: true,
+      ambiguous: matchCount > 1,
+      role: chatAtlasTurn2AuditRole(node),
+      productAnswer: node.productAnswer === true,
+      branchShellAlias: node.branchShellAlias === true,
+      stopped: node.stopped === true,
+      createTimePresent: chatAtlasGraphCreateTime(node) !== null,
+      parentIsTargetQuestion: !!questionNode && node.parentId === questionNode.nodeId,
+      directChildIndex,
+      reachableFromAnswerRoot: rootOrdinal >= 0,
+      answerRootOrdinal: rootOrdinal,
+      graphPathContainsTargetQuestion: !!questionNode && chainIds.has(questionNode.nodeId),
+      // A wrapper/alias sits between the question and this identity.
+      intermediateNodeBetweenQuestionAndIdentity: !!root && root.nodeId !== node.nodeId,
+      onCurrentNodeChain: chainNodeIds.has(node.nodeId),
+    });
+  }
+
+  function chatAtlasCaptureTurn2GraphAudit() {
+    const store = (payload) => {
+      chatAtlasTurn2GraphAudit = chatAtlasFreeze(payload);
+      return chatAtlasTurn2GraphAudit;
+    };
+    const blank = (reason) => store({
+      state: 'skipped', reason,
+      conclusion: 'insufficient-graph-evidence',
+      policyRecommendation: 'no-policy-change-supported',
+      question: { found: false, unique: false, directChildCount: 0, productUserChildCount: 0,
+        productAnswerChildCount: 0, branchShellAliasChildCount: 0, stoppedChildCount: 0,
+        answerRootCount: 0, questionVariantCount: 0, answerRootCountGreaterThanOne: false },
+      children: [], current: null, defaultAnswer: null,
+      defaultEligibility: { archive: false, presentation: false, nativeSibling: false,
+        exclusionReason: 'insufficient-graph-evidence' },
+      points: [], turn2Point: { found: false, kind: 'none', variantCount: 0, selectedIndex: -1,
+        containsCurrent: false, containsDefault: false, containsBoth: false },
+      pointer: { present: false, belongsToGraph: false, chainContainsQuestion: false,
+        chainContainsCurrent: false, chainContainsDefault: false, agreesWithEffective: false },
+    });
+
+    const targetQId = chatAtlasCompleteIndexIdentity(chatAtlasDefaultOverlayState.revealTargetQId);
+    const currentAId = chatAtlasCompleteIndexIdentity(chatAtlasDefaultOverlayState.revealTargetCurrentAId);
+    const defaultAId = chatAtlasCompleteIndexIdentity(chatAtlasDefaultOverlayState.revealTargetExpectedAId);
+    if (!targetQId || !currentAId || !defaultAId) return blank('audit-target-unresolved');
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return blank(scope.reason);
+    const graph = scope.graph;
+    const byId = scope.byId;
+
+    // ── Mission F: the host's own pointer, proven through its chain ────────
+    const pointerId = chatAtlasCompleteIndexIdentity(graph.currentNode);
+    const pointerNode = pointerId ? byId.get(pointerId) || null : null;
+    let pointerChain = [];
+    if (pointerNode) {
+      try { pointerChain = chatAtlasChainToRoot(byId, pointerNode) || []; } catch { pointerChain = []; }
+    }
+    const chainNodeIds = new Set(pointerChain.map((node) => node.nodeId));
+    const chainMessageIds = new Set(pointerChain
+      .map((node) => chatAtlasCompleteIndexIdentity(node.messageId))
+      .filter(Boolean));
+    let effectiveTurn2AId = '';
+    try {
+      const effective = getEffectivePresentationIndex();
+      const row = (Array.isArray(effective?.turns) ? effective.turns : [])
+        .find((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === targetQId) || null;
+      effectiveTurn2AId = chatAtlasCompleteIndexIdentity(row?.primaryAId) || '';
+    } catch { effectiveTurn2AId = ''; }
+    const pointer = Object.freeze({
+      present: !!pointerId,
+      belongsToGraph: !!pointerNode,
+      chainContainsQuestion: chainMessageIds.has(targetQId),
+      chainContainsCurrent: chainMessageIds.has(currentAId),
+      chainContainsDefault: chainMessageIds.has(defaultAId),
+      // Membership is the proof. Equality with graph.currentNode is not.
+      agreesWithEffective: !!effectiveTurn2AId && chainMessageIds.has(effectiveTurn2AId),
+    });
+
+    // ── Mission C: the target question and its direct children ────────────
+    const questionMatches = chatAtlasTurn2AuditMatchCount(graph, targetQId, 'productUser');
+    const questionNode = chatAtlasConvergenceUniqueNode(graph, targetQId, 'productUser');
+    const currentMatches = chatAtlasTurn2AuditMatchCount(graph, currentAId, null);
+    const defaultMatches = chatAtlasTurn2AuditMatchCount(graph, defaultAId, null);
+    const ambiguous = questionMatches > 1 || currentMatches > 1 || defaultMatches > 1;
+    if (!questionNode && !ambiguous) return blank('target-question-unresolved');
+
+    const answerRoots = questionNode
+      ? chatAtlasConvergenceAnswerVariantRoots(questionNode, byId)
+      : [];
+    const questionVariants = questionNode
+      ? chatAtlasConvergenceQuestionVariants(questionNode, byId)
+      : [];
+    const childNodes = (questionNode?.childIds || [])
+      .map((childId) => byId.get(childId))
+      .filter(Boolean);
+    const children = childNodes.slice(0, CHAT_ATLAS_TURN2_AUDIT_MAX_CHILDREN).map((node, index) => {
+      const resolved = chatAtlasAnswerIdentityForRoot(node, byId);
+      const own = chatAtlasCompleteIndexIdentity(node.messageId) || '';
+      return Object.freeze({
+        ordinal: index,
+        role: chatAtlasTurn2AuditRole(node),
+        productUser: node.productUser === true,
+        productAnswer: node.productAnswer === true,
+        branchShellAlias: node.branchShellAlias === true,
+        stopped: node.stopped === true,
+        createTimePresent: chatAtlasGraphCreateTime(node) !== null,
+        parentIsTargetQuestion: node.parentId === questionNode.nodeId,
+        answerIdentityResolves: !!resolved,
+        resolvedAnswerIsCurrent: !!resolved && resolved === currentAId,
+        resolvedAnswerIsDefault: !!resolved && resolved === defaultAId,
+        childIsCurrent: own === currentAId,
+        childIsDefault: own === defaultAId,
+      });
+    });
+    const question = Object.freeze({
+      found: !!questionNode,
+      unique: questionMatches === 1,
+      directChildCount: childNodes.length,
+      productUserChildCount: childNodes.filter((n) => n.productUser === true).length,
+      productAnswerChildCount: childNodes.filter((n) => n.productAnswer === true).length,
+      branchShellAliasChildCount: childNodes.filter((n) => n.branchShellAlias === true).length,
+      stoppedChildCount: childNodes.filter((n) => n.stopped === true).length,
+      answerRootCount: answerRoots.length,
+      questionVariantCount: questionVariants.length,
+      answerRootCountGreaterThanOne: answerRoots.length > 1,
+    });
+
+    // ── Mission D ─────────────────────────────────────────────────────────
+    const current = chatAtlasTurn2AuditAssistant(graph, byId, questionNode, answerRoots, currentAId, chainNodeIds);
+    const defaultAnswer = chatAtlasTurn2AuditAssistant(graph, byId, questionNode, answerRoots, defaultAId, chainNodeIds);
+
+    // ── Mission E: summarise the EXISTING branch vector, unchanged ─────────
+    // Membership is tested on the answer-branch ROOT that carries an identity,
+    // which is what variantIds holds — a stopped or aliased variant is still a
+    // root even when no product answer resolves beneath it.
+    const rootIdFor = (node) => {
+      if (!node || !questionNode) return '';
+      const root = chatAtlasConvergenceBranchRoot(questionNode, node, byId);
+      return root ? root.nodeId : '';
+    };
+    const currentRootId = rootIdFor(chatAtlasTurn2AuditNodeByMessageId(graph, currentAId));
+    const defaultRootId = rootIdFor(chatAtlasTurn2AuditNodeByMessageId(graph, defaultAId));
+    let computed = null;
+    try { computed = chatAtlasComputeDefaultLatestCreatedPath(); } catch { computed = null; }
+    const vector = computed?.ok === true && Array.isArray(computed.branchVector) ? computed.branchVector : [];
+    const targetOrder = (() => {
+      const turns = Array.isArray(computed?.turns) ? computed.turns : [];
+      const row = turns.find((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === targetQId) || null;
+      return row ? Number(row.order || 0) : 0;
+    })();
+    const summarise = (point) => {
+      const ids = Array.isArray(point?.variantIds) ? point.variantIds : [];
+      const times = Array.isArray(point?.variantCreateTimes) ? point.variantCreateTimes : [];
+      const selectedIndex = Number(point?.selectedIndex ?? -1);
+      const selectedId = selectedIndex >= 0 ? String(ids[selectedIndex] || '') : '';
+      const selectedTime = selectedIndex >= 0 ? times[selectedIndex] : null;
+      return Object.freeze({
+        order: Number(point?.order || 0),
+        kind: String(point?.kind || 'none'),
+        variantCount: Number(point?.variantCount || ids.length || 0),
+        selectedIndex,
+        selectedVariantCreateTimePresent: typeof selectedTime === 'number'
+          && Number.isFinite(selectedTime) && selectedTime > 0,
+        ownerIsTargetQuestion: chatAtlasCompleteIndexIdentity(point?.ownerMessageId) === targetQId,
+        containsCurrent: !!currentRootId && ids.includes(currentRootId),
+        containsDefault: !!defaultRootId && ids.includes(defaultRootId),
+        selectedIsCurrent: !!currentRootId && selectedId === currentRootId,
+        selectedIsDefault: !!defaultRootId && selectedId === defaultRootId,
+      });
+    };
+    const points = vector.slice(0, CHAT_ATLAS_TURN2_AUDIT_MAX_POINTS).map(summarise);
+    const turn2Raw = vector.find((point) => (
+      String(point?.kind || '') === 'assistant-regeneration'
+      && chatAtlasCompleteIndexIdentity(point?.ownerMessageId) === targetQId
+      && (!targetOrder || Number(point?.order || 0) === targetOrder)
+    )) || null;
+    const turn2Summary = turn2Raw ? summarise(turn2Raw) : null;
+    const turn2Point = Object.freeze({
+      found: !!turn2Summary,
+      kind: turn2Summary ? turn2Summary.kind : 'none',
+      variantCount: turn2Summary ? turn2Summary.variantCount : 0,
+      selectedIndex: turn2Summary ? turn2Summary.selectedIndex : -1,
+      containsCurrent: !!turn2Summary && turn2Summary.containsCurrent,
+      containsDefault: !!turn2Summary && turn2Summary.containsDefault,
+      containsBoth: !!turn2Summary && turn2Summary.containsCurrent && turn2Summary.containsDefault,
+    });
+
+    // ── Mission D exclusion ladder and Mission G conclusion ────────────────
+    const archiveEligible = defaultAnswer.found
+      && (defaultAnswer.productAnswer || defaultAnswer.branchShellAlias);
+    const structuralSibling = question.answerRootCountGreaterThanOne
+      && current.reachableFromAnswerRoot
+      && defaultAnswer.reachableFromAnswerRoot
+      && current.answerRootOrdinal !== defaultAnswer.answerRootOrdinal;
+    const nativeSibling = structuralSibling && turn2Point.containsBoth;
+
+    let exclusionReason = 'none';
+    if (ambiguous) exclusionReason = 'ambiguous-root';
+    else if (!defaultAnswer.found) exclusionReason = 'node-not-found';
+    else if (defaultAnswer.role !== 'assistant') exclusionReason = 'not-assistant';
+    else if (!defaultAnswer.reachableFromAnswerRoot) {
+      exclusionReason = defaultAnswer.graphPathContainsTargetQuestion
+        ? 'not-resolved-from-answer-root'
+        : 'parent-mismatch';
+    } else if (!question.answerRootCountGreaterThanOne) exclusionReason = 'not-direct-child';
+    else if (!turn2Point.containsBoth) exclusionReason = 'not-resolved-from-answer-root';
+    else if (defaultAnswer.stopped) exclusionReason = 'stopped';
+    else if (defaultAnswer.branchShellAlias) exclusionReason = 'branch-shell-alias';
+    else if (!defaultAnswer.productAnswer) exclusionReason = 'not-assistant';
+
+    const presentationEligible = nativeSibling && exclusionReason === 'none';
+
+    let conclusion = 'insufficient-graph-evidence';
+    if (ambiguous) conclusion = 'graph-identity-ambiguous';
+    else if (!questionNode || !current.found || !defaultAnswer.found) {
+      conclusion = 'insufficient-graph-evidence';
+    } else if (!nativeSibling) conclusion = 'not-genuine-answer-siblings';
+    else if (!presentationEligible) conclusion = 'sibling-target-not-presentation-eligible';
+    else conclusion = 'genuine-eligible-answer-siblings';
+
+    let policyRecommendation = 'no-policy-change-supported';
+    if (conclusion === 'graph-identity-ambiguous') policyRecommendation = 'graph-ambiguous';
+    else if (conclusion === 'genuine-eligible-answer-siblings') policyRecommendation = 'default-target-valid';
+    else if (exclusionReason === 'branch-shell-alias') policyRecommendation = 'exclude-branch-shell-alias';
+    else if (exclusionReason === 'stopped') policyRecommendation = 'exclude-stopped-answer';
+    else if (structuralSibling && !turn2Point.containsBoth) policyRecommendation = 'require-branch-vector-membership';
+    else if (['not-resolved-from-answer-root', 'parent-mismatch', 'not-direct-child'].includes(exclusionReason)) {
+      policyRecommendation = 'require-direct-answer-sibling';
+    }
+
+    return store({
+      state: 'captured',
+      reason: null,
+      conclusion,
+      policyRecommendation,
+      question,
+      children,
+      current,
+      defaultAnswer,
+      defaultEligibility: Object.freeze({
+        archive: archiveEligible,
+        presentation: presentationEligible,
+        nativeSibling,
+        exclusionReason,
+      }),
+      points,
+      turn2Point,
+      pointer,
+    });
+  }
+
+  function chatAtlasRevealMeasureTarget(targetQId) {
+    const wanted = chatAtlasCompleteIndexIdentity(targetQId);
+    chatAtlasRevealState.mountedQId = null;
+    chatAtlasRevealState.mountedAId = null;
+    chatAtlasRevealState.pagerPresent = false;
+    if (!wanted) return Object.freeze({ state: 'target-still-unmounted', reason: 'reveal-target-unproven' });
+    let map = null;
+    try { map = chatAtlasMapMountedNativePath(); } catch { map = null; }
+    const rows = Array.isArray(map?.rows) ? map.rows : [];
+    const matches = rows.filter((row) => row.mountedQId === wanted);
+    if (!matches.length) return Object.freeze({ state: 'target-still-unmounted', reason: 'target-question-unmounted' });
+    if (matches.length > 1) return Object.freeze({ state: 'target-mounted-ambiguous', reason: 'target-question-duplicated' });
+    const row = matches[0];
+    chatAtlasRevealState.mountedQId = row.mountedQId;
+    if (!row.mountedAId) {
+      return Object.freeze({ state: 'target-answer-unavailable', reason: 'target-answer-unmounted' });
+    }
+    // Passive structural capture at the exact moment the row is proven and
+    // before restoration re-virtualizes it. Read-only; no DOM is retained.
+    try { chatAtlasRevealAuditPager(row); } catch {}
+    try { chatAtlasPagerLocatorCapture(row); } catch {}
+    try { chatAtlasCaptureTurn2GraphAudit(); } catch {}
+    // The pager must belong to THIS question/answer pair. Split user/assistant
+    // sections are handled because the row carries its own answer section.
+    let pagers = [];
+    try { pagers = chatAtlasNativeVariantPagers(row.answerSection || row.section) || []; } catch { pagers = []; }
+    const owned = pagers.filter((entry) => entry.kind === 'assistant-regeneration'
+      && entry.ownerId === row.mountedAId);
+    if (owned.length > 1) return Object.freeze({ state: 'target-mounted-ambiguous', reason: 'pager-owner-ambiguous' });
+    chatAtlasRevealState.mountedAId = row.mountedAId;
+    chatAtlasRevealState.pagerPresent = owned.length === 1;
+    // The question and its answer ARE mounted. Calling that "still unmounted"
+    // threw away proven evidence and misdescribed the terminal condition.
+    if (!owned.length) {
+      return Object.freeze({ state: 'target-mounted-pager-unavailable', reason: 'reveal-pager-unavailable' });
+    }
+    return Object.freeze({ state: 'target-mounted', reason: null });
+  }
+
+  // The action boundary. ENABLED: exactly one reversible movement of the proven
+  // conversation container to its absolute top. No loop, no increments, no
+  // second scroll — the attempt counter is the hard gate.
+  const CHAT_ATLAS_REVEAL_ACTION_ENABLED = true;
+  const CHAT_ATLAS_REVEAL_RECONCILE_TICKS = 3;
+
+  function chatAtlasExecuteOneShotRevealAction(transaction) {
+    if (CHAT_ATLAS_REVEAL_ACTION_ENABLED !== true) {
+      chatAtlasRevealState.reason = 'reveal-action-disabled';
+      return Object.freeze({ ok: false, executed: false, reason: 'reveal-action-disabled' });
+    }
+    if (!chatAtlasRevealScopeValid()) {
+      return Object.freeze({ ok: false, executed: false, reason: 'reveal-scope-drift' });
+    }
+    if (chatAtlasRevealState.attempts >= 1 || chatAtlasRevealState.topScrollExecuted === true) {
+      return Object.freeze({ ok: false, executed: false, reason: 'reveal-attempt-exhausted' });
+    }
+    const container = transaction?.container || null;
+    if (!container) return Object.freeze({ ok: false, executed: false, reason: 'reveal-container-unavailable' });
+    chatAtlasRevealState.attempts = 1;
+    let moved = false;
+    chatAtlasRevealArmInternalMovement('reveal-top', 0, Number(container.scrollTop || 0));
+    chatAtlasRevealInternal(() => {
+      try { container.scrollTop = 0; moved = true; } catch { moved = false; }
+    });
+    if (!moved) {
+      return Object.freeze({ ok: false, executed: false, reason: 'reveal-produced-no-mount' });
+    }
+    chatAtlasRevealState.topScrollExecuted = true;
+    chatAtlasRevealState.reconcileStartedAtNavigationMs = chatAtlasRevealNavigationMs();
+    chatAtlasRevealState.reconcileState = 'reconciling';
+    return Object.freeze({ ok: true, executed: true, reason: null });
+  }
+
+  // One bounded reveal: open, bookmark, one scroll, measure. The reconciliation
+  // window is driven by the EXISTING authority notification, capped by ticks.
+  const CHAT_ATLAS_REVEAL_READINESS_MAX = 3;
+  // Scheduled late-boot probes are a RESERVED budget: boot-time authority
+  // publications must never spend it. Five probes across ~8 s.
+  // ABSOLUTE probe targets measured from the readiness start, so event-loop
+  // delay cannot compound the schedule. Sparse across ~40 s: a conversation
+  // can finish mounting far later than the old 8 s window allowed.
+  // Post-scroll reconciliation targets, absolute from the top-scroll time. The
+  // live trace saw the internal movement land 19.2 s after the scroll, so the
+  // window reaches 30 s. Authority publications and scroll wakeups may
+  // reconcile EARLIER but never spend this reserved budget.
+  const CHAT_ATLAS_REVEAL_RECONCILE_TARGETS_MS = Object.freeze([
+    100, 500, 1500, 3000, 6000, 12000, 20000, 30000,
+  ]);
+  const CHAT_ATLAS_REVEAL_RECONCILE_SCHEDULED_MAX = CHAT_ATLAS_REVEAL_RECONCILE_TARGETS_MS.length;
+  const CHAT_ATLAS_REVEAL_RECONCILE_DEADLINE_MS = 30000;
+
+  function chatAtlasRevealReconcileElapsedMs() {
+    const frozen = Number(chatAtlasRevealState.reconcileTerminalElapsedMs || 0);
+    if (frozen > 0) return frozen;
+    const started = Number(chatAtlasRevealState.reconcileStartedAtNavigationMs || 0);
+    if (!started) return 0;
+    return Math.max(0, chatAtlasRevealNavigationMs() - started);
+  }
+
+  function chatAtlasRevealCancelReconcileRetry() {
+    const handle = chatAtlasRevealState.reconcileRetryTask;
+    chatAtlasRevealState.reconcileRetryTask = null;
+    chatAtlasRevealState.reconcileRetryPending = false;
+    if (handle == null) return false;
+    try {
+      if (typeof W.clearTimeout === 'function') W.clearTimeout(handle);
+      else clearTimeout(handle);
+    } catch {}
+    return true;
+  }
+
+  function chatAtlasRevealScheduleReconcileRetry() {
+    const st = chatAtlasRevealState;
+    if (st.transactionState !== 'awaiting-mount') return false;
+    if (st.reconcileRetryPending === true) return false;
+    const spent = Number(st.reconcileScheduledProbes || 0);
+    if (spent >= CHAT_ATLAS_REVEAL_RECONCILE_SCHEDULED_MAX) return false;
+    const elapsed = chatAtlasRevealReconcileElapsedMs();
+    if (elapsed >= CHAT_ATLAS_REVEAL_RECONCILE_DEADLINE_MS) return false;
+    const target = CHAT_ATLAS_REVEAL_RECONCILE_TARGETS_MS[spent];
+    const delay = Math.max(0, target - elapsed);
+    const generation = Number(st.reconcileRetryGeneration || 0) + 1;
+    st.reconcileRetryGeneration = generation;
+    st.reconcileRetryPending = true;
+    const schedule = typeof W.setTimeout === 'function'
+      ? (fn, ms) => W.setTimeout(fn, ms)
+      : (fn, ms) => setTimeout(fn, ms);
+    st.reconcileRetryTask = schedule(() => {
+      st.reconcileRetryTask = null;
+      st.reconcileRetryPending = false;
+      if (Number(st.reconcileRetryGeneration || 0) !== generation) return;
+      if (st.transactionState !== 'awaiting-mount') return;
+      try { chatAtlasRevealReconcileTick('scheduled'); } catch {}
+    }, delay);
+    return true;
+  }
+
+  const CHAT_ATLAS_REVEAL_READINESS_TARGETS_MS = Object.freeze([
+    500, 1500, 3000, 6000, 10000, 16000, 24000, 34000, 40000,
+  ]);
+  const CHAT_ATLAS_REVEAL_READINESS_SCHEDULED_MAX = CHAT_ATLAS_REVEAL_READINESS_TARGETS_MS.length;
+  const CHAT_ATLAS_REVEAL_READINESS_DEADLINE_MS = 40000;
+
+  // Milliseconds since navigation, matching the trace's own basis.
+  function chatAtlasRevealNavigationMs() {
+    try {
+      const value = W.performance && typeof W.performance.now === 'function'
+        ? Number(W.performance.now())
+        : NaN;
+      if (Number.isFinite(value)) return Math.round(value);
+    } catch {}
+    return 0;
+  }
+
+  // Live while running; FROZEN once readiness reaches a terminal state, so a
+  // later projection read cannot inflate it.
+  function chatAtlasRevealReadinessElapsedMs() {
+    const frozen = Number(chatAtlasRevealState.readinessTerminalElapsedMs || 0);
+    if (frozen > 0) return frozen;
+    const started = Number(chatAtlasRevealState.readinessStartedAtNavigationMs || 0);
+    if (!started) return 0;
+    return Math.max(0, chatAtlasRevealNavigationMs() - started);
+  }
+
+  function chatAtlasRevealFreezeReadiness(terminalState) {
+    const st = chatAtlasRevealState;
+    if (Number(st.readinessTerminalElapsedMs || 0) > 0) return false;
+    const started = Number(st.readinessStartedAtNavigationMs || 0);
+    st.readinessTerminalElapsedMs = started
+      ? Math.max(1, chatAtlasRevealNavigationMs() - started)
+      : 1;
+    st.readinessTerminalState = terminalState;
+    return true;
+  }
+
+  function chatAtlasRevealCancelReadinessRetry() {
+    const handle = chatAtlasRevealState.readinessRetryTask;
+    chatAtlasRevealState.readinessRetryTask = null;
+    chatAtlasRevealState.readinessRetryPending = false;
+    if (handle == null) return false;
+    // Call through W so the receiver is preserved.
+    try {
+      if (typeof W.clearTimeout === 'function') W.clearTimeout(handle);
+      else clearTimeout(handle);
+    } catch {}
+    return true;
+  }
+
+  // Authority notifications alone proved insufficient: the conversation can
+  // finish mounting AFTER the last publication, leaving a pending readiness
+  // transaction with a resolved container and nothing left to wake it. One
+  // bounded, transaction-owned timeout closes that gap. It is not polling: it
+  // is capped by revealReadinessCap and cancelled on every terminal path.
+  function chatAtlasRevealScheduleReadinessRetry() {
+    const st = chatAtlasRevealState;
+    if (st.transactionState !== 'waiting-for-container-readiness') return false;
+    if (st.readinessRetryPending === true) return false;         // no duplicates
+    // Only SCHEDULED probes count against the reserved budget.
+    const spent = Number(st.readinessScheduledProbes || 0);
+    if (spent >= CHAT_ATLAS_REVEAL_READINESS_SCHEDULED_MAX) return false;
+    const elapsed = chatAtlasRevealReadinessElapsedMs();
+    if (elapsed >= CHAT_ATLAS_REVEAL_READINESS_DEADLINE_MS) return false;
+    // Absolute target minus elapsed: a late timer does not push the rest out.
+    const target = CHAT_ATLAS_REVEAL_READINESS_TARGETS_MS[spent];
+    const delay = Math.max(0, target - elapsed);
+    const generation = Number(st.readinessRetryGeneration || 0) + 1;
+    st.readinessRetryGeneration = generation;
+    st.readinessRetryDelayMs = delay;
+    st.readinessRetryPending = true;
+    st.readinessRetryScheduled = Number(st.readinessRetryScheduled || 0) + 1;
+    const schedule = typeof W.setTimeout === 'function'
+      ? (fn, ms) => W.setTimeout(fn, ms)
+      : (fn, ms) => setTimeout(fn, ms);
+    st.readinessRetryTask = schedule(() => {
+      st.readinessRetryTask = null;
+      st.readinessRetryPending = false;
+      // A superseded or replaced transaction must not act.
+      if (Number(st.readinessRetryGeneration || 0) !== generation) return;
+      if (st.transactionState !== 'waiting-for-container-readiness') return;
+      try { chatAtlasRevealRunOneShot(st.readinessTarget, 'scheduled'); } catch {}
+    }, delay);
+    return true;
+  }
+
+  function chatAtlasRevealRunOneShot(target, source = 'authority') {
+    const st = chatAtlasRevealState;
+    const waiting = st.transactionState === 'waiting-for-container-readiness';
+    if (st.transactionState !== 'idle' && !waiting) {
+      return Object.freeze({ ok: false, state: st.transactionState, reason: 'reveal-already-run' });
+    }
+    if (waiting) {
+      // A pending readiness transaction is inert once its scope moved.
+      if (!chatAtlasRevealScopeValid()) {
+        chatAtlasRevealCancelReadinessRetry();
+        chatAtlasRevealFreezeReadiness('superseded');
+        st.readinessState = 'superseded';
+        st.readinessReason = 'reveal-scope-drift';
+        return chatAtlasRevealFinish('reveal-scope-drift', 'reveal-scope-drift');
+      }
+    } else {
+      st.pin = chatAtlasRevealCurrentPin(target);
+      st.readinessTarget = target;
+      st.readinessStartedAtNavigationMs = chatAtlasRevealNavigationMs();
+      st.readinessFirstResolvedAtNavigationMs = 0;
+      st.readinessTerminalElapsedMs = 0;
+      st.readinessTerminalState = null;
+      st.readinessReadyElapsedMs = 0;
+      st.readinessAttempts = 0;
+      st.readinessAuthorityProbes = 0;
+      st.readinessScheduledProbes = 0;
+      st.readinessState = 'waiting';
+      st.readinessReason = null;
+      st.superseded = false;
+      st.supersededBy = null;
+    }
+    // Readiness retries CONTAINER DISCOVERY ONLY. It never scrolls, never
+    // captures a bookmark and never consumes the single scroll attempt.
+    const probe = chatAtlasResolveConversationScrollContainer();
+    if (!probe.ok) {
+      st.readinessAttempts = Number(st.readinessAttempts || 0) + 1;
+      if (source === 'scheduled') st.readinessScheduledProbes = Number(st.readinessScheduledProbes || 0) + 1;
+      else st.readinessAuthorityProbes = Number(st.readinessAuthorityProbes || 0) + 1;
+      st.readinessReason = probe.reason;
+      // Only the reserved schedule can end the window — boot-time authority
+      // noise never times readiness out.
+      const budgetSpent = Number(st.readinessScheduledProbes || 0) >= CHAT_ATLAS_REVEAL_READINESS_SCHEDULED_MAX;
+      const deadlineReached = chatAtlasRevealReadinessElapsedMs() >= CHAT_ATLAS_REVEAL_READINESS_DEADLINE_MS;
+      if (budgetSpent || deadlineReached) {
+        // One last look before giving up: a container that resolved between
+        // the probe above and now must not be discarded.
+        const finalProbe = chatAtlasResolveConversationScrollContainer();
+        if (finalProbe.ok) {
+          chatAtlasRevealCancelReadinessRetry();
+          if (!st.readinessFirstResolvedAtNavigationMs) {
+            st.readinessFirstResolvedAtNavigationMs = chatAtlasRevealNavigationMs();
+          }
+          chatAtlasRevealFreezeReadiness('ready');
+          st.readinessReadyElapsedMs = Number(st.readinessTerminalElapsedMs || 0);
+          st.readinessState = 'ready';
+          st.readinessReason = null;
+          st.transactionState = 'idle';
+          const late = chatAtlasRevealOpenTransaction(target || st.readinessTarget);
+          if (!late.ok) return chatAtlasRevealFinish('reveal-container-unavailable', late.reason);
+          return chatAtlasRevealProceedAfterOpen(late);
+        }
+        chatAtlasRevealCancelReadinessRetry();
+        chatAtlasRevealFreezeReadiness('timeout');
+        st.readinessState = 'timeout';
+        return chatAtlasRevealFinish('reveal-container-readiness-timeout', probe.reason);
+      }
+      st.readinessState = 'waiting';
+      st.transactionState = 'waiting-for-container-readiness';
+      // The final attempt must run even if no further notification arrives.
+      chatAtlasRevealScheduleReadinessRetry();
+      return Object.freeze({
+        ok: false, state: 'waiting-for-container-readiness', reason: probe.reason,
+        retryPending: st.readinessRetryPending === true,
+      });
+    }
+    // Resolved: no retry may remain outstanding and no stale reason may linger.
+    chatAtlasRevealCancelReadinessRetry();
+    if (!st.readinessFirstResolvedAtNavigationMs) {
+      st.readinessFirstResolvedAtNavigationMs = chatAtlasRevealNavigationMs();
+    }
+    chatAtlasRevealFreezeReadiness('ready');
+    st.readinessReadyElapsedMs = Number(st.readinessTerminalElapsedMs || 0);
+    st.readinessState = 'ready';
+    st.readinessReason = null;
+    st.transactionState = 'idle';
+    const opened = chatAtlasRevealOpenTransaction(target || st.readinessTarget);
+    if (!opened.ok) return chatAtlasRevealFinish('reveal-container-unavailable', opened.reason);
+    return chatAtlasRevealProceedAfterOpen(opened);
+  }
+
+  function chatAtlasRevealProceedAfterOpen(opened) {
+    chatAtlasRevealState.container = opened.container;
+    chatAtlasRevealState.ticks = 0;
+    chatAtlasRevealCaptureBookmark(opened.container);
+    const action = chatAtlasExecuteOneShotRevealAction({ container: opened.container });
+    if (action.executed !== true) {
+      return chatAtlasRevealTerminate('reveal-container-unavailable', action.reason);
+    }
+    chatAtlasRevealState.transactionState = 'awaiting-mount';
+    return chatAtlasRevealReconcileTick();
+  }
+
+  function chatAtlasRevealReconcileTick(source = 'authority') {
+    // Supersession is checked FIRST: a user action already moved the state out
+    // of 'awaiting-mount', and reporting a generic 'not awaiting' would hide
+    // the precise terminal reason the contract requires.
+    if (chatAtlasRevealState.superseded === true) {
+      if (chatAtlasRevealState.transactionState === 'idle') {
+        return Object.freeze({ ok: false, state: 'idle', reason: 'reveal-not-awaiting' });
+      }
+      return chatAtlasRevealTerminate('reveal-superseded-by-user-scroll', 'reveal-superseded-by-user-scroll');
+    }
+    if (chatAtlasRevealState.transactionState !== 'awaiting-mount') {
+      return Object.freeze({ ok: false, state: chatAtlasRevealState.transactionState, reason: 'reveal-not-awaiting' });
+    }
+    const drift = chatAtlasRevealScopeDrift();
+    chatAtlasRevealState.driftField = drift.field;
+    chatAtlasRevealState.driftHard = drift.hard === true;
+    if (drift.hard === true) {
+      return chatAtlasRevealTerminate('reveal-scope-drift', `reveal-scope-drift:${drift.field}`);
+    }
+    // Only SCHEDULED probes spend the reserved budget; authority publications
+    // and scroll wakeups reconcile opportunistically.
+    if (source === 'scheduled') {
+      chatAtlasRevealState.reconcileScheduledProbes = Number(chatAtlasRevealState.reconcileScheduledProbes || 0) + 1;
+    } else if (source === 'scroll') {
+      chatAtlasRevealState.reconcileScrollWakeups = Number(chatAtlasRevealState.reconcileScrollWakeups || 0) + 1;
+    } else {
+      chatAtlasRevealState.reconcileAuthorityProbes = Number(chatAtlasRevealState.reconcileAuthorityProbes || 0) + 1;
+    }
+    chatAtlasRevealState.reconcileLastProbeAtNavigationMs = chatAtlasRevealNavigationMs();
+    // Soft churn keeps the ORIGINAL pinned target identities and keeps going.
+    const container = chatAtlasRevealState.container || null;
+    const pin = chatAtlasRevealState.pin;
+    const measured = chatAtlasRevealMeasureTarget(pin?.targetQId);
+    chatAtlasRevealState.ticks = Number(chatAtlasRevealState.ticks || 0) + 1;
+    // Any conclusive measurement ends it; only a genuinely absent target waits.
+    if (measured.state !== 'target-still-unmounted' && measured.state !== 'target-answer-unavailable') {
+      chatAtlasRevealFreezeReconcile(measured.state);
+      return chatAtlasRevealTerminate(measured.state, measured.reason);
+    }
+    const budgetSpent = Number(chatAtlasRevealState.reconcileScheduledProbes || 0)
+      >= CHAT_ATLAS_REVEAL_RECONCILE_SCHEDULED_MAX;
+    const deadlineReached = chatAtlasRevealReconcileElapsedMs() >= CHAT_ATLAS_REVEAL_RECONCILE_DEADLINE_MS;
+    if (budgetSpent || deadlineReached) {
+      // One final LIVE measurement: a stale earlier read must never decide it.
+      const finalMeasured = chatAtlasRevealMeasureTarget(pin?.targetQId);
+      chatAtlasRevealFreezeReconcile(finalMeasured.state);
+      if (finalMeasured.state !== 'target-still-unmounted') {
+        return chatAtlasRevealTerminate(finalMeasured.state, finalMeasured.reason);
+      }
+      return chatAtlasRevealTerminate(
+        drift.soft === true ? 'reveal-soft-scope-drift-restored' : 'target-still-unmounted',
+        finalMeasured.reason,
+      );
+    }
+    // The lifecycle drives itself: nothing outside it needs to fire again.
+    chatAtlasRevealScheduleReconcileRetry();
+    return Object.freeze({ ok: false, state: 'awaiting-mount', reason: measured.reason });
+  }
+
+  function chatAtlasRevealDiagnostics() {
+    const bookmark = chatAtlasRevealState.bookmark;
+    return Object.freeze({
+      revealState: String(chatAtlasRevealState.transactionState || 'idle'),
+      revealReason: chatAtlasRevealState.reason,
+      revealAttempts: Number(chatAtlasRevealState.attempts || 0),
+      revealTransactionState: String(chatAtlasRevealState.transactionState || 'idle'),
+      // Hashed, never raw: the token embeds chat and question identities, and
+      // diagnostics stay content-free the same way the trusted-capture token
+      // hash does.
+      revealTransactionTokenHash: chatAtlasRevealState.token
+        ? `djb2:${chatAtlasCompleteIndexStableHash(String(chatAtlasRevealState.token))}`
+        : null,
+      revealTransactionReason: chatAtlasRevealState.reason,
+      revealTransactionScopeValid: chatAtlasRevealScopeValid(),
+      revealTransactionSuperseded: chatAtlasRevealState.superseded === true,
+      revealUserSuperseded: chatAtlasRevealState.superseded === true,
+      revealTopScrollExecuted: chatAtlasRevealState.topScrollExecuted === true,
+      revealListenerCount: chatAtlasRevealState.listeners.length,
+      revealMountedQId: chatAtlasRevealState.mountedQId,
+      revealMountedAId: chatAtlasRevealState.mountedAId,
+      revealPagerPresent: chatAtlasRevealState.pagerPresent === true,
+      revealBookmarkKind: bookmark?.kind || null,
+      revealBookmarkTurnId: bookmark?.turnId || null,
+      revealBookmarkOffset: Number(bookmark?.offset || 0),
+      revealBookmarkScrollTop: Number(bookmark?.scrollTop || 0),
+      revealBookmarkCaptured: bookmark?.captured === true,
+      revealRestoreState: String(chatAtlasRevealState.restoreState || 'idle'),
+      revealRestoreReason: chatAtlasRevealState.restoreReason,
+      revealRestoreMethod: chatAtlasRevealState.restoreMethod,
+      revealRestoreTargetId: chatAtlasRevealState.restoreTargetId,
+      revealRestoreOffset: Number(chatAtlasRevealState.restoreOffset || 0),
+      revealRestoreFinalScrollTop: Number(chatAtlasRevealState.restoreFinalScrollTop || 0),
+      revealRestoreRequestedScrollTop: Number(chatAtlasRevealState.restoreRequestedScrollTop || 0),
+      revealRestoreFirstMeasuredScrollTop: Number(chatAtlasRevealState.restoreFirstMeasuredScrollTop || 0),
+      revealRestoreBookmarkOffset: Number(chatAtlasRevealState.bookmark?.offset || 0),
+      revealRestoreMeasuredOffset: Number(chatAtlasRevealState.restoreMeasuredOffset || 0),
+      revealRestoreOffsetError: Number(chatAtlasRevealState.restoreOffsetError || 0),
+      revealRestoreCorrectionAttempts: Number(chatAtlasRevealState.restoreCorrectionAttempts || 0),
+      revealRestoreCorrectionReason: chatAtlasRevealState.restoreCorrectionReason,
+      revealRestoreTolerancePx: CHAT_ATLAS_REVEAL_RESTORE_TOLERANCE_PX,
+      pagerAuditState: String(chatAtlasRevealState.pagerAudit?.state || 'idle'),
+      pagerAuditReason: chatAtlasRevealState.pagerAudit?.reason || null,
+      pagerAuditTargetMounted: chatAtlasRevealState.pagerAudit?.targetMounted === true,
+      pagerAuditAssistantMounted: chatAtlasRevealState.pagerAudit?.assistantMounted === true,
+      pagerAuditRegionCount: Number(chatAtlasRevealState.pagerAudit?.totals?.regionCount || 0),
+      pagerAuditTotalButtons: Number(chatAtlasRevealState.pagerAudit?.totals?.totalButtons || 0),
+      pagerAuditCandidateCount: Number(chatAtlasRevealState.pagerAudit?.totals?.candidateCount || 0),
+      pagerAuditRecognizedLabelCount: Number(chatAtlasRevealState.pagerAudit?.totals?.recognizedLabelCount || 0),
+      pagerAuditIndicatorCount: Number(chatAtlasRevealState.pagerAudit?.totals?.indicatorCount || 0),
+      pagerAuditOwnerMatchCount: Number(chatAtlasRevealState.pagerAudit?.totals?.ownerMatchCount || 0),
+      pagerAuditResolverEntryCount: Number(chatAtlasRevealState.pagerAudit?.totals?.resolverEntryCount || 0),
+      pagerAuditResolverOwnedCount: Number(chatAtlasRevealState.pagerAudit?.totals?.resolverOwnedCount || 0),
+      pagerAuditLikelyFailureClass: chatAtlasRevealState.pagerAudit?.failureClass || null,
+      pagerAuditRawButtonOccurrences: Number(chatAtlasRevealState.pagerAudit?.totals?.rawButtonOccurrences || 0),
+      pagerAuditUniqueButtonCount: Number(chatAtlasRevealState.pagerAudit?.totals?.uniqueButtonCount || 0),
+      pagerAuditDuplicateOccurrenceCount: Number(chatAtlasRevealState.pagerAudit?.totals?.duplicateOccurrenceCount || 0),
+      pagerAuditUniqueCandidateCount: Number(chatAtlasRevealState.pagerAudit?.totals?.uniqueCandidateCount || 0),
+      pagerAuditAdjacentControlCount: Number(chatAtlasRevealState.pagerAudit?.totals?.adjacentControlCount || 0),
+      pagerAuditAdjacentLabelledCount: Number(chatAtlasRevealState.pagerAudit?.totals?.adjacentLabelledCount || 0),
+      pagerAuditAdjacentContractCount: Number(chatAtlasRevealState.pagerAudit?.totals?.adjacentContractCount || 0),
+      pagerAuditRegions: chatAtlasRevealState.pagerAudit?.regions || [],
+      pagerAuditControls: chatAtlasRevealState.pagerAudit?.controls || [],
+      pagerAuditIndicators: chatAtlasRevealState.pagerAudit?.indicators || [],
+      pagerAuditAdjacent: chatAtlasRevealState.pagerAudit?.adjacent || [],
+      pagerLocatorState: String(chatAtlasRevealState.pagerLocator?.state || 'idle'),
+      pagerLocatorReason: chatAtlasRevealState.pagerLocator?.reason || null,
+      pagerLocatorConclusion: chatAtlasRevealState.pagerLocator?.conclusion || null,
+      pagerLocatorContainerIndicatorCount: Number(chatAtlasRevealState.pagerLocator?.totals?.containerIndicatorCount || 0),
+      pagerLocatorContainerExactLabelCount: Number(chatAtlasRevealState.pagerLocator?.totals?.containerExactLabelCount || 0),
+      pagerLocatorContainerDirectionalCount: Number(chatAtlasRevealState.pagerLocator?.totals?.containerDirectionalCount || 0),
+      pagerLocatorContainerUnlabelledSvgCount: Number(chatAtlasRevealState.pagerLocator?.totals?.containerUnlabelledSvgCount || 0),
+      pagerLocatorKnownPagerCount: Number(chatAtlasRevealState.pagerLocator?.totals?.knownPagerCount || 0),
+      pagerLocatorKnownPagerSignatureCount: Number(chatAtlasRevealState.pagerLocator?.totals?.knownPagerSignatureCount || 0),
+      pagerLocatorTargetSignatureMatches: Number(chatAtlasRevealState.pagerLocator?.totals?.targetSignatureMatches || 0),
+      pagerLocatorUnlabelledTargetSignatureMatch: chatAtlasRevealState.pagerLocator?.totals?.unlabelledTargetSignatureMatch === true,
+      pagerLocatorNearestKnownSignatureDistancePx: Number(chatAtlasRevealState.pagerLocator?.totals?.nearestKnownSignatureDistancePx ?? -1),
+      pagerLocatorTargetNearbyControlCount: Number(chatAtlasRevealState.pagerLocator?.totals?.targetNearbyControlCount || 0),
+      pagerLocatorTargetOwnerMatchCount: Number(chatAtlasRevealState.pagerLocator?.totals?.targetOwnerMatchCount || 0),
+      pagerLocatorOverlayCandidateCount: Number(chatAtlasRevealState.pagerLocator?.totals?.overlayCandidateCount || 0),
+      pagerLocatorTargetHovered: chatAtlasRevealState.pagerLocator?.visibility?.hovered === true,
+      pagerLocatorTargetFocusWithin: chatAtlasRevealState.pagerLocator?.visibility?.focusWithin === true,
+      pagerLocatorTargetVisiblePercent: Number(chatAtlasRevealState.pagerLocator?.visibility?.visiblePercent || 0),
+      pagerLocatorControls: chatAtlasRevealState.pagerLocator?.controls || [],
+      pagerLocatorIndicators: chatAtlasRevealState.pagerLocator?.indicators || [],
+      pagerLocatorKnownPagerSignatures: chatAtlasRevealState.pagerLocator?.knownPagerSignatures || [],
+      pagerLocatorOverlayCandidates: chatAtlasRevealState.pagerLocator?.overlayCandidates || [],
+      // ── Selected-chain / canonical pairing parity (Stage 2C-2ai1) ───────
+      selectedChainPairingRule: 'canonical-last-product-answer',
+      ...(() => {
+        const parity = chatAtlasSelectedChainCanonicalParity();
+        let computed = null;
+        try { computed = chatAtlasComputeDefaultLatestCreatedPath(); } catch { computed = null; }
+        const targetQId = chatAtlasCompleteIndexIdentity(chatAtlasDefaultOverlayState.revealTargetQId);
+        const roots = Array.isArray(computed?.branchRoots) ? computed.branchRoots : [];
+        const record = targetQId
+          ? (roots.find((entry) => chatAtlasCompleteIndexIdentity(entry?.qId) === targetQId) || null)
+          : (roots.find((entry) => Number(entry?.order || 0) === 2) || null);
+        const canonical = chatAtlasCanonicalPresentationIndex();
+        const canonicalRow = record
+          ? (Array.isArray(canonical?.turns)
+            ? canonical.turns.find((turn) => (
+              chatAtlasCompleteIndexIdentity(turn?.qId) === chatAtlasCompleteIndexIdentity(record.qId)
+            )) || null
+            : null)
+          : null;
+        return {
+          selectedChainTurn2BranchRootPresent: !!chatAtlasCompleteIndexIdentity(record?.branchRootAId),
+          selectedChainTurn2BranchRootIsPrimary: record?.branchRootIsPrimary === true,
+          selectedChainTurn2PrimaryAnswerResolved: !!chatAtlasCompleteIndexIdentity(record?.primaryAId),
+          selectedChainTurn2PrimaryMatchesCanonical: !!record && !!canonicalRow
+            && chatAtlasCompleteIndexIdentity(record.primaryAId)
+              === chatAtlasCompleteIndexIdentity(canonicalRow.primaryAId),
+          selectedChainCanonicalParity: parity.ok === true,
+          selectedChainCanonicalParityReason: parity.reason || null,
+          selectedChainCanonicalParityRows: Number(parity.comparedRows || 0),
+          selectedChainCanonicalParityMismatches: Number(parity.mismatchCount || 0),
+        };
+      })(),
+      // ── Graph-proven divergence and question-edit plan (Stage 2C-2ah8) ──
+      graphDivergenceState: String(chatAtlasGraphDivergence().state || 'idle'),
+      graphDivergenceReason: chatAtlasGraphDivergence().reason || null,
+      graphDivergenceKind: chatAtlasGraphDivergence().kind || null,
+      graphDivergenceOrder: Number(chatAtlasGraphDivergence().order || 0),
+      graphDivergenceSharedPrefixLength: Number(chatAtlasGraphDivergence().sharedPrefixLength || 0),
+      graphDivergenceOwnerFound: chatAtlasGraphDivergence().ownerFound === true,
+      graphDivergenceOwnerRole: chatAtlasGraphDivergence().ownerRole || null,
+      graphDivergenceOwnerMessageId: chatAtlasGraphDivergence().ownerMessageId || null,
+      graphDivergenceCurrentRootFound: chatAtlasGraphDivergence().currentRootFound === true,
+      graphDivergenceDefaultRootFound: chatAtlasGraphDivergence().defaultRootFound === true,
+      graphDivergenceCurrentRootMessageId: chatAtlasGraphDivergence().currentRootMessageId || null,
+      graphDivergenceDefaultRootMessageId: chatAtlasGraphDivergence().defaultRootMessageId || null,
+      graphDivergenceVariantCount: Number(chatAtlasGraphDivergence().variantCount || 0),
+      graphDivergenceCurrentIndex: Number(chatAtlasGraphDivergence().currentIndex ?? -1),
+      graphDivergenceDefaultIndex: Number(chatAtlasGraphDivergence().defaultIndex ?? -1),
+      graphDivergenceDirectAnswerSiblingProof: chatAtlasGraphDivergence().directAnswerSiblingProof === true,
+      graphDivergenceQuestionVariantProof: chatAtlasGraphDivergence().questionVariantProof === true,
+      graphDivergenceBranchVectorAgreement: chatAtlasGraphDivergence().branchVectorAgreement === true,
+      defaultObservedDivergenceKind: chatAtlasDefaultOverlayState.observedDivergenceKind || null,
+      defaultNativeRoute: chatAtlasDefaultOverlayState.nativeRoute || null,
+      defaultAnswerConvergenceSuppressed: chatAtlasDefaultOverlayState.answerConvergenceSuppressed === true,
+      defaultQuestionEditPlanState: String(chatAtlasQuestionEditPlanState.state || 'idle'),
+      defaultQuestionEditPlanReason: chatAtlasQuestionEditPlanState.reason || null,
+      defaultQuestionEditPagerOwnerProven: chatAtlasQuestionEditPlanState.plan?.pagerOwnerProven === true,
+      defaultQuestionEditPreviousAvailable: chatAtlasQuestionEditPlanState.plan?.previousAvailable === true,
+      defaultQuestionEditNextAvailable: chatAtlasQuestionEditPlanState.plan?.nextAvailable === true,
+      defaultQuestionEditRequiredDirection: chatAtlasQuestionEditPlanState.plan?.requiredDirection || null,
+      defaultQuestionEditVariantCount: Number(chatAtlasQuestionEditPlanState.plan?.variantCount || 0),
+      defaultQuestionEditCurrentIndex: Number(chatAtlasQuestionEditPlanState.plan?.currentIndex ?? -1),
+      defaultQuestionEditTargetIndex: Number(chatAtlasQuestionEditPlanState.plan?.targetIndex ?? -1),
+      defaultQuestionEditActivationPermitted: chatAtlasQuestionEditPlanState.plan?.activationPermitted === true,
+      defaultQuestionEditActivationCount: Number(chatAtlasQuestionEditPlanState.activations || 0),
+      // ── Turn-2 graph eligibility audit (Stage 2C-2ah7) ──────────────────
+      turn2GraphAuditState: String(chatAtlasTurn2GraphAudit?.state || 'idle'),
+      turn2GraphAuditReason: chatAtlasTurn2GraphAudit?.reason || null,
+      turn2GraphAuditConclusion: chatAtlasTurn2GraphAudit?.conclusion || null,
+      turn2GraphAuditPolicyRecommendation: chatAtlasTurn2GraphAudit?.policyRecommendation || null,
+      turn2QuestionFound: chatAtlasTurn2GraphAudit?.question?.found === true,
+      turn2QuestionUnique: chatAtlasTurn2GraphAudit?.question?.unique === true,
+      turn2DirectChildCount: Number(chatAtlasTurn2GraphAudit?.question?.directChildCount || 0),
+      turn2AnswerRootCount: Number(chatAtlasTurn2GraphAudit?.question?.answerRootCount || 0),
+      turn2QuestionVariantCount: Number(chatAtlasTurn2GraphAudit?.question?.questionVariantCount || 0),
+      turn2CurrentAssistantFound: chatAtlasTurn2GraphAudit?.current?.found === true,
+      turn2CurrentAssistantDirectChild: Number(chatAtlasTurn2GraphAudit?.current?.directChildIndex ?? -1) >= 0,
+      turn2CurrentAssistantProductAnswer: chatAtlasTurn2GraphAudit?.current?.productAnswer === true,
+      turn2CurrentAssistantBranchShellAlias: chatAtlasTurn2GraphAudit?.current?.branchShellAlias === true,
+      turn2CurrentAssistantStopped: chatAtlasTurn2GraphAudit?.current?.stopped === true,
+      turn2DefaultAssistantFound: chatAtlasTurn2GraphAudit?.defaultAnswer?.found === true,
+      turn2DefaultAssistantDirectChild: Number(chatAtlasTurn2GraphAudit?.defaultAnswer?.directChildIndex ?? -1) >= 0,
+      turn2DefaultAssistantProductAnswer: chatAtlasTurn2GraphAudit?.defaultAnswer?.productAnswer === true,
+      turn2DefaultAssistantBranchShellAlias: chatAtlasTurn2GraphAudit?.defaultAnswer?.branchShellAlias === true,
+      turn2DefaultAssistantStopped: chatAtlasTurn2GraphAudit?.defaultAnswer?.stopped === true,
+      turn2DefaultAssistantArchiveEligible: chatAtlasTurn2GraphAudit?.defaultEligibility?.archive === true,
+      turn2DefaultAssistantPresentationEligible: chatAtlasTurn2GraphAudit?.defaultEligibility?.presentation === true,
+      turn2DefaultAssistantNativeSiblingEligible: chatAtlasTurn2GraphAudit?.defaultEligibility?.nativeSibling === true,
+      turn2DefaultAssistantExclusionReason: chatAtlasTurn2GraphAudit?.defaultEligibility?.exclusionReason || null,
+      turn2DefaultAssistantIntermediateNode:
+        chatAtlasTurn2GraphAudit?.defaultAnswer?.intermediateNodeBetweenQuestionAndIdentity === true,
+      turn2DefaultAssistantAnswerRootOrdinal: Number(chatAtlasTurn2GraphAudit?.defaultAnswer?.answerRootOrdinal ?? -1),
+      turn2BranchVectorPointFound: chatAtlasTurn2GraphAudit?.turn2Point?.found === true,
+      turn2BranchVectorKind: chatAtlasTurn2GraphAudit?.turn2Point?.kind || null,
+      turn2BranchVectorVariantCount: Number(chatAtlasTurn2GraphAudit?.turn2Point?.variantCount || 0),
+      turn2BranchVectorSelectedIndex: Number(chatAtlasTurn2GraphAudit?.turn2Point?.selectedIndex ?? -1),
+      turn2BranchVectorContainsCurrent: chatAtlasTurn2GraphAudit?.turn2Point?.containsCurrent === true,
+      turn2BranchVectorContainsDefault: chatAtlasTurn2GraphAudit?.turn2Point?.containsDefault === true,
+      turn2BranchVectorContainsBoth: chatAtlasTurn2GraphAudit?.turn2Point?.containsBoth === true,
+      turn2CurrentGraphPointerPresent: chatAtlasTurn2GraphAudit?.pointer?.present === true,
+      turn2CurrentGraphPointerBelongs: chatAtlasTurn2GraphAudit?.pointer?.belongsToGraph === true,
+      turn2CurrentGraphChainContainsQuestion: chatAtlasTurn2GraphAudit?.pointer?.chainContainsQuestion === true,
+      turn2CurrentGraphChainContainsCurrentAssistant: chatAtlasTurn2GraphAudit?.pointer?.chainContainsCurrent === true,
+      turn2CurrentGraphChainContainsDefaultAssistant: chatAtlasTurn2GraphAudit?.pointer?.chainContainsDefault === true,
+      turn2CurrentGraphAgreesWithEffective: chatAtlasTurn2GraphAudit?.pointer?.agreesWithEffective === true,
+      turn2GraphDirectChildren: chatAtlasTurn2GraphAudit?.children || [],
+      turn2DefaultBranchVectorPoints: chatAtlasTurn2GraphAudit?.points || [],
+      revealRestoreDelta: Math.round(
+        Number(chatAtlasRevealState.restoreFinalScrollTop || 0)
+        - Number(chatAtlasRevealState.bookmark?.scrollTop || 0),
+      ),
+      revealReconcileTicks: Number(chatAtlasRevealState.ticks || 0),
+      revealReadinessState: String(chatAtlasRevealState.readinessState || 'idle'),
+      revealReadinessReason: chatAtlasRevealState.readinessReason,
+      revealReadinessAttempts: Number(chatAtlasRevealState.readinessAttempts || 0),
+      revealReadinessCap: CHAT_ATLAS_REVEAL_READINESS_MAX,
+      revealReadinessRetryScheduled: Number(chatAtlasRevealState.readinessRetryScheduled || 0),
+      revealReadinessRetryPending: chatAtlasRevealState.readinessRetryPending === true,
+      revealReadinessRetryDelayMs: Number(chatAtlasRevealState.readinessRetryDelayMs || 0),
+      revealReadinessRetryGeneration: Number(chatAtlasRevealState.readinessRetryGeneration || 0),
+      revealReadinessAuthorityProbes: Number(chatAtlasRevealState.readinessAuthorityProbes || 0),
+      revealReadinessScheduledProbes: Number(chatAtlasRevealState.readinessScheduledProbes || 0),
+      revealReadinessScheduledCap: CHAT_ATLAS_REVEAL_READINESS_SCHEDULED_MAX,
+      revealReadinessElapsedMs: chatAtlasRevealReadinessElapsedMs(),
+      revealReadinessStartedAtNavigationMs: Number(chatAtlasRevealState.readinessStartedAtNavigationMs || 0),
+      revealReadinessFirstResolvedAtNavigationMs: Number(chatAtlasRevealState.readinessFirstResolvedAtNavigationMs || 0),
+      revealReadinessReadyElapsedMs: Number(chatAtlasRevealState.readinessReadyElapsedMs || 0),
+      revealReadinessTerminalElapsedMs: Number(chatAtlasRevealState.readinessTerminalElapsedMs || 0),
+      revealReadinessTerminalState: chatAtlasRevealState.readinessTerminalState,
+      revealSupersessionSource: chatAtlasRevealState.supersessionSource,
+      revealSupersessionEventType: chatAtlasRevealState.supersessionEventType,
+      revealSupersessionEventTrusted: chatAtlasRevealState.supersessionEventTrusted === true,
+      revealSupersessionPhase: chatAtlasRevealState.supersessionPhase,
+      revealSupersessionInternalDepth: Number(chatAtlasRevealState.supersessionInternalDepth || 0),
+      revealSupersessionInternalExpectationActive: chatAtlasRevealState.supersessionInternalExpectationActive === true,
+      revealSupersessionPointerScrollArmed: chatAtlasRevealState.supersessionPointerScrollArmed === true,
+      revealSupersessionMsAfterTopScroll: Number(chatAtlasRevealState.supersessionMsAfterTopScroll || 0),
+      revealSupersessionScrollTopBefore: Number(chatAtlasRevealState.supersessionScrollTopBefore || 0),
+      revealSupersessionScrollTopAfter: Number(chatAtlasRevealState.supersessionScrollTopAfter || 0),
+      revealSupersessionExpectedInternalTop: Number(chatAtlasRevealState.supersessionExpectedInternalTop || 0),
+      revealSupersessionReason: chatAtlasRevealState.supersessionReason,
+      revealReconcileState: String(chatAtlasRevealState.reconcileState || 'idle'),
+      revealReconcileReason: chatAtlasRevealState.reconcileReason,
+      revealReconcileAuthorityProbes: Number(chatAtlasRevealState.reconcileAuthorityProbes || 0),
+      revealReconcileScrollWakeups: Number(chatAtlasRevealState.reconcileScrollWakeups || 0),
+      revealReconcileScheduledProbes: Number(chatAtlasRevealState.reconcileScheduledProbes || 0),
+      revealReconcileScheduledCap: CHAT_ATLAS_REVEAL_RECONCILE_SCHEDULED_MAX,
+      revealReconcileStartedAtNavigationMs: Number(chatAtlasRevealState.reconcileStartedAtNavigationMs || 0),
+      revealReconcileLastProbeAtNavigationMs: Number(chatAtlasRevealState.reconcileLastProbeAtNavigationMs || 0),
+      revealReconcileTerminalElapsedMs: Number(chatAtlasRevealState.reconcileTerminalElapsedMs || 0),
+      revealReconcileRetryPending: chatAtlasRevealState.reconcileRetryPending === true,
+      revealReconcileDeadlineMs: CHAT_ATLAS_REVEAL_RECONCILE_DEADLINE_MS,
+      revealReadinessDeadlineMs: CHAT_ATLAS_REVEAL_READINESS_DEADLINE_MS,
+      revealScopeDriftField: chatAtlasRevealState.driftField,
+      revealScopeDriftPhase: String(chatAtlasRevealState.transactionState || 'idle'),
+      revealScopeHardInvalidation: chatAtlasRevealState.driftHard === true,
+      revealScopeRestorePermitted: chatAtlasRevealRestorePermitted(),
+      revealScopeDriftBeforeHash: chatAtlasRevealState.pin
+        ? `djb2:${chatAtlasCompleteIndexStableHash(String(chatAtlasRevealState.pin.divergenceFingerprint || ''))}`
+        : null,
+      revealScopeDriftAfterHash: chatAtlasRevealState.pin
+        ? `djb2:${chatAtlasCompleteIndexStableHash(String(chatAtlasRevealCurrentPin({
+          order: chatAtlasRevealState.pin.targetOrder,
+          qId: chatAtlasRevealState.pin.targetQId,
+          currentAId: chatAtlasRevealState.pin.targetCurrentAId,
+          expectedAId: chatAtlasRevealState.pin.targetExpectedAId,
+        }).divergenceFingerprint || ''))}`
+        : null,
+      ...chatAtlasRevealContainerDiagnostics(),
+    });
+  }
+
+  const chatAtlasDefaultOverlayState = {
+    state: 'idle',
+    reason: null,
+    key: '',
+    terminalNodeId: null,
+    terminalCreateTime: null,
+    pathCount: 0,
+    fingerprint: '',
+    branchVectorCount: 0,
+    publications: 0,
+    resolutions: 0,
+    graphAcquisitions: 0,
+    effectiveIdentity: '',
+    samePathCheckRan: false,
+    samePathResult: null,
+    effectiveAvailableAtCheck: false,
+    effectiveCountAtCheck: 0,
+    firstDifference: null,
+    deferrals: 0,
+    resolutionSource: null,
+    answerOnlyReason: null,
+    convergenceAttempts: 0,
+    convergenceSignature: '',
+    convergenceReason: null,
+    convergenceExpectedAId: null,
+    convergenceExpectedQId: null,
+    convergenceEvaluation: null,
+    answerConvergenceSuppressed: false,
+    nativeRoute: null,
+    anchorOwnershipReason: null,
+    observedDivergenceKind: null,
+    revealTargetOrder: 0,
+    revealTargetQId: null,
+    revealTargetExpectedAId: null,
+    revealTargetCurrentAId: null,
+    revealTargetDivergenceKind: null,
+    revealTargetReason: null,
+    convergenceRecord: null,
+  };
+
+  function chatAtlasPathIdentityKey(turns) {
+    return (Array.isArray(turns) ? turns : [])
+      .map((turn) => `${Number(turn?.order || 0)}:${chatAtlasCompleteIndexIdentity(turn?.qId)}:${chatAtlasCompleteIndexIdentity(turn?.primaryAId) || ''}`)
+      .join('|');
+  }
+
+  // Ordered identity equality. Deliberately NOT the fingerprint: that hash
+  // also folds in answerVariants, and the graph-derived rows legitimately
+  // carry the full variant set where the host canonical rows carry the host's
+  // own. Two paths are the same selected route when these columns agree.
+  // The first row whose identity columns disagree, for diagnostics. Returns
+  // null when the two paths are the same selected route.
+  function chatAtlasFirstPathIdentityDifference(left, right) {
+    const a = Array.isArray(left) ? left : [];
+    const b = Array.isArray(right) ? right : [];
+    if (a.length !== b.length) {
+      return Object.freeze({ index: -1, field: 'length', left: a.length, right: b.length });
+    }
+    for (let i = 0; i < a.length; i += 1) {
+      const cols = [
+        ['order', Number(a[i]?.order || 0), Number(b[i]?.order || 0)],
+        ['qId', chatAtlasCompleteIndexIdentity(a[i]?.qId), chatAtlasCompleteIndexIdentity(b[i]?.qId)],
+        ['primaryAId', chatAtlasCompleteIndexIdentity(a[i]?.primaryAId), chatAtlasCompleteIndexIdentity(b[i]?.primaryAId)],
+        ['noAnswer', a[i]?.noAnswer === true, b[i]?.noAnswer === true],
+        ['stopped', a[i]?.stopped === true, b[i]?.stopped === true],
+      ];
+      for (const [field, l, r] of cols) {
+        if (l !== r) return Object.freeze({ index: i, field, left: l, right: r });
+      }
+    }
+    return null;
+  }
+
+  function chatAtlasSamePathIdentity(left, right) {
+    const a = Array.isArray(left) ? left : [];
+    const b = Array.isArray(right) ? right : [];
+    if (!a.length || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      if (
+        Number(a[i]?.order || 0) !== Number(b[i]?.order || 0)
+        || chatAtlasCompleteIndexIdentity(a[i]?.qId) !== chatAtlasCompleteIndexIdentity(b[i]?.qId)
+        || chatAtlasCompleteIndexIdentity(a[i]?.primaryAId) !== chatAtlasCompleteIndexIdentity(b[i]?.primaryAId)
+        || (a[i]?.noAnswer === true) !== (b[i]?.noAnswer === true)
+        || (a[i]?.stopped === true) !== (b[i]?.stopped === true)
+      ) return false;
+    }
+    return true;
+  }
+
+  function chatAtlasDefaultOverlayDiagnostics() {
+    return Object.freeze({
+      defaultOverlayState: String(chatAtlasDefaultOverlayState.state || 'idle'),
+      defaultPublicationReason: chatAtlasDefaultOverlayState.reason,
+      defaultTerminalId: chatAtlasDefaultOverlayState.terminalNodeId,
+      defaultTerminalCreateTime: chatAtlasDefaultOverlayState.terminalCreateTime,
+      defaultPathCount: Number(chatAtlasDefaultOverlayState.pathCount || 0),
+      defaultPathFingerprint: String(chatAtlasDefaultOverlayState.fingerprint || ''),
+      defaultBranchVectorCount: Number(chatAtlasDefaultOverlayState.branchVectorCount || 0),
+      defaultPublications: Number(chatAtlasDefaultOverlayState.publications || 0),
+      defaultResolutions: Number(chatAtlasDefaultOverlayState.resolutions || 0),
+      defaultSamePathCheckRan: chatAtlasDefaultOverlayState.samePathCheckRan === true,
+      defaultSamePathResult: chatAtlasDefaultOverlayState.samePathResult,
+      defaultEffectiveAvailableAtCheck: chatAtlasDefaultOverlayState.effectiveAvailableAtCheck === true,
+      defaultEffectiveCountAtCheck: Number(chatAtlasDefaultOverlayState.effectiveCountAtCheck || 0),
+      defaultFirstDifference: chatAtlasDefaultOverlayState.firstDifference,
+      defaultDedupKey: String(chatAtlasDefaultOverlayState.key || ''),
+      defaultDeferrals: Number(chatAtlasDefaultOverlayState.deferrals || 0),
+      defaultResolutionSource: chatAtlasDefaultOverlayState.resolutionSource,
+      defaultAnswerOnlyReason: chatAtlasDefaultOverlayState.answerOnlyReason,
+      defaultConvergenceAttempts: Number(chatAtlasDefaultOverlayState.convergenceAttempts || 0),
+      defaultConvergenceReason: chatAtlasDefaultOverlayState.convergenceReason,
+      defaultConvergenceExpectedAId: chatAtlasDefaultOverlayState.convergenceExpectedAId,
+      defaultConvergenceExpectedQId: chatAtlasDefaultOverlayState.convergenceExpectedQId,
+      defaultConvergenceEvaluation: chatAtlasDefaultOverlayState.convergenceEvaluation,
+      revealTargetOrder: Number(chatAtlasDefaultOverlayState.revealTargetOrder || 0),
+      revealTargetQId: chatAtlasDefaultOverlayState.revealTargetQId,
+      revealTargetExpectedAId: chatAtlasDefaultOverlayState.revealTargetExpectedAId,
+      revealTargetCurrentAId: chatAtlasDefaultOverlayState.revealTargetCurrentAId,
+      revealTargetDivergenceKind: chatAtlasDefaultOverlayState.revealTargetDivergenceKind,
+      revealTargetReason: chatAtlasDefaultOverlayState.revealTargetReason,
+      ...chatAtlasRevealDiagnostics(),
+      defaultEffectiveIdentity: String(chatAtlasDefaultOverlayState.effectiveIdentity || ''),
+      defaultGraphAcquisitions: Number(chatAtlasDefaultOverlayState.graphAcquisitions || 0),
+      manualOverrideActive: completeTurnIndexAuthorityState.manualOverrideActive === true,
+      manualOverrideRevision: Number(completeTurnIndexAuthorityState.manualOverrideRevision || 0),
+    });
+  }
+
+  // A manual selection owns the session from the moment it is captured. The
+  // default origin is inert afterwards until a reload resets the session.
+  function chatAtlasMarkManualBranchOverride(reason = 'manual-native-selection') {
+    const state = completeTurnIndexAuthorityState;
+    state.manualOverrideActive = true;
+    state.manualOverrideRevision = Number(state.manualOverrideRevision || 0) + 1;
+    state.manualOverrideChatId = String(state.chatId || '');
+    state.manualOverrideRouteKey = String(state.routeKey || '');
+    state.manualOverrideGeneration = Number(state.generation || 0);
+    chatAtlasDefaultOverlayState.state = 'superseded';
+    chatAtlasDefaultOverlayState.reason = reason;
+    chatAtlasDefaultOverlayState.key = '';
+    chatAtlasDefaultOverlayState.effectiveIdentity = '';
+    chatAtlasDefaultOverlayState.convergenceRecord = null;
+    chatAtlasDefaultOverlayState.convergenceSignature = '';
+    chatAtlasDefaultOverlayState.convergenceReason = 'superseded-by-manual';
+    try { chatAtlasRevealSupersede('manual-branch-selection'); } catch {}
+    chatAtlasBranchTransactionTrace('default-superseded-by-manual', { reason });
+  }
+
+  // A route/generation change is a new page session for this purpose.
+  function chatAtlasResetManualBranchOverride(reason = 'route-reset') {
+    const state = completeTurnIndexAuthorityState;
+    if (state.manualOverrideActive !== true) return;
+    state.manualOverrideActive = false;
+    state.manualOverrideRevision = 0;
+    chatAtlasDefaultOverlayState.state = 'idle';
+    chatAtlasDefaultOverlayState.reason = reason;
+    chatAtlasDefaultOverlayState.key = '';
+    chatAtlasDefaultOverlayState.effectiveIdentity = '';
+  }
+
+  // Every condition of the scoped exception, proven from the graph. Any single
+  // failure means the route is NOT an answer-only difference and the general
+  // containment rule applies unchanged.
+  function chatAtlasDefaultAnswerOnlyDivergence(defaultTurns, canonicalTurns) {
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return Object.freeze({ ok: false, reason: scope.reason });
+    const a = Array.isArray(defaultTurns) ? defaultTurns : [];
+    const b = Array.isArray(canonicalTurns) ? canonicalTurns : [];
+    if (!a.length || a.length !== b.length) return Object.freeze({ ok: false, reason: 'answer-only-length-differs' });
+    const qIds = new Set();
+    let differing = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      const qId = chatAtlasCompleteIndexIdentity(a[i]?.qId);
+      if (!qId || qIds.has(qId)) return Object.freeze({ ok: false, reason: 'answer-only-duplicate-question' });
+      qIds.add(qId);
+      if (
+        Number(a[i]?.order || 0) !== Number(b[i]?.order || 0)
+        || qId !== chatAtlasCompleteIndexIdentity(b[i]?.qId)
+        || (a[i]?.noAnswer === true) !== (b[i]?.noAnswer === true)
+        || (a[i]?.stopped === true) !== (b[i]?.stopped === true)
+      ) return Object.freeze({ ok: false, reason: 'answer-only-row-mismatch' });
+      const mine = chatAtlasCompleteIndexIdentity(a[i]?.primaryAId);
+      const theirs = chatAtlasCompleteIndexIdentity(b[i]?.primaryAId);
+      if (mine === theirs) continue;
+      differing += 1;
+      // The differing selection must be a PROVEN answer variant of that same
+      // question in the retained graph.
+      const questionNode = chatAtlasConvergenceUniqueNode(scope.graph, qId, 'productUser');
+      if (!questionNode) return Object.freeze({ ok: false, reason: 'answer-only-question-unproven' });
+      const identities = chatAtlasConvergenceAnswerVariantRoots(questionNode, scope.byId)
+        .map((root) => chatAtlasAnswerIdentityForRoot(root, scope.byId));
+      if (!mine || !identities.includes(mine)) {
+        return Object.freeze({ ok: false, reason: 'answer-only-variant-unproven' });
+      }
+    }
+    if (!differing) return Object.freeze({ ok: false, reason: 'answer-only-no-difference' });
+    return Object.freeze({ ok: true, reason: null, differing });
+  }
+
+  // Preferred route when the newest-created default differs from the native
+  // path only by answer selections: move the NATIVE content onto the default
+  // answers using the existing identity-proven bounded convergence, then let
+  // the host authority refresh settle. Nothing is published while native and
+  // Core disagree, so the Core parity gate is never challenged.
+  // Tri-state comparison of the mounted native path against a target route.
+  // Absence of evidence is NEVER agreement: a target turn that is not mounted,
+  // or is mounted without its assistant identity, yields 'unavailable'.
+  // The exact branch owner at the FIRST ordered divergence between the target
+  // route and the published effective path. This — not the first unmounted row
+  // of the path — is what must be revealed and converged.
+  function chatAtlasFirstDivergenceTarget(targetTurns) {
+    const none = (why) => Object.freeze({
+      ok: false, reason: why, order: 0, qId: null,
+      expectedAId: null, currentAId: null, kind: null,
+    });
+    const turns = Array.isArray(targetTurns) ? targetTurns : [];
+    if (!turns.length) return none('reveal-target-unproven');
+    let effective = null;
+    try { effective = getEffectivePresentationIndex(); } catch { effective = null; }
+    const rows = Array.isArray(effective?.turns) ? effective.turns : [];
+    if (!rows.length) return none('reveal-target-unproven');
+    const shared = Math.min(turns.length, rows.length);
+    for (let i = 0; i < shared; i += 1) {
+      const qId = chatAtlasCompleteIndexIdentity(turns[i]?.qId);
+      const theirQId = chatAtlasCompleteIndexIdentity(rows[i]?.qId);
+      const aId = chatAtlasCompleteIndexIdentity(turns[i]?.primaryAId);
+      const theirAId = chatAtlasCompleteIndexIdentity(rows[i]?.primaryAId);
+      const sameShape = (turns[i]?.noAnswer === true) === (rows[i]?.noAnswer === true)
+        && (turns[i]?.stopped === true) === (rows[i]?.stopped === true)
+        && Number(turns[i]?.order || 0) === Number(rows[i]?.order || 0);
+      if (qId === theirQId && aId === theirAId && sameShape) continue;
+      return Object.freeze({
+        ok: true,
+        reason: null,
+        order: Number(turns[i]?.order || 0),
+        qId,
+        expectedAId: aId || null,
+        currentAId: theirAId || null,
+        // The presentation rows only OBSERVE that a qId is shared. The native
+        // control kind comes from the graph-proven branch edge; an unproven
+        // graph never yields 'assistant-regeneration' here.
+        observedSameQuestion: qId === theirQId,
+        kind: chatAtlasGraphDivergence().kind === 'assistant-regeneration'
+          ? 'assistant-regeneration'
+          : 'question-edit',
+      });
+    }
+    if (turns.length === rows.length) return none('reveal-target-identical');
+    const i = shared;
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      order: Number(turns[i]?.order || shared + 1),
+      qId: chatAtlasCompleteIndexIdentity(turns[i]?.qId) || null,
+      expectedAId: chatAtlasCompleteIndexIdentity(turns[i]?.primaryAId) || null,
+      currentAId: null,
+      kind: 'question-edit',
+    });
+  }
+
+  function chatAtlasEvaluateNativeAgainstTarget(targetTurns) {
+    const frozen = (result, why, mismatch = null, expected = null) => Object.freeze({
+      result,
+      reason: why,
+      mismatch,
+      expectedQId: expected?.qId || null,
+      expectedPrimaryAId: expected?.primaryAId || null,
+    });
+    const turns = Array.isArray(targetTurns) ? targetTurns : [];
+    if (!turns.length) return frozen('unavailable', 'target-path-empty');
+    let map = null;
+    try { map = chatAtlasMapMountedNativePath(); } catch { map = null; }
+    const rows = Array.isArray(map?.rows) ? map.rows : [];
+    if (!rows.length) {
+      // Report the exact divergence owner. Falling back to the first path row
+      // named a turn that does not diverge at all.
+      const target = chatAtlasFirstDivergenceTarget(turns);
+      return frozen('unavailable', 'native-path-unmounted', null, {
+        qId: target.ok ? target.qId : null,
+        primaryAId: target.ok ? target.expectedAId : null,
+      });
+    }
+    // Rows are keyed by the question they mount, so a split user/assistant
+    // topology pairs through chatAtlasMapMountedNativePath rather than through
+    // an assumption that both roles share one section.
+    const byQId = new Map();
+    for (const row of rows) if (row.mountedQId) byQId.set(row.mountedQId, row);
+    let firstUnavailable = null;
+    for (const turn of turns) {
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      const aId = chatAtlasCompleteIndexIdentity(turn?.primaryAId);
+      if (!qId) continue;
+      const row = byQId.get(qId) || null;
+      if (!row) {
+        if (!firstUnavailable) {
+          firstUnavailable = { reason: 'target-question-unmounted', qId, primaryAId: aId || null };
+        }
+        continue;
+      }
+      if (aId && !row.mountedAId) {
+        if (!firstUnavailable) {
+          firstUnavailable = { reason: 'target-answer-unmounted', qId, primaryAId: aId };
+        }
+        continue;
+      }
+      if (aId && row.mountedAId !== aId) {
+        return frozen('mismatch', 'native-answer-differs', Object.freeze({
+          section: row.answerSection || row.section,
+          kind: 'assistant-regeneration',
+          mountedQId: qId,
+          mountedAId: row.mountedAId,
+          expectedQId: qId,
+          expectedPrimaryAId: aId,
+          expectedOrder: Number(turn?.order || 0),
+        }), { qId, primaryAId: aId });
+      }
+    }
+    if (firstUnavailable) {
+      return frozen('unavailable', firstUnavailable.reason, null, firstUnavailable);
+    }
+    return frozen('match', 'native-matches-target');
+  }
+
+  // ── Anchor branch ownership (Stage 2C-2ai1) ──────────────────────────────
+  // The displayed answer is the LAST eligible answer in the turn window, so it
+  // is generally NOT one of the question's direct variant-root ids. Requiring
+  // that equality was the old `default-anchor-answer-not-variant` gate and it
+  // is no longer the right question. What must hold instead: the row's branch
+  // ROOT is one of the owner's variant roots, and the displayed answer lives
+  // inside that same root's subtree.
+  function chatAtlasProveAnchorBranchOwnership(computed, anchorIndex) {
+    const fail = (reason) => Object.freeze({ ok: false, reason });
+    const row = Array.isArray(computed?.turns) ? computed.turns[anchorIndex] : null;
+    if (!row) return fail('anchor-row-missing');
+    const roots = Array.isArray(computed?.branchRoots) ? computed.branchRoots : [];
+    const record = roots.find((entry) => Number(entry?.order || 0) === Number(row.order || 0)) || null;
+    if (!record) return fail('anchor-branch-root-unrecorded');
+    const primaryAId = chatAtlasCompleteIndexIdentity(row.primaryAId);
+    if (!primaryAId) return fail('anchor-answer-missing');
+    if (chatAtlasCompleteIndexIdentity(record.primaryAId) !== primaryAId) {
+      return fail('anchor-answer-row-mismatch');
+    }
+    const branchRootAId = chatAtlasCompleteIndexIdentity(record.branchRootAId);
+    if (!branchRootAId) return fail('anchor-branch-root-missing');
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return fail(scope.reason);
+    const questionNode = chatAtlasConvergenceUniqueNode(scope.graph, row.qId, 'productUser');
+    if (!questionNode) return fail('anchor-question-ambiguous');
+    // 1. the selected branch root belongs to the owner's variant-root set
+    const rootNodes = chatAtlasConvergenceAnswerVariantRoots(questionNode, scope.byId);
+    const selectedRoot = rootNodes.find((node) => (
+      chatAtlasCompleteIndexIdentity(node.messageId) === branchRootAId
+      || chatAtlasAnswerIdentityForRoot(node, scope.byId) === branchRootAId
+    )) || null;
+    if (!selectedRoot) return fail('anchor-branch-root-not-a-variant');
+    // 2. the displayed answer resolves from THAT root
+    if (record.branchRootIsPrimary !== true && record.displayResolvedFromBranchRoot !== true) {
+      return fail('anchor-answer-not-resolved-from-root');
+    }
+    return Object.freeze({
+      ok: true, reason: null, branchRootAId, primaryAId,
+      branchRootIsPrimary: record.branchRootIsPrimary === true,
+      rootCount: rootNodes.length,
+    });
+  }
+
+  // Pairing parity between the selected-chain projection and the canonical
+  // host-payload projection, on the columns production actually compares.
+  function chatAtlasSelectedChainCanonicalParity() {
+    const blank = (reason) => chatAtlasFreeze({
+      ok: false, reason, comparedRows: 0, mismatchCount: 0, firstMismatchOrder: 0,
+    });
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    if (!Array.isArray(canonical?.turns) || !canonical.turns.length) return blank('canonical-unavailable');
+    let computed = null;
+    try { computed = chatAtlasComputeDefaultLatestCreatedPath(); } catch { computed = null; }
+    if (computed?.ok !== true) return blank(computed?.reason || 'default-path-unavailable');
+    const byQId = new Map(canonical.turns.map((turn) => [
+      chatAtlasCompleteIndexIdentity(turn?.qId), turn,
+    ]));
+    let compared = 0;
+    let mismatches = 0;
+    let firstMismatchOrder = 0;
+    for (const turn of computed.turns) {
+      const canonicalRow = byQId.get(chatAtlasCompleteIndexIdentity(turn?.qId));
+      if (!canonicalRow) continue;
+      compared += 1;
+      if (
+        chatAtlasCompleteIndexIdentity(turn?.primaryAId)
+        !== chatAtlasCompleteIndexIdentity(canonicalRow?.primaryAId)
+      ) {
+        mismatches += 1;
+        if (!firstMismatchOrder) firstMismatchOrder = Number(turn?.order || 0);
+      }
+    }
+    return chatAtlasFreeze({
+      ok: compared > 0 && mismatches === 0,
+      reason: compared === 0 ? 'no-shared-rows' : (mismatches ? 'primary-answer-mismatch' : null),
+      comparedRows: compared,
+      mismatchCount: mismatches,
+      firstMismatchOrder,
+    });
+  }
+
+  // ── Graph-proven divergence (Stage 2C-2ah8) ──────────────────────────────
+  // The native control kind is decided by a real branch EDGE, never by two
+  // presentation rows sharing a qId. `same qId + different primaryAId` survives
+  // only as an observation and may not select a control type.
+  const chatAtlasGraphDivergenceState = { key: '', value: null };
+
+  function chatAtlasGraphDivergenceEmpty(state, reason) {
+    return chatAtlasFreeze({
+      state, reason, kind: null, order: 0, sharedPrefixLength: 0,
+      ownerFound: false, ownerRole: null, ownerMessageId: null,
+      currentRootFound: false, defaultRootFound: false,
+      currentRootMessageId: null, defaultRootMessageId: null,
+      variantCount: 0, currentIndex: -1, defaultIndex: -1, requiredDirection: null,
+      directAnswerSiblingProof: false, questionVariantProof: false,
+      branchVectorAgreement: false, observedKind: null,
+      currentQuestionMessageId: null, defaultQuestionMessageId: null,
+    });
+  }
+
+  // The point in a branch vector whose variant set literally contains this
+  // root node. Matching on the root is exact for BOTH kinds: the node that
+  // follows the shared owner on a chain IS that chain's variant root.
+  function chatAtlasGraphDivergencePointFor(vector, rootNodeId) {
+    if (!rootNodeId) return null;
+    for (const point of vector || []) {
+      const ids = Array.isArray(point?.variantIds) ? point.variantIds : [];
+      if (ids.includes(rootNodeId)) return point;
+    }
+    return null;
+  }
+
+  function chatAtlasComputeGraphDivergence() {
+    const fail = (reason) => chatAtlasGraphDivergenceEmpty('fail-closed', reason);
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return chatAtlasGraphDivergenceEmpty('waiting', scope.reason);
+    const { graph, byId } = scope;
+    const captureAtStart = String(selectedPathAcquisitionState.graph?.captureIdentity || '');
+
+    // ── The two root-to-leaf chains ───────────────────────────────────────
+    const currentNode = byId.get(chatAtlasCompleteIndexIdentity(graph.currentNode)) || null;
+    if (!currentNode) return fail('current-node-unresolved');
+    const currentChain = chatAtlasChainToRoot(byId, currentNode);
+    if (!currentChain || !currentChain.length) return fail('current-chain-unresolved');
+    const chosen = chatAtlasSelectLatestCreatedTerminal(graph, byId);
+    if (!chosen.ok) return fail(chosen.reason || 'default-terminal-unresolved');
+    const defaultChain = chatAtlasChainToRoot(byId, chosen.node);
+    if (!defaultChain || !defaultChain.length) return fail('default-chain-unresolved');
+
+    // ── Longest common graph-node prefix ──────────────────────────────────
+    let prefix = 0;
+    while (
+      prefix < currentChain.length
+      && prefix < defaultChain.length
+      && currentChain[prefix].nodeId === defaultChain[prefix].nodeId
+    ) prefix += 1;
+    if (prefix === 0) return fail('chains-share-no-root');
+    if (prefix >= currentChain.length && prefix >= defaultChain.length) {
+      return chatAtlasGraphDivergenceEmpty('identical', 'chains-identical');
+    }
+    if (prefix >= currentChain.length || prefix >= defaultChain.length) {
+      // One chain is a prefix of the other: a continuation, not a branch edge.
+      return fail('divergence-is-continuation');
+    }
+    const owner = currentChain[prefix - 1] || null;
+    const currentRoot = currentChain[prefix];
+    const defaultRoot = defaultChain[prefix];
+    if (!owner) return fail('shared-owner-unproven');
+    if (currentRoot.nodeId === defaultRoot.nodeId) return fail('divergence-roots-identical');
+
+    // ── Resolve the EXISTING branch-vector point on each chain ────────────
+    const currentVector = chatAtlasBranchVectorForChain(currentChain, byId);
+    const defaultVector = chatAtlasBranchVectorForChain(defaultChain, byId);
+    const currentPoint = chatAtlasGraphDivergencePointFor(currentVector, currentRoot.nodeId);
+    const defaultPoint = chatAtlasGraphDivergencePointFor(defaultVector, defaultRoot.nodeId);
+    if (!currentPoint || !defaultPoint) return fail('branch-vector-point-absent');
+    const agreement = String(currentPoint.kind) === String(defaultPoint.kind)
+      && String(currentPoint.ownerMessageId || '') === String(defaultPoint.ownerMessageId || '')
+      && Number(currentPoint.variantCount || 0) === Number(defaultPoint.variantCount || 0);
+    if (!agreement) return fail('branch-vector-disagreement');
+    const variantIds = Array.isArray(defaultPoint.variantIds) ? defaultPoint.variantIds : [];
+    if (!variantIds.includes(currentRoot.nodeId) || !variantIds.includes(defaultRoot.nodeId)) {
+      return fail('roots-not-in-one-variant-set');
+    }
+    const kind = String(defaultPoint.kind || '');
+    if (kind !== 'question-edit' && kind !== 'assistant-regeneration') return fail('divergence-kind-unknown');
+    const currentIndex = variantIds.indexOf(currentRoot.nodeId);
+    const defaultIndex = variantIds.indexOf(defaultRoot.nodeId);
+    if (currentIndex < 0 || defaultIndex < 0) return fail('variant-index-unresolved');
+
+    // ── Mission D: strict direct answer-sibling proof ─────────────────────
+    let directAnswerSiblingProof = false;
+    if (kind === 'assistant-regeneration') {
+      const roots = owner.productUser === true
+        ? chatAtlasConvergenceAnswerVariantRoots(owner, byId)
+        : [];
+      const rootIds = roots.map((node) => node.nodeId);
+      directAnswerSiblingProof = owner.productUser === true
+        && roots.length > 1
+        && rootIds.includes(currentRoot.nodeId)
+        && rootIds.includes(defaultRoot.nodeId)
+        && !!chatAtlasAnswerIdentityForRoot(currentRoot, byId)
+        && !!chatAtlasAnswerIdentityForRoot(defaultRoot, byId);
+    }
+    // ── Mission E: strict question-variant proof ──────────────────────────
+    let questionVariantProof = false;
+    if (kind === 'question-edit') {
+      const variants = currentRoot.productUser === true
+        ? chatAtlasConvergenceQuestionVariants(currentRoot, byId)
+        : [];
+      const variantNodeIds = variants.map((node) => node.nodeId);
+      questionVariantProof = currentRoot.productUser === true
+        && defaultRoot.productUser === true
+        && variants.length > 1
+        && variantNodeIds.includes(currentRoot.nodeId)
+        && variantNodeIds.includes(defaultRoot.nodeId)
+        && currentRoot.parentId === owner.nodeId
+        && defaultRoot.parentId === owner.nodeId;
+    }
+    if (kind === 'assistant-regeneration' && !directAnswerSiblingProof) {
+      return fail('answer-sibling-proof-failed');
+    }
+    if (kind === 'question-edit' && !questionVariantProof) return fail('question-variant-proof-failed');
+    if (String(selectedPathAcquisitionState.graph?.captureIdentity || '') !== captureAtStart) {
+      return fail('graph-capture-changed');
+    }
+    return chatAtlasFreeze({
+      state: 'proven',
+      reason: null,
+      kind,
+      order: Number(defaultPoint.order || 0),
+      sharedPrefixLength: prefix,
+      ownerFound: true,
+      ownerRole: chatAtlasTurn2AuditRole(owner),
+      ownerMessageId: chatAtlasCompleteIndexIdentity(owner.messageId) || null,
+      currentRootFound: true,
+      defaultRootFound: true,
+      currentRootMessageId: chatAtlasCompleteIndexIdentity(currentRoot.messageId) || null,
+      defaultRootMessageId: chatAtlasCompleteIndexIdentity(defaultRoot.messageId) || null,
+      variantCount: Number(defaultPoint.variantCount || variantIds.length || 0),
+      currentIndex,
+      defaultIndex,
+      requiredDirection: defaultIndex > currentIndex ? 'next' : 'previous',
+      directAnswerSiblingProof,
+      questionVariantProof,
+      branchVectorAgreement: true,
+      observedKind: null,
+      currentQuestionMessageId: kind === 'question-edit'
+        ? (chatAtlasCompleteIndexIdentity(currentRoot.messageId) || null) : null,
+      defaultQuestionMessageId: kind === 'question-edit'
+        ? (chatAtlasCompleteIndexIdentity(defaultRoot.messageId) || null) : null,
+    });
+  }
+
+  // One computation per graph capture. Never cached across captures.
+  function chatAtlasGraphDivergence() {
+    const key = [
+      String(completeTurnIndexAuthorityState.chatId || ''),
+      String(completeTurnIndexAuthorityState.routeKey || ''),
+      Number(completeTurnIndexAuthorityState.generation || 0),
+      String(selectedPathAcquisitionState.graph?.captureIdentity || ''),
+    ].join('|');
+    if (chatAtlasGraphDivergenceState.key === key && chatAtlasGraphDivergenceState.value) {
+      return chatAtlasGraphDivergenceState.value;
+    }
+    let value = null;
+    try { value = chatAtlasComputeGraphDivergence(); }
+    catch { value = chatAtlasGraphDivergenceEmpty('fail-closed', 'graph-divergence-threw'); }
+    chatAtlasGraphDivergenceState.key = key;
+    chatAtlasGraphDivergenceState.value = value;
+    return value;
+  }
+
+  // ── Proof-only question-edit plan (Stage 2C-2ah8) ────────────────────────
+  // Uses the UNCHANGED prover. Nothing here clicks, focuses or dispatches:
+  // activation is refused by contract at this stage.
+  const chatAtlasQuestionEditPlanState = {
+    state: 'idle', reason: null, plan: null, activations: 0,
+  };
+
+  function chatAtlasQuestionEditSectionFor(messageId) {
+    const id = chatAtlasCompleteIndexIdentity(messageId);
+    if (!id) return null;
+    let el = null;
+    try { el = D.querySelector(`[data-message-author-role="user"][data-message-id="${id}"]`); } catch { el = null; }
+    if (!el) return null;
+    try { return el.closest('[data-testid^="conversation-turn-"]') || null; } catch { return null; }
+  }
+
+  function chatAtlasBuildQuestionEditPlan(divergence) {
+    const record = (state, reason, plan = null) => {
+      chatAtlasQuestionEditPlanState.state = state;
+      chatAtlasQuestionEditPlanState.reason = reason;
+      chatAtlasQuestionEditPlanState.plan = plan ? chatAtlasFreeze(plan) : null;
+      return chatAtlasFreeze({ state, reason, plan: chatAtlasQuestionEditPlanState.plan });
+    };
+    if (divergence?.state !== 'proven' || divergence.kind !== 'question-edit') {
+      return record('fail-closed', 'question-edit-divergence-unproven');
+    }
+    const section = chatAtlasQuestionEditSectionFor(divergence.currentQuestionMessageId);
+    if (!section) return record('fail-closed', 'question-edit-control-unavailable');
+    const proof = chatAtlasProveConvergenceStep(Object.freeze({
+      kind: 'question-edit',
+      section,
+      mountedQId: divergence.currentQuestionMessageId,
+      expectedQId: divergence.defaultQuestionMessageId,
+      mountedAId: null,
+      expectedPrimaryAId: null,
+    }));
+    if (proof.ok !== true) return record('fail-closed', proof.reason || 'question-edit-step-unproven');
+    const controls = chatAtlasNativeEditControls(section);
+    return record('ready', null, {
+      kind: 'question-edit',
+      ownerMessageId: divergence.ownerMessageId,
+      order: divergence.order,
+      variantCount: divergence.variantCount,
+      currentIndex: divergence.currentIndex,
+      targetIndex: divergence.defaultIndex,
+      requiredDirection: divergence.requiredDirection,
+      pagerOwnerId: String(controls.ownerId || ''),
+      pagerOwnerProven: !!controls.ownerId
+        && controls.ownerId === chatAtlasCompleteIndexIdentity(divergence.currentQuestionMessageId),
+      previousAvailable: !!controls.previous,
+      nextAvailable: !!controls.next,
+      // This stage proves the step. It never earns the right to take it.
+      activationPermitted: false,
+    });
+  }
+
+  function chatAtlasConvergeDefaultNativeAnswers(computed, reason) {
+    const state = completeTurnIndexAuthorityState;
+    if (state.manualOverrideActive === true) {
+      return Object.freeze({ ok: false, activated: false, reason: 'manual-override-active' });
+    }
+    const transaction = chatAtlasBranchTransactionCurrent();
+    // A default convergence owns no user transaction: bind it to the graph
+    // capture instead, and never open or supersede a manual one.
+    const record = {
+      token: String(transaction?.token || `default:${selectedPathAcquisitionState.graph?.captureIdentity || ''}`),
+      chatId: String(state.chatId || ''),
+      routeKey: String(state.routeKey || ''),
+      generation: Number(state.generation || 0),
+      origin: 'default-latest-created',
+    };
+    // Record the exact divergence owner before evaluating native evidence, so
+    // the reveal target is always the turn that actually diverges.
+    const revealTarget = chatAtlasFirstDivergenceTarget(computed.turns);
+    chatAtlasDefaultOverlayState.revealTargetOrder = revealTarget.order;
+    chatAtlasDefaultOverlayState.revealTargetQId = revealTarget.qId;
+    chatAtlasDefaultOverlayState.revealTargetExpectedAId = revealTarget.expectedAId;
+    chatAtlasDefaultOverlayState.revealTargetCurrentAId = revealTarget.currentAId;
+    chatAtlasDefaultOverlayState.revealTargetDivergenceKind = revealTarget.kind;
+    chatAtlasDefaultOverlayState.revealTargetReason = revealTarget.reason;
+    if (revealTarget.ok !== true) {
+      chatAtlasDefaultOverlayState.convergenceReason = revealTarget.reason;
+      return Object.freeze({ ok: false, activated: false, reason: revealTarget.reason });
+    }
+    const evaluation = chatAtlasEvaluateNativeAgainstTarget(computed.turns);
+    // Expected identities are recorded for EVERY outcome, so an unavailable
+    // target never reports null targets.
+    chatAtlasDefaultOverlayState.convergenceExpectedQId = evaluation.expectedQId;
+    chatAtlasDefaultOverlayState.convergenceExpectedAId = evaluation.expectedPrimaryAId;
+    chatAtlasDefaultOverlayState.convergenceEvaluation = evaluation.result;
+    if (evaluation.result === 'unavailable') {
+      // One bounded, reversible reveal may mount the exact target so a LATER
+      // stage has a real pager to prove. This never activates a control and
+      // never starts convergence: attempts stay 0 here by construction.
+      try { chatAtlasRevealRunOneShot(revealTarget); } catch {}
+      chatAtlasDefaultOverlayState.convergenceReason = `native-target-unavailable:${evaluation.reason}`;
+      return Object.freeze({
+        ok: false, activated: false, reason: 'native-target-unavailable', detail: evaluation.reason,
+      });
+    }
+    if (evaluation.result === 'match') {
+      chatAtlasDefaultOverlayState.convergenceReason = 'native-already-matches';
+      return Object.freeze({ ok: true, activated: false, reason: 'native-already-matches' });
+    }
+    const mismatch = evaluation.mismatch;
+    if (!mismatch) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'native-evaluation-unresolved';
+      return Object.freeze({ ok: false, activated: false, reason: 'native-evaluation-unresolved' });
+    }
+    // The target must be fully known BEFORE anything is attempted. An answer
+    // regeneration with no target answer identity is not a provable step.
+    chatAtlasDefaultOverlayState.convergenceExpectedQId = mismatch.expectedQId || null;
+    chatAtlasDefaultOverlayState.convergenceExpectedAId = mismatch.expectedPrimaryAId || null;
+    if (!chatAtlasCompleteIndexIdentity(mismatch.expectedQId)) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'target-question-unproven';
+      return Object.freeze({ ok: false, activated: false, reason: 'target-question-unproven' });
+    }
+    if (
+      mismatch.kind === 'assistant-regeneration'
+      && !chatAtlasCompleteIndexIdentity(mismatch.expectedPrimaryAId)
+    ) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'target-variant-unproven';
+      return Object.freeze({ ok: false, activated: false, reason: 'target-variant-unproven' });
+    }
+    const proof = chatAtlasProveConvergenceStep(mismatch);
+    if (proof.ok !== true) {
+      chatAtlasDefaultOverlayState.convergenceReason = proof.reason;
+      return Object.freeze({ ok: false, activated: false, reason: proof.reason });
+    }
+    if (!proof.button) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'native-control-unavailable';
+      return Object.freeze({ ok: false, activated: false, reason: 'native-control-unavailable' });
+    }
+    const attempts = Number(chatAtlasDefaultOverlayState.convergenceAttempts || 0);
+    if (attempts >= CHAT_ATLAS_CONVERGENCE_MAX_STEPS) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'default-convergence-attempts-exhausted';
+      return Object.freeze({ ok: false, activated: false, reason: 'default-convergence-attempts-exhausted' });
+    }
+    const signature = `${mismatch.kind}|${mismatch.expectedOrder}|${mismatch.mountedQId}|${mismatch.mountedAId}`;
+    if (String(chatAtlasDefaultOverlayState.convergenceSignature || '') === signature) {
+      chatAtlasDefaultOverlayState.convergenceReason = 'default-activation-produced-no-identity-change';
+      return Object.freeze({ ok: false, activated: false, reason: 'default-activation-produced-no-identity-change' });
+    }
+    chatAtlasDefaultOverlayState.convergenceSignature = signature;
+    chatAtlasDefaultOverlayState.convergenceAttempts = attempts + 1;
+    chatAtlasDefaultOverlayState.convergenceExpectedAId = mismatch.expectedPrimaryAId;
+    chatAtlasDefaultOverlayState.convergenceRecord = chatAtlasFreeze(record);
+    // Our own activation is not a user selection.
+    state.nativeConvergenceActivating = true;
+    let clicked = 0;
+    try {
+      for (let step = 0; step < proof.steps; step += 1) {
+        try { proof.button.click(); clicked += 1; } catch { break; }
+      }
+    } finally {
+      state.nativeConvergenceActivating = false;
+    }
+    if (!clicked) {
+      // The control did not run. Nothing was activated, so nothing may claim
+      // it was: roll the attempt back and fail closed.
+      chatAtlasDefaultOverlayState.convergenceAttempts = attempts;
+      chatAtlasDefaultOverlayState.convergenceSignature = '';
+      chatAtlasDefaultOverlayState.convergenceReason = 'native-control-activation-failed';
+      return Object.freeze({ ok: false, activated: false, reason: 'native-control-activation-failed' });
+    }
+    chatAtlasBranchTransactionTrace('default-convergence-activated', {
+      reason: `${proof.kind}@${mismatch.expectedOrder}:${proof.direction}:${clicked}`,
+    });
+    chatAtlasDefaultOverlayState.convergenceReason = 'activated-awaiting-identity';
+    return Object.freeze({
+      ok: true,
+      activated: true,
+      reason: 'default-convergence-activated',
+      clicked,
+      kind: proof.kind,
+      expectedQId: mismatch.expectedQId,
+      expectedPrimaryAId: mismatch.expectedPrimaryAId,
+    });
+  }
+
+  function chatAtlasPublishDefaultLatestCreatedPath(reason = 'default-initial') {
+    const state = completeTurnIndexAuthorityState;
+    const record = (code, why) => {
+      chatAtlasDefaultOverlayState.state = code;
+      chatAtlasDefaultOverlayState.reason = why;
+      // 'already-current' is a successful resolution with nothing to install.
+      const alreadyCurrent = code === 'already-current';
+      return Object.freeze({ ok: alreadyCurrent, reason: why, alreadyCurrent });
+    };
+    if (state.enabled !== true) return record('idle', 'authority-disabled');
+    // A manual selection in this page session always wins.
+    if (state.manualOverrideActive === true) return record('superseded', 'manual-override-active');
+    const retained = selectedPathAcquisitionState.graph;
+    if (
+      !retained
+      || retained.chatId !== String(state.chatId || '')
+      || retained.routeKey !== String(state.routeKey || '')
+      || Number(retained.generation || 0) !== Number(state.generation || 0)
+    ) return record('waiting', 'graph-not-current');
+    const captureIdentity = String(retained.captureIdentity || '');
+    if (!captureIdentity) return record('waiting', 'graph-capture-unknown');
+    const canonical = chatAtlasCanonicalPresentationIndex();
+    if (!Array.isArray(canonical?.turns) || !canonical.turns.length) {
+      return record('waiting', 'canonical-unavailable');
+    }
+    // Exactly one publication per (chat, route, generation, capture) — a DOM
+    // mutation or a badge refresh can never turn into repeated work.
+    const key = JSON.stringify([
+      state.chatId, state.routeKey, Number(state.generation || 0),
+      captureIdentity, String(canonical.sourceFingerprint || ''),
+    ]);
+    // Only a CONCLUSIVE outcome may suppress later attempts. Caching a
+    // failure here was the live defect: the very first notification runs
+    // before the effective index is installed, so an inconclusive comparison
+    // became a permanent fail-closed for the whole page session.
+    if (chatAtlasDefaultOverlayState.key === key
+      && ['published', 'already-current'].includes(chatAtlasDefaultOverlayState.state)) {
+      return Object.freeze({
+        ok: true,
+        reason: 'deduplicated',
+        alreadyCurrent: chatAtlasDefaultOverlayState.state === 'already-current',
+      });
+    }
+    const computed = chatAtlasComputeDefaultLatestCreatedPath();
+    if (computed.ok !== true) {
+      // Ambiguity is never guessed past: the host canonical path stays.
+      chatAtlasDefaultOverlayState.terminalNodeId = null;
+      chatAtlasDefaultOverlayState.terminalCreateTime = null;
+      chatAtlasDefaultOverlayState.pathCount = 0;
+      chatAtlasDefaultOverlayState.fingerprint = '';
+      chatAtlasDefaultOverlayState.branchVectorCount = 0;
+      return record('fail-closed', computed.reason);
+    }
+    // The default route may already BE the active path. That is a successful
+    // resolution, not a failure: no overlay is required, and installing a
+    // duplicate index would create a second authority for the same turns.
+    let effective = null;
+    try { effective = getEffectivePresentationIndex(); } catch { effective = null; }
+    const effectiveTurns = Array.isArray(effective?.turns) ? effective.turns : [];
+    chatAtlasDefaultOverlayState.effectiveAvailableAtCheck = effectiveTurns.length > 0;
+    chatAtlasDefaultOverlayState.effectiveCountAtCheck = effectiveTurns.length;
+    if (!effectiveTurns.length) {
+      // Nothing to compare against yet. Defer WITHOUT caching: the existing
+      // authority notification fires again once the index settles.
+      chatAtlasDefaultOverlayState.samePathCheckRan = false;
+      chatAtlasDefaultOverlayState.samePathResult = null;
+      chatAtlasDefaultOverlayState.firstDifference = null;
+      chatAtlasDefaultOverlayState.deferrals += 1;
+      return record('waiting', 'effective-index-unavailable');
+    }
+    chatAtlasDefaultOverlayState.samePathCheckRan = true;
+    const difference = chatAtlasFirstPathIdentityDifference(computed.turns, effectiveTurns);
+    chatAtlasDefaultOverlayState.firstDifference = difference;
+    chatAtlasDefaultOverlayState.samePathResult = difference === null;
+    if (chatAtlasSamePathIdentity(computed.turns, effectiveTurns)) {
+      chatAtlasDefaultOverlayState.terminalNodeId = computed.terminalNodeId;
+      chatAtlasDefaultOverlayState.terminalCreateTime = computed.terminalCreateTime;
+      chatAtlasDefaultOverlayState.pathCount = computed.count;
+      chatAtlasDefaultOverlayState.fingerprint = computed.fingerprint;
+      chatAtlasDefaultOverlayState.branchVectorCount = computed.branchVector.length;
+      chatAtlasDefaultOverlayState.effectiveIdentity = chatAtlasPathIdentityKey(effectiveTurns);
+      chatAtlasDefaultOverlayState.resolutions += 1;
+      chatAtlasDefaultOverlayState.key = key;
+      chatAtlasBranchTransactionTrace('default-already-current', { reason: `${computed.count}` });
+      return record('already-current', 'canonical-already-selected');
+    }
+    // Classify the divergence against the canonical path. The anchor model is
+    // NOT the same for both kinds, which is exactly why anchoring on the last
+    // shared row rejected a legitimate answer-variant divergence.
+    // First position where the two routes stop agreeing. Paths of different
+    // length diverge at the end of the shorter one.
+    const shared = Math.min(computed.turns.length, canonical.turns.length);
+    let at = -1;
+    for (let i = 0; i < shared; i += 1) {
+      if (
+        chatAtlasCompleteIndexIdentity(computed.turns[i]?.qId)
+          !== chatAtlasCompleteIndexIdentity(canonical.turns[i]?.qId)
+        || chatAtlasCompleteIndexIdentity(computed.turns[i]?.primaryAId)
+          !== chatAtlasCompleteIndexIdentity(canonical.turns[i]?.primaryAId)
+      ) { at = i; break; }
+    }
+    if (at < 0) {
+      if (computed.turns.length === canonical.turns.length) {
+        return record('fail-closed', 'default-canonical-identical');
+      }
+      at = shared;
+    }
+    if (at < 1) return record('fail-closed', 'default-canonical-root-mismatch');
+    // Same question, different answer => the divergence is the answer variant
+    // AT that turn. Anything else is a question/continuation divergence owned
+    // by the last shared turn above it.
+    const sameQuestionAtDifference = at < shared
+      && chatAtlasCompleteIndexIdentity(computed.turns[at]?.qId)
+        === chatAtlasCompleteIndexIdentity(canonical.turns[at]?.qId);
+    // Answer divergence: anchor ON the differing turn. Question divergence:
+    // anchor on the last shared turn, above it.
+    // OBSERVATION ONLY. It still selects the presentation anchor model, which
+    // is a row concern, but it may never decide the native control kind.
+    const observedDivergenceKind = sameQuestionAtDifference ? 'assistant-regeneration' : 'question-edit';
+    chatAtlasDefaultOverlayState.observedDivergenceKind = observedDivergenceKind;
+    const graphDivergence = chatAtlasGraphDivergence();
+    // Required invariant: assistant-regeneration ⇒ direct answer-root sibling
+    // relationship is graph-proven ⇒ both alternatives share one variant set.
+    const divergenceKind = graphDivergence.state === 'proven'
+      && graphDivergence.kind === 'assistant-regeneration'
+      && graphDivergence.directAnswerSiblingProof === true
+      ? 'assistant-regeneration'
+      : 'question-edit';
+    const anchorIndex = sameQuestionAtDifference ? at : at - 1;
+    const prefix = anchorIndex + 1;
+    if (anchorIndex < 0 || prefix > computed.turns.length || prefix > canonical.turns.length) {
+      return record('fail-closed', 'default-divergence-unresolved');
+    }
+    // Only an assistant-regeneration divergence may qualify for the scoped
+    // canonical-question reuse exception.
+    // The misclassified case, and ONLY it: the presentation rows share a qId,
+    // so the old classifier called this an answer regeneration and sent it to
+    // the answer converger — while the graph proves the branch edge is a
+    // question edit. A divergence the observation ALREADY read as a question
+    // edit is ordinary publication and is left entirely alone.
+    if (
+      observedDivergenceKind === 'assistant-regeneration'
+      && graphDivergence.state === 'proven'
+      && graphDivergence.kind === 'question-edit'
+    ) {
+      chatAtlasDefaultOverlayState.answerConvergenceSuppressed = true;
+      chatAtlasDefaultOverlayState.nativeRoute = 'graph-proven-question-edit';
+      const plan = chatAtlasBuildQuestionEditPlan(graphDivergence);
+      chatAtlasDefaultOverlayState.terminalNodeId = computed.terminalNodeId;
+      chatAtlasDefaultOverlayState.terminalCreateTime = computed.terminalCreateTime;
+      chatAtlasDefaultOverlayState.pathCount = computed.count;
+      chatAtlasDefaultOverlayState.branchVectorCount = computed.branchVector.length;
+      return plan.state === 'ready'
+        ? record('waiting', 'graph-proven-question-edit-plan-ready')
+        : record('fail-closed', plan.reason || 'question-edit-plan-unresolved');
+    }
+    chatAtlasDefaultOverlayState.answerConvergenceSuppressed = false;
+    chatAtlasDefaultOverlayState.nativeRoute = divergenceKind === 'assistant-regeneration'
+      ? 'graph-proven-assistant-regeneration'
+      : 'graph-divergence-unproven';
+    const answerOnly = divergenceKind === 'assistant-regeneration'
+      ? chatAtlasDefaultAnswerOnlyDivergence(computed.turns, canonical.turns)
+      : Object.freeze({ ok: false, reason: 'answer-only-kind-ineligible' });
+    chatAtlasDefaultOverlayState.resolutionSource = answerOnly.ok === true
+      ? 'scoped-default-answer-overlay'
+      : null;
+    chatAtlasDefaultOverlayState.answerOnlyReason = answerOnly.reason;
+    if (answerOnly.ok === true) {
+      // Native content disagrees only by answer selection. Publishing here
+      // would be refused by the Core parity gate — and rightly so, because the
+      // old answer is still what the page renders. Converge the native pager
+      // instead and let the host authority refresh settle the route.
+      const converged = chatAtlasConvergeDefaultNativeAnswers(computed, reason);
+      chatAtlasDefaultOverlayState.resolutionSource = 'native-convergence';
+      chatAtlasDefaultOverlayState.terminalNodeId = computed.terminalNodeId;
+      chatAtlasDefaultOverlayState.terminalCreateTime = computed.terminalCreateTime;
+      chatAtlasDefaultOverlayState.pathCount = computed.count;
+      chatAtlasDefaultOverlayState.branchVectorCount = computed.branchVector.length;
+      // Only a REAL activation may be reported as one. `ok` alone is not
+      // activation: the converger also returns ok for 'native-already-matches',
+      // which is a non-activation and was being mislabelled here.
+      if (converged.activated === true) {
+        return record('converging', 'native-convergence-activated');
+      }
+      if (converged.ok === true && converged.reason === 'native-already-matches') {
+        // Native already renders the default answers; the host authority has
+        // not republished yet. Wait for it rather than claim either state.
+        return record('waiting', 'native-matches-awaiting-authority-refresh');
+      }
+      return record('fail-closed', converged.reason || 'default-convergence-unresolved');
+    }
+    const anchor = computed.turns[anchorIndex];
+    if (divergenceKind === 'assistant-regeneration') {
+      const ownership = chatAtlasProveAnchorBranchOwnership(computed, anchorIndex);
+      chatAtlasDefaultOverlayState.anchorOwnershipReason = ownership.reason || null;
+      if (ownership.ok !== true) {
+        return record('fail-closed', ownership.reason || 'default-anchor-branch-unproven');
+      }
+    }
+    const anchorSelectedAId = chatAtlasCompleteIndexIdentity(anchor?.primaryAId);
+    if (!anchorSelectedAId) return record('fail-closed', 'default-anchor-answer-missing');
+    const token = `default:${captureIdentity}:${computed.fingerprint}`;
+    if (!chatAtlasCompleteIndexIdentity(computed.rootNodeId)) {
+      return record('fail-closed', 'default-root-node-unresolved');
+    }
+    // Same immutable shape a proven manual acquisition installs: the turns the
+    // default path shares with the host canonical index ARE the canonical rows,
+    // tagged as the canonical prefix; only the divergent tail is graph-derived.
+    const defaultPath = chatAtlasFreeze(computed.turns.map((turn, index) => (
+      index < prefix
+        ? chatAtlasFreeze({
+          order: Number(canonical.turns[index].order || 0),
+          qId: canonical.turns[index].qId,
+          turnId: canonical.turns[index].turnId,
+          // The anchor row keeps the DEFAULT route's selected answer; the
+          // rows above it are the host canonical rows unchanged.
+          primaryAId: index === anchorIndex
+            ? turn.primaryAId
+            : canonical.turns[index].primaryAId,
+          answerVariants: chatAtlasFreeze(Array.from(
+            (index === anchorIndex ? turn.answerVariants : canonical.turns[index].answerVariants) || [],
+          )),
+          noAnswer: index === anchorIndex
+            ? turn.noAnswer === true
+            : canonical.turns[index].noAnswer === true,
+          stopped: index === anchorIndex
+            ? turn.stopped === true
+            : canonical.turns[index].stopped === true,
+          // Evidence for the default origin is the host canonical row itself.
+          provenance: index === anchorIndex ? 'anchor' : 'canonical-prefix',
+          confirmedByNativeEvidence: index === anchorIndex
+            ? true
+            : canonical.turns[index].confirmedByNativeEvidence === true,
+        })
+        : turn
+    )));
+    const proof = chatAtlasFreeze({
+      anchorQId: chatAtlasCompleteIndexIdentity(anchor.qId),
+      anchorSelectedAId,
+      rootNodeId: computed.rootNodeId,
+      tailNodeId: computed.terminalNodeId,
+      pathLength: defaultPath.length,
+      canonicalPrefixLength: prefix,
+      canonicalFingerprint: String(canonical.sourceFingerprint || ''),
+      graphCapturedAt: String(retained.identityGraph?.capturedAt || ''),
+      token,
+      chatId: String(state.chatId || ''),
+      routeKey: String(state.routeKey || ''),
+      generation: Number(state.generation || 0),
+      staleRevision: 0,
+      // Same reason/source discipline as a proven manual acquisition: this IS
+      // a proven complete path derived from the host identity graph.
+      reason: 'selected-path-proven',
+      source: 'host-identity-graph',
+      defaultOrigin: true,
+      defaultTerminalNodeId: computed.terminalNodeId,
+      defaultTerminalCreateTime: computed.terminalCreateTime,
+      defaultPathFingerprint: computed.fingerprint,
+      graphCaptureIdentity: captureIdentity,
+      manualOverrideRevision: Number(state.manualOverrideRevision || 0),
+      defaultDivergenceKind: divergenceKind,
+      defaultAnswerOnlyProven: answerOnly.ok === true,
+      defaultResolutionSource: answerOnly.ok === true
+        ? 'scoped-default-answer-overlay'
+        : 'default-latest-created-overlay',
+    });
+    selectedPathAcquisitionState.origin = 'default-latest-created';
+    selectedPathAcquisitionState.token = token;
+    selectedPathAcquisitionState.anchorQId = proof.anchorQId;
+    selectedPathAcquisitionState.anchorSelectedAId = anchorSelectedAId;
+    selectedPathAcquisitionState.chatId = proof.chatId;
+    selectedPathAcquisitionState.routeKey = proof.routeKey;
+    selectedPathAcquisitionState.generation = proof.generation;
+    selectedPathAcquisitionState.staleRevision = 0;
+    selectedPathAcquisitionState.status = 'proven';
+    selectedPathAcquisitionState.reason = 'default-latest-created-proven';
+    selectedPathAcquisitionState.path = defaultPath;
+    selectedPathAcquisitionState.proof = proof;
+    selectedPathAcquisitionState.provenAt = new Date().toISOString();
+    chatAtlasBranchTransactionTrace('default-publish', {
+      reason: `${computed.count}@${String(computed.terminalNodeId || '').slice(0, 8)}`,
+    });
+    let status = null;
+    try {
+      status = typeof chatAtlasSelectedPathOverlayEvaluate === 'function'
+        ? chatAtlasSelectedPathOverlayEvaluate()
+        : null;
+    } catch { status = null; }
+    const active = selectedPathOverlayState.status === 'active';
+    chatAtlasDefaultOverlayState.terminalNodeId = computed.terminalNodeId;
+    chatAtlasDefaultOverlayState.terminalCreateTime = computed.terminalCreateTime;
+    chatAtlasDefaultOverlayState.pathCount = computed.count;
+    chatAtlasDefaultOverlayState.fingerprint = computed.fingerprint;
+    chatAtlasDefaultOverlayState.branchVectorCount = computed.branchVector.length;
+    if (!active) return record('fail-closed', String(status?.reason || 'overlay-refused'));
+    chatAtlasDefaultOverlayState.key = key;
+    chatAtlasDefaultOverlayState.publications += 1;
+    chatAtlasDefaultOverlayState.state = 'published';
+    chatAtlasDefaultOverlayState.reason = reason;
+    return Object.freeze({ ok: true, reason, count: computed.count });
+  }
+
+  // Branch metadata for the turns on the effective path: the active position
+  // and total at each turn, for the MiniMap boxes. Alternatives never become
+  // extra turns — this is metadata ON a turn, not a turn.
+  function chatAtlasEffectivePathBranchBadges() {
+    const out = new Map();
+    const scope = chatAtlasConvergenceGraphScope();
+    if (!scope.ok) return out;
+    const index = getEffectivePresentationIndex();
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    for (const turn of turns) {
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      const questionNode = chatAtlasConvergenceUniqueNode(scope.graph, qId, 'productUser');
+      if (!questionNode) continue;
+      const badge = {
+        questionIndex: 0, questionCount: 0, answerIndex: 0, answerCount: 0,
+        qId, primaryAId: chatAtlasCompleteIndexIdentity(turn?.primaryAId) || '',
+      };
+      const questionVariants = chatAtlasConvergenceQuestionVariants(questionNode, scope.byId);
+      if (questionVariants.length > 1) {
+        const at = questionVariants.findIndex((entry) => entry.nodeId === questionNode.nodeId);
+        if (at >= 0) { badge.questionIndex = at + 1; badge.questionCount = questionVariants.length; }
+      }
+      const answerRoots = chatAtlasConvergenceAnswerVariantRoots(questionNode, scope.byId);
+      if (answerRoots.length > 1 && badge.primaryAId) {
+        const answerNode = chatAtlasConvergenceUniqueNode(scope.graph, badge.primaryAId, 'productAnswer');
+        const root = chatAtlasConvergenceBranchRoot(questionNode, answerNode, scope.byId)
+          || answerRoots.find((entry) => chatAtlasAnswerIdentityForRoot(entry, scope.byId) === badge.primaryAId)
+          || null;
+        const at = root ? answerRoots.findIndex((entry) => entry.nodeId === root.nodeId) : -1;
+        if (at >= 0) { badge.answerIndex = at + 1; badge.answerCount = answerRoots.length; }
+      }
+      if (badge.questionCount > 1 || badge.answerCount > 1) out.set(qId, chatAtlasFreeze(badge));
+    }
+    return out;
+  }
+
   // The mounted native path, read once, compared against the effective branch.
   function chatAtlasMapMountedNativePath() {
     const index = getEffectivePresentationIndex();
@@ -9990,9 +13768,14 @@
   // effective branch — either the QUESTION variant (a user edit) or, when the
   // question already agrees, the ANSWER variant beneath it (a regeneration).
   // Returns null only when every mounted turn agrees on BOTH.
-  function chatAtlasFirstNativePathMismatch() {
-    const index = getEffectivePresentationIndex();
-    const turns = Array.isArray(index?.turns) ? index.turns : [];
+  function chatAtlasFirstNativePathMismatch(targetTurns = null) {
+    // Default target is the published effective branch. The default-origin
+    // convergence passes the newest-created path instead, so the SAME proven
+    // machinery aligns native content with it.
+    const index = targetTurns ? null : getEffectivePresentationIndex();
+    const turns = Array.isArray(targetTurns)
+      ? targetTurns
+      : (Array.isArray(index?.turns) ? index.turns : []);
     if (!turns.length) return null;
     let sections = [];
     try {
@@ -10242,7 +14025,7 @@
   }
 
   // One bounded convergence attempt. Returns a frozen outcome; never throws.
-  function chatAtlasRunNativeConvergence(reason = 'convergence') {
+  function chatAtlasRunNativeConvergence(reason = 'convergence', targetTurns = null) {
     const state = completeTurnIndexAuthorityState;
     const transaction = chatAtlasBranchTransactionCurrent();
     if (!transaction || transaction.state === 'reset') {
@@ -10259,14 +14042,14 @@
     if (state.nativeConvergenceState?.phase === 'fail-closed') {
       return Object.freeze({ ok: false, reason: state.nativeConvergenceState.reason });
     }
-    const mismatch = chatAtlasFirstNativePathMismatch();
+    const mismatch = chatAtlasFirstNativePathMismatch(targetTurns);
     if (!mismatch) {
       // Every mounted branch point agrees. Convergence is only COMPLETE when
       // the descendants actually materialised through the terminal turn; an
       // agreeing but short prefix is the host failing to expand, and it is
       // reported as exactly that rather than being called success.
       const map = chatAtlasMapMountedNativePath();
-      const complete = map.terminalMounted === true;
+      const complete = targetTurns ? true : map.terminalMounted === true;
       if (state.nativeConvergenceState) {
         state.nativeConvergenceState = Object.freeze({
           ...state.nativeConvergenceState,
@@ -10750,6 +14533,11 @@
       ]))}`,
     });
     // The production runtime owns this notifier. Isolated function-extraction
+    // This is a genuine trusted user branch action — self-generated
+    // convergence clicks returned above and never reach here. It takes
+    // ownership of the session, so the default newest-created origin becomes
+    // inert until a reload or a route/generation reset.
+    try { chatAtlasMarkManualBranchOverride('trusted-native-branch-click'); } catch {}
     // harnesses may intentionally omit it while still exercising Gate 5.
     if (typeof chatAtlasNotifyCompleteIndexState === 'function') chatAtlasNotifyCompleteIndexState();
     if (typeof scheduleChatAtlasLedgerFlush === 'function') {
@@ -11562,6 +15350,48 @@
     return out;
   }
 
+  // Branch metadata for the turns on the effective path, keyed by qId. One
+  // entry per branching turn; alternatives never become extra entries.
+  function getChatAtlasBranchBadges() {
+    const out = [];
+    try {
+      for (const [, badge] of chatAtlasEffectivePathBranchBadges()) {
+        out.push(Object.freeze({
+          qId: badge.qId,
+          primaryAId: badge.primaryAId || null,
+          questionBranchIndex: Number(badge.questionIndex || 0),
+          questionBranchCount: Number(badge.questionCount || 0),
+          answerBranchIndex: Number(badge.answerIndex || 0),
+          answerBranchCount: Number(badge.answerCount || 0),
+        }));
+      }
+    } catch {}
+    return Object.freeze(out);
+  }
+
+  function getChatAtlasDefaultLatestCreatedPath() {
+    try {
+      const result = chatAtlasComputeDefaultLatestCreatedPath();
+      return Object.freeze({
+        ok: result.ok === true,
+        reason: result.reason,
+        terminalNodeId: result.terminalNodeId,
+        terminalMessageId: result.terminalMessageId,
+        terminalCreateTime: result.terminalCreateTime,
+        count: result.count,
+        fingerprint: result.fingerprint,
+        source: result.source,
+        branchVector: result.branchVector,
+      });
+    } catch {
+      return Object.freeze({
+        ok: false, reason: 'default-path-unavailable', terminalNodeId: null,
+        terminalMessageId: null, terminalCreateTime: null, count: 0,
+        fingerprint: '', source: 'latest-created-terminal', branchVector: Object.freeze([]),
+      });
+    }
+  }
+
   function getCompleteTurnIndexProjectionStatus() {
     const index = completeTurnIndexAuthorityState.index;
     const refresh = completeIndexRefreshCoordinator?.getStatus?.() || null;
@@ -11638,6 +15468,7 @@
       nativeConvergenceExpectedQId: completeTurnIndexAuthorityState.nativeConvergenceState?.expectedQId || null,
       nativeConvergenceAttempts: Number(completeTurnIndexAuthorityState.nativeConvergenceState?.attempts || 0),
       ...chatAtlasNativeBranchPlanDiagnostics(),
+      ...chatAtlasDefaultOverlayDiagnostics(),
       branchTransactionTrace: completeTurnIndexAuthorityState.branchTransactionTrace.map((entry) => Object.freeze({ ...entry })),
       branchSelectionStaleRevision: Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0),
       branchSelectionStaleQId: completeTurnIndexAuthorityState.branchSelectionStaleQId || null,
@@ -11700,6 +15531,19 @@
   }
 
   function chatAtlasNotifyCompleteIndexState() {
+    // The default origin publishes at most once per graph capture; the guard
+    // lives inside the publisher, so this hook cannot become a request storm.
+    try { chatAtlasPublishDefaultLatestCreatedPath('complete-index-published'); } catch {}
+    // One bounded tick per authority publication, capped inside the callee.
+    // While waiting for the conversation to mount, the same notification
+    // retries CONTAINER DISCOVERY only. No timer, no observer, no second scroll.
+    try {
+      if (chatAtlasRevealState.transactionState === 'waiting-for-container-readiness') {
+        chatAtlasRevealRunOneShot(chatAtlasRevealState.readinessTarget);
+      } else {
+        chatAtlasRevealReconcileTick();
+      }
+    } catch {}
     const detail = getCompleteTurnIndexProjectionStatus();
     try { W.dispatchEvent(new CustomEvent(COMPLETE_TURN_INDEX_STATE_EVENT, { detail })); } catch {}
     try { H2O.events?.emit?.(COMPLETE_TURN_INDEX_STATE_EVENT, detail); } catch {}
@@ -11839,6 +15683,7 @@
 
     selectedPathAcquisitionState.status = 'proven';
     selectedPathAcquisitionState.reason = 'selected-path-proven';
+    selectedPathAcquisitionState.origin = 'manual-native-selection';
     selectedPathAcquisitionState.token = intent.token;
     selectedPathAcquisitionState.anchorQId = intent.qId;
     selectedPathAcquisitionState.anchorSelectedAId = targetAnswerId;
@@ -12091,6 +15936,7 @@
     );
     try { completeTurnIndexAuthorityState.controller?.abort?.('route-changed'); } catch {}
     completeTurnIndexAuthorityState.generation += 1;
+    try { chatAtlasResetManualBranchOverride('route-generation-reset'); } catch {}
     completeTurnIndexAuthorityState.status = completeTurnIndexAuthorityState.enabled
       ? (staleStatus ? 'stale-route-discarded' : 'loading-full-index')
       : 'disabled';
@@ -13050,6 +16896,8 @@
     getChatAtlasConvergenceParity,
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
+    getChatAtlasBranchBadges,
+    getChatAtlasDefaultLatestCreatedPath,
     getSelectedPathAcquisitionStatus,
     getSelectedPathDerivationDiagnostics,
     getGraphIdentityDiagnostics,

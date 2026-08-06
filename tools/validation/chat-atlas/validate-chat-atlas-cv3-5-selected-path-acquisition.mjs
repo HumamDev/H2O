@@ -128,6 +128,7 @@ const archiveFunctions = [
   'conversationTurnIndexRole',
   'conversationTurnIndexProductUser',
   'conversationTurnIndexStopped',
+  'conversationTurnIndexCreateTime',
   'conversationTurnIndexProductAnswer',
   'conversationTurnIndexPlaceholder',
   'conversationTurnIndexBranchShellAlias',
@@ -824,10 +825,15 @@ await fixture('Harness A IDs-only immutable graph', () => {
   equal(Object.keys(flagOn.identityGraph).sort(), ['capturedAt', 'chatId', 'currentNode', 'nodeCount', 'nodes'], 'graph keys are exact');
   equal(
     Object.keys(flagOn.identityGraph.nodes[0]).sort(),
-    ['branchShellAlias', 'childIds', 'messageId', 'nodeId', 'parentId', 'productAnswer', 'productUser', 'role', 'stopped'],
+    ['branchShellAlias', 'childIds', 'createTime', 'messageId', 'nodeId', 'parentId', 'productAnswer', 'productUser', 'role', 'stopped'],
     'node keys are exact',
   );
   ok(flagOn.identityGraph.nodes.every((node) => typeof node.branchShellAlias === 'boolean'), 'branch-shell proof is a bounded scalar');
+  ok(
+    flagOn.identityGraph.nodes.every((node) => node.createTime === null
+      || (typeof node.createTime === 'number' && Number.isFinite(node.createTime) && node.createTime > 0)),
+    'creation time is a trustworthy positive number or explicitly null',
+  );
   ok(Object.isFrozen(flagOn.identityGraph), 'graph is frozen');
   ok(Object.isFrozen(flagOn.identityGraph.nodes), 'node array is frozen');
   ok(flagOn.identityGraph.nodes.every((node) => Object.isFrozen(node) && Object.isFrozen(node.childIds)), 'every record and child array is frozen');

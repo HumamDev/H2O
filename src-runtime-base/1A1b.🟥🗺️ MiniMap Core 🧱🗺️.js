@@ -980,9 +980,98 @@ function UM_PUBLIC() {
     btn.dataset.surfaceRole = 'answer';
     btn.setAttribute('aria-label', `Go to answer ${idx || ''}`);
 
+    applyBranchBadgeAttrs(btn, String(meta?.questionId || turn?.questionId || '').trim(), answerId);
+
     const num = btn.querySelector('.cgxui-mm-num');
     if (num) num.textContent = String(idxNum || '');
     return btn;
+  }
+
+  // Branch position/total for one box on the effective path. Read from the
+  // Core's graph-derived badge map keyed by qId, never from mounted DOM order.
+  // Cached per projection fingerprint so a badge refresh never triggers work
+  // per DOM mutation.
+  let branchBadgeCache = { key: '', byQId: new Map() };
+
+  function getBranchBadgeMap() {
+    let key = '';
+    try {
+      const status = getCompleteIndexProjectionStatus();
+      if (status.enabled !== true) return null;
+      key = `${status.chatId || ''}|${status.routeGeneration || 0}|${status.fingerprint || ''}|${status.count || 0}`;
+    } catch { return null; }
+    if (key && branchBadgeCache.key === key) return branchBadgeCache.byQId;
+    const byQId = new Map();
+    try {
+      const rows = getTurnRuntimeApi()?.getChatAtlasBranchBadges?.() || [];
+      for (const row of rows) {
+        const qId = String(row?.qId || '').trim();
+        if (qId) byQId.set(qId, row);
+        // A box whose question identity cannot be resolved from its own row
+        // meta still owns its answer identity, so key the badge by both.
+        const aId = String(row?.primaryAId || '').trim();
+        if (aId && !byQId.has(aId)) byQId.set(aId, row);
+      }
+    } catch { return null; }
+    branchBadgeCache = { key, byQId };
+    return byQId;
+  }
+
+  function applyBranchBadgeAttrs(btn, questionId, answerId) {
+    if (!btn) return;
+    const map = getBranchBadgeMap();
+    const row = map
+      ? (
+        (questionId ? map.get(String(questionId).trim()) : null)
+        || (answerId ? map.get(String(answerId).trim()) : null)
+        || null
+      )
+      : null;
+    const qCount = Math.max(0, Number(row?.questionBranchCount || 0) || 0);
+    const qIndex = Math.max(0, Number(row?.questionBranchIndex || 0) || 0);
+    const aCount = Math.max(0, Number(row?.answerBranchCount || 0) || 0);
+    const aIndex = Math.max(0, Number(row?.answerBranchIndex || 0) || 0);
+    // A badge is shown only when that side genuinely has more than one
+    // variant, and only when the box still belongs to the same answer the
+    // badge was computed for.
+    const answerMatches = !row?.primaryAId || !answerId
+      || String(row.primaryAId) === String(answerId).trim();
+    const setOrClear = (name, value) => {
+      if (value) btn.setAttribute(name, String(value));
+      else btn.removeAttribute(name);
+    };
+    setOrClear('data-question-branch-index', qCount > 1 && qIndex > 0 ? qIndex : 0);
+    setOrClear('data-question-branch-count', qCount > 1 && qIndex > 0 ? qCount : 0);
+    setOrClear('data-answer-branch-index', answerMatches && aCount > 1 && aIndex > 0 ? aIndex : 0);
+    setOrClear('data-answer-branch-count', answerMatches && aCount > 1 && aIndex > 0 ? aCount : 0);
+    const parts = [];
+    if (qCount > 1 && qIndex > 0) parts.push(`Q ${qIndex}/${qCount}`);
+    if (answerMatches && aCount > 1 && aIndex > 0) parts.push(`A ${aIndex}/${aCount}`);
+    const label = parts.join(' · ');
+    setOrClear('data-branch-badge', label);
+    renderBranchBadgeEl(btn, label);
+  }
+
+  // The visible badge. It rides on the existing box - one box per effective
+  // turn, never an extra box for an alternative - and is removed the moment
+  // the turn stops branching so a stale badge cannot survive a switch.
+  function renderBranchBadgeEl(btn, label) {
+    let el = null;
+    try { el = btn.querySelector?.('.cgxui-mm-branch') || null; } catch {}
+    if (!label) {
+      if (el) { try { el.remove(); } catch {} }
+      return;
+    }
+    if (!el) {
+      try {
+        el = document.createElement('span');
+        el.className = 'cgxui-mm-branch';
+        el.setAttribute('aria-hidden', 'true');
+        btn.appendChild(el);
+      } catch { return; }
+    }
+    if (el.textContent !== label) el.textContent = label;
+    el.setAttribute('data-branch-parts', String(label.split(' · ').length));
   }
 
   function syncQuestionBtnMeta(qBtn, turn, band, qaMeta = null) {
