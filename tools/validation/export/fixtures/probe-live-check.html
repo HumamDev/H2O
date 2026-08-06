@@ -1,0 +1,98 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Export Phase 0A — attached-probe live check</title>
+<!--
+  MANUAL live confirmation for Scope B.
+
+  The Node validator proves the attach-before-read CONTRACT against a modelled
+  DOM. It cannot prove real browser layout. Open this file in the browser you
+  ship against and confirm the verdict below reads PASS.
+
+  It replicates the exact probe style used by:
+    src-runtime-base/0E1a.⬛️📀 Export Chat 📀.js   (TEXT_PROBE_STYLE)
+    src-runtime-base/0E2a.⚫️💿 Quick Export 💿.js  (PROBE_STYLE)
+  If those constants change, update PROBE_STYLE here to match.
+-->
+<style>
+  body { font: 14px/1.5 system-ui, -apple-system, sans-serif; margin: 24px; max-width: 900px; }
+  h1 { font-size: 18px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  pre.out { background: #f4f4f5; border: 1px solid #d4d4d8; border-radius: 8px; padding: 10px; white-space: pre-wrap; }
+  .verdict { padding: 10px 12px; border-radius: 8px; font-weight: 600; margin: 16px 0; }
+  .pass { background: #dcfce7; border: 1px solid #16a34a; color: #14532d; }
+  .fail { background: #fee2e2; border: 1px solid #dc2626; color: #7f1d1d; }
+  #sample { border: 1px dashed #d4d4d8; padding: 10px; border-radius: 8px; }
+  table { border-collapse: collapse; }
+  td { border: 1px solid #d4d4d8; padding: 2px 8px; }
+</style>
+
+<h1>Export Phase 0A — attached-probe live check</h1>
+
+<div id="sample">
+  <p>First paragraph.</p>
+  <p>Second paragraph.</p>
+  <ul><li>Alpha</li><li>Beta</li><li>Gamma</li></ul>
+  <table><tr><td>Name</td><td>Value</td></tr><tr><td>rows</td><td>2</td></tr></table>
+  <pre>line one
+line two
+line three</pre>
+</div>
+
+<div id="verdict" class="verdict">running…</div>
+
+<div class="cols">
+  <div><strong>Detached clone (the bug)</strong><pre class="out" id="before"></pre></div>
+  <div><strong>Attached probe (the fix)</strong><pre class="out" id="after"></pre></div>
+</div>
+
+<script>
+  // Must stay identical to TEXT_PROBE_STYLE / PROBE_STYLE in the runtime files.
+  const PROBE_STYLE =
+    'position:fixed;left:-99999px;top:0;width:1024px;max-width:1024px;pointer-events:none;contain:content;';
+
+  function readDetached(el) {
+    return (el.cloneNode(true).innerText || '').trim();
+  }
+
+  function readViaProbe(el) {
+    const clone = el.cloneNode(true);
+    const host = document.body || document.documentElement;
+    const probe = document.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = PROBE_STYLE;
+    probe.appendChild(clone);
+    host.appendChild(probe);
+    try {
+      return String(probe.innerText || probe.textContent || '').trim();
+    } finally {
+      try { probe.remove(); } catch {}
+    }
+  }
+
+  const sample = document.getElementById('sample');
+  const before = readDetached(sample);
+  const after = readViaProbe(sample);
+
+  document.getElementById('before').textContent = before;
+  document.getElementById('after').textContent = after;
+
+  const lines = (s) => s.split('\n').map((x) => x.trim()).filter(Boolean);
+  const afterLines = lines(after);
+
+  const checks = [
+    ['paragraphs separated', afterLines.includes('First paragraph.') && afterLines.includes('Second paragraph.')],
+    ['paragraphs not run together', !after.includes('First paragraph.Second')],
+    ['list items separated', ['Alpha', 'Beta', 'Gamma'].every((t) => afterLines.includes(t))],
+    ['table rows separated', afterLines.some((l) => /^Name\s+Value$/.test(l)) && afterLines.some((l) => /^rows\s+2$/.test(l))],
+    ['code lines separated', ['line one', 'line two', 'line three'].every((t) => afterLines.includes(t))],
+    ['strictly better than detached', afterLines.length > lines(before).length],
+    ['no probe left behind', !document.querySelector('div[aria-hidden="true"][style*="-99999px"]')],
+  ];
+
+  const failed = checks.filter(([, ok]) => !ok).map(([name]) => name);
+  const el = document.getElementById('verdict');
+  el.className = 'verdict ' + (failed.length ? 'fail' : 'pass');
+  el.textContent = failed.length
+    ? 'FAIL — ' + failed.join('; ')
+    : 'PASS — all ' + checks.length + ' rendered-text checks hold in this browser.';
+</script>

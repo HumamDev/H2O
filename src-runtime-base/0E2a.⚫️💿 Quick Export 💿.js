@@ -38,6 +38,12 @@
   const BTN_ATTR  = 'data-ho-testbtn';
   const BTN_CLASS = 'ho-test-toolbar-btn';
 
+  // Off-screen but still RENDERED. No display:none / visibility:hidden — either
+  // would make innerText fall back to textContent, which is the bug this fixes.
+  const PROBE_ATTR  = 'data-ho-textprobe';
+  const PROBE_STYLE =
+    'position:fixed;left:-99999px;top:0;width:1024px;max-width:1024px;pointer-events:none;contain:content;';
+
   const style = document.createElement('style');
   style.textContent = `
     .${BTN_CLASS}{
@@ -93,6 +99,32 @@
     URL.revokeObjectURL(a.href);
   }
 
+  /**
+   * Read rendered text from an already-scrubbed clone.
+   * `innerText` only reports rendered line boundaries while the node is being
+   * rendered; a detached clone falls back to textContent and loses every block
+   * break. Attach the clone to an off-screen (but still rendered) probe first,
+   * then drop the probe. No display:none / visibility:hidden — either would take
+   * the node out of rendering and reinstate the bug.
+   */
+  function readRenderedText(clone) {
+    if (!clone) return '';
+    const host = document.body || document.documentElement;
+    if (!host) return String(clone.textContent || '');
+
+    const probe = document.createElement('div');
+    probe.setAttribute(PROBE_ATTR, '1');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = PROBE_STYLE;
+    probe.appendChild(clone);
+    host.appendChild(probe);
+    try {
+      return String(probe.innerText || probe.textContent || '');
+    } finally {
+      try { probe.remove(); } catch {}
+    }
+  }
+
   function getCleanText(el) {
     if (!el) return '';
     const clone = el.cloneNode(true);
@@ -108,7 +140,7 @@
        button[aria-label="More actions"]`
     ).forEach(n => n.remove());
 
-    return clone.innerText.trim();
+    return readRenderedText(clone).trim();
   }
 
   function findPrevUserMessage(assistantEl) {
