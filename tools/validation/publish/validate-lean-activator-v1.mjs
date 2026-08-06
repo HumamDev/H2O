@@ -90,6 +90,8 @@ const P3C_A3_SUBJECT = "fix(publish): complete activation intent and rollback ev
 const P3C_A3_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+const ACCEPTED_P3C_A3A_HEAD = "6d48185b0601c16ca82c09813ef435a05f5f63a9";
+const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
@@ -98,8 +100,8 @@ const REQUIRED_FILES = Object.freeze([
   "provider/identity-provider-supabase.js",
 ]);
 const EXPECTED_SCOPE = 55;
-const EXPECTED_RUNTIME = 215;
-const EXPECTED_STRUCTURAL = 53;
+const EXPECTED_RUNTIME = 220;
+const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
 const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
@@ -428,6 +430,19 @@ function classifyScope(state) {
     value.committedPaths.length > 0 &&
     value.committedPaths.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry));
   if (p3cA3Clean) return "p3c-a3-committed";
+  // A3b: validator-only negative closure on the accepted A3a commit.
+  const p3cA3bBase = value.head === ACCEPTED_P3C_A3A_HEAD && value.untracked.length === 0 &&
+    value.staged.length === 0;
+  if (p3cA3bBase && value.modifiedTracked.length > 0 &&
+      value.modifiedTracked.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry))) {
+    return "p3c-a3b-uncommitted";
+  }
+  const p3cA3bClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === ACCEPTED_P3C_A3A_HEAD && value.subject === P3C_A3B_SUBJECT &&
+    value.committedPaths.length > 0 &&
+    value.committedPaths.every((entry) => P3C_A3_AUTHORIZED_PATHS.includes(entry));
+  if (p3cA3bClean) return "p3c-a3b-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -978,7 +993,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-a2-uncommitted", "p3c-a2-committed",
     "p3c-a2-1-uncommitted", "p3c-a2-1-committed",
     "p3c-b1-uncommitted", "p3c-b1-committed",
-    "p3c-a3-uncommitted", "p3c-a3-committed"]
+    "p3c-a3-uncommitted", "p3c-a3-committed",
+    "p3c-a3b-uncommitted", "p3c-a3b-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -3882,6 +3898,7 @@ async function runP3cA2Tests() {
 
   await runP3cB1Tests();
   await runP3cA3Tests();
+  await runP3cA3bTests();
 
   await test("verification is stable across path spellings, spaces and emoji", async () => {
     const context = await createVerifiedActivation("spelling");
@@ -4423,6 +4440,249 @@ async function runP3cA3Tests() {
   });
 }
 
+/* ------------------------------------------------------------------------- *
+ * P3C-A3b — negative-case closure for activation completeness
+ * ------------------------------------------------------------------------- */
+
+/** One accepted activation plus the source authority its intent binds. */
+async function resolvedActivationFixture(label) {
+  const context = await createActivationFixture(`a3b-${label}`);
+  const activation = context.activate();
+  const source = {
+    repository: fs.realpathSync.native(context.fixture.repository),
+    branch: "main",
+    approvedHead: git(context.fixture.repository, ["rev-parse", "HEAD"]),
+    sourceTree: git(context.fixture.repository, ["rev-parse", "HEAD^{tree}"]),
+    gitExecutable: JSON.parse(fs.readFileSync(context.intent.intentPath, "utf8")).gitExecutable,
+  };
+  return { ...context, activation, source, foundation: { root: context.anchor } };
+}
+
+const classify = (context, overrides = {}) =>
+  context.api.classifyExistingIntent(context.intent.intentPath, context.foundation,
+    { ...context.source, ...overrides }, { environment: cleanEnvironment() });
+
+const rewriteJson = (target, mutate) => {
+  const value = JSON.parse(fs.readFileSync(target, "utf8"));
+  mutate(value);
+  fs.rmSync(target);
+  fs.writeFileSync(target, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  return value;
+};
+
+const chainFilesOf = (context) => {
+  const directory = path.join(context.anchor, "transactions", context.intent.activationId);
+  return fs.readdirSync(directory).filter((n) => n.startsWith("seq-")).sort()
+    .map((n) => path.join(directory, n));
+};
+
+async function runP3cA3bTests() {
+  await test("intent resolution fails closed on every receipt and chain defect", async () => {
+    // Each case breaks exactly one requirement and must leave the intent
+    // unresolved with a precise, typed reason.
+    const cases = [
+      ["receipt absent", "receipt-absent", (c) => fs.rmSync(c.activation.activationReceiptPath)],
+      ["receipt not regular", "receipt-not-regular", (c) => {
+        fs.rmSync(c.activation.activationReceiptPath);
+        fs.symlinkSync(c.intent.intentPath, c.activation.activationReceiptPath);
+      }],
+      ["receipt malformed", "receipt-malformed", (c) => {
+        fs.rmSync(c.activation.activationReceiptPath);
+        fs.writeFileSync(c.activation.activationReceiptPath, "{ not json\n", { mode: 0o600 });
+      }],
+      ["receipt identity drift", "receipt-identity-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.mode = "stage-receipt"; })],
+      ["receipt intent digest drift", "receipt-intent-binding-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.intentSha256 = "0".repeat(64); })],
+      ["receipt stage drift", "receipt-source-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.stageReceiptSha256 = "0".repeat(64); })],
+      ["receipt build-marker drift", "receipt-source-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.buildMarker = "1700000000000"; })],
+      ["receipt variant drift", "receipt-source-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.acceptedExtensionVariant = "dev-lean"; })],
+      ["terminal record removed", "transaction-not-accepted", (c) => {
+        const files = chainFilesOf(c);
+        fs.rmSync(files[files.length - 1]);
+      }],
+      ["terminal receipt digest drift", "accepted-receipt-binding-mismatch", (c) => {
+        const files = chainFilesOf(c);
+        rewriteJson(files[files.length - 1], (r) => { r.activationReceiptSha256 = "0".repeat(64); });
+      }],
+      ["foreign transaction repository", "transaction-foreign", (c) => {
+        const files = chainFilesOf(c);
+        rewriteJson(files[files.length - 1], (r) => { r.repositoryRealpath = "/tmp/other-repository"; });
+      }],
+      ["transaction removed", "transaction-absent", (c) =>
+        fs.rmSync(path.join(c.anchor, "transactions", c.intent.activationId), { recursive: true })],
+    ];
+    for (const [label, expected, breakIt] of cases) {
+      const context = await resolvedActivationFixture(`fail-${expected}-${label.length}`);
+      assert.equal(classify(context).resolved, true, `${label}: must start resolved`);
+      breakIt(context);
+      const outcome = classify(context);
+      assert.equal(outcome.resolved, false, label);
+      assert.equal(outcome.code, expected, `${label} expected ${expected}, got ${outcome.code}`);
+      // An unresolved intent must still block preparing another.
+      expectActivatorError(() => context.api.prepareActivationIntent(
+        createStageFixture(context.fixture.repository, `a3b-${label.length}`).receiptPath,
+        { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE,
+          randomBytes: SECOND_RANDOM_BYTES }),
+      "activation-intent-unresolved");
+      disposeTemporaryRoot(context.fixture.top);
+    }
+  });
+
+  await test("intent source-authority drift is never treated as resolved", async () => {
+    const context = await resolvedActivationFixture("source-drift");
+    assert.equal(classify(context).resolved, true);
+    for (const [label, override] of [
+      ["repository", { repository: "/tmp/another-repository" }],
+      ["branch", { branch: "release" }],
+      ["approved HEAD", { approvedHead: "0".repeat(40) }],
+      ["source tree", { sourceTree: "0".repeat(40) }],
+      ["stable Git identity", { gitExecutable: { path: "/usr/bin/git", realpath: "/usr/bin/git",
+        version: "git version 0.0.0", sha256: "0".repeat(64) } }],
+    ]) {
+      const outcome = classify(context, override);
+      assert.equal(outcome.resolved, false, label);
+      assert.equal(outcome.code, "intent-foreign-source", label);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("only canonical regular intent entries are accepted", async () => {
+    const context = await resolvedActivationFixture("entries");
+    const intents = path.join(context.anchor, "activation-intents");
+    const secondStage = () => createStageFixture(context.fixture.repository, `a3b-entry-${Date.now()}`);
+    const prepare = () => context.api.prepareActivationIntent(secondStage().receiptPath,
+      { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE, randomBytes: SECOND_RANDOM_BYTES });
+    // Baseline: with only the resolved intent present, preparation succeeds.
+    const ok = prepare();
+    fs.rmSync(ok.intentPath);
+    const cases = [
+      ["symlink entry", "activation-intent-entry-invalid", () => {
+        fs.symlinkSync(context.intent.intentPath,
+          path.join(intents, "20260101T000000000Z-aaaaaaaaaaaa.json"));
+      }],
+      ["directory entry", "activation-intent-entry-invalid", () => {
+        fs.mkdirSync(path.join(intents, "20260101T000000000Z-bbbbbbbbbbbb.json"));
+      }],
+      ["unknown filename", "activation-intent-entry-unknown", () => {
+        fs.writeFileSync(path.join(intents, "notes.txt"), "scratch\n");
+      }],
+      ["malformed activation id", "activation-intent-entry-unknown", () => {
+        fs.writeFileSync(path.join(intents, "not-an-id.json"), "{}\n");
+      }],
+      ["uppercase hex id", "activation-intent-entry-unknown", () => {
+        fs.writeFileSync(path.join(intents, "20260101T000000000Z-AAAAAAAAAAAA.json"), "{}\n");
+      }],
+    ];
+    for (const [label, expected, plant] of cases) {
+      plant();
+      expectActivatorError(prepare, expected, label);
+      for (const entry of fs.readdirSync(intents)) {
+        if (entry !== `${context.intent.activationId}.json`) {
+          fs.rmSync(path.join(intents, entry), { recursive: true, force: true });
+        }
+      }
+    }
+    // The genuine intent survived every rejection untouched.
+    assert.equal(fs.existsSync(context.intent.intentPath), true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("tampered previous-generation receipt evidence is rejected", async () => {
+    const context = await resolvedActivationFixture("tamper");
+    const second = secondActivation(context, "tamper");
+    const result = second.activate();
+    const receiptPath = result.activationReceiptPath;
+    const pristine = fs.readFileSync(receiptPath);
+    const cases = [
+      ["previous tree digest", (r) => {
+        r.previousCanonicalIdentities.alias.previousTreeDigest = "0".repeat(64);
+      }],
+      ["previous file count", (r) => { r.previousCanonicalIdentities.alias.previousFileCount = 999; }],
+      ["previous manifest", (r) => { r.previousCanonicalIdentities.alias.previousManifest = []; }],
+      ["retired candidate path", (r) => {
+        r.previousCanonicalIdentities.alias.retiredCandidatePath = "/tmp/elsewhere";
+      }],
+      ["promoted identity", (r) => {
+        r.promotedCanonicalIdentities.alias.treeDigest = "0".repeat(64);
+      }],
+      ["rollback availability", (r) => {
+        r.previousCanonicalIdentities.extension.rollbackCandidateAvailable = true;
+        r.previousCanonicalIdentities.extension.previousTreeDigest = "0".repeat(64);
+      }],
+    ];
+    for (const [label, mutate] of cases) {
+      fs.rmSync(receiptPath);
+      fs.writeFileSync(receiptPath, pristine, { mode: 0o600 });
+      const tampered = rewriteJson(receiptPath, mutate);
+      // The intent binding breaks, so the receipt no longer resolves its intent.
+      const outcome = context.api.classifyExistingIntent(second.intent.intentPath,
+        context.foundation, context.source, { environment: cleanEnvironment() });
+      assert.equal(outcome.resolved, false, label);
+      // And a tampered promoted identity is caught by canonical verification.
+      if (label === "promoted identity") {
+        assert.throws(() => context.api.verifyCanonicalFromReceipt(receiptPath,
+          { environment: cleanEnvironment() }),
+        (error) => typeof error?.code === "string", label);
+      }
+      assert.equal(typeof tampered.previousCanonicalIdentities.alias, "object", label);
+    }
+    // Restore and confirm the untampered receipt still resolves.
+    fs.rmSync(receiptPath);
+    fs.writeFileSync(receiptPath, pristine, { mode: 0o600 });
+    assert.equal(context.api.classifyExistingIntent(second.intent.intentPath, context.foundation,
+      context.source, { environment: cleanEnvironment() }).resolved, true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("recovery of accepted evidence mutates no intent and no receipt", async () => {
+    const context = await resolvedActivationFixture("recovery-immutable");
+    const second = secondActivation(context, "recovery");
+    const secondResult = second.activate();
+    const intentsBefore = fs.readdirSync(path.join(context.anchor, "activation-intents")).sort()
+      .map((name) => [name, sha256(fs.readFileSync(path.join(context.anchor, "activation-intents", name)))]);
+    const receiptsBefore = fs.readdirSync(path.join(context.anchor, "activations")).sort()
+      .map((name) => [name, sha256(fs.readFileSync(path.join(context.anchor, "activations", name)))]);
+    // The CURRENT generation's activation is already terminal: a no-op.
+    const current = context.api.recoverActivation(second.intent.activationId,
+      { environment: cleanEnvironment() });
+    assert.equal(current.ok, true, current.code);
+    assert.equal(current.alreadyTerminal, true);
+    assert.equal(current.mutationPerformed, false);
+    assert.equal(current.activationReceiptCreated, false);
+    // The SUPERSEDED activation must fail closed, not "recover" anything: the
+    // live payload is generation 2, which activation 1 never promoted, so it is
+    // foreign to that transaction and requires an operator.
+    const superseded = context.api.recoverActivation(context.intent.activationId,
+      { environment: cleanEnvironment() });
+    assert.equal(superseded.ok, false);
+    assert.equal(superseded.code, "recovery-required");
+    assert.equal(superseded.classification, "preserve-foreign-live-and-require-operator");
+    assert.equal(superseded.operatorActionRequired, true);
+    assert.equal(superseded.mutationPerformed, false);
+    assert.equal(superseded.evidencePreserved, true);
+    assert.equal(superseded.activationReceiptCreated, false);
+    for (const recovered of [current, superseded]) {
+      for (const flag of ["reloadPerformed", "canaryPerformed", "pushPerformed",
+        "networkActionPerformed", "browserActionPerformed", "pruningPerformed"]) {
+        assert.equal(recovered[flag], false, flag);
+      }
+    }
+    // Both intents and both receipts are byte-identical after two recoveries.
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activation-intents")).sort()
+      .map((name) => [name, sha256(fs.readFileSync(path.join(context.anchor, "activation-intents", name)))]),
+    intentsBefore);
+    assert.deepEqual(fs.readdirSync(path.join(context.anchor, "activations")).sort()
+      .map((name) => [name, sha256(fs.readFileSync(path.join(context.anchor, "activations", name)))]),
+    receiptsBefore);
+    assert.equal(secondResult.ok, true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+}
+
 function runStructuralTests() {
   const source = fs.readFileSync(path.join(ROOT, ACTIVATOR_REL), "utf8");
   const canonicalSource = fs.readFileSync(path.join(ROOT, CANONICAL_LIB_REL), "utf8");
@@ -4879,6 +5139,63 @@ function runStructuralTests() {
     assert.match(region, /assertPublisherLockStillOwned\(/u);
     assert.match(region, /lease\.verify\(\)/u);
   });
+  structural("activation intents are classified, never consumed", () => {
+    const region = source.slice(source.indexOf("export function classifyExistingIntent"),
+      source.indexOf("function buildActivationIntent"));
+    assert.ok(region.length > 0, "the intent-resolution region must be locatable");
+    // No intent is ever unlinked, renamed, rewritten or recursively cleaned.
+    for (const mutator of ["unlinkSync", "renameSync", "rmSync", "rmdirSync", "writeFileSync",
+      "copyFileSync", "truncateSync"]) {
+      assert.doesNotMatch(region, new RegExp(`fs\\.${mutator}\\s*\\(`, "u"), mutator);
+    }
+    // The directory-nonempty shortcut is gone for good.
+    assert.doesNotMatch(source, /function assertNoUnresolvedIntent/u);
+    assert.match(source, /function assertEveryIntentResolved/u);
+    // Resolution requires BOTH a verified receipt and a terminal accepted record.
+    assert.match(region, /activationReceiptPath\(/u);
+    assert.match(region, /readTransactionChain\(/u);
+    assert.match(region, /transactionState !== "accepted"/u);
+    assert.match(region, /accepted-receipt-binding-mismatch/u);
+    assert.match(region, /receipt-intent-binding-mismatch/u);
+    // No environment or CLI override can declare an intent resolved.
+    assert.doesNotMatch(region, /process\.env\.[A-Z_]+/u);
+    assert.doesNotMatch(region, /H2O_[A-Z_]*RESOLV|--resolve|--force/u);
+    const cli = source.slice(source.indexOf("export async function runLeanActivator"));
+    assert.doesNotMatch(cli, /classifyExistingIntent|assertEveryIntentResolved/u);
+  });
+  structural("previous-generation receipt evidence is internally derived", () => {
+    const region = source.slice(source.indexOf("export function buildPreviousGenerationEvidence"),
+      source.indexOf("function buildActivationBaseRecord"));
+    assert.ok(region.length > 0);
+    // Derived from the folded chain, never from a caller-supplied identity.
+    assert.match(region, /foldChainTreeStates\(chain\)/u);
+    assert.match(region, /recomputeIncomingManifest\(unit\.retiredPath, ""\)/u);
+    // Availability is computed from disk verification, not asserted by a caller.
+    assert.match(region, /rollbackCandidateAvailable: present && candidateVerified/u);
+    assert.doesNotMatch(region, /rollbackCandidateAvailable: (true|false)[,\s]/u);
+    // The exact v2 previous-generation key set.
+    for (const key of ["logicalName", "livePath", "previousState", "previousEntryType",
+      "previousTreeDigest", "previousFileCount", "previousManifest", "previousBuildMarker",
+      "previousRequiredFiles", "retiredCandidatePath", "promotedTreeDigest", "promotedFileCount",
+      "promotedBuildMarker", "sameStageIdentity", "rollbackCandidateAvailable"]) {
+      // Property shorthand (`previousState,`) is as valid as `key:` here.
+      assert.match(region, new RegExp(`\\b${key}\\s*[,:]`, "u"), key);
+    }
+    // Stage and activation receipt schema constants stay separate.
+    assert.match(source, /export const RECEIPT_SCHEMA_VERSION = 1;/u);
+    assert.match(source, /ACTIVATION_RECEIPT_SCHEMA_VERSION/u);
+    const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    assert.match(payloadSource, /export const ACTIVATION_RECEIPT_SCHEMA_VERSION = 2;/u);
+  });
+  structural("the reported activation slice is exactly P3C-A3", () => {
+    assert.match(validatorSource, /activationSlice: "P3C-A3",/u);
+    assert.doesNotMatch(validatorSource, /activationSlice: "P3C-(A1|A2|B1|B2)"/u);
+    // Rollback and pruning remain unavailable after A3.
+    const cli = source.slice(source.indexOf("export async function runLeanActivator"));
+    assert.match(cli, /mutation-command-not-implemented/u);
+    for (const command of ["--rollback", "--prune"]) assert.ok(cli.includes(command), command);
+    assert.doesNotMatch(cli, /rollbackUnitToPrevious|reverseRollbackUnit|publishRollbackReceipt/u);
+  });
   structural("P3A adds no package command and keeps the four-path scope", () => {
     const packageSource = fs.readFileSync(path.join(ROOT, PACKAGE_REL), "utf8");
     assert.doesNotMatch(packageSource, /lean-payload-transaction|--activate-receipt|--rollback|--recover|--prune|--verify-canonical|publish:h2o:activate/u);
@@ -4908,7 +5225,7 @@ async function main() {
     runtimeScenarios: runtimeResults.length,
     structuralAssertions: structuralResults.length,
     activationImplemented: true,
-    activationSlice: "P3C-B1",
+    activationSlice: "P3C-A3",
     canonicalProductionVerificationImplemented: true,
     twoProcessLeaseContentionProven: true,
     recoveryImplemented: true,
