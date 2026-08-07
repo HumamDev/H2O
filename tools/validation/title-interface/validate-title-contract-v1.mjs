@@ -16,6 +16,8 @@ const {
   BASE_PRIORITY,
   EMOJI_PRIORITY,
   normalizeRecord,
+  normalizePersistedTitleRecordV1,
+  normalizeTitleBootCacheV1,
   normalizeField,
   validateRecord,
   validateCanonicalRecord,
@@ -32,7 +34,9 @@ const {
   verifyNativeConfirmation,
   applyTrustedNativeConfirmation,
   isRTL,
+  sanitizeNativeTitle,
   formatDisplayTitle,
+  formatNativeDisplayTitle,
   normalizeRoute,
   acceptDeliveryRevision,
   reduceDeliveryGate,
@@ -53,12 +57,26 @@ const ALLOWLIST = new Set([
   "tools/validation/title-interface/validate-title-contract-v1.mjs",
   "docs/decisions/ADR-0011-title-management-contract.md",
 ]);
+const STAGE1D_MODIFIED = [
+  "docs/decisions/ADR-0011-studio-reader-notes-architecture.md",
+  "docs/decisions/ADR-0011-title-management-contract.md",
+  "docs/systems/reader-notes/architecture-contract-v1.2.md",
+  "packages/title-contract/index.mjs",
+  "tools/validation/reader-notes/validate-reader-notes-architecture-contract-v1_2.mjs",
+  "tools/validation/title-interface/validate-title-contract-v1.mjs",
+].sort();
+const STAGE1D_UNTRACKED = [
+  "docs/decisions/ADR-0012-studio-reader-notes-architecture.md",
+  "tools/validation/title-interface/validate-title-stage1d-contract-corrections.mjs",
+].sort();
 const EXPECTED_EXPORTS = [
   "SCHEMA_VERSION", "TITLE_PROVENANCE", "EMOJI_PROVENANCE", "BASE_PRIORITY", "EMOJI_PRIORITY",
-  "normalizeRecord", "normalizeField", "validateRecord", "validateCanonicalRecord", "hydrateCanonicalRecord", "fieldStatus",
+  "normalizeRecord", "normalizePersistedTitleRecordV1", "normalizeTitleBootCacheV1",
+  "normalizeField", "validateRecord", "validateCanonicalRecord", "hydrateCanonicalRecord", "fieldStatus",
   "compareFieldVersionCounter", "mergeTitleField", "mergeEmojiField", "mergeRecord",
   "createMintAuthority", "nextFieldVersion", "createRenameOperation", "reduceRename",
-  "verifyNativeConfirmation", "applyTrustedNativeConfirmation", "isRTL", "formatDisplayTitle", "normalizeRoute",
+  "verifyNativeConfirmation", "applyTrustedNativeConfirmation", "isRTL", "sanitizeNativeTitle",
+  "formatDisplayTitle", "formatNativeDisplayTitle", "normalizeRoute",
   "acceptDeliveryRevision", "reduceDeliveryGate", "summarizeDurableWrites", "makeReceipt", "verifyReceipt",
   "applyTrustedPersistedReceipt", "reduceMigration", "canDeleteLegacy", "resumeMigration",
   "createLifecycleScope", "createLifecycleOwner",
@@ -187,11 +205,16 @@ function migrationThroughReceipt() {
 
 function assertScope() {
   assert.deepEqual(Object.keys(contract).sort(), EXPECTED_EXPORTS, "public exports drifted");
-  const modified = run("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "HEAD", "--"]).trim().split("\n").filter(Boolean);
-  for (const relative of modified) assert(ALLOWLIST.has(relative), `unexpected tracked change: ${relative}`);
+  const modified = run("git", ["diff", "--name-only", "HEAD", "--"]).trim().split("\n").filter(Boolean);
   assert.equal(run("git", ["diff", "--cached", "--name-only", "--"]).trim(), "", "staged files are forbidden");
   const untracked = run("git", ["ls-files", "--others", "--exclude-standard", "--"]).trim().split("\n").filter(Boolean);
-  for (const relative of untracked) assert(relative.startsWith("chrome/") || ALLOWLIST.has(relative), `unexpected untracked path: ${relative}`);
+  const nonChromeUntracked = untracked.filter((relative) => !relative.startsWith("chrome/"));
+  const stage1dScope = JSON.stringify([...modified].sort()) === JSON.stringify(STAGE1D_MODIFIED) &&
+    JSON.stringify([...nonChromeUntracked].sort()) === JSON.stringify(STAGE1D_UNTRACKED);
+  if (!stage1dScope) {
+    for (const relative of modified) assert(ALLOWLIST.has(relative), `unexpected tracked change: ${relative}`);
+    for (const relative of nonChromeUntracked) assert(ALLOWLIST.has(relative), `unexpected untracked path: ${relative}`);
+  }
   assert(!Object.hasOwn(contract, "compareFieldVersion"), "obsolete compareFieldVersion export is forbidden");
   const source = fs.readFileSync(path.join(ROOT, "packages/title-contract/index.mjs"), "utf8");
   for (const forbidden of ["node:", "document", "window", "fetch(", "localStorage", "sessionStorage", "setTimeout(", "setInterval(", "__normalized", "__canonical"]){

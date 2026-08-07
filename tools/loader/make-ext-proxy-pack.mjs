@@ -33,6 +33,7 @@ import {
   DEV_SERVER_URL,
   RUNTIME_BASE_REL,
 } from "../paths.mjs";
+import { assertDeliveryWritePermitted } from "../publish/canonical-write-guard.mjs";
 
 // Local aliases preserve pre-Phase-0C variable names. Each resolves to the
 // same value as before under the same env-var overrides.
@@ -54,6 +55,32 @@ const BUILD_TS = String(process.env.H2O_BUILD_TS || Date.now());
 const PROXY_DIR = path.join(SERVER, DEV_DIR_NAME, "proxy");
 const OUT_FILE = path.join(PROXY_DIR, "_paste-pack.ext.txt");
 const OUT_NAME = path.basename(OUT_FILE);
+
+try {
+  assertDeliveryWritePermitted({
+    destination: PROXY_DIR,
+    purpose: "make-ext-proxy-pack",
+    environment: process.env,
+  });
+} catch (error) {
+  const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+  const body = {
+    ok: false,
+    error:
+      typeof error?.code === "string"
+        ? error.code
+        : "proxy-pack-write-guard-failed",
+    message:
+      typeof error?.message === "string"
+        ? error.message
+        : "Proxy-pack write guard failed.",
+    exitCode,
+  };
+  process.stderr.write(
+    `[H2O] proxy-pack write guard rejected: ${JSON.stringify(body)}\n`,
+  );
+  process.exit(exitCode);
+}
 
 function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });

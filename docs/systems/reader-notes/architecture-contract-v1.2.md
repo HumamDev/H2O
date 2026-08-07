@@ -9,7 +9,7 @@ not implement MVP-A1, MVP-A2a, MVP-A2b, MVP-A3, or MVP-B.
 
 Related:
 
-- [ADR-0011: Studio Reader & Notes Architecture Contract](../../decisions/ADR-0011-studio-reader-notes-architecture.md)
+- [ADR-0012: Studio Reader & Notes Architecture Contract](../../decisions/ADR-0012-studio-reader-notes-architecture.md)
 - [ADR-0004: Library Index Source Model](../../decisions/ADR-0004-library-index-source-model.md)
 - [ADR-0005: Linked vs Saved Library Records](../../decisions/ADR-0005-linked-vs-saved-library-records.md)
 - [ADR-0007: Studio Canonical Organization State + Transport Adapter Strategy](../../decisions/ADR-0007-studio-canonical-organization-state-transport-adapters.md)

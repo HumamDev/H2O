@@ -37,6 +37,10 @@
   let attachTimer = 0;
   let refreshTimer = 0;
   let bodyObserver = null;
+  let editorSessionSeq = 0;
+  let activeEditorSession = null;
+  let renameError = null;
+  let destroyed = false;
   const cleanups = new Set();
 
   const STYLE_ID = 'ho-title-under-input-style-v3';
@@ -162,6 +166,40 @@
       text-align: center;
       outline: none;
       font-weight: 600;
+    }
+
+    .ho-title-rename-error {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      max-width: min(36vw, 300px);
+      color: rgba(255, 176, 176, 0.96);
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+
+    .ho-title-rename-error > span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ho-title-rename-retry {
+      border: 0;
+      border-radius: 4px;
+      padding: 1px 5px;
+      background: rgba(255, 255, 255, 0.10);
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .ho-title-rename-status {
+      color: rgba(255, 255, 255, 0.62);
+      font-size: 10px;
+      font-weight: 600;
+      white-space: nowrap;
     }
 
     .ho-title-placeholder-title {
@@ -362,7 +400,51 @@
     return fn;
   }
 
+  function canonicalString(value) {
+    return typeof value === 'string' ? value : '';
+  }
+
+  function editorSessionMatches(session, state) {
+    if (!session || session.cancelled || destroyed || activeEditorSession !== session) return false;
+    const snapshot = state || W.H2O?.ChatTitle?.getState?.() || {};
+    return (
+      getCurrentChatId() === session.chatId &&
+      snapshot.chatId === session.chatId &&
+      snapshot.routeKind === session.routeKind &&
+      Number.isSafeInteger(snapshot.routeToken) &&
+      snapshot.routeToken === session.routeToken
+    );
+  }
+
+  function detachEditorInputListeners(session) {
+    if (!session?.input) return;
+    try { session.input.removeEventListener('keydown', session.onKeydown); } catch {}
+    try { session.input.removeEventListener('blur', session.onBlur); } catch {}
+    session.onKeydown = null;
+    session.onBlur = null;
+  }
+
+  function cancelEditorSession(reason) {
+    const session = activeEditorSession;
+    if (!session) {
+      isEditing = false;
+      return false;
+    }
+    session.cancelled = true;
+    session.cancelReason = String(reason || 'cancelled');
+    session.finished = true;
+    detachEditorInputListeners(session);
+    try { session.controller?.abort?.(); } catch {}
+    session.controller = null;
+    activeEditorSession = null;
+    isEditing = false;
+    return true;
+  }
+
   function destroy() {
+    destroyed = true;
+    cancelEditorSession('runtime-destroyed');
+    renameError = null;
     clearTimeout(attachTimer);
     clearTimeout(refreshTimer);
     closeTitleMenu();
@@ -398,10 +480,12 @@
   }
 
   function hideTitleLabel() {
+    cancelEditorSession('route-or-label-removed');
     closeTitleMenu();
     shownTitle = '';
     shownProjectKey = '';
     baseTitle = '';
+    renameError = null;
     if (labelEl) {
       try { labelEl.remove(); } catch {}
       labelEl = null;
@@ -962,8 +1046,8 @@
     labelEl.appendChild(main);
   }
 
-  function updateLabelText(text) {
-    const next = norm(text);
+  function updateLabelText(text, options = {}) {
+    const next = options.canonical === true ? canonicalString(text) : norm(text);
     if (!next) return;
     shownTitle = next;
     if (!ensureLabel() || !labelEl || isEditing) return;
@@ -990,28 +1074,122 @@
     }
   }
 
+  function clearRenameError() {
+    renameError = null;
+    try { labelEl?.querySelector?.('.ho-title-rename-error')?.remove?.(); } catch {}
+  }
+
+  function renderRenameError() {
+    if (!renameError || isEditing || !labelEl) return;
+    const currentChatId = getCurrentChatId();
+    if (renameError.chatId !== currentChatId) {
+      clearRenameError();
+      return;
+    }
+    const main = labelEl.querySelector('.ho-title-main');
+    if (!main || main.querySelector('.ho-title-rename-error')) return;
+    const box = D.createElement('span');
+    box.className = 'ho-title-rename-error';
+    box.setAttribute('role', 'status');
+    box.setAttribute('aria-live', 'polite');
+    const message = D.createElement('span');
+    message.textContent = renameError.message;
+    const retry = D.createElement('button');
+    retry.type = 'button';
+    retry.className = 'ho-title-rename-retry';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const retryText = renameError?.pendingText || '';
+      clearRenameError();
+      startInlineEdit(retryText);
+    });
+    box.appendChild(message);
+    box.appendChild(retry);
+    main.appendChild(box);
+  }
+
   function renderFromState(state) {
-    if (!getCurrentChatId() || !state || state.routeKind === 'project') {
+    const currentChatId = getCurrentChatId();
+    if (!currentChatId || !state || state.routeKind === 'project') {
       hideTitleLabel();
       return;
     }
+    if (state.chatId && state.chatId !== currentChatId) {
+      hideTitleLabel();
+      return;
+    }
+    if (activeEditorSession && !editorSessionMatches(activeEditorSession, state)) {
+      cancelEditorSession('route-state-changed');
+    }
+    if (renameError && (
+      renameError.chatId !== currentChatId ||
+      (Number.isSafeInteger(state.routeToken) && renameError.routeToken !== state.routeToken)
+    )) {
+      clearRenameError();
+    }
     baseTitle = norm(state.baseTitle || '');
-    const display = norm(state.displayTitle || state.baseTitle || '');
-    if (display && !(isEmojiOnlyTitle(display) && !baseTitle)) {
-      updateLabelText(display);
+    const canonical = state.convergence?.enabled === true;
+    const display = canonical
+      ? canonicalString(state.displayTitle)
+      : norm(state.displayTitle || state.baseTitle || '');
+    if (display && (canonical || !(isEmojiOnlyTitle(display) && !baseTitle))) {
+      updateLabelText(display, { canonical });
     } else {
       updatePlaceholderLabel();
     }
+    renderRenameError();
   }
 
-  function startInlineEdit() {
-    if (!ensureLabel() || !labelEl || isEditing) return;
+  function renderCurrentTitleState(api, fallback) {
+    if (destroyed) return;
+    let current = fallback || {};
+    try { current = api?.getState?.() || current; } catch {}
+    try { renderFromState(current); } catch {}
+  }
+
+  function startInlineEdit(initialValue) {
+    if (destroyed || !ensureLabel() || !labelEl || isEditing) return;
     const api = W.H2O && W.H2O.ChatTitle;
     const state = api?.getState?.() || {};
+    const chatId = getCurrentChatId();
+    if (
+      !chatId ||
+      state.chatId !== chatId ||
+      state.routeKind !== 'chat' ||
+      !Number.isSafeInteger(state.routeToken)
+    ) {
+      renderCurrentTitleState(api, state);
+      return;
+    }
     const currentBase = norm(state.baseTitle || baseTitle || shownTitle);
     if (!currentBase) return;
-
+    const editValue = norm(initialValue || currentBase);
+    const identity = Object.freeze({
+      chatId,
+      routeToken: state.routeToken,
+      routeKind: state.routeKind,
+      editorSessionId: `under-input-editor-${++editorSessionSeq}`,
+    });
+    const session = {
+      identity,
+      chatId: identity.chatId,
+      routeToken: identity.routeToken,
+      routeKind: identity.routeKind,
+      editorSessionId: identity.editorSessionId,
+      cancelled: false,
+      cancelReason: '',
+      finished: false,
+      controller: null,
+      input: null,
+      label: labelEl,
+      onKeydown: null,
+      onBlur: null,
+    };
+    activeEditorSession = session;
     isEditing = true;
+    clearRenameError();
     closeTitleMenu();
     labelEl.innerHTML = '';
 
@@ -1041,62 +1219,175 @@
     const input = D.createElement('input');
     input.type = 'text';
     input.className = 'ho-title-edit-input';
-    input.value = currentBase;
+    input.value = editValue;
+    session.input = input;
     main.appendChild(input);
     labelEl.appendChild(main);
     input.focus();
     input.select();
 
-    let finished = false;
-    function finish(commit) {
-      if (finished) return;
-      finished = true;
-      isEditing = false;
+    async function finish(commit) {
+      if (session.finished || session.cancelled || activeEditorSession !== session || destroyed) return;
+      session.finished = true;
+      detachEditorInputListeners(session);
 
-      const nextBase = norm(commit ? input.value : currentBase);
-      labelEl.innerHTML = '';
-
-      if (commit && nextBase && nextBase !== currentBase) {
-        applyRename(nextBase);
-      } else {
-        renderFromState(api?.getState?.() || { baseTitle: currentBase, displayTitle: shownTitle || currentBase });
+      if (!commit) {
+        cancelEditorSession('editor-cancelled');
+        renderCurrentTitleState(api, state);
+        return;
       }
+      if (!editorSessionMatches(session)) {
+        cancelEditorSession('route-stale-before-submit');
+        renderCurrentTitleState(api, state);
+        return;
+      }
+
+      const nextBase = norm(input.value);
+      if (!nextBase || nextBase === currentBase) {
+        cancelEditorSession('editor-unchanged');
+        renderCurrentTitleState(api, state);
+        return;
+      }
+
+      input.disabled = true;
+      input.setAttribute('aria-busy', 'true');
+      const status = D.createElement('span');
+      status.className = 'ho-title-rename-status';
+      status.textContent = 'Saving…';
+      main.appendChild(status);
+      session.controller = typeof W.AbortController === 'function' ? new W.AbortController() : null;
+
+      const result = await applyRename(nextBase, session);
+      if (
+        result?.ignored ||
+        session.cancelled ||
+        destroyed ||
+        activeEditorSession !== session
+      ) {
+        return;
+      }
+
+      const currentLabel = labelEl;
+      const canRender = !!currentLabel &&
+        currentLabel === session.label &&
+        currentLabel.isConnected !== false;
+      activeEditorSession = null;
+      session.controller = null;
+      isEditing = false;
+      if (!canRender) return;
+
+      currentLabel.innerHTML = '';
+      if (result?.ok) {
+        clearRenameError();
+      } else {
+        renameError = {
+          chatId: session.chatId,
+          routeToken: session.routeToken,
+          pendingText: nextBase,
+          message: 'Title was not saved.',
+        };
+      }
+      renderCurrentTitleState(api, state);
     }
 
-    input.addEventListener('keydown', (event) => {
+    const runFinish = (commit) => {
+      void finish(commit).catch(() => {
+        const wasCurrent = activeEditorSession === session && !destroyed;
+        cancelEditorSession('editor-finish-error');
+        if (!wasCurrent) return;
+        renameError = {
+          chatId: session.chatId,
+          routeToken: session.routeToken,
+          pendingText: norm(input.value || editValue),
+          message: 'Title was not saved.',
+        };
+        renderCurrentTitleState(api, state);
+      });
+    };
+    session.onKeydown = (event) => {
       if (event.key === 'Enter') {
         event.preventDefault();
-        finish(true);
+        runFinish(true);
       } else if (event.key === 'Escape') {
         event.preventDefault();
-        finish(false);
+        runFinish(false);
       }
-    });
-    input.addEventListener('blur', () => finish(true));
+    };
+    session.onBlur = () => runFinish(true);
+    input.addEventListener('keydown', session.onKeydown);
+    input.addEventListener('blur', session.onBlur);
   }
 
-  function applyRename(nextBase) {
+  async function applyRename(nextBase, session) {
     const api = W.H2O && W.H2O.ChatTitle;
-    if (!api) {
-      updateLabelText(nextBase);
-      return;
+    if (!api || typeof api.renameNative !== 'function') {
+      return {
+        ok: false,
+        status: 'title-api-unavailable',
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
     }
-    api.setTitle?.({
-      baseTitle: nextBase,
-      source: 'user',
-      priority: 100,
-      confidence: 1,
-      reason: 'under-input-rename',
-    }, {
-      force: true,
-      userInitiated: true,
-      reason: 'under-input-rename',
-    });
-    updateLabelText(api.getState?.().displayTitle || nextBase);
-    api.renameNative?.(nextBase, {
-      userInitiated: true,
-      source: 'under-input',
-    });
+    if (!editorSessionMatches(session)) {
+      return {
+        ok: false,
+        status: 'route-stale-before-request',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
+    }
+
+    let result;
+    try {
+      result = await api.renameNative(nextBase, {
+        userInitiated: true,
+        source: 'under-input',
+        chatId: session.chatId,
+        expectedRouteToken: session.routeToken,
+        expectedRouteKind: session.routeKind,
+        operationId: session.editorSessionId,
+        signal: session.controller?.signal,
+      });
+    } catch (err) {
+      result = {
+        ok: false,
+        status: 'error',
+        error: String(err && err.message || err),
+      };
+    }
+
+    if (!editorSessionMatches(session)) {
+      return {
+        ok: false,
+        status: 'superseded',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
+    }
+    const current = api.getState?.() || {};
+    if (
+      current.chatId !== session.chatId ||
+      current.routeKind !== session.routeKind ||
+      current.routeToken !== session.routeToken ||
+      result?.status === 'route-stale' ||
+      result?.status === 'route-stale-before-request'
+    ) {
+      cancelEditorSession('route-stale-after-request');
+      return {
+        ok: false,
+        status: 'route-stale',
+        ignored: true,
+        chatId: session.chatId,
+        routeToken: session.routeToken,
+      };
+    }
+    return {
+      ...(result || { ok: false, status: 'unknown' }),
+      chatId: session.chatId,
+      routeToken: session.routeToken,
+    };
   }
 
   function attachChatTitle() {
@@ -1109,6 +1400,7 @@
   }
 
   function scheduleAttach() {
+    if (destroyed) return;
     clearTimeout(attachTimer);
     attachTimer = setTimeout(() => {
       if (!attachChatTitle()) scheduleAttach();
@@ -1116,6 +1408,7 @@
   }
 
   function refreshSoon(reason) {
+    if (destroyed) return;
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       try {
@@ -1126,12 +1419,18 @@
   }
 
   function init() {
+    if (destroyed) return;
     ensureLabel();
     if (!attachChatTitle()) scheduleAttach();
     refreshSoon('under-input-init');
 
-    const onTitleChanged = (event) => renderFromState(event?.detail);
-    const onEmojiUpdated = (event) => renderFromState(event?.detail);
+    const renderCurrentState = (event) => {
+      let current = event?.detail;
+      try { current = W.H2O?.ChatTitle?.getState?.() || current; } catch {}
+      renderFromState(current);
+    };
+    const onTitleChanged = (event) => renderCurrentState(event);
+    const onEmojiUpdated = (event) => renderCurrentState(event);
     const onAutoEmojiChanged = () => refreshSoon('legacy-autoemoji-changed');
     const onPopState = () => refreshSoon('popstate');
 

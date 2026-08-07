@@ -9,6 +9,7 @@ import {
   getExtensionKey,
   deriveVariantFromOutDir,
 } from "./chrome-extension-keys.mjs";
+import { assertDeliveryWritePermitted } from "../../../../publish/canonical-write-guard.mjs";
 
 const TOOL_FILE = fileURLToPath(import.meta.url);
 const TOOL_DIR = path.dirname(TOOL_FILE);
@@ -632,6 +633,32 @@ Notes:
 }
 
 async function main() {
+  try {
+    assertDeliveryWritePermitted({
+      destination: OUT_DIR,
+      purpose: "pack-ops-panel",
+      environment: process.env,
+    });
+  } catch (error) {
+    const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+    const body = {
+      ok: false,
+      error:
+        typeof error?.code === "string"
+          ? error.code
+          : "ops-panel-write-guard-failed",
+      message:
+        typeof error?.message === "string"
+          ? error.message
+          : "Ops Panel write guard failed.",
+      exitCode,
+    };
+    process.stderr.write(
+      `[H2O] ops-panel write guard rejected: ${JSON.stringify(body)}\n`,
+    );
+    process.exit(exitCode);
+  }
+
   ensureDir(OUT_DIR);
   await writeExtensionIcons(OUT_DIR, "panel");
   copyIconPack(OUT_DIR, OPS_ICON_PACK_DIR);

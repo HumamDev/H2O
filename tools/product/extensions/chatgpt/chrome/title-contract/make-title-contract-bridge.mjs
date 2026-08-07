@@ -5,7 +5,8 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const TITLE_CONTRACT_BRIDGE_FILENAME = "title-contract-bridge.js";
-export const TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION = "2";
+export const TITLE_CONTRACT_BRIDGE_VERSION = "3";
+export const TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION = "3";
 
 export const TITLE_CONTRACT_SOURCE_EXPORTS = Object.freeze([
   "BASE_PRIORITY",
@@ -24,6 +25,7 @@ export const TITLE_CONTRACT_SOURCE_EXPORTS = Object.freeze([
   "createRenameOperation",
   "fieldStatus",
   "formatDisplayTitle",
+  "formatNativeDisplayTitle",
   "hydrateCanonicalRecord",
   "isRTL",
   "makeReceipt",
@@ -32,12 +34,15 @@ export const TITLE_CONTRACT_SOURCE_EXPORTS = Object.freeze([
   "mergeTitleField",
   "nextFieldVersion",
   "normalizeField",
+  "normalizePersistedTitleRecordV1",
   "normalizeRecord",
   "normalizeRoute",
+  "normalizeTitleBootCacheV1",
   "reduceDeliveryGate",
   "reduceMigration",
   "reduceRename",
   "resumeMigration",
+  "sanitizeNativeTitle",
   "summarizeDurableWrites",
   "validateCanonicalRecord",
   "validateRecord",
@@ -56,9 +61,42 @@ export const TITLE_CONTRACT_PRIVILEGED_EXPORTS = Object.freeze([
   "verifyNativeConfirmation",
 ].sort());
 
-export const TITLE_CONTRACT_PUBLIC_EXPORTS = Object.freeze(
-  TITLE_CONTRACT_SOURCE_EXPORTS.filter((name) => !TITLE_CONTRACT_PRIVILEGED_EXPORTS.includes(name)),
-);
+export const TITLE_CONTRACT_SOURCE_ONLY_EXPORTS = Object.freeze([
+  "normalizePersistedTitleRecordV1",
+  "normalizeTitleBootCacheV1",
+].sort());
+
+export const TITLE_CONTRACT_PUBLIC_EXPORTS = Object.freeze([
+  "BASE_PRIORITY",
+  "EMOJI_PRIORITY",
+  "EMOJI_PROVENANCE",
+  "SCHEMA_VERSION",
+  "TITLE_PROVENANCE",
+  "acceptDeliveryRevision",
+  "canDeleteLegacy",
+  "compareFieldVersionCounter",
+  "createLifecycleOwner",
+  "createLifecycleScope",
+  "createRenameOperation",
+  "fieldStatus",
+  "formatDisplayTitle",
+  "formatNativeDisplayTitle",
+  "isRTL",
+  "makeReceipt",
+  "mergeEmojiField",
+  "mergeRecord",
+  "mergeTitleField",
+  "normalizeField",
+  "normalizeRecord",
+  "normalizeRoute",
+  "reduceDeliveryGate",
+  "reduceMigration",
+  "reduceRename",
+  "sanitizeNativeTitle",
+  "validateCanonicalRecord",
+  "validateRecord",
+  "verifyReceipt",
+].sort());
 
 const CONTRACT_RELATIVE_PATH = "packages/title-contract/index.mjs";
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +106,71 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 function sha256(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
+
+function normalizeExportClass(label, names) {
+  if (!Array.isArray(names)) {
+    throw new Error(`[H2O] Title contract bridge ${label} classification must be an array.`);
+  }
+  const normalized = names.map((name) => String(name)).sort();
+  if (normalized.some((name) => !IDENTIFIER.test(name))) {
+    throw new Error(`[H2O] Title contract bridge ${label} classification contains an invalid export name.`);
+  }
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(`[H2O] Title contract bridge ${label} classification contains duplicate exports.`);
+  }
+  return normalized;
+}
+
+export function validateTitleContractExportPartition({
+  sourceExports = TITLE_CONTRACT_SOURCE_EXPORTS,
+  publicExports = TITLE_CONTRACT_PUBLIC_EXPORTS,
+  privilegedExports = TITLE_CONTRACT_PRIVILEGED_EXPORTS,
+  sourceOnlyExports = TITLE_CONTRACT_SOURCE_ONLY_EXPORTS,
+} = {}) {
+  const source = normalizeExportClass("source", sourceExports);
+  const publicNames = normalizeExportClass("public", publicExports);
+  const privileged = normalizeExportClass("privileged", privilegedExports);
+  const sourceOnly = normalizeExportClass("source-only", sourceOnlyExports);
+  const classified = [...publicNames, ...privileged, ...sourceOnly];
+  if (new Set(classified).size !== classified.length) {
+    throw new Error("[H2O] Title contract bridge export classifications overlap.");
+  }
+  const classifiedSorted = classified.sort();
+  if (JSON.stringify(classifiedSorted) !== JSON.stringify(source)) {
+    const sourceSet = new Set(source);
+    const classifiedSet = new Set(classifiedSorted);
+    const missing = source.filter((name) => !classifiedSet.has(name));
+    const unexpected = classifiedSorted.filter((name) => !sourceSet.has(name));
+    throw new Error(
+      `[H2O] Title contract bridge export partition mismatch: missing ${JSON.stringify(missing)}, unexpected ${JSON.stringify(unexpected)}.`,
+    );
+  }
+  for (const [label, actual, expected] of [
+    ["source", source, TITLE_CONTRACT_SOURCE_EXPORTS],
+    ["public", publicNames, TITLE_CONTRACT_PUBLIC_EXPORTS],
+    ["privileged", privileged, TITLE_CONTRACT_PRIVILEGED_EXPORTS],
+    ["source-only", sourceOnly, TITLE_CONTRACT_SOURCE_ONLY_EXPORTS],
+  ]) {
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      throw new Error(`[H2O] Title contract bridge ${label} classification does not match the exact approved names.`);
+    }
+  }
+  return Object.freeze({
+    sourceExports: Object.freeze(source),
+    publicExports: Object.freeze(publicNames),
+    privilegedExports: Object.freeze(privileged),
+    sourceOnlyExports: Object.freeze(sourceOnly),
+  });
+}
+
+export function computeTitleContractPublicSurfaceDigest(
+  publicExports = TITLE_CONTRACT_PUBLIC_EXPORTS,
+) {
+  const publicNames = normalizeExportClass("public", publicExports);
+  return sha256(Buffer.from(`${publicNames.join("\n")}\n`, "utf8"));
+}
+
+const TITLE_CONTRACT_EXPORT_PARTITION = validateTitleContractExportPartition();
 
 function maskStringsAndComments(source) {
   let state = "code";
@@ -132,8 +235,8 @@ function inspectGrammar(source) {
   const unique = new Set(exports);
   if (unique.size !== exports.length) throw new Error("[H2O] Title contract bridge rejects duplicate export names.");
   const observed = [...unique].sort();
-  if (JSON.stringify(observed) !== JSON.stringify(TITLE_CONTRACT_SOURCE_EXPORTS)) {
-    throw new Error(`[H2O] Title contract bridge export-set mismatch: expected ${TITLE_CONTRACT_SOURCE_EXPORTS.length}, observed ${observed.length}.`);
+  if (JSON.stringify(observed) !== JSON.stringify(TITLE_CONTRACT_EXPORT_PARTITION.sourceExports)) {
+    throw new Error(`[H2O] Title contract bridge export-set mismatch: expected ${TITLE_CONTRACT_EXPORT_PARTITION.sourceExports.length}, observed ${observed.length}.`);
   }
   return { transformedSource: transformed.join("\n"), exportNames: Object.freeze(observed) };
 }
@@ -148,12 +251,16 @@ function makeInstallationSource({ sourceSha256, repositoryHeadAtBuild, publicSur
 
   const __H2O_TITLE_CONTRACT_EXPECTED__ = Object.freeze({
     schemaVersion: 2,
-    bridgeVersion: "2",
+    bridgeVersion: ${literal(TITLE_CONTRACT_BRIDGE_VERSION)},
     sourceSha256: ${literal(sourceSha256)},
+    sourceExportCount: ${TITLE_CONTRACT_SOURCE_EXPORTS.length},
+    publicExportCount: ${TITLE_CONTRACT_PUBLIC_EXPORTS.length},
+    privilegedExportCount: ${TITLE_CONTRACT_PRIVILEGED_EXPORTS.length},
+    sourceOnlyExportCount: ${TITLE_CONTRACT_SOURCE_ONLY_EXPORTS.length},
     publicSurfaceDigest: ${literal(publicSurfaceDigest)},
   });
   const __H2O_TITLE_CONTRACT_PUBLIC_KEYS__ = Object.freeze(${literal(TITLE_CONTRACT_PUBLIC_EXPORTS)});
-  const __H2O_TITLE_CONTRACT_GLOBAL_STATUS_KEY__ = "__H2O_TITLE_CONTRACT_BRIDGE_STATUS_V2__";
+  const __H2O_TITLE_CONTRACT_GLOBAL_STATUS_KEY__ = "__H2O_TITLE_CONTRACT_BRIDGE_STATUS_V3__";
 
   function __h2oOwnData(object, key) {
     try {
@@ -183,14 +290,28 @@ function makeInstallationSource({ sourceSha256, repositoryHeadAtBuild, publicSur
     const schemaVersion = __h2oOwnData(identity, "schemaVersion");
     const bridgeVersion = __h2oOwnData(identity, "bridgeVersion");
     const sourceIdentity = __h2oOwnData(identity, "sourceSha256");
+    const sourceExportCount = __h2oOwnData(identity, "sourceExportCount");
+    const publicExportCount = __h2oOwnData(identity, "publicExportCount");
+    const privilegedExportCount = __h2oOwnData(identity, "privilegedExportCount");
+    const sourceOnlyExportCount = __h2oOwnData(identity, "sourceOnlyExportCount");
     const surfaceDigest = __h2oOwnData(identity, "publicSurfaceDigest");
     if (schemaVersion !== 2 || typeof bridgeVersion !== "string" ||
         typeof sourceIdentity !== "string" || typeof surfaceDigest !== "string") {
       return "foreign-object";
     }
-    return bridgeVersion === __H2O_TITLE_CONTRACT_EXPECTED__.bridgeVersion &&
-      sourceIdentity === __H2O_TITLE_CONTRACT_EXPECTED__.sourceSha256 &&
-      surfaceDigest === __H2O_TITLE_CONTRACT_EXPECTED__.publicSurfaceDigest
+    if (bridgeVersion !== __H2O_TITLE_CONTRACT_EXPECTED__.bridgeVersion ||
+        sourceIdentity !== __H2O_TITLE_CONTRACT_EXPECTED__.sourceSha256 ||
+        surfaceDigest !== __H2O_TITLE_CONTRACT_EXPECTED__.publicSurfaceDigest) {
+      return "reload-required";
+    }
+    if (typeof sourceExportCount !== "number" || typeof publicExportCount !== "number" ||
+        typeof privilegedExportCount !== "number" || typeof sourceOnlyExportCount !== "number") {
+      return "foreign-object";
+    }
+    return sourceExportCount === __H2O_TITLE_CONTRACT_EXPECTED__.sourceExportCount &&
+      publicExportCount === __H2O_TITLE_CONTRACT_EXPECTED__.publicExportCount &&
+      privilegedExportCount === __H2O_TITLE_CONTRACT_EXPECTED__.privilegedExportCount &&
+      sourceOnlyExportCount === __H2O_TITLE_CONTRACT_EXPECTED__.sourceOnlyExportCount
       ? "same-identity"
       : "reload-required";
   }
@@ -198,7 +319,7 @@ function makeInstallationSource({ sourceSha256, repositoryHeadAtBuild, publicSur
   function __h2oMakeBridgeStatus(result) {
     return Object.freeze({
       schemaVersion: 1,
-      bridgeVersion: "2",
+      bridgeVersion: ${literal(TITLE_CONTRACT_BRIDGE_VERSION)},
       sourceSha256: __H2O_TITLE_CONTRACT_EXPECTED__.sourceSha256,
       result: String(result || "foreign-object").slice(0, 32),
     });
@@ -273,9 +394,12 @@ function makeInstallationSource({ sourceSha256, repositoryHeadAtBuild, publicSur
 
     const identity = deepFreeze({
       schemaVersion: 2,
-      bridgeVersion: "2",
+      bridgeVersion: ${literal(TITLE_CONTRACT_BRIDGE_VERSION)},
       sourceSha256: ${literal(sourceSha256)},
-      sourceExportCount: 35,
+      sourceExportCount: ${TITLE_CONTRACT_SOURCE_EXPORTS.length},
+      publicExportCount: ${TITLE_CONTRACT_PUBLIC_EXPORTS.length},
+      privilegedExportCount: ${TITLE_CONTRACT_PRIVILEGED_EXPORTS.length},
+      sourceOnlyExportCount: ${TITLE_CONTRACT_SOURCE_ONLY_EXPORTS.length},
       publicSurfaceKeys: __H2O_TITLE_CONTRACT_PUBLIC_KEYS__,
       publicSurfaceDigest: ${literal(publicSurfaceDigest)},
       generatorVersion: ${literal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION)},
@@ -325,7 +449,7 @@ export function transformTitleContractToClassicBridge({
   }
   const grammar = inspectGrammar(source);
   const sourceSha256 = sha256(sourceBuffer);
-  const publicSurfaceDigest = sha256(Buffer.from(`${TITLE_CONTRACT_PUBLIC_EXPORTS.join("\n")}\n`, "utf8"));
+  const publicSurfaceDigest = computeTitleContractPublicSurfaceDigest();
   const code = `(() => {\n  "use strict";\n\n${grammar.transformedSource}${makeInstallationSource({
     sourceSha256,
     repositoryHeadAtBuild,
@@ -337,8 +461,11 @@ export function transformTitleContractToClassicBridge({
     sourceExportCount: grammar.exportNames.length,
     sourceExportNames: grammar.exportNames,
     publicSurfaceKeys: TITLE_CONTRACT_PUBLIC_EXPORTS,
+    privilegedSurfaceKeys: TITLE_CONTRACT_PRIVILEGED_EXPORTS,
+    sourceOnlySurfaceKeys: TITLE_CONTRACT_SOURCE_ONLY_EXPORTS,
     publicSurfaceDigest,
     repositoryHeadAtBuild,
+    bridgeVersion: TITLE_CONTRACT_BRIDGE_VERSION,
     generatorVersion: TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION,
   });
 }

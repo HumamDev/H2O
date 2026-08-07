@@ -71,6 +71,11 @@ const MIGRATION_STATES = new Set([
 const RENAME_STATES = new Set([
   "idle", "preparing", "pending", "superseded", "confirmed", "failed", "rolledBack", "reconcile",
 ]);
+const PERSISTED_TITLE_RECORD_KEYS = new Set([
+  "version", "chatId", "baseTitle", "source", "priority", "confidence",
+  "emoji", "emojiSource", "emojiPriority", "emojiConfidence", "updatedAt", "emojiUpdatedAt",
+]);
+const TITLE_BOOT_CACHE_KEYS = new Set(["version", "chatId", "state", "updatedAt", "expiresAt"]);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== "object") return false;
@@ -107,6 +112,24 @@ function boundedString(value, max, { empty = false } = {}) {
 
 function safeInteger(value, minimum = 0) {
   return Number.isSafeInteger(value) && value >= minimum;
+}
+
+function supportedPersistedVersion(value) {
+  return value === 1 || value === "1.0.0";
+}
+
+function normalizeWhitespace(value) {
+  return typeof value === "string" ? value.trim().replace(/\s+/gu, " ") : "";
+}
+
+function validPersistedChatId(value) {
+  return boundedString(value, LIMIT.chatId) &&
+    !/^g-p-/iu.test(value) &&
+    /^[a-z0-9][a-z0-9_-]{7,255}$/iu.test(value);
+}
+
+function validPersistedSource(value) {
+  return boundedString(value, LIMIT.surface) && /^[a-z0-9][a-z0-9:._-]*$/iu.test(value);
 }
 
 function deepFreeze(value, seen = new WeakSet()) {
@@ -329,6 +352,77 @@ export function normalizeRecord(raw) {
 
 export function validateRecord(raw) {
   return normalizeRecord(raw) !== null;
+}
+
+export function normalizePersistedTitleRecordV1(raw) {
+  try {
+    if (!isPlainObject(raw) || !onlyKeys(raw, PERSISTED_TITLE_RECORD_KEYS)) return null;
+    const present = new Set(Reflect.ownKeys(raw));
+    const version = ownData(raw, "version", true);
+    const rawChatId = ownData(raw, "chatId", true);
+    if (version === BAD || rawChatId === BAD || !supportedPersistedVersion(version) || typeof rawChatId !== "string") return null;
+    const chatId = rawChatId.trim();
+    if (!validPersistedChatId(chatId)) return null;
+
+    const titleKeys = ["baseTitle", "source", "priority", "confidence", "updatedAt"];
+    const emojiKeys = ["emoji", "emojiSource", "emojiPriority", "emojiConfidence", "emojiUpdatedAt"];
+    const hasTitle = present.has("baseTitle");
+    const hasEmoji = present.has("emoji");
+    if (!hasTitle && !hasEmoji) return null;
+    if (!hasTitle && titleKeys.some((key) => key !== "baseTitle" && present.has(key))) return null;
+    if (!hasEmoji && emojiKeys.some((key) => key !== "emoji" && present.has(key))) return null;
+
+    const result = { version, chatId };
+    for (const key of [...titleKeys, ...emojiKeys]) {
+      if (!present.has(key)) continue;
+      const value = ownData(raw, key, true);
+      if (value === BAD) return null;
+      if (key === "baseTitle") {
+        if (typeof value !== "string" || value.length > LIMIT.title) return null;
+        result.baseTitle = sanitizeNativeTitle(value);
+      } else if (key === "emoji") {
+        if (value !== null && typeof value !== "string") return null;
+        const emoji = value === null ? "" : value.trim();
+        if (emoji.length > LIMIT.emoji) return null;
+        result.emoji = emoji || null;
+      } else if (key === "source" || key === "emojiSource") {
+        if (typeof value !== "string") return null;
+        const source = value.trim();
+        if (!validPersistedSource(source)) return null;
+        result[key] = source;
+      } else if (key === "priority" || key === "emojiPriority" || key === "updatedAt" || key === "emojiUpdatedAt") {
+        if (!safeInteger(value)) return null;
+        result[key] = value;
+      } else {
+        if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) return null;
+        result[key] = value;
+      }
+    }
+    return deepFreeze(result);
+  } catch {
+    return null;
+  }
+}
+
+export function normalizeTitleBootCacheV1(raw) {
+  try {
+    if (!isPlainObject(raw) || !onlyKeys(raw, TITLE_BOOT_CACHE_KEYS)) return null;
+    const version = ownData(raw, "version", true);
+    const rawChatId = ownData(raw, "chatId", true);
+    const stateRaw = ownData(raw, "state", true);
+    const updatedAt = ownData(raw, "updatedAt", true);
+    const expiresAt = ownData(raw, "expiresAt", true);
+    if ([version, rawChatId, stateRaw, updatedAt, expiresAt].includes(BAD) ||
+        !supportedPersistedVersion(version) || typeof rawChatId !== "string" ||
+        !safeInteger(updatedAt) || !safeInteger(expiresAt) || expiresAt <= updatedAt) return null;
+    const chatId = rawChatId.trim();
+    if (!validPersistedChatId(chatId)) return null;
+    const state = normalizePersistedTitleRecordV1(stateRaw);
+    if (!state || state.chatId !== chatId) return null;
+    return deepFreeze({ version, chatId, state, updatedAt, expiresAt });
+  } catch {
+    return null;
+  }
 }
 
 function isDeepFrozen(value, seen = new WeakSet()) {
@@ -590,12 +684,114 @@ export function isRTL(value) {
   return typeof value === "string" && /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/u.test(value);
 }
 
+export function sanitizeNativeTitle(value) {
+  return normalizeWhitespace(value).replace(/\s*[-\u2013\u2014]\s*chatgpt$/iu, "").trim();
+}
+
 export function formatDisplayTitle(baseTitle, emoji) {
   const title = typeof baseTitle === "string" ? baseTitle.trim().replace(/\s+/gu, " ") : "";
   const mark = typeof emoji === "string" ? emoji.trim() : "";
   const dir = isRTL(title) ? "rtl" : "ltr";
   if (!mark) return Object.freeze({ text: title, dir });
   return Object.freeze({ text: dir === "rtl" ? `${title} ${mark}`.trim() : `${mark} ${title}`.trim(), dir });
+}
+
+function codePointToken(value, index) {
+  if (index < 0 || index >= value.length) return null;
+  const codePoint = value.codePointAt(index);
+  if (codePoint === undefined) return null;
+  return { codePoint, width: codePoint > 0xFFFF ? 2 : 1 };
+}
+
+function extendedPictographicToken(value, index) {
+  const token = codePointToken(value, index);
+  if (!token) return null;
+  return /^\p{Extended_Pictographic}$/u.test(value.slice(index, index + token.width)) ? token : null;
+}
+
+function consumeOptionalEmojiComponents(value, index) {
+  let cursor = index;
+  if (codePointToken(value, cursor)?.codePoint === 0xFE0F) cursor += 1;
+  const modifier = codePointToken(value, cursor)?.codePoint;
+  if (modifier >= 0x1F3FB && modifier <= 0x1F3FF) cursor += 2;
+  return cursor;
+}
+
+function consumePictographicComponent(value, index) {
+  const base = extendedPictographicToken(value, index);
+  return base ? consumeOptionalEmojiComponents(value, index + base.width) : -1;
+}
+
+function consumeSupportedEmojiSequence(value, index = 0) {
+  const first = codePointToken(value, index);
+  if (!first) return -1;
+
+  if (first.codePoint >= 0x1F1E6 && first.codePoint <= 0x1F1FF) {
+    const second = codePointToken(value, index + first.width);
+    return second && second.codePoint >= 0x1F1E6 && second.codePoint <= 0x1F1FF
+      ? index + first.width + second.width
+      : -1;
+  }
+
+  if (/^[#*0-9]$/u.test(value[index])) {
+    let cursor = index + 1;
+    if (codePointToken(value, cursor)?.codePoint === 0xFE0F) cursor += 1;
+    return codePointToken(value, cursor)?.codePoint === 0x20E3 ? cursor + 1 : -1;
+  }
+
+  let cursor = consumePictographicComponent(value, index);
+  if (cursor < 0) return -1;
+  while (codePointToken(value, cursor)?.codePoint === 0x200D) {
+    cursor = consumePictographicComponent(value, cursor + 1);
+    if (cursor < 0) return -1;
+  }
+  return cursor;
+}
+
+function selectedEmojiSequence(value) {
+  if (typeof value !== "string") return "";
+  const clean = value.trim();
+  if (!clean || clean.length > LIMIT.emoji) return "";
+  return consumeSupportedEmojiSequence(clean) === clean.length ? clean : "";
+}
+
+function startsWithSelectedSequence(title, selected, start, end) {
+  if (start + selected.length > end || !title.startsWith(selected, start)) return false;
+  return consumeSupportedEmojiSequence(title, start) === start + selected.length;
+}
+
+function endsWithSelectedSequence(title, selected, start, end) {
+  const candidate = end - selected.length;
+  if (candidate < start || title.slice(candidate, end) !== selected) return false;
+  return title[candidate - 1] !== "\u200D" &&
+    consumeSupportedEmojiSequence(title, candidate) === end;
+}
+
+function stripSelectedEmojiEdges(title, selected) {
+  if (!title || !selected) return title;
+  let start = 0;
+  let end = title.length;
+  while (startsWithSelectedSequence(title, selected, start, end)) {
+    start += selected.length;
+    while (title[start] === " ") start += 1;
+  }
+  while (endsWithSelectedSequence(title, selected, start, end)) {
+    end -= selected.length;
+    while (title[end - 1] === " ") end -= 1;
+  }
+  return title.slice(start, end);
+}
+
+export function formatNativeDisplayTitle(baseTitle, emoji) {
+  const sanitized = sanitizeNativeTitle(baseTitle);
+  const selected = selectedEmojiSequence(emoji);
+  const title = stripSelectedEmojiEdges(sanitized, selected);
+  const dir = isRTL(title) ? "rtl" : "ltr";
+  if (!selected) return Object.freeze({ text: title, dir });
+  return Object.freeze({
+    text: dir === "rtl" ? `${title} ${selected}`.trim() : `${selected} ${title}`.trim(),
+    dir,
+  });
 }
 
 export function normalizeRoute(pathname, previousSnapshot = null) {

@@ -27,6 +27,34 @@ import {
   DEV_ORDER_TSV,
   RUNTIME_BASE_REL,
 } from "../paths.mjs";
+import { assertDeliveryWritePermitted } from "../publish/canonical-write-guard.mjs";
+
+try {
+  assertDeliveryWritePermitted({
+    destination: ALIAS_DIR,
+    purpose: "make-aliases",
+    environment: process.env,
+    cwd: REPO_ROOT,
+  });
+} catch (error) {
+  const exitCode = Number.isInteger(error?.exitCode) ? error.exitCode : 1;
+  const body = {
+    ok: false,
+    error:
+      typeof error?.code === "string"
+        ? error.code
+        : "alias-write-guard-failed",
+    message:
+      typeof error?.message === "string"
+        ? error.message
+        : "Alias write guard failed.",
+    exitCode,
+  };
+  process.stderr.write(
+    `[H2O] alias write guard rejected: ${JSON.stringify(body)}\n`,
+  );
+  process.exit(exitCode);
+}
 
 // Local aliases preserve the pre-Phase-0C variable names so the rest of this
 // file is untouched and downstream tools that may grep these names are

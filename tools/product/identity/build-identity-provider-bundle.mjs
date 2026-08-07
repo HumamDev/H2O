@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
 import { extensionBuildDir } from "../../paths.mjs";
+import { assertDeliveryWritePermitted } from "../../publish/canonical-write-guard.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,6 +21,11 @@ export async function buildIdentityProviderBundle(outDir) {
   // path.join(SCRIPT_DIR, "..", "..", "..", "build", "chrome-ext-dev-controls").
   // The outDir parameter is still honored (highest-precedence override).
   const outRoot = path.resolve(outDir || extensionBuildDir("dev-controls"));
+  assertDeliveryWritePermitted({
+    destination: outRoot,
+    purpose: "identity-provider-bundle",
+    environment: process.env,
+  });
   const outFile = path.join(outRoot, IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH);
   ensureDir(path.dirname(outFile));
   const staleOutFile = path.join(path.dirname(outFile), LEGACY_PROVIDER_BUNDLE_BASENAME);
@@ -53,6 +59,26 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       console.log("[H2O] identity provider bundle generated:", result.outFile);
     })
     .catch((error) => {
+      if (Number.isInteger(error?.exitCode)) {
+        const exitCode = error.exitCode;
+        const body = {
+          ok: false,
+          error:
+            typeof error?.code === "string"
+              ? error.code
+              : "identity-provider-bundle-write-guard-failed",
+          message:
+            typeof error?.message === "string"
+              ? error.message
+              : "Identity-provider bundle write guard failed.",
+          exitCode,
+        };
+        process.stderr.write(
+          `[H2O] identity-provider-bundle write guard rejected: ${JSON.stringify(body)}\n`,
+        );
+        process.exitCode = exitCode;
+        return;
+      }
       console.error("[H2O] identity provider bundle build failed.");
       console.error(error?.stack || error);
       process.exitCode = 1;

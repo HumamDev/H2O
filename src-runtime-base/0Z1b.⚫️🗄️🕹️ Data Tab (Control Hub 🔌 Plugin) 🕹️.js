@@ -1652,8 +1652,23 @@ function boot(api){
 
     if (kind === 'pdf') {
       if (typeof exporter.downloadPDF !== 'function') return { message: 'PDF exporter unavailable.' };
-      exporter.downloadPDF(snapshot, `H2O_archive_${chatId}.pdf`, title);
-      return { ok: true, message: 'Exported Archive Latest to PDF (via print dialog).' };
+
+      // downloadPDF reports { ok, reason, message }. Report success only when it
+      // confirms a populated print window — never on truthiness alone, and never
+      // when it throws. The await also normalises a promise-returning exporter:
+      // a rejection lands in the catch instead of escaping unhandled.
+      let res = null;
+      try {
+        res = await exporter.downloadPDF(snapshot, `H2O_archive_${chatId}.pdf`, title);
+      } catch (error) {
+        try { console.warn('[H2O DataTab] archive PDF export threw', error); } catch {}
+        return { message: `PDF export failed (${String((error && error.message) || error || 'unknown error')}).` };
+      }
+
+      if (!res || res.ok !== true) {
+        return { message: (res && res.message) || 'PDF export failed — nothing was exported.' };
+      }
+      return { ok: true, message: 'Opened Archive Latest in a print window (use the browser print dialog to save as PDF).' };
     }
     if (kind === 'docx') {
       if (typeof exporter.downloadDOCXReal === 'function') {

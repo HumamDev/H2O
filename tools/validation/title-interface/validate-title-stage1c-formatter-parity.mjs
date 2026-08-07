@@ -13,9 +13,11 @@ import {
   getExtensionKey,
 } from "../../product/extensions/chatgpt/chrome/chrome-extension-keys.mjs";
 import {
+  TITLE_CONTRACT_BRIDGE_VERSION,
   TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION,
   TITLE_CONTRACT_PRIVILEGED_EXPORTS,
   TITLE_CONTRACT_PUBLIC_EXPORTS,
+  TITLE_CONTRACT_SOURCE_ONLY_EXPORTS,
   makeCanonicalTitleContractBridge,
   transformTitleContractToClassicBridge,
 } from "../../product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
@@ -37,11 +39,60 @@ const END_MARKER = "// H2O_TITLE_STAGE1C_PARITY_END";
 const BOOT_INVOCATION = "\n  boot();\n";
 const TEST_HOOK = "__H2O_STAGE1C_FORMATTER_PARITY_TEST__";
 const LIFECYCLE_TEST_HOOK = "__H2O_STAGE1C_DOCUMENT_LIFECYCLE_TEST__";
-const EXPECTED_RUNTIME_SHA256 = "bcbaee7817f4d7cbfea1c063b0936a877e99e2bfe7cb8e28072a96b8f9411a16";
+const EXPECTED_RUNTIME_SHA256 = "7fec34f297ee1bbd0ee1a9f533d0186f0810e97ada5186d9ee494780feecb0fa";
 const EXPECTED_STAGE1C = new Set([RUNTIME_REL, VALIDATOR_REL]);
 const EXPECTED_MODIFIED = new Set([RUNTIME_REL]);
 const EXPECTED_UNTRACKED = new Set([VALIDATOR_REL]);
 const ROUTE_CORRECTION_SCOPE_MODE = "route-correction";
+const STAGE1D_COORDINATION_SCOPE_MODE = "stage1d-bridge-coordination";
+const STAGE1E_CONVERGENCE_SCOPE_MODE = "stage1e-convergence";
+const STAGE1E_CONVERGENCE_SCOPE_OPTION = "--stage1e-convergence-scope";
+const STAGE1E_CORRECTIONS_SCOPE_MODE = "stage1e-corrections";
+const STAGE1F_SCOPE_MODE = "stage1f-rollback";
+const STAGE1F_SCOPE_OPTION = "--stage1f-rollback-scope";
+const STAGE1E_CORRECTIONS_SCOPE_OPTION = "--stage1e-corrections-scope";
+const GENERATOR_REL = "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs";
+const STAGE1B_VALIDATOR_REL = "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs";
+const TAB_RUNTIME_REL = "src-runtime-base/9B1a.🟤🔖 Tab Title 🔖.js";
+const UNDER_INPUT_RUNTIME_REL = "src-runtime-base/9C1a.🟤📌 Title Under Input bar 📌.js";
+const SIDEBAR_RUNTIME_REL = "src-runtime-base/9B2a.🟤🏷️ Sidebar Title Renderer 🏷️.js";
+const STAGE1E_VALIDATOR_REL = "tools/validation/title-interface/validate-title-stage1e-convergence-v1.mjs";
+const TITLE_ADR_REL = "docs/decisions/ADR-0011-title-management-contract.md";
+const STAGE1D_COORDINATION_SCOPE = new Set([
+  GENERATOR_REL,
+  RUNTIME_REL,
+  STAGE1B_VALIDATOR_REL,
+  VALIDATOR_REL,
+]);
+const STAGE1E_CONVERGENCE_TRACKED_SCOPE = new Set([
+  RUNTIME_REL,
+  TAB_RUNTIME_REL,
+  UNDER_INPUT_RUNTIME_REL,
+  VALIDATOR_REL,
+  TITLE_ADR_REL,
+]);
+const STAGE1E_CONVERGENCE_SCOPE = new Set([
+  ...STAGE1E_CONVERGENCE_TRACKED_SCOPE,
+  STAGE1E_VALIDATOR_REL,
+]);
+// The Stage 1F candidate now also carries the passive sidebar presentation
+// adapter, because canonical convergence OFF must no longer strip the emoji.
+const STAGE1F_SCOPE = new Set([
+  RUNTIME_REL,
+  TAB_RUNTIME_REL,
+  SIDEBAR_RUNTIME_REL,
+  VALIDATOR_REL,
+  STAGE1E_VALIDATOR_REL,
+]);
+const STAGE1E_CORRECTIONS_SCOPE = new Set([
+  RUNTIME_REL,
+  TAB_RUNTIME_REL,
+  UNDER_INPUT_RUNTIME_REL,
+  VALIDATOR_REL,
+  STAGE1E_VALIDATOR_REL,
+  TITLE_ADR_REL,
+]);
+const SOURCE_ONLY = process.argv.includes("--source-only");
 const CANARY_EXPECTATION = Object.freeze({
   schema: "h2o.title-stage1c.canary-expectation.v1",
   counterContinuityRequires: Object.freeze([
@@ -54,14 +105,15 @@ const CANARY_EXPECTATION = Object.freeze({
 });
 const EXPECTED_IDENTITY = Object.freeze({
   schemaVersion: 2,
-  bridgeVersion: "2",
-  generatorVersion: "2",
-  sourceExportCount: 35,
-  sourceSha256: "9d795e840d6236cc1b35c8142243e16528e14af6095c55a2dcb7230a219fc551",
-  publicSurfaceDigest: "b86b9dcc0d1258e6a5112ceeca19bf207e54a4fc921ddf95dc91b0cc20a3d3eb",
+  bridgeVersion: "3",
+  generatorVersion: "3",
+  sourceExportCount: 39,
+  publicExportCount: 29,
+  privilegedExportCount: 8,
+  sourceOnlyExportCount: 2,
+  sourceSha256: "57f3fe783b5253d07dafcd7ec4c89b75602337b86d83033ed52fbcc104097b0d",
+  publicSurfaceDigest: "d525371c9e82cea7e59351a429120f049b52ca6c3b81ff72eeb599460bc755d3",
 });
-const HISTORICAL_STAGE1B_HEAD = "9776f6738c074798de02edd16eb6a2911105af63";
-const HISTORICAL_STAGE1B_BRIDGE_SHA256 = "4c11f0b9aca19944fe74e90c953d694ed94ddd33bcc23cf67bd631f6c2cc33f5";
 const EXPECTED_EXTENSION_ID = "ogcjkeaiicglflamhjaaimdhphjlgkbb";
 const SCOPE_MODE_PREFIX = "--scope-mode=";
 const scopeTests = [];
@@ -174,11 +226,42 @@ function splitNul(value) {
 
 function parseRequestedScopeMode(argv) {
   const options = argv.filter((argument) => argument.startsWith(SCOPE_MODE_PREFIX));
+  const stage1EOptions = argv.filter((argument) => argument.startsWith("--stage1e-convergence"));
+  const correctionOptions = argv.filter((argument) => argument.startsWith("--stage1e-corrections"));
+  const stage1FOptions = argv.filter((argument) => argument.startsWith("--stage1f-rollback"));
+  assert(
+    stage1FOptions.every((argument) => argument === STAGE1F_SCOPE_OPTION),
+    "unknown Stage 1F rollback scope option",
+  );
+  assert(stage1FOptions.length <= 1, "duplicate Stage 1F rollback scope options are forbidden");
   assert(options.length <= 1, "duplicate --scope-mode options are forbidden");
+  assert(
+    stage1EOptions.every((argument) => argument === STAGE1E_CONVERGENCE_SCOPE_OPTION),
+    "unknown Stage 1E convergence scope option",
+  );
+  assert(stage1EOptions.length <= 1, "duplicate Stage 1E convergence scope options are forbidden");
+  assert(
+    correctionOptions.every((argument) => argument === STAGE1E_CORRECTIONS_SCOPE_OPTION),
+    "unknown Stage 1E corrections scope option",
+  );
+  assert(correctionOptions.length <= 1, "duplicate Stage 1E corrections scope options are forbidden");
+  assert(
+    Number(options.length > 0) + Number(stage1EOptions.length > 0) + Number(correctionOptions.length > 0) <= 1,
+    "Stage 1E convergence scope conflicts with --scope-mode or another Stage 1E scope",
+  );
+  assert(
+    !(stage1FOptions.length && (options.length || stage1EOptions.length || correctionOptions.length)),
+    "Stage 1F rollback scope conflicts with another scope option",
+  );
+  if (stage1FOptions.length === 1) return STAGE1F_SCOPE_MODE;
+  if (stage1EOptions.length === 1) return STAGE1E_CONVERGENCE_SCOPE_MODE;
+  if (correctionOptions.length === 1) return STAGE1E_CORRECTIONS_SCOPE_MODE;
   if (options.length === 0) return null;
   const value = options[0].slice(SCOPE_MODE_PREFIX.length);
   assert(
-    value === "validator-self-correction" || value === ROUTE_CORRECTION_SCOPE_MODE,
+    value === "validator-self-correction"
+      || value === ROUTE_CORRECTION_SCOPE_MODE
+      || value === STAGE1D_COORDINATION_SCOPE_MODE,
     `unknown requested Stage 1C scope mode: ${value}`,
   );
   return value;
@@ -189,24 +272,43 @@ function classifyStage1CScope({
   modifiedTracked,
   staged,
   untracked,
+  committedHeadPaths = [],
   trackedStage1CFiles,
+  trackedCoordinationFiles,
+  trackedStage1EFiles,
   generatedOutputIgnored,
 }) {
   assert(
     requestedMode === null
+      || requestedMode === STAGE1F_SCOPE_MODE
       || requestedMode === "validator-self-correction"
-      || requestedMode === ROUTE_CORRECTION_SCOPE_MODE,
+      || requestedMode === ROUTE_CORRECTION_SCOPE_MODE
+      || requestedMode === STAGE1D_COORDINATION_SCOPE_MODE
+      || requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+      || requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE,
     `unknown requested Stage 1C scope mode: ${String(requestedMode)}`,
   );
   const modified = new Set(modifiedTracked);
   const stagedPaths = new Set(staged);
   const untrackedPaths = new Set(untracked);
   const trackedFiles = new Set(trackedStage1CFiles);
+  const coordinationFiles = new Set(trackedCoordinationFiles);
+  const stage1ETrackedFiles = new Set(trackedStage1EFiles);
   assert.equal(stagedPaths.size, 0, `staged paths are forbidden: ${[...stagedPaths].sort().join(", ")}`);
   assert.equal(generatedOutputIgnored, true, "expected generated output must remain ignored and unstaged");
 
+  const allowedUntracked = requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+    ? new Set([STAGE1E_VALIDATOR_REL])
+    : (requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE ? new Set() : EXPECTED_UNTRACKED);
   const unexpectedUntracked = [...untrackedPaths]
-    .filter((relative) => !relative.startsWith("chrome/") && !EXPECTED_UNTRACKED.has(relative));
+    .filter((relative) => (
+      (
+        requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE
+        || requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+        || !relative.startsWith("chrome/")
+      )
+      && !allowedUntracked.has(relative)
+    ));
   assert.deepEqual(unexpectedUntracked, [], `unexpected untracked paths: ${unexpectedUntracked.join(", ")}`);
   const stage1CUntracked = new Set(
     [...untrackedPaths].filter((relative) => EXPECTED_UNTRACKED.has(relative)),
@@ -230,6 +332,71 @@ function classifyStage1CScope({
     assert.equal(stage1CUntracked.size, 0, "route-correction forbids untracked Stage 1C files");
     assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "route-correction requires both tracked Stage 1C files");
     return ROUTE_CORRECTION_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1D_COORDINATION_SCOPE_MODE) {
+    assert(
+      sameSet(modified, STAGE1D_COORDINATION_SCOPE),
+      `stage1d-bridge-coordination requires exactly ${JSON.stringify([...STAGE1D_COORDINATION_SCOPE].sort())}`,
+    );
+    assert.equal(stage1CUntracked.size, 0, "stage1d-bridge-coordination forbids untracked Stage 1C files");
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1d-bridge-coordination requires both tracked Stage 1C files");
+    assert(
+      sameSet(coordinationFiles, STAGE1D_COORDINATION_SCOPE),
+      "stage1d-bridge-coordination requires all four coordination files to be tracked",
+    );
+    return STAGE1D_COORDINATION_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1E_CONVERGENCE_SCOPE_MODE) {
+    assert(
+      sameSet(modified, STAGE1E_CONVERGENCE_TRACKED_SCOPE),
+      `stage1e-convergence requires exactly ${JSON.stringify([...STAGE1E_CONVERGENCE_TRACKED_SCOPE].sort())}`,
+    );
+    assert(
+      sameSet(untrackedPaths, new Set([STAGE1E_VALIDATOR_REL])),
+      `stage1e-convergence requires exactly one untracked path: ${STAGE1E_VALIDATOR_REL}`,
+    );
+    assert(
+      sameSet(stage1ETrackedFiles, STAGE1E_CONVERGENCE_TRACKED_SCOPE),
+      "stage1e-convergence requires all five authorized tracked files",
+    );
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1e-convergence requires both tracked Stage 1C files");
+    return STAGE1E_CONVERGENCE_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1F_SCOPE_MODE) {
+    assert.equal(untrackedPaths.size, 0, "stage1f-rollback forbids untracked paths");
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1f-rollback requires both tracked Stage 1C files");
+    // The candidate is equivalent whether it is still uncommitted or already
+    // committed as one focused commit, so both shapes are accepted and every
+    // partial, foreign, staged or mixed set still fails closed.
+    if (modified.size === 0) {
+      assert(
+        sameSet(new Set(committedHeadPaths), STAGE1F_SCOPE),
+        `committed-clean stage1f-rollback requires exactly ${JSON.stringify([...STAGE1F_SCOPE].sort())}`,
+      );
+      return STAGE1F_SCOPE_MODE;
+    }
+    assert(
+      sameSet(modified, STAGE1F_SCOPE),
+      `stage1f-rollback requires exactly ${JSON.stringify([...STAGE1F_SCOPE].sort())}`,
+    );
+    return STAGE1F_SCOPE_MODE;
+  }
+
+  if (requestedMode === STAGE1E_CORRECTIONS_SCOPE_MODE) {
+    assert(
+      sameSet(modified, STAGE1E_CORRECTIONS_SCOPE),
+      `stage1e-corrections requires exactly ${JSON.stringify([...STAGE1E_CORRECTIONS_SCOPE].sort())}`,
+    );
+    assert.equal(untrackedPaths.size, 0, "stage1e-corrections forbids untracked paths");
+    assert(
+      sameSet(stage1ETrackedFiles, STAGE1E_CONVERGENCE_TRACKED_SCOPE),
+      "stage1e-corrections requires all previously tracked Stage 1E files",
+    );
+    assert(sameSet(trackedFiles, EXPECTED_STAGE1C), "stage1e-corrections requires both tracked Stage 1C files");
+    return STAGE1E_CORRECTIONS_SCOPE_MODE;
   }
 
   const unexpectedModified = [...modified].filter((relative) => !EXPECTED_MODIFIED.has(relative));
@@ -276,6 +443,8 @@ function committedScopeInput(overrides = {}) {
     staged: [],
     untracked: ["chrome/protected"],
     trackedStage1CFiles: [...EXPECTED_STAGE1C],
+    trackedCoordinationFiles: [...STAGE1D_COORDINATION_SCOPE],
+    trackedStage1EFiles: [...STAGE1E_CONVERGENCE_TRACKED_SCOPE],
     generatedOutputIgnored: true,
     ...overrides,
   };
@@ -288,6 +457,12 @@ function assertRepositoryScope(requestedMode) {
   const staged = splitNul(run("git", ["diff", "--cached", "--name-only", "-z", "--"]));
   const untracked = splitNul(run("git", ["ls-files", "-z", "--others", "--exclude-standard", "--"]));
   const trackedStage1CFiles = splitNul(run("git", ["ls-files", "-z", "--", ...EXPECTED_STAGE1C]));
+  const trackedCoordinationFiles = splitNul(
+    run("git", ["ls-files", "-z", "--", ...STAGE1D_COORDINATION_SCOPE]),
+  );
+  const trackedStage1EFiles = splitNul(
+    run("git", ["ls-files", "-z", "--", ...STAGE1E_CONVERGENCE_TRACKED_SCOPE]),
+  );
   assert(fs.existsSync(path.join(ROOT, BRIDGE_REL)), "generated bridge is missing");
   assert.equal(run("git", ["ls-files", "--", BRIDGE_REL]).trim(), "", "generated bridge must remain untracked");
   run("git", ["check-ignore", "-q", "--", BRIDGE_REL]);
@@ -296,7 +471,12 @@ function assertRepositoryScope(requestedMode) {
     modifiedTracked,
     staged,
     untracked,
+    committedHeadPaths: splitNul(
+      run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD", "--"]),
+    ),
     trackedStage1CFiles,
+    trackedCoordinationFiles,
+    trackedStage1EFiles,
     generatedOutputIgnored: true,
   });
 }
@@ -326,6 +506,12 @@ scopeTest("explicit route-correction state accepted", () => {
     modifiedTracked: [RUNTIME_REL, VALIDATOR_REL],
   })), ROUTE_CORRECTION_SCOPE_MODE);
 });
+scopeTest("explicit Stage 1D bridge-coordination state accepted", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1D_COORDINATION_SCOPE_MODE,
+    modifiedTracked: [...STAGE1D_COORDINATION_SCOPE],
+  })), STAGE1D_COORDINATION_SCOPE_MODE);
+});
 scopeTest("two-file route correction is rejected without its explicit mode", () => {
   assert.throws(() => classifyStage1CScope(committedScopeInput({
     modifiedTracked: [RUNTIME_REL, VALIDATOR_REL],
@@ -336,6 +522,18 @@ scopeTest("route-correction rejects any third modified path", () => {
     requestedMode: ROUTE_CORRECTION_SCOPE_MODE,
     modifiedTracked: [RUNTIME_REL, VALIDATOR_REL, "src-runtime-base/foreign.js"],
   })), /requires exactly the two Stage 1C paths/u);
+});
+scopeTest("Stage 1D bridge-coordination rejects a partial path set", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1D_COORDINATION_SCOPE_MODE,
+    modifiedTracked: [...STAGE1D_COORDINATION_SCOPE].slice(0, 3),
+  })), /requires exactly/u);
+});
+scopeTest("Stage 1D bridge-coordination rejects a foreign fifth path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1D_COORDINATION_SCOPE_MODE,
+    modifiedTracked: [...STAGE1D_COORDINATION_SCOPE, "foreign.js"],
+  })), /requires exactly/u);
 });
 scopeTest("validator self-tamper rejected by default", () => {
   assert.throws(() => classifyStage1CScope(committedScopeInput({
@@ -400,6 +598,153 @@ scopeTest("duplicate scope mode options rejected", () => {
 scopeTest("unknown CLI scope option rejected", () => {
   assert.throws(() => parseRequestedScopeMode(["--scope-mode=unknown"]), /unknown requested Stage 1C scope mode/u);
 });
+scopeTest("existing Stage 1C scope rejects a 9B1a modification", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    modifiedTracked: [TAB_RUNTIME_REL],
+  })), /unexpected modified tracked paths/u);
+});
+scopeTest("existing Stage 1C scope rejects a 9C1a modification", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    modifiedTracked: [UNDER_INPUT_RUNTIME_REL],
+  })), /unexpected modified tracked paths/u);
+});
+scopeTest("Stage 1E convergence scope accepts exactly the authorized six-file set", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CONVERGENCE_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CONVERGENCE_TRACKED_SCOPE],
+    untracked: [STAGE1E_VALIDATOR_REL],
+  })), STAGE1E_CONVERGENCE_SCOPE_MODE);
+});
+scopeTest("Stage 1E convergence scope rejects a seventh tracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CONVERGENCE_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CONVERGENCE_TRACKED_SCOPE, "src-runtime-base/foreign.js"],
+    untracked: [STAGE1E_VALIDATOR_REL],
+  })), /requires exactly/u);
+});
+scopeTest("Stage 1E convergence scope rejects a seventh untracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CONVERGENCE_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CONVERGENCE_TRACKED_SCOPE],
+    untracked: [STAGE1E_VALIDATOR_REL, "foreign.tmp"],
+  })), /unexpected untracked paths/u);
+});
+scopeTest("Stage 1E convergence scope rejects generated-output changes", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CONVERGENCE_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CONVERGENCE_TRACKED_SCOPE, LOADER_REL],
+    untracked: [STAGE1E_VALIDATOR_REL],
+  })), /requires exactly/u);
+});
+scopeTest("Stage 1E convergence scope retains the fixed behavioral registry", () => {
+  assert.equal(typeof test, "function");
+  assert.equal(typeof asyncTest, "function");
+  assert.equal(STAGE1E_CONVERGENCE_SCOPE_MODE, "stage1e-convergence");
+});
+scopeTest("Stage 1E convergence scope conflicts with existing scope modes", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CONVERGENCE_SCOPE_OPTION,
+    "--scope-mode=route-correction",
+  ]), /conflicts with --scope-mode/u);
+});
+scopeTest("duplicate Stage 1E convergence scope options are rejected", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CONVERGENCE_SCOPE_OPTION,
+    STAGE1E_CONVERGENCE_SCOPE_OPTION,
+  ]), /duplicate Stage 1E convergence/u);
+});
+scopeTest("unknown Stage 1E convergence scope options are rejected", () => {
+  assert.throws(
+    () => parseRequestedScopeMode(["--stage1e-convergence-scope=unknown"]),
+    /unknown Stage 1E convergence scope option/u,
+  );
+});
+scopeTest("Stage 1F rollback scope accepts the exact dirty four-file shape", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [...STAGE1F_SCOPE],
+    untracked: [],
+  })), STAGE1F_SCOPE_MODE);
+});
+scopeTest("Stage 1F rollback scope accepts the exact committed-clean four-file shape", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE],
+  })), STAGE1F_SCOPE_MODE);
+});
+scopeTest("Stage 1F rollback scope rejects a partial committed set", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE].slice(0, 3),
+  })), /committed-clean stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects a foreign fifth committed path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE, "src-runtime-base/foreign.js"],
+  })), /committed-clean stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects a mixed committed and dirty state", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [RUNTIME_REL],
+    untracked: [],
+    committedHeadPaths: [...STAGE1F_SCOPE],
+  })), /stage1f-rollback requires exactly/u);
+});
+scopeTest("Stage 1F rollback scope rejects staged Stage 1F paths", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1F_SCOPE_MODE,
+    modifiedTracked: [...STAGE1F_SCOPE],
+    staged: [RUNTIME_REL],
+    untracked: [],
+  })), /staged paths are forbidden/u);
+});
+scopeTest("Stage 1E corrections scope accepts exactly the focused six-file set", () => {
+  assert.equal(classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE],
+    untracked: [],
+  })), STAGE1E_CORRECTIONS_SCOPE_MODE);
+});
+scopeTest("Stage 1E corrections scope rejects a seventh tracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE, "src-runtime-base/foreign.js"],
+    untracked: [],
+  })), /requires exactly/u);
+});
+scopeTest("Stage 1E corrections scope rejects every untracked path", () => {
+  assert.throws(() => classifyStage1CScope(committedScopeInput({
+    requestedMode: STAGE1E_CORRECTIONS_SCOPE_MODE,
+    modifiedTracked: [...STAGE1E_CORRECTIONS_SCOPE],
+    untracked: ["foreign.tmp"],
+  })), /unexpected untracked paths/u);
+});
+scopeTest("Stage 1E corrections and convergence modes conflict", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+    STAGE1E_CONVERGENCE_SCOPE_OPTION,
+  ]), /conflicts with --scope-mode/u);
+});
+scopeTest("duplicate Stage 1E corrections scope options are rejected", () => {
+  assert.throws(() => parseRequestedScopeMode([
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+    STAGE1E_CORRECTIONS_SCOPE_OPTION,
+  ]), /duplicate Stage 1E corrections/u);
+});
+scopeTest("unknown Stage 1E corrections scope options are rejected", () => {
+  assert.throws(
+    () => parseRequestedScopeMode(["--stage1e-corrections-scope=unknown"]),
+    /unknown Stage 1E corrections scope option/u,
+  );
+});
 
 const runtimePath = path.join(ROOT, RUNTIME_REL);
 const runtimeSource = fs.readFileSync(runtimePath, "utf8");
@@ -408,7 +753,33 @@ const baselineSource = execFileSync("git", ["show", `HEAD:${RUNTIME_REL}`], {
   encoding: "utf8",
   maxBuffer: 16 * 1024 * 1024,
 });
-const bridgeSource = fs.readFileSync(path.join(ROOT, BRIDGE_REL), "utf8");
+const sourcePolicyBridge = SOURCE_ONLY
+  ? makeCanonicalTitleContractBridge({ repositoryRoot: ROOT })
+  : null;
+const bridgeSource = SOURCE_ONLY
+  ? sourcePolicyBridge.code
+  : fs.readFileSync(path.join(ROOT, BRIDGE_REL), "utf8");
+if (!SOURCE_ONLY) {
+  const generatedIdentitySandbox = {};
+  vm.createContext(generatedIdentitySandbox);
+  new vm.Script(bridgeSource, { filename: BRIDGE_REL }).runInContext(generatedIdentitySandbox);
+  const generatedIdentity = generatedIdentitySandbox.H2O?.TitleContract?.identity;
+  const staleIdentityFields = Object.entries(EXPECTED_IDENTITY)
+    .filter(([key, expected]) => generatedIdentity?.[key] !== expected)
+    .map(([key]) => key);
+  assert.deepEqual(
+    staleIdentityFields,
+    [],
+    `stale generated bridge identity: ${staleIdentityFields.join(", ") || "missing bridge"}`,
+  );
+}
+const productionHelperSandbox = {};
+vm.createContext(productionHelperSandbox);
+new vm.Script(bridgeSource, { filename: `${BRIDGE_REL}:production-helper-probe` })
+  .runInContext(productionHelperSandbox);
+const productionBridgeHelpers = productionHelperSandbox.H2O?.TitleContract;
+assert.equal(typeof productionBridgeHelpers?.sanitizeNativeTitle, "function");
+assert.equal(typeof productionBridgeHelpers?.formatNativeDisplayTitle, "function");
 
 function countLiteral(source, needle) {
   return source.split(needle).length - 1;
@@ -533,15 +904,18 @@ function realmObject(context, values = {}) {
 
 function installFakeContract(context, {
   formatter = () => Object.freeze({ text: "", dir: "ltr" }),
+  sanitizer = (value) => (typeof value === "string" ? value : String(value || "")),
   rtl = () => false,
   identityOverrides = {},
   omitFormatter = false,
+  omitSanitizer = false,
   descriptor = {},
 } = {}) {
   const identity = realmObject(context, { ...EXPECTED_IDENTITY, ...identityOverrides });
   Object.freeze(identity);
   const contract = realmObject(context, { identity, isRTL: rtl });
-  if (!omitFormatter) contract.formatDisplayTitle = formatter;
+  if (!omitSanitizer) contract.sanitizeNativeTitle = sanitizer;
+  if (!omitFormatter) contract.formatNativeDisplayTitle = formatter;
   Object.freeze(contract);
   const h2o = realmObject(context);
   Object.defineProperty(h2o, "TitleContract", {
@@ -605,9 +979,11 @@ function baseSandbox() {
 function createHarness({
   bridge = "real",
   formatter,
+  sanitizer,
   rtl,
   identityOverrides,
   omitFormatter,
+  omitSanitizer,
   descriptor,
   windowProxy = null,
   source = instrumentedSource,
@@ -615,11 +991,17 @@ function createHarness({
   const env = baseSandbox();
   const { sandbox } = env;
   vm.createContext(sandbox);
-  const callState = { count: 0 };
+  const callState = { count: 0, sanitizerCount: 0 };
   if (bridge === "real") {
     new vm.Script(bridgeSource, { filename: BRIDGE_REL }).runInContext(sandbox);
   } else if (bridge === "fake") {
     installFakeContract(sandbox, {
+      sanitizer: (...args) => {
+        callState.sanitizerCount += 1;
+        return sanitizer
+          ? sanitizer(...args)
+          : (typeof args[0] === "string" ? args[0] : String(args[0] || ""));
+      },
       formatter: (...args) => {
         callState.count += 1;
         return formatter ? formatter(...args) : Object.freeze({ text: "", dir: "ltr" });
@@ -627,6 +1009,7 @@ function createHarness({
       rtl,
       identityOverrides,
       omitFormatter,
+      omitSanitizer,
       descriptor,
     });
   }
@@ -645,7 +1028,10 @@ function createHarness({
     ...env,
     hook,
     callState,
-    resetCalls() { callState.count = 0; },
+    resetCalls() {
+      callState.count = 0;
+      callState.sanitizerCount = 0;
+    },
   };
 }
 
@@ -1000,6 +1386,30 @@ test("missing formatter disables parity", () => {
   assert.equal(harness.callState.count, 0);
 });
 
+test("missing sanitizer disables parity", () => {
+  const harness = createHarness({ bridge: "fake", omitSanitizer: true });
+  assert.equal(snapshot(harness).gate, "helper-missing");
+  compare(harness, "Hello", "✨", 1);
+  assert.equal(harness.callState.sanitizerCount, 0);
+  assert.equal(harness.callState.count, 0);
+});
+
+test("throwing or malformed sanitizer counts one error and never calls formatter", () => {
+  for (const sanitizer of [
+    () => { throw new Error("sanitizer failed"); },
+    () => Object.freeze({ invalid: true }),
+  ]) {
+    const harness = createHarness({ bridge: "fake", sanitizer });
+    harness.resetCalls();
+    const before = snapshot(harness);
+    const { legacy, parity } = compare(harness, "Hello", "✨", 97);
+    assert.equal(legacy, "✨ Hello");
+    assert.equal(parity.errors, before.errors + 1);
+    assert.equal(harness.callState.sanitizerCount, 1);
+    assert.equal(harness.callState.count, 0);
+  }
+});
+
 test("throwing formatter counts one error and preserves legacy", () => {
   const harness = createHarness({
     bridge: "fake",
@@ -1066,6 +1476,93 @@ test("ChatGPT suffix mismatch is classified despite an empty emoji", () => {
   });
   assert.equal(result.legacy, "Actual title");
   assert.equal(result.parity.lastMismatch.class, "chatgpt-suffix");
+});
+
+test("native sanitizer attestation and formatter independently receive the original base title", () => {
+  const fixtures = [
+    {
+      baseTitle: "Title - ChatGPT - ChatGPT",
+      legacy: "✨ Title - ChatGPT",
+      contract: "✨ Title - ChatGPT",
+      outcome: "match",
+    },
+    {
+      baseTitle: "Title - ChatGPT",
+      legacy: "✨ Title",
+      contract: "✨ Title",
+      outcome: "match",
+    },
+    {
+      baseTitle: "Alpha - Beta",
+      legacy: "✨ Alpha - Beta",
+      contract: "✨ Alpha - Beta",
+      outcome: "match",
+    },
+    {
+      baseTitle: "Alpha - Beta - ChatGPT",
+      legacy: "✨ Alpha - Beta",
+      contract: "✨ Alpha - Beta",
+      outcome: "match",
+    },
+    {
+      baseTitle: "ChatGPT",
+      legacy: "✨",
+      contract: "✨ ChatGPT",
+      outcome: "mismatch",
+      mismatchClass: "chatgpt-suffix",
+    },
+    {
+      baseTitle: "Title - ChatGPT\u200B",
+      legacy: "✨ Title - ChatGPT\u200B",
+      contract: "✨ Title - ChatGPT\u200B",
+      outcome: "match",
+    },
+  ];
+
+  fixtures.forEach((fixture, index) => {
+    const sanitizerInputs = [];
+    const formatterInputs = [];
+    const formatterResults = [];
+    const harness = createHarness({
+      bridge: "fake",
+      sanitizer(baseTitle) {
+        sanitizerInputs.push(baseTitle);
+        return productionBridgeHelpers.sanitizeNativeTitle(baseTitle);
+      },
+      formatter(baseTitle, emoji) {
+        formatterInputs.push([baseTitle, emoji]);
+        const result = productionBridgeHelpers.formatNativeDisplayTitle(baseTitle, emoji);
+        formatterResults.push(result.text);
+        return result;
+      },
+    });
+    sanitizerInputs.length = 0;
+    formatterInputs.length = 0;
+    formatterResults.length = 0;
+    harness.resetCalls();
+    const before = snapshot(harness);
+    const result = compare(harness, fixture.baseTitle, "✨", 300 + index);
+
+    assert.deepEqual(sanitizerInputs, [fixture.baseTitle]);
+    assert.deepEqual(formatterInputs, [[fixture.baseTitle, "✨"]]);
+    const sanitized = productionBridgeHelpers.sanitizeNativeTitle(fixture.baseTitle);
+    if (sanitized !== fixture.baseTitle) {
+      assert.notEqual(formatterInputs[0][0], sanitized);
+    }
+    assert.deepEqual(formatterResults, [fixture.contract]);
+    assert.equal(result.legacy, fixture.legacy);
+    assert.equal(result.parity.comparisons, before.comparisons + 1);
+    assert.equal(result.parity.errors, before.errors);
+
+    if (fixture.outcome === "match") {
+      assert.equal(result.parity.matches, before.matches + 1);
+      assert.equal(result.parity.mismatches, before.mismatches);
+    } else {
+      assert.equal(result.parity.matches, before.matches);
+      assert.equal(result.parity.mismatches, before.mismatches + 1);
+      assert.equal(result.parity.lastMismatch.class, fixture.mismatchClass);
+    }
+  });
 });
 
 test("edge emoji dedupe has precedence over direction mismatch", () => {
@@ -1837,6 +2334,7 @@ test("generated build-token parity rejects conflicting authoritative tokens", ()
 });
 
 test("delivered proxy references the exact working Stage 1C alias bytes and shared build token", () => {
+  if (SOURCE_ONLY) return;
   const aliasPath = path.join(ROOT, ALIAS_REL);
   assert.equal(fs.lstatSync(aliasPath).isSymbolicLink(), true);
   assert.equal(fs.realpathSync(aliasPath), fs.realpathSync(runtimePath));
@@ -1871,7 +2369,14 @@ function assertProtectedRuntimeIdentity() {
     "-c", "core.quotePath=false", "ls-tree", "-rz", "--name-only", "HEAD", "--", "src-runtime-base",
   ], { cwd: ROOT });
   const paths = raw.toString().split("\0").filter(Boolean);
-  for (const prefix of ["0A1a", "9B1a", "9C1a", "9D1a"]) {
+  const protectedPrefixes = (
+    scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE ||
+    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE ||
+    scopeMode === STAGE1F_SCOPE_MODE
+  )
+    ? ["0A1a", "9D1a"]
+    : ["0A1a", "9B1a", "9C1a", "9D1a"];
+  for (const prefix of protectedPrefixes) {
     const matches = paths.filter((relative) => path.basename(relative).startsWith(prefix));
     assert.equal(matches.length, 1, `${prefix} path count`);
     const relative = matches[0];
@@ -1880,6 +2385,30 @@ function assertProtectedRuntimeIdentity() {
       run("git", ["rev-parse", `HEAD:${relative}`]).trim(),
       `${prefix} changed`,
     );
+  }
+  if (
+    scopeMode === STAGE1E_CONVERGENCE_SCOPE_MODE ||
+    scopeMode === STAGE1E_CORRECTIONS_SCOPE_MODE
+  ) {
+    assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", TAB_RUNTIME_REL]).trim(), "");
+    assert.notEqual(run("git", ["diff", "--name-only", "HEAD", "--", UNDER_INPUT_RUNTIME_REL]).trim(), "");
+  }
+  if (scopeMode === STAGE1F_SCOPE_MODE) {
+    // Stage 1F changes 9B1a and must never change 9C1a. The candidate carries
+    // that change either as a working-tree diff or as the committed diff, so
+    // the same requirement is checked against whichever shape is present.
+    const dirtyTab = run("git", ["diff", "--name-only", "HEAD", "--", TAB_RUNTIME_REL]).trim();
+    const dirtyUnderInput = run("git", ["diff", "--name-only", "HEAD", "--", UNDER_INPUT_RUNTIME_REL]).trim();
+    if (dirtyTab === "") {
+      const committed = splitNul(
+        run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "HEAD", "--"]),
+      );
+      assert(committed.includes(TAB_RUNTIME_REL), "stage1f-rollback requires a 9B1a change");
+      assert.equal(committed.includes(UNDER_INPUT_RUNTIME_REL), false, "stage1f-rollback must not change 9C1a");
+    } else {
+      assert.notEqual(dirtyTab, "");
+      assert.equal(dirtyUnderInput, "");
+    }
   }
 }
 
@@ -1894,7 +2423,8 @@ test("protected title runtimes, H2O Core, and dev-order remain unchanged", () =>
 
 test("bridge regeneration and generated identities remain coherent", () => {
   const currentHead = run("git", ["rev-parse", "HEAD"]).trim();
-  assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "2");
+  assert.equal(TITLE_CONTRACT_BRIDGE_VERSION, "3");
+  assert.equal(TITLE_CONTRACT_BRIDGE_GENERATOR_VERSION, "3");
 
   const contractPath = path.join(ROOT, CONTRACT_REL);
   const sourceBytes = fs.readFileSync(contractPath);
@@ -1905,7 +2435,7 @@ test("bridge regeneration and generated identities remain coherent", () => {
   });
   assert(sourceBytes.equals(committedSourceBytes), "working contract source must equal committed HEAD");
 
-  const bridgeBytes = fs.readFileSync(path.join(ROOT, BRIDGE_REL));
+  const bridgeBytes = Buffer.from(bridgeSource, "utf8");
   const generatedSandbox = {};
   vm.createContext(generatedSandbox);
   new vm.Script(bridgeBytes.toString("utf8"), { filename: BRIDGE_REL }).runInContext(generatedSandbox);
@@ -1913,42 +2443,34 @@ test("bridge regeneration and generated identities remain coherent", () => {
   assert(generatedContract && typeof generatedContract === "object", "generated public bridge missing");
   const generatedBuildHead = String(generatedContract.identity?.repositoryHeadAtBuild || "");
   assert.match(generatedBuildHead, /^[0-9a-f]{40}$/u, "generated bridge build HEAD identity");
-  execFileSync("git", ["cat-file", "-e", `${generatedBuildHead}^{commit}`], { cwd: ROOT });
-  execFileSync("git", ["merge-base", "--is-ancestor", generatedBuildHead, currentHead], { cwd: ROOT });
-
-  const buildHeadSourceBytes = execFileSync("git", ["show", `${generatedBuildHead}:${CONTRACT_REL}`], {
-    cwd: ROOT,
-    encoding: null,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  assert(sourceBytes.equals(buildHeadSourceBytes), "contract source changed since bridge generation");
+  assert.equal(
+    generatedBuildHead,
+    SOURCE_ONLY ? currentHead : generatedBuildHead,
+    "source-only bridge must attest the current repository HEAD",
+  );
 
   const current = transformTitleContractToClassicBridge({
     sourceBytes,
     committedSourceBytes,
     repositoryHeadAtBuild: generatedBuildHead,
   });
+  if (!SOURCE_ONLY) {
+    execFileSync("git", ["cat-file", "-e", `${generatedBuildHead}^{commit}`], { cwd: ROOT });
+    execFileSync("git", ["merge-base", "--is-ancestor", generatedBuildHead, currentHead], { cwd: ROOT });
+    const buildHeadSourceBytes = execFileSync("git", ["show", `${generatedBuildHead}:${CONTRACT_REL}`], {
+      cwd: ROOT,
+      encoding: null,
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    assert(sourceBytes.equals(buildHeadSourceBytes), "contract source changed since bridge generation");
+  }
+  const canonical = makeCanonicalTitleContractBridge({ repositoryRoot: ROOT });
   if (currentHead === generatedBuildHead) {
-    const canonical = makeCanonicalTitleContractBridge({ repositoryRoot: ROOT });
     assert.equal(canonical.code, current.code, "canonical current-HEAD regeneration mismatch");
   }
   assert.equal(current.repositoryHeadAtBuild, generatedBuildHead);
   assert(Buffer.from(current.code, "utf8").equals(bridgeBytes), "current bridge differs from in-memory regeneration");
   const currentBridgeSha256 = sha256(bridgeBytes);
-
-  const historical = transformTitleContractToClassicBridge({
-    sourceBytes,
-    committedSourceBytes,
-    repositoryHeadAtBuild: HISTORICAL_STAGE1B_HEAD,
-  });
-  assert.equal(sha256(Buffer.from(historical.code, "utf8")), HISTORICAL_STAGE1B_BRIDGE_SHA256);
-  assert.equal(current.code.split(generatedBuildHead).length - 1, 1);
-  assert.equal(historical.code.split(HISTORICAL_STAGE1B_HEAD).length - 1, 1);
-  assert.equal(
-    current.code.replace(generatedBuildHead, "<REPOSITORY_HEAD>"),
-    historical.code.replace(HISTORICAL_STAGE1B_HEAD, "<REPOSITORY_HEAD>"),
-    "bridge generations differ beyond repositoryHeadAtBuild",
-  );
 
   const contract = generatedContract;
   assert(contract && typeof contract === "object", "generated public bridge missing");
@@ -1958,12 +2480,15 @@ test("bridge regeneration and generated identities remain coherent", () => {
   }
   assert.equal(identity.repositoryHeadAtBuild, generatedBuildHead);
   assert.deepEqual([...identity.publicSurfaceKeys], [...TITLE_CONTRACT_PUBLIC_EXPORTS]);
-  assert.equal(identity.publicSurfaceKeys.length, 27);
+  assert.equal(identity.publicSurfaceKeys.length, 29);
   assert.deepEqual(
     Object.keys(contract).filter((key) => key !== "identity").sort(),
     [...TITLE_CONTRACT_PUBLIC_EXPORTS],
   );
   for (const name of TITLE_CONTRACT_PRIVILEGED_EXPORTS) {
+    assert.equal(Object.prototype.hasOwnProperty.call(contract, name), false, `${name} exposed`);
+  }
+  for (const name of TITLE_CONTRACT_SOURCE_ONLY_EXPORTS) {
     assert.equal(Object.prototype.hasOwnProperty.call(contract, name), false, `${name} exposed`);
   }
 
@@ -1975,11 +2500,14 @@ test("bridge regeneration and generated identities remain coherent", () => {
     stableCompatibilityIdentity: true,
     publicSurfaceCount: identity.publicSurfaceKeys.length,
     privilegedExportsExposed: 0,
-    historicalSha256: HISTORICAL_STAGE1B_BRIDGE_SHA256,
-    historicalReconstructionMatch: true,
-    normalizedDifferenceOnly: "repositoryHeadAtBuild",
+    sourceOnlyExportsExposed: 0,
+    generatedBytesChecked: !SOURCE_ONLY,
+    sourcePolicyOnly: SOURCE_ONLY,
+    historicalBridgeVersion: "2",
+    historicalCompatibilityStatus: "superseded-by-bridge-version-3",
   });
 
+  if (SOURCE_ONLY) return;
   assert(generatedBuildTokenParity, "generated build-token parity was not established");
   new vm.Script(fs.readFileSync(path.join(ROOT, LOADER_REL), "utf8"), { filename: LOADER_REL });
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, MANIFEST_REL), "utf8"));
@@ -1990,23 +2518,27 @@ test("bridge regeneration and generated identities remain coherent", () => {
   assert.deepEqual(manifest.permissions, ["storage", "tabs", "contextMenus", "identity"]);
 });
 
-test("all 154 canonical aliases remain valid symlinks", () => {
+test("all 155 canonical aliases remain valid symlinks", () => {
   const script = `
     import fs from "node:fs";
     import path from "node:path";
     import { listAliasArtifacts } from "./tools/script-registry.mjs";
     const artifacts = listAliasArtifacts(path.resolve("apps/dev-server/alias"));
-    if (artifacts.length !== 154) process.exit(2);
+    if (artifacts.length !== 155) process.exit(2);
     for (const artifact of artifacts) {
       if (!fs.lstatSync(artifact.fullPath).isSymbolicLink()) process.exit(3);
       fs.realpathSync(artifact.fullPath);
     }
+    const sidebar = artifacts.filter((artifact) => artifact.filename === "9B2a._Sidebar_Title_Renderer_.js");
+    if (sidebar.length !== 1) process.exit(4);
+    if (!fs.lstatSync(sidebar[0].fullPath).isSymbolicLink()) process.exit(5);
+    fs.realpathSync(sidebar[0].fullPath);
   `;
   execFileSync(process.execPath, ["--input-type=module", "-e", script], { cwd: ROOT });
 });
 
-assert.equal(scopeTests.length, 18, "scope test count drifted");
-assert.equal(tests.length, 53, "runtime scenario count drifted");
+assert.equal(scopeTests.length, 43, "scope test count drifted");
+assert.equal(tests.length, 56, "runtime scenario count drifted");
 
 console.log(JSON.stringify({
   ok: true,

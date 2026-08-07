@@ -192,7 +192,6 @@
 🟢	8A1a.🟪🎨 Theme Core 🎨.js
 🟢	8A1b.🟪🎨 Themes Panel 🎨.js
 🟢	8A2a.🟪🌸 H2O Skins Registry 🌸.js
-🟢	8Y1a.🟣🧊 Input Dock (Keys Rail).js
 
 # =========================
 # 🖥️ INTERFACE
@@ -203,6 +202,7 @@
 🟢	9B0a.🟤🏷️ Chat Title State 🏷️.js
 🟢	9B1a.🟤🔖 Tab Title 🔖.js
 🟢	9C1a.🟤📌 Title Under Input bar 📌.js
+🟢	9B2a.🟤🏷️ Sidebar Title Renderer 🏷️.js
 🔴	9D1a.🟤📱 Auto Emoji Title 📱.js
 🔴	9X1a.🟤🧷 Keep Projects Open.js
 🔴	9Z1a.🟤🧼 Hide Disclaimer 🧼.js
