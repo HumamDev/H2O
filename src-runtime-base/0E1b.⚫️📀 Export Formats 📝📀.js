@@ -197,26 +197,95 @@
     );
   }
 
+  /**
+   * Open a populated, printable document for a snapshot.
+   *
+   * Returns a narrow structured result: { ok, reason, message }.
+   * `ok === true` means a window was opened AND verified to contain the
+   * rendered document. Every other outcome is an explicit failure — callers
+   * must not treat a returned object as success on truthiness alone.
+   *
+   * Window handling: `noopener`/`noreferrer` cannot be used here. Per the HTML
+   * standard's window open steps, `noopener` makes window.open return null, so
+   * the previous call could never obtain a handle: it always returned false
+   * while still leaving a blank tab on screen. Instead the popup is opened
+   * without those tokens and its `opener` is severed immediately, which keeps
+   * the handle needed to populate and print the document.
+   */
   function downloadPDF(snapshot, filename, title) {
-    const html = toHTML(snapshot, { title: title });
     const chatId = (snapshot && snapshot.chatId) || 'unknown';
-    const w = W.open('', '_blank', 'noopener,noreferrer');
-    if (!w) return false;
+
+    // Pre-flight before any window is created, so a snapshot that cannot
+    // produce a printable document never leaves a blank tab behind.
+    const messages = (snapshot && Array.isArray(snapshot.messages)) ? snapshot.messages : null;
+    if (!messages || !messages.length) {
+      return {
+        ok: false,
+        reason: 'empty-snapshot',
+        message: 'Nothing to print — this archive snapshot has no messages. Capture the chat again, then retry.',
+      };
+    }
+
+    const html = toHTML(snapshot, { title: title });
+    if (!html || !String(html).trim()) {
+      return {
+        ok: false,
+        reason: 'empty-document',
+        message: 'Nothing to print — the archive document came out empty. Capture the chat again, then retry.',
+      };
+    }
+
+    let w = null;
+    try {
+      w = W.open('', '_blank');
+    } catch (e) {
+      console.warn('[H2O.ExportFormats] downloadPDF window.open threw', e);
+      w = null;
+    }
+
+    if (!w) {
+      return {
+        ok: false,
+        reason: 'popup-blocked',
+        message: 'Could not open the print window. Allow popups for this site, then retry — nothing was exported.',
+      };
+    }
 
     try {
+      // Sever the opener link; the popup only needs to render local content.
+      try { w.opener = null; } catch {}
+
       w.document.open();
       w.document.write(html);
       w.document.close();
       try { w.document.title = filename || `chat_${chatId}`; } catch {}
+
+      // Confirm the document really is populated before reporting success.
+      const body = w.document && w.document.body;
+      const populated = !!body && String(body.innerHTML || '').trim().length > 0;
+      if (!populated) {
+        try { w.close(); } catch {}
+        return {
+          ok: false,
+          reason: 'document-empty',
+          message: 'The print window opened but stayed empty, so it was closed. Nothing was exported — please retry.',
+        };
+      }
+
       W.setTimeout(() => {
         try { w.focus(); } catch {}
         try { w.print(); } catch {}
       }, 250);
-      return true;
+
+      return { ok: true, reason: 'opened', message: 'Print window opened.' };
     } catch (e) {
       console.warn('[H2O.ExportFormats] downloadPDF failed', e);
       try { w.close(); } catch {}
-      return false;
+      return {
+        ok: false,
+        reason: 'write-failed',
+        message: `Could not write the print document (${String((e && e.message) || e || 'unknown error')}). Nothing was exported.`,
+      };
     }
   }
 

@@ -1804,19 +1804,6 @@
       "critical": false,
       "optionalDependsOn": []
     },
-    "8Y1a._Input_Dock_(Keys_Rail)_.js": {
-      "phase": "document-idle",
-      "dependsOn": [
-        "0A1a._H2O_Core_.js"
-      ],
-      "after": [],
-      "group": "EXTENSIONS",
-      "provides": [
-        "h2o.InputDock"
-      ],
-      "critical": false,
-      "optionalDependsOn": []
-    },
     "9A1a._Interface_Kernel_.js": {
       "phase": "document-idle",
       "dependsOn": [

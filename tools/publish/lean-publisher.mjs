@@ -434,7 +434,48 @@ export function releaseLock(lockDirectory, selfPid, ownerId) {
 
 // ─── source preflight ────────────────────────────────────────────────────────
 
-export function runSourcePreflight() {
+/**
+ * Working-tree cleanliness for one worktree root. Used for canonical in legacy
+ * mode and always for the selected source worktree.
+ */
+function assertWorktreeClean(root, codes) {
+  const staged = git(root, ["diff", "--cached", "--name-only"]);
+  if (staged) {
+    fail(codes.index, "Publisher requires an empty index.", { root, staged: staged.split("\n") });
+  }
+  const modified = git(root, ["diff", "--name-only", "HEAD", "--"]);
+  if (modified) {
+    fail(codes.tracked, "Publisher requires a clean tracked working tree.", {
+      root, modified: modified.split("\n"),
+    });
+  }
+  const untracked = git(root, ["ls-files", "--others", "--exclude-standard", "--"]);
+  if (untracked) {
+    fail(codes.untracked, "Publisher requires no untracked non-ignored source.", {
+      root, untracked: untracked.split("\n"),
+    });
+  }
+}
+
+/** Real-aware git common directory for a worktree root. */
+function gitCommonDir(root) {
+  return realAware(git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+}
+
+/** Registered worktree roots, real-aware, as reported by the canonical repository. */
+function registeredWorktreeRoots(root) {
+  return git(root, ["worktree", "list", "--porcelain"])
+    .split("\n")
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => realAware(line.slice("worktree ".length)));
+}
+
+/**
+ * Canonical comparison authority. Identity, branch and foundation ancestry are
+ * proved here for every mode; canonical working-copy cleanliness is proved by
+ * the caller only when canonical is also the artifact source.
+ */
+function collectCanonicalAuthority() {
   const topLevel = realAware(git(REPO_ROOT, ["rev-parse", "--show-toplevel"]));
   if (topLevel !== realAware(REPO_ROOT)) {
     fail("unexpected-repository", "Publisher is not operating on its own repository worktree.", {
@@ -452,27 +493,6 @@ export function runSourcePreflight() {
   const branch = git(REPO_ROOT, ["branch", "--show-current"]);
   if (branch !== "main") {
     fail("unexpected-branch", "Publisher requires branch main.", { branch });
-  }
-
-  const staged = git(REPO_ROOT, ["diff", "--cached", "--name-only"]);
-  if (staged) {
-    fail("index-not-empty", "Publisher requires an empty index.", {
-      staged: staged.split("\n"),
-    });
-  }
-
-  const modified = git(REPO_ROOT, ["diff", "--name-only", "HEAD", "--"]);
-  if (modified) {
-    fail("worktree-not-clean", "Publisher requires a clean tracked working tree.", {
-      modified: modified.split("\n"),
-    });
-  }
-
-  const untracked = git(REPO_ROOT, ["ls-files", "--others", "--exclude-standard", "--"]);
-  if (untracked) {
-    fail("untracked-source-present", "Publisher requires no untracked non-ignored source.", {
-      untracked: untracked.split("\n"),
-    });
   }
 
   const approvedHead = git(REPO_ROOT, ["rev-parse", "HEAD"]);
@@ -497,27 +517,195 @@ export function runSourcePreflight() {
     remote = null;
   }
 
-  return { repository: realAware(REPO_ROOT), branch, approvedHead, remote };
+  return Object.freeze({
+    repository: realAware(REPO_ROOT),
+    branch,
+    approvedHead,
+    remote,
+    commonDir: gitCommonDir(REPO_ROOT),
+  });
 }
 
-function assertSourceStillClean(approvedHead) {
-  const head = git(REPO_ROOT, ["rev-parse", "HEAD"]);
-  if (head !== approvedHead) {
-    fail("source-head-moved", "Repository HEAD moved during the staging build.", {
-      approvedHead,
-      observed: head,
+/**
+ * Source artifact authority. Trust derives from canonical git common-dir
+ * identity, registered-worktree membership, the exact source commit and tree,
+ * and ancestry to canonical main — never from the supplied path alone. The path
+ * is retained for generation and audit only.
+ */
+export function resolveSourceAuthority(canonical, requestedPath) {
+  if (requestedPath === null || requestedPath === undefined) {
+    assertWorktreeClean(REPO_ROOT, {
+      index: "index-not-empty",
+      tracked: "worktree-not-clean",
+      untracked: "untracked-source-present",
+    });
+    return Object.freeze({
+      mode: "canonical",
+      commonDir: canonical.commonDir,
+      root: canonical.repository,
+      head: canonical.approvedHead,
+      tree: git(REPO_ROOT, ["rev-parse", "HEAD^{tree}"]),
+      branch: canonical.branch,
     });
   }
-  const modified = git(REPO_ROOT, ["diff", "--name-only", "HEAD", "--"]);
-  const staged = git(REPO_ROOT, ["diff", "--cached", "--name-only"]);
-  const untracked = git(REPO_ROOT, ["ls-files", "--others", "--exclude-standard", "--"]);
+
+  let stat = null;
+  try { stat = fs.statSync(requestedPath); } catch { stat = null; }
+  if (!stat) {
+    fail("source-worktree-missing", "Selected source worktree path does not exist.", { requestedPath });
+  }
+  if (!stat.isDirectory()) {
+    fail("source-worktree-not-directory", "Selected source worktree path is not a directory.", { requestedPath });
+  }
+
+  const root = realAware(requestedPath);
+  const observedTop = realAware(git(root, ["rev-parse", "--show-toplevel"]));
+  if (observedTop !== root) {
+    fail("source-worktree-not-worktree-root", "Selected source path is not a worktree root.", {
+      requestedPath, root, observedTop,
+    });
+  }
+
+  // Repository identity: the same shared object store as canonical. A foreign
+  // repository with identical content fails here regardless of its bytes.
+  const commonDir = gitCommonDir(root);
+  if (commonDir !== canonical.commonDir) {
+    fail("source-worktree-foreign-repository", "Selected source worktree belongs to another repository.", {
+      expected: canonical.commonDir, observed: commonDir,
+    });
+  }
+
+  // Registration: an unregistered copied checkout is rejected even when its
+  // common-dir text matches, because canonical does not list it.
+  const registered = registeredWorktreeRoots(REPO_ROOT);
+  if (!registered.includes(root)) {
+    fail("source-worktree-unregistered", "Selected source worktree is not a registered worktree of this repository.", {
+      root, registered,
+    });
+  }
+
+  assertWorktreeClean(root, {
+    index: "source-index-not-empty",
+    tracked: "source-worktree-not-clean",
+    untracked: "source-untracked-present",
+  });
+
+  const head = git(root, ["rev-parse", "HEAD"]);
+  const tree = git(root, ["rev-parse", "HEAD^{tree}"]);
+  // Detached HEAD is permitted; the commit and tree carry the authority.
+  const branchName = git(root, ["branch", "--show-current"]);
+  const branch = branchName ? branchName : null;
+
+  assertSourceAncestry(head, canonical.approvedHead);
+
+  for (const foundation of FOUNDATION_COMMITS) {
+    if (!gitAllows(REPO_ROOT, ["merge-base", "--is-ancestor", foundation, head])) {
+      fail("source-foundation-not-ancestor", "Selected source HEAD does not descend from the accepted safety foundation.", {
+        foundation, head,
+      });
+    }
+  }
+
+  return Object.freeze({ mode: "explicit-worktree", commonDir, root, head, tree, branch });
+}
+
+/** Source must be reachable from canonical main: ancestor-or-equal. */
+function assertSourceAncestry(sourceHead, canonicalHead) {
+  if (sourceHead === canonicalHead) return;
+  if (!gitAllows(REPO_ROOT, ["merge-base", "--is-ancestor", sourceHead, canonicalHead])) {
+    fail("source-not-ancestor-of-canonical", "Selected source HEAD is not ancestor-or-equal to canonical main HEAD.", {
+      sourceHead, canonicalHead,
+    });
+  }
+}
+
+export function runSourcePreflight({ sourceWorktree = null } = {}) {
+  const canonical = collectCanonicalAuthority();
+  const selected = resolveSourceAuthority(canonical, sourceWorktree);
+
+  return {
+    // Canonical comparison authority (receipt: repository / branch / approvedHead).
+    repository: canonical.repository,
+    branch: canonical.branch,
+    approvedHead: canonical.approvedHead,
+    remote: canonical.remote,
+    canonicalCommonDir: canonical.commonDir,
+    // Source artifact authority. sourceRoot is where every builder reads from.
+    sourceMode: selected.mode,
+    sourceRoot: selected.root,
+    sourceHead: selected.head,
+    sourceTree: selected.tree,
+    sourceBranch: selected.branch,
+    sourceCommonDir: selected.commonDir,
+  };
+}
+
+/**
+ * Post-generation stability. Proves the selected source did not move or dirty
+ * during the build, and that canonical remains valid comparison authority.
+ * Canonical HEAD may advance while the source stays ancestor-or-equal.
+ */
+function assertSourceStillClean(source) {
+  const topLevel = realAware(git(REPO_ROOT, ["rev-parse", "--show-toplevel"]));
+  if (topLevel !== source.repository) {
+    fail("canonical-identity-changed", "Canonical repository identity changed during the staging build.", {
+      expected: source.repository, observed: topLevel,
+    });
+  }
+  const canonicalBranch = git(REPO_ROOT, ["branch", "--show-current"]);
+  if (canonicalBranch !== "main") {
+    fail("canonical-branch-changed", "Canonical branch left main during the staging build.", {
+      observed: canonicalBranch,
+    });
+  }
+  const canonicalHead = git(REPO_ROOT, ["rev-parse", "HEAD"]);
+
+  if (source.sourceMode === "explicit-worktree") {
+    let stat = null;
+    try { stat = fs.statSync(source.sourceRoot); } catch { stat = null; }
+    if (!stat || !stat.isDirectory()) {
+      fail("source-worktree-disappeared", "Selected source worktree vanished during the staging build.", {
+        sourceRoot: source.sourceRoot,
+      });
+    }
+    if (gitCommonDir(source.sourceRoot) !== source.sourceCommonDir) {
+      fail("source-repository-identity-changed", "Selected source worktree changed repository identity during the build.", {
+        sourceRoot: source.sourceRoot,
+      });
+    }
+    if (!registeredWorktreeRoots(REPO_ROOT).includes(source.sourceRoot)) {
+      fail("source-worktree-unregistered", "Selected source worktree is no longer registered.", {
+        sourceRoot: source.sourceRoot,
+      });
+    }
+  }
+
+  const head = git(source.sourceRoot, ["rev-parse", "HEAD"]);
+  if (head !== source.sourceHead) {
+    fail("source-head-moved", "Source HEAD moved during the staging build.", {
+      approvedHead: source.sourceHead, observed: head,
+    });
+  }
+  const tree = git(source.sourceRoot, ["rev-parse", "HEAD^{tree}"]);
+  if (tree !== source.sourceTree) {
+    fail("source-tree-changed", "Source tree changed during the staging build.", {
+      expected: source.sourceTree, observed: tree,
+    });
+  }
+
+  const modified = git(source.sourceRoot, ["diff", "--name-only", "HEAD", "--"]);
+  const staged = git(source.sourceRoot, ["diff", "--cached", "--name-only"]);
+  const untracked = git(source.sourceRoot, ["ls-files", "--others", "--exclude-standard", "--"]);
   if (modified || staged || untracked) {
-    fail("source-changed-during-build", "Repository source changed during the staging build.", {
+    fail("source-changed-during-build", "Source changed during the staging build.", {
       modified: modified ? modified.split("\n") : [],
       staged: staged ? staged.split("\n") : [],
       untracked: untracked ? untracked.split("\n") : [],
     });
   }
+
+  // Canonical may advance; the source must remain reachable from it.
+  assertSourceAncestry(source.sourceHead, canonicalHead);
 }
 
 // ─── staging + builders ──────────────────────────────────────────────────────
@@ -564,19 +752,32 @@ export function createStagingRoot() {
  * parent shell cannot redirect a staged build into live output. The publisher
  * then sets exactly the destination variables it intends.
  */
-export function childEnvironment(extra) {
+/**
+ * Every H2O_* variable is stripped before H2O_SRC_DIR is set, so no inherited
+ * environment can redirect generation. `sourceRoot` defaults to REPO_ROOT,
+ * preserving legacy behaviour for callers that pass no source authority.
+ */
+export function childEnvironment(extra, sourceRoot = REPO_ROOT) {
   const environment = { ...process.env };
   for (const name of Object.keys(environment)) {
     if (name.startsWith("H2O_")) delete environment[name];
   }
-  return { ...environment, H2O_SRC_DIR: REPO_ROOT, ...extra };
+  return { ...environment, H2O_SRC_DIR: sourceRoot, ...extra };
 }
 
-function runBuilder(label, relativeScript, extra) {
+function runBuilder(label, relativeScript, extra, sourceRoot = REPO_ROOT) {
+  // Tool authority stays canonical: the builder script and its cwd come from
+  // REPO_ROOT. Content authority is sourceRoot, carried only by H2O_SRC_DIR.
+  const environment = childEnvironment(extra, sourceRoot);
+  if (environment.H2O_SRC_DIR !== sourceRoot) {
+    fail("source-pinning-violation", "Stage builder environment does not carry the selected source root.", {
+      label, expected: sourceRoot, observed: environment.H2O_SRC_DIR ?? null,
+    });
+  }
   const script = path.join(REPO_ROOT, relativeScript);
   const result = spawnSync(process.execPath, [script], {
     cwd: REPO_ROOT,
-    env: childEnvironment(extra),
+    env: environment,
     encoding: "utf8",
     timeout: CHILD_TIMEOUT_MS,
     killSignal: "SIGTERM",
@@ -593,30 +794,30 @@ function runBuilder(label, relativeScript, extra) {
   return { label, script: relativeScript };
 }
 
-function stageAliases(stage, buildTimestamp) {
+function stageAliases(stage, buildTimestamp, sourceRoot) {
   return runBuilder("aliases", "tools/loader/make-aliases.mjs", {
     H2O_SERVER_DIR: stage.serverRoot,
     H2O_ALIAS_SCOPE: "all",
     H2O_BUILD_TS: buildTimestamp,
-  });
+  }, sourceRoot);
 }
 
-function stageDevOutput(stage, buildTimestamp) {
+function stageDevOutput(stage, buildTimestamp, sourceRoot) {
   return runBuilder("dev-output", "tools/loader/make-ext-proxy-pack.mjs", {
     H2O_SERVER_DIR: stage.serverRoot,
     H2O_DEV_DIR_NAME: "dev_output",
     H2O_BUILD_TS: buildTimestamp,
-  });
+  }, sourceRoot);
 }
 
-function stageExtension(stage, buildTimestamp) {
+function stageExtension(stage, buildTimestamp, sourceRoot) {
   return runBuilder("extension", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
     H2O_EXT_OUT_DIR: stage.extensionRoot,
     H2O_EXT_DEV_VARIANT: "controls",
     H2O_IDENTITY_PHASE_NETWORK: "request_otp",
     H2O_IDENTITY_OAUTH_PROVIDER: "google",
     H2O_BUILD_TS: buildTimestamp,
-  });
+  }, sourceRoot);
 }
 
 // ─── lightweight validation ──────────────────────────────────────────────────
@@ -643,7 +844,7 @@ export function validateStagedAliases(stage, source, worktreeRoots) {
   if (entries.length === 0) {
     fail("staged-alias-empty", "Staged alias directory contains no aliases.");
   }
-  const approvedWorktree = realAware(source.repository);
+  const approvedWorktree = realAware(source.sourceRoot ?? source.repository);
   const stagedAliasRoot = realAware(stage.aliasDir);
   const foreignWorktrees = worktreeRoots.filter((root) => root !== approvedWorktree);
   let regularFileCount = 0;
@@ -758,7 +959,9 @@ export function validateStagedExtension(stage, source, buildTimestamp, worktreeR
     });
   }
 
-  const approvedWorktree = realAware(source.repository);
+  // Artifact provenance root: the worktree the staged bytes were generated
+  // from. Falls back to the canonical repository for legacy callers.
+  const approvedWorktree = realAware(source.sourceRoot ?? source.repository);
   const foreignWorktrees = worktreeRoots.filter((root) => root !== approvedWorktree);
   for (const file of listFilesRecursive(stage.extensionRoot)) {
     if (!/\.(js|json|txt|html|css)$/u.test(file)) continue;
@@ -838,16 +1041,50 @@ function writeReceipt(stage, receipt) {
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
-export async function runLeanPublisher({ argv = [] } = {}) {
+/**
+ * Batch 2A-R.1 argument surface: --stage-only, plus one optional
+ * --source-worktree <path>. No destination argument exists and none may be
+ * added here; source selection changes artifact authority only.
+ */
+export function parsePublisherArguments(argv) {
   const args = argv.slice();
-  const allowed = new Set(["--stage-only"]);
-  if (args.length !== 1 || !args.every((arg) => allowed.has(arg))) {
-    fail("invalid-arguments", "Lean publisher Batch 1 accepts exactly --stage-only.", { args });
+  let stageOnly = false;
+  let sourceWorktree = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--stage-only") {
+      if (stageOnly) fail("invalid-arguments", "--stage-only may be supplied only once.", { args });
+      stageOnly = true;
+      continue;
+    }
+    if (arg === "--source-worktree") {
+      if (sourceWorktree !== null) {
+        fail("invalid-arguments", "--source-worktree may be supplied only once.", { args });
+      }
+      const value = args[index + 1];
+      if (typeof value !== "string" || !value || value.startsWith("--")) {
+        fail("invalid-arguments", "--source-worktree requires exactly one path value.", { args });
+      }
+      sourceWorktree = value;
+      index += 1;
+      continue;
+    }
+    fail("invalid-arguments", "Lean publisher accepts --stage-only and optional --source-worktree <path>.", { args });
   }
+
+  if (!stageOnly) {
+    fail("invalid-arguments", "Lean publisher requires --stage-only.", { args });
+  }
+  return Object.freeze({ stageOnly, sourceWorktree });
+}
+
+export async function runLeanPublisher({ argv = [] } = {}) {
+  const parsed = parsePublisherArguments(argv);
 
   const startedAt = new Date().toISOString();
   const buildTimestamp = String(Date.now());
-  const source = runSourcePreflight();
+  const source = runSourcePreflight({ sourceWorktree: parsed.sourceWorktree });
 
   const anchor = deriveSharedAnchor({ cwd: REPO_ROOT, env: {}, allowOverride: false });
   // Sibling of the canonical anchor: this publisher never creates that anchor.
@@ -865,11 +1102,11 @@ export async function runLeanPublisher({ argv = [] } = {}) {
   try {
     stage = createStagingRoot();
 
-    stageAliases(stage, buildTimestamp);
-    stageDevOutput(stage, buildTimestamp);
-    stageExtension(stage, buildTimestamp);
+    stageAliases(stage, buildTimestamp, source.sourceRoot);
+    stageDevOutput(stage, buildTimestamp, source.sourceRoot);
+    stageExtension(stage, buildTimestamp, source.sourceRoot);
 
-    assertSourceStillClean(source.approvedHead);
+    assertSourceStillClean(source);
 
     const aliasResult = validateStagedAliases(stage, source, worktreeRoots);
     const devOutputResult = validateStagedDevOutput(stage, buildTimestamp);
@@ -890,6 +1127,17 @@ export async function runLeanPublisher({ argv = [] } = {}) {
       remote: source.remote,
       branch: source.branch,
       approvedHead: source.approvedHead,
+      // Artifact-generation authority. repository/branch/approvedHead above stay
+      // canonical comparison authority; commonDir + head + tree are the durable
+      // identity here and worktreeRoot is audit metadata, not a trust anchor.
+      sourceAuthority: {
+        mode: source.sourceMode,
+        commonDir: source.sourceCommonDir,
+        head: source.sourceHead,
+        tree: source.sourceTree,
+        branch: source.sourceBranch,
+        worktreeRoot: source.sourceRoot,
+      },
       stagedExtensionVariant: STAGED_EXTENSION_VARIANT,
       buildTimestamp,
       startedAt,

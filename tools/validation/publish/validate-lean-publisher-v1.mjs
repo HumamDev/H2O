@@ -41,7 +41,7 @@ const PUBLISHER = path.join(ROOT, PUBLISHER_REL);
 const FINAL_PATHS = Object.freeze([PACKAGE_JSON_REL, PUBLISHER_REL, VALIDATOR_REL]);
 const UNCOMMITTED_MODIFIED = Object.freeze([PUBLISHER_REL, VALIDATOR_REL]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([]);
-const EXPECTED_RUNTIME_SCENARIOS = 47;
+const EXPECTED_RUNTIME_SCENARIOS = 61;
 const EXPECTED_SCOPE_SCENARIOS = 8;
 const LOCK_PENDING_PREFIX = ".h2o-publisher-lock.pending-";
 const FORBIDDEN_STALE_PREFIX = ".h2o-publisher-lock.stale-";
@@ -1210,6 +1210,399 @@ async function runRuntimeScenarios() {
         .filter(([code]) => RAW_OS_ERROR_CODES.includes(code))
         .reduce((sum, [, count]) => sum + count, 0),
     };
+  });
+
+  // ─── Batch 2A-R.1: source-worktree authority ───────────────────────────────
+  //
+  // Canonical comparison authority (repository / branch / approvedHead) stays
+  // pinned to the fixture's own repository. Source artifact authority may be an
+  // explicitly selected clean registered sibling worktree. Canonical
+  // working-copy dirtiness is irrelevant only in explicit-worktree mode.
+
+  const SENTINEL_REL = "config/h2o-source-authority-sentinel.txt";
+
+  /** Real-aware path normalisation matching the publisher's realAware(). */
+  function realpath(target) {
+    try { return fs.realpathSync.native(target); } catch { return path.resolve(target); }
+  }
+
+  /** Register a sibling worktree of the fixture at `commitish`. */
+  function addFixtureWorktree(fixture, label, commitish = "HEAD") {
+    const root = path.join(fixture.top, label);
+    git(fixture.repository, ["worktree", "add", "--quiet", "--detach", root, commitish]);
+    provisionLocalBuildInputs(fixture.repository, root);
+    return realpath(root);
+  }
+
+  // The stage builders consume local build inputs that are deliberately untracked
+  // (dependency tree, icon packs, local identity provider config). A clean committed
+  // worktree therefore cannot build on its own: whoever prepares a source worktree
+  // must provision the same local inputs the canonical worktree carries. These are
+  // all gitignored, so provisioning them leaves the source worktree clean.
+  //
+  // This models an OPERATOR PREREQUISITE, not committed-source provenance. These
+  // bytes are outside sourceAuthority.head/tree by construction, so they are never
+  // evidence of which commit produced an artifact — see P-R11, which proves source
+  // selection using committed product source only.
+  function provisionLocalBuildInputs(from, to) {
+    const dependencies = path.join(from, "node_modules");
+    if (fs.existsSync(dependencies)) {
+      const target = path.join(to, "node_modules");
+      fs.mkdirSync(target, { recursive: true });
+      for (const entry of fs.readdirSync(dependencies)) {
+        const link = path.join(target, entry);
+        if (!fs.existsSync(link)) fs.symlinkSync(path.join(dependencies, entry), link);
+      }
+    }
+    for (const relative of [
+      "assets/chrome-dev-controls-icons",
+      "assets/chrome-dev-lean-icons",
+      "assets/internal-dev-controls-icons",
+      "config/local/identity-provider.local.json",
+    ]) {
+      const origin = path.join(from, relative);
+      if (!fs.existsSync(origin)) continue;
+      const target = path.join(to, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.cpSync(origin, target, { recursive: true });
+    }
+  }
+
+  /** Dirty the fixture's canonical worktree with unrelated tracked + untracked content. */
+  function dirtyCanonical(fixture) {
+    fs.appendFileSync(path.join(fixture.repository, "package.json"), "\n");
+    fs.writeFileSync(path.join(fixture.repository, "unrelated-untracked.txt"), "unrelated\n");
+  }
+
+  const RUNTIME_BASE_REL = "src-runtime-base";
+  const EXTENSION_BUILDER_REL = "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs";
+  const EXTENSION_BUILDER_CHAINED = "build-chrome-live-extension.chained.mjs";
+
+  /**
+   * A committed runtime module that make-aliases genuinely consumes: every file
+   * in the runtime base is aliased because the publisher stages with
+   * H2O_ALIAS_SCOPE=all, which disables order-file filtering. Chosen
+   * deterministically and never a lane owned by other work.
+   */
+  function pickAliasedSourceFile(root) {
+    const names = fs.readdirSync(path.join(root, RUNTIME_BASE_REL))
+      .filter((name) => name.endsWith(".js"))
+      .filter((name) => !/Prompt Manager|Export/u.test(name))
+      .sort();
+    assert.ok(names.length > 0, "fixture must expose aliasable runtime source");
+    return path.join(RUNTIME_BASE_REL, names[0]);
+  }
+
+  /**
+   * Replace the last stage builder with a fixture-owned hook. The publisher runs
+   * aliases -> dev-output -> extension and only then proves post-build source
+   * stability, so a hook here executes deterministically inside the build window
+   * and before that proof — no sleeps and no timing race. `chain` re-runs the
+   * real builder afterwards for scenarios that must still produce staged output.
+   */
+  function installStageHook(fixture, body, { chain = false } = {}) {
+    const builder = path.join(fixture.repository, EXTENSION_BUILDER_REL);
+    let tail = "";
+    if (chain) {
+      fs.copyFileSync(builder, path.join(path.dirname(builder), EXTENSION_BUILDER_CHAINED));
+      tail = `await import("./${EXTENSION_BUILDER_CHAINED}");\n`;
+    }
+    fs.writeFileSync(builder, `${body}\n${tail}`);
+    git(fixture.repository, ["add", "-A"]);
+    git(fixture.repository, ["commit", "-q", "-m", "fixture: stage-window hook"]);
+  }
+
+  /** Staged alias files whose bytes exactly equal `sourceFile`. */
+  function aliasesMatchingSource(stagingRoot, sourceFile) {
+    const wanted = fs.readFileSync(sourceFile);
+    const aliasRoot = path.join(stagingRoot, "server", "alias");
+    if (!fs.existsSync(aliasRoot)) return [];
+    return fs.readdirSync(aliasRoot)
+      .map((name) => path.join(aliasRoot, name))
+      .filter((file) => fs.lstatSync(file).isFile() && fs.readFileSync(file).equals(wanted));
+  }
+
+  /** Every staged file containing `marker`, across all staged families. */
+  function stagedFilesContaining(stagingRoot, marker) {
+    const hits = [];
+    const walk = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.isFile()) {
+          try { if (fs.readFileSync(full, "utf8").includes(marker)) hits.push(full); } catch { /* binary */ }
+        }
+      }
+    };
+    walk(stagingRoot);
+    return hits;
+  }
+
+  await test("P-R1 legacy canonical mode is unchanged and records canonical source authority", () => {
+    const fixture = createPublishableFixture("r1-legacy");
+    const staged = runPublisher(fixture);
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    assert.equal(staged.receipt.sourceAuthority.mode, "canonical");
+    assert.equal(staged.receipt.sourceAuthority.head, staged.receipt.approvedHead);
+    assert.equal(staged.receipt.sourceAuthority.worktreeRoot, realpath(fixture.repository));
+    assert.equal(staged.receipt.sourceAuthority.branch, "main");
+  });
+
+  await test("P-R2 explicit clean source succeeds while canonical is dirty", () => {
+    const fixture = createPublishableFixture("r1-dirty-canonical");
+    const worktree = addFixtureWorktree(fixture, "clean-source");
+    dirtyCanonical(fixture);
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    assert.equal(staged.receipt.sourceAuthority.mode, "explicit-worktree");
+    assert.equal(staged.receipt.sourceAuthority.worktreeRoot, worktree);
+    assert.equal(staged.receipt.repository, realpath(fixture.repository));
+    assert.equal(staged.receipt.branch, "main");
+  });
+
+  await test("P-R3 clean ancestor source succeeds while canonical is ahead", () => {
+    const fixture = createPublishableFixture("r1-ancestor");
+    const ancestor = git(fixture.repository, ["rev-parse", "HEAD"]);
+    const worktree = addFixtureWorktree(fixture, "ancestor-source", ancestor);
+    fs.writeFileSync(path.join(fixture.repository, SENTINEL_REL), "canonical-ahead\n");
+    git(fixture.repository, ["add", "-A"]);
+    git(fixture.repository, ["commit", "-q", "-m", "fixture: advance canonical"]);
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    assert.equal(staged.receipt.sourceAuthority.head, ancestor);
+    assert.notEqual(staged.receipt.approvedHead, ancestor);
+  });
+
+  await test("P-R4 divergent source is rejected", () => {
+    const fixture = createPublishableFixture("r1-divergent");
+    const worktree = addFixtureWorktree(fixture, "divergent-source");
+    fs.writeFileSync(path.join(worktree, SENTINEL_REL), "divergent\n");
+    git(worktree, ["add", "-A"]);
+    git(worktree, ["commit", "-q", "-m", "fixture: diverge source"]);
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.notEqual(staged.result.status, 0);
+    assert.equal(errorCodeOf(staged.result), "source-not-ancestor-of-canonical");
+  });
+
+  await test("P-R5 foreign repository source is rejected", () => {
+    const fixture = createPublishableFixture("r1-foreign-a");
+    const foreign = createPublishableFixture("r1-foreign-b");
+    const staged = runPublisher(fixture, {
+      args: ["--stage-only", "--source-worktree", foreign.repository],
+    });
+    assert.notEqual(staged.result.status, 0);
+    assert.equal(errorCodeOf(staged.result), "source-worktree-foreign-repository");
+  });
+
+  await test("P-R6 unregistered copied checkout is rejected", () => {
+    const fixture = createPublishableFixture("r1-unregistered");
+    const copy = path.join(fixture.top, "copied-checkout");
+    fs.cpSync(fixture.repository, copy, { recursive: true });
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", copy] });
+    assert.notEqual(staged.result.status, 0);
+    assert.ok(
+      ["source-worktree-unregistered", "source-worktree-foreign-repository"].includes(errorCodeOf(staged.result)),
+      `unexpected code ${errorCodeOf(staged.result)}`,
+    );
+  });
+
+  await test("P-R7 dirty source is rejected for tracked, staged and untracked content", () => {
+    for (const [label, dirty, code] of [
+      ["tracked", (wt) => fs.appendFileSync(path.join(wt, "package.json"), "\n"), "source-worktree-not-clean"],
+      ["staged", (wt) => {
+        fs.appendFileSync(path.join(wt, "package.json"), "\n");
+        git(wt, ["add", "package.json"]);
+      }, "source-index-not-empty"],
+      ["untracked", (wt) => fs.writeFileSync(path.join(wt, "stray.txt"), "x\n"), "source-untracked-present"],
+    ]) {
+      const fixture = createPublishableFixture(`r1-dirty-${label}`);
+      const worktree = addFixtureWorktree(fixture, "dirty-source");
+      dirty(worktree);
+      const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+      assert.notEqual(staged.result.status, 0, label);
+      assert.equal(errorCodeOf(staged.result), code, label);
+    }
+  });
+
+  // Generator pinning. The marker lives in a runtime module make-aliases really
+  // consumes, so the staged alias bytes are decisive evidence of which worktree
+  // the builders read. If H2O_SRC_DIR ever reverted to canonical REPO_ROOT the
+  // staged alias would carry the canonical dirty marker and this fails.
+  await test("P-R11 staged bytes come from the selected source, not dirty canonical", () => {
+    const fixture = createPublishableFixture("r1-provenance");
+    const relative = pickAliasedSourceFile(fixture.repository);
+    const SOURCE_MARKER = "H2O_PROVENANCE_SOURCE_WORKTREE_R1";
+    const CANONICAL_MARKER = "H2O_PROVENANCE_CANONICAL_DIRTY_R1";
+    const canonicalFile = path.join(fixture.repository, relative);
+
+    // Commit the source marker so canonical main and the sibling worktree agree,
+    // then select a clean worktree at that commit.
+    fs.appendFileSync(canonicalFile, `\n// ${SOURCE_MARKER}\n`);
+    git(fixture.repository, ["add", "-A"]);
+    git(fixture.repository, ["commit", "-q", "-m", "fixture: source provenance marker"]);
+    const worktree = addFixtureWorktree(fixture, "provenance-source");
+    const sourceFile = path.join(worktree, relative);
+
+    // Canonical working copy only: same line, conflicting value, uncommitted.
+    fs.writeFileSync(canonicalFile,
+      fs.readFileSync(canonicalFile, "utf8").replace(SOURCE_MARKER, CANONICAL_MARKER));
+    assert.ok(fs.readFileSync(canonicalFile, "utf8").includes(CANONICAL_MARKER),
+      "dirty canonical must carry the canonical marker");
+    assert.ok(fs.readFileSync(sourceFile, "utf8").includes(SOURCE_MARKER),
+      "selected source must carry the source marker");
+    assert.equal(git(worktree, ["status", "--porcelain=v1"]), "", "source worktree stays clean");
+
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+
+    // Positive: exactly one staged alias equals the selected source byte-for-byte.
+    const matches = aliasesMatchingSource(staged.stagingRoot, sourceFile);
+    assert.equal(matches.length, 1, "one staged alias must equal the selected source bytes");
+    assert.ok(fs.readFileSync(matches[0], "utf8").includes(SOURCE_MARKER));
+    assert.ok(stagedFilesContaining(staged.stagingRoot, SOURCE_MARKER).length > 0,
+      "the source marker must actually reach the stage");
+    // Negative: the dirty canonical value reached nothing at all.
+    assert.deepEqual(stagedFilesContaining(staged.stagingRoot, CANONICAL_MARKER), [],
+      "canonical dirty bytes must not reach the stage");
+    assert.equal(staged.receipt.sourceAuthority.head, git(worktree, ["rev-parse", "HEAD"]));
+    assert.equal(staged.receipt.sourceAuthority.tree, git(worktree, ["rev-parse", "HEAD^{tree}"]));
+  });
+
+  await test("P-R8 source HEAD movement during the build is rejected", () => {
+    const fixture = createPublishableFixture("r1-head-moved");
+    const worktree = addFixtureWorktree(fixture, "moving-source");
+    installStageHook(fixture, [
+      'import { execFileSync } from "node:child_process";',
+      'execFileSync("git", ["commit", "--allow-empty", "-q", "-m", "probe: advance source"],',
+      '  { cwd: process.env.LEANPUB_PROBE_SOURCE_WT });',
+    ].join("\n"));
+    const before = git(worktree, ["rev-parse", "HEAD"]);
+
+    const staged = runPublisher(fixture, {
+      args: ["--stage-only", "--source-worktree", worktree],
+      env: { LEANPUB_PROBE_SOURCE_WT: worktree },
+    });
+    assert.equal(staged.result.status, 1, String(staged.result.stdout));
+    assert.equal(errorCodeOf(staged.result), "source-head-moved");
+    assert.equal(staged.receipt, null, "no receipt may survive a moved source");
+    assert.notEqual(git(worktree, ["rev-parse", "HEAD"]), before, "the hook must really have moved HEAD");
+  });
+
+  await test("P-R9 source dirtied during the build is rejected", () => {
+    const fixture = createPublishableFixture("r1-dirt-during-build");
+    const relative = pickAliasedSourceFile(fixture.repository);
+    const worktree = addFixtureWorktree(fixture, "dirtying-source");
+    installStageHook(fixture, [
+      'import fs from "node:fs";',
+      'import path from "node:path";',
+      'fs.appendFileSync(',
+      '  path.join(process.env.LEANPUB_PROBE_SOURCE_WT, process.env.LEANPUB_PROBE_DIRTY_REL),',
+      '  "\\n// probe: mid-build dirt\\n");',
+    ].join("\n"));
+
+    const staged = runPublisher(fixture, {
+      args: ["--stage-only", "--source-worktree", worktree],
+      env: { LEANPUB_PROBE_SOURCE_WT: worktree, LEANPUB_PROBE_DIRTY_REL: relative },
+    });
+    assert.equal(staged.result.status, 1, String(staged.result.stdout));
+    assert.equal(errorCodeOf(staged.result), "source-changed-during-build");
+    assert.equal(staged.receipt, null, "no receipt may survive a dirtied source");
+    assert.notEqual(git(worktree, ["status", "--porcelain=v1"]), "", "the hook must really have dirtied the source");
+  });
+
+  // The approved policy is ancestry, not an exact canonical-HEAD pin: canonical
+  // main may advance mid-build provided the selected source stays reachable.
+  await test("P-R10 canonical may advance during the build while the source stays an ancestor", () => {
+    const fixture = createPublishableFixture("r1-canonical-advance");
+    const sourceCommit = git(fixture.repository, ["rev-parse", "HEAD"]);
+    const worktree = addFixtureWorktree(fixture, "ancestor-source", sourceCommit);
+    // Installing the hook is itself the pre-staging advance to C1.
+    installStageHook(fixture, [
+      'import { execFileSync } from "node:child_process";',
+      'execFileSync("git", ["commit", "--allow-empty", "-q", "-m", "probe: advance canonical"],',
+      '  { cwd: process.env.LEANPUB_PROBE_CANONICAL });',
+    ].join("\n"), { chain: true });
+    const c1 = git(fixture.repository, ["rev-parse", "HEAD"]);
+    assert.notEqual(c1, sourceCommit, "canonical must lead the source before staging");
+
+    const staged = runPublisher(fixture, {
+      args: ["--stage-only", "--source-worktree", worktree],
+      env: { LEANPUB_PROBE_CANONICAL: fixture.repository },
+    });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    const c2 = git(fixture.repository, ["rev-parse", "HEAD"]);
+    assert.notEqual(c2, c1, "canonical must really have advanced during the build");
+    assert.equal(staged.receipt.approvedHead, c1, "receipt keeps the preflight canonical head");
+    assert.equal(staged.receipt.sourceAuthority.head, sourceCommit);
+    assert.equal(staged.receipt.sourceAuthority.mode, "explicit-worktree");
+    // Ancestry to the advanced canonical head still holds.
+    execFileSync("git", ["merge-base", "--is-ancestor", sourceCommit, c2],
+      { cwd: fixture.repository, encoding: "utf8", timeout: 60_000 });
+  });
+
+  await test("P-R12 receipt records canonical and source authority fields", () => {
+    const fixture = createPublishableFixture("r1-receipt");
+    const worktree = addFixtureWorktree(fixture, "receipt-source");
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    const authority = staged.receipt.sourceAuthority;
+    assert.deepEqual(Object.keys(authority).sort(),
+      ["branch", "commonDir", "head", "mode", "tree", "worktreeRoot"]);
+    assert.equal(authority.mode, "explicit-worktree");
+    assert.equal(authority.head, git(worktree, ["rev-parse", "HEAD"]));
+    assert.equal(authority.tree, git(worktree, ["rev-parse", "HEAD^{tree}"]));
+    assert.equal(authority.branch, null, "detached fixture worktree records a null branch");
+    assert.equal(authority.worktreeRoot, worktree);
+    assert.equal(authority.commonDir, realpath(git(fixture.repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"])));
+    // Canonical comparison authority untouched.
+    assert.equal(staged.receipt.repository, realpath(fixture.repository));
+    assert.equal(staged.receipt.branch, "main");
+    assert.equal(staged.receipt.approvedHead, git(fixture.repository, ["rev-parse", "HEAD"]));
+  });
+
+  // A fresh clone carries no generated live tree, so comparing it before/after
+  // would compare nothing. Seed both live families with recognisable sentinels
+  // first; then an unchanged digest is real evidence rather than two absences.
+  await test("P-R13 explicit-source staging writes nothing outside the temporary stage root", () => {
+    const fixture = createPublishableFixture("r1-stage-only");
+    const worktree = addFixtureWorktree(fixture, "isolated-source");
+    const liveAlias = path.join(fixture.repository, "apps", "dev-server", "alias");
+    const liveDevOutput = path.join(fixture.repository, "apps", "dev-server", "dev_output");
+    for (const [directory, name] of [[liveAlias, "0Z0z_live_alias_sentinel.js"], [liveDevOutput, "live_dev_output_sentinel.txt"]]) {
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, name), `H2O_LIVE_SENTINEL_MUST_NOT_CHANGE ${name}\n`);
+    }
+    const before = { alias: fixtureManifest(liveAlias), devOutput: fixtureManifest(liveDevOutput) };
+    assert.ok(before.alias.length > 0, "seeded live alias tree must be non-empty");
+    assert.ok(before.devOutput.length > 0, "seeded live dev_output tree must be non-empty");
+
+    const staged = runPublisher(fixture, { args: ["--stage-only", "--source-worktree", worktree] });
+    assert.equal(staged.result.status, 0, String(staged.result.stderr));
+    assert.ok(isWithin(realpath(os.tmpdir()), realpath(staged.stagingRoot)), "stage root must be temporary");
+
+    assert.deepEqual(fixtureManifest(liveAlias), before.alias, "fixture live alias tree must be untouched");
+    assert.deepEqual(fixtureManifest(liveDevOutput), before.devOutput, "fixture live dev_output tree must be untouched");
+    // The staged families really were produced, i.e. the comparison is not vacuous.
+    assert.ok(fs.existsSync(path.join(staged.stagingRoot, "server", "alias")), "stage must hold its own alias family");
+  });
+
+  await test("P-R14 CLI rejects malformed --source-worktree usage", () => {
+    const fixture = createPublishableFixture("r1-cli");
+    const worktree = addFixtureWorktree(fixture, "cli-source");
+    const cases = [
+      [["--stage-only", "--source-worktree", worktree, "--source-worktree", worktree], "duplicate"],
+      [["--stage-only", "--source-worktree"], "missing value"],
+      [["--stage-only", "--source-worktree", path.join(fixture.top, "nope")], "nonexistent"],
+      [["--stage-only", "--source-worktree", path.join(fixture.repository, "package.json")], "file"],
+    ];
+    for (const [args, label] of cases) {
+      const staged = runPublisher(fixture, { args });
+      assert.notEqual(staged.result.status, 0, label);
+      assert.ok(
+        ["invalid-arguments", "source-worktree-missing", "source-worktree-not-directory"].includes(errorCodeOf(staged.result)),
+        `${label}: unexpected code ${errorCodeOf(staged.result)}`,
+      );
+    }
   });
 
   await test("runtime scenario count is exact", () => {
