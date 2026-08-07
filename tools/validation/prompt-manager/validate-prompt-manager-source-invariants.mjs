@@ -1161,10 +1161,16 @@ function main() {
     }
   });
 
-  check('[2A] Phase 2B/auto-send fields are NOT introduced', () => {
-    for (const field of ['lastUsedAt', 'useCount']) {
-      assert.doesNotMatch(CODE, new RegExp(`\\b${field}\\b`), `${field} belongs to Phase 2B`);
-    }
+  check('[2A] a per-prompt auto-send field is NOT introduced', () => {
+    /* [2B] This case originally also forbade `lastUsedAt` and `useCount`, which
+     * was correct while Phase 2A was the head: they were Phase 2B surface and
+     * had no business appearing early. Phase 2B introduces them by approved
+     * design, so that half of the premise is obsolete and only that half is
+     * removed — their shape and normalization are now pinned by the [2B] cases
+     * and by the ranking validator. `autoSend` stays forbidden as a prompt
+     * field, and the record-literal check below is untouched. */
+    assert.match(CODE, /const ENGINE_PM_normUsageTs = /, 'usage metadata must be normalized, not raw');
+    assert.match(CODE, /const ENGINE_PM_normUseCount = /);
     /* A per-prompt autoSend PROPERTY must not exist. The pre-existing uses are a
      * storage-key map entry and the DOM_setInputText option bag — neither is a
      * record field — so target object literals that also carry `favorite:`,
@@ -1406,10 +1412,15 @@ function main() {
       'an unknown id must not report a storage failure it never attempted');
   });
 
-  check('[fix] the corrections introduced no Phase 2B/2C surface', () => {
-    for (const pat of [/\blastUsedAt\b/, /\buseCount\b/, /LIBRARY_PM/, /schemaVersion/,
-                       /UI_PM_FILTER_FAV/, /rankPrompts/]) {
-      assert.doesNotMatch(CODE, pat, `Phase 2B/2C surface leaked: ${pat}`);
+  check('[fix] the corrections introduced no Phase 2C surface', () => {
+    /* [2B] `lastUsedAt`, `useCount`, the Favorites filter token and rankPrompts
+     * were listed here as future surface that Phase 2A must not anticipate.
+     * Phase 2B ships them deliberately, so they move out of this prohibition
+     * and into the [2B] cases that pin their exact shape. Everything that is
+     * still genuinely out of scope stays listed. */
+    for (const pat of [/LIBRARY_PM/, /schemaVersion/, /\bexportPrompts\b/, /\bimportPrompts\b/,
+                       /:backup:/, /createObjectURL/]) {
+      assert.doesNotMatch(CODE, pat, `Phase 2C surface leaked: ${pat}`);
     }
   });
 
@@ -1645,6 +1656,491 @@ function main() {
     // duplicate-ID policy stays explicitly deferred
     assert.doesNotMatch(CODE, /dedupeById|duplicateIdPolicy|resolveDuplicateId/,
       'duplicate-ID redesign remains outside Phase 2A');
+  });
+
+
+  /* ══════════════ PHASE 2B — RETRIEVAL, FAVOURITES, USAGE ══════════════ */
+
+  check('[2B] usage metadata is exactly lastUsedAt + useCount, and no autoSend field', () => {
+    assert.match(CODE, /const ENGINE_PM_normUsageTs = /);
+    assert.match(CODE, /const ENGINE_PM_normUseCount = /);
+    // the two fields exist only as OPTIONAL prompt metadata written by usage
+    const touch = CODE.match(/const ENGINE_PM_touchPromptUsage = [\s\S]*?\n  \};/);
+    assert.ok(touch, 'touchPromptUsage not found');
+    assert.match(touch[0], /lastUsedAt: ENGINE_PM_normUsageTs\(now\)/);
+    assert.match(touch[0], /useCount: ENGINE_PM_normUseCount\(p\.useCount\) \+ 1/);
+    // no per-prompt autoSend anywhere: the only autoSend is the global config key
+    assert.doesNotMatch(CODE, /autoSend:\s*!!p\.|p\.autoSend|autoSend:\s*rec\./,
+      'Phase 2B must not add a per-prompt autoSend field');
+  });
+
+  check('[2B] the normalizers implement exactly the specified acceptance rule', () => {
+    const ts = CODE.match(/const ENGINE_PM_normUsageTs = [\s\S]*?\n  \};/)[0];
+    assert.match(ts, /Number\.isFinite\(n\) \? n : 0/);
+    const uc = CODE.match(/const ENGINE_PM_normUseCount = [\s\S]*?\n  \};/)[0];
+    assert.match(uc, /if \(!Number\.isFinite\(n\)\) return 0;/);
+    assert.match(uc, /if \(!Number\.isInteger\(n\)\) return 0;/);
+    assert.match(uc, /return n >= 0 \? n : 0;/);
+  });
+
+  check('[2B] absence is NOT a reason to rewrite storage', () => {
+    const lp = CODE.match(/    loadPrompts\(\) \{[\s\S]*?\n    \},/);
+    assert.ok(lp, 'loadPrompts not found');
+    // only a PRESENT-but-invalid value may set changed
+    assert.match(lp[0], /if \(p\.lastUsedAt !== undefined\) \{/);
+    assert.match(lp[0], /if \(p\.useCount !== undefined\) \{/);
+    assert.doesNotMatch(lp[0], /if \(!p\.lastUsedAt\)|if \(!p\.useCount\)|p\.lastUsedAt = 0; changed|p\.useCount = 0; changed/,
+      'a missing field must not mark the list dirty');
+  });
+
+  check('[2B] no storage schema version bump and no new key for usage', () => {
+    assert.doesNotMatch(CODE, /schemaVersion|SCHEMA_VERSION|:schema:|state:usage|KEY_PM_[A-Z_]*USAGE/,
+      'usage metadata must not introduce a schema key or version');
+  });
+
+  check('[2B] the exact ranking constants are present with the specified values', () => {
+    for (const [name, value] of [
+      ['PM_RANK_TITLE_EXACT', 1000], ['PM_RANK_TITLE_PREFIX', 800],
+      ['PM_RANK_TITLE_WORD', 600], ['PM_RANK_TITLE_INCLUDES', 400],
+      ['PM_RANK_BODY_WORD', 200], ['PM_RANK_BODY_INCLUDES', 100],
+      ['PM_RANK_NO_MATCH', 0], ['PM_RANK_FAVORITE_BOOST', 150],
+      ['PM_RANK_RECENT_7D_BOOST', 60], ['PM_RANK_RECENT_30D_BOOST', 30],
+      ['PM_RANK_USE_UNIT', 5], ['PM_RANK_USE_CAP', 10],
+    ]) {
+      assert.match(CODE, new RegExp(`const ${name} = ${value};`), `${name} must be exactly ${value}`);
+    }
+  });
+
+  check('[2B] scoring is integer arithmetic — no floating point', () => {
+    const rank = CODE.match(/const ENGINE_PM_rankPrompts = [\s\S]*?\n  \};/)[0];
+    assert.doesNotMatch(rank, /Math\.(random|log|pow|sqrt|exp)|\/ *\d|\* *0\.\d/,
+      'no division, decimals or transcendental scoring may enter the ranker');
+  });
+
+  check('[2B] the recency boosts never stack', () => {
+    const rb = CODE.match(/const ENGINE_PM_recencyBoost = [\s\S]*?\n  \};/)[0];
+    assert.match(rb, /if \(age <= PM_RANK_WINDOW_7D\) return PM_RANK_RECENT_7D_BOOST;/);
+    assert.match(rb, /if \(age <= PM_RANK_WINDOW_30D\) return PM_RANK_RECENT_30D_BOOST;/);
+    assert.doesNotMatch(rb, /PM_RANK_RECENT_7D_BOOST \+ PM_RANK_RECENT_30D_BOOST/);
+  });
+
+  check('[2B] the usage boost is capped at 10 uses', () => {
+    const ub = CODE.match(/const ENGINE_PM_usageBoost = [\s\S]*?;\n/)[0];
+    assert.match(ub, /Math\.min\(ENGINE_PM_normUseCount\(useCount\), PM_RANK_USE_CAP\) \* PM_RANK_USE_UNIT/);
+  });
+
+  check('[2B] only the highest base tier applies', () => {
+    const rb = CODE.match(/const ENGINE_PM_rankBase = [\s\S]*?\n  \};/)[0];
+    // each tier returns immediately, so tiers cannot accumulate
+    const returns = rb.match(/return PM_RANK_[A-Z_]+;/g) || [];
+    assert.equal(returns.length, 7, `expected 7 early returns, found ${returns.length}`);
+    assert.doesNotMatch(rb, /score \+=|base \+=/, 'tiers must not accumulate');
+  });
+
+  check('[2B] an empty query does NOT sort by recency or useCount', () => {
+    const rank = CODE.match(/const ENGINE_PM_rankPrompts = [\s\S]*?\n  \};/)[0];
+    const emptyIdx = rank.indexOf('if (!q) {');
+    const emptyEnd = rank.indexOf('const scored = [];');
+    assert.ok(emptyIdx !== -1 && emptyEnd > emptyIdx, 'empty-query branch not found');
+    const branch = rank.slice(emptyIdx, emptyEnd);
+    assert.doesNotMatch(branch, /lastUsedAt|useCount|recencyBoost|usageBoost/,
+      'the unsearched library must not be reordered by usage signals');
+    assert.match(branch, /favorite \? 1 : 0/, 'favourites are pinned first');
+    assert.match(branch, /a\.originalIndex - b\.originalIndex/, 'manual order inside each group');
+  });
+
+  check('[2B] the original array index is the FINAL tie-break', () => {
+    const rank = CODE.match(/const ENGINE_PM_rankPrompts = [\s\S]*?\n  \};/)[0];
+    const sortIdx = rank.lastIndexOf('return scored.sort(');
+    const chain = rank.slice(sortIdx);
+    const order = ['a.score !== b.score', 'favorite ? 1 : 0', 'lastUsedAt', 'useCount', 'a.originalIndex - b.originalIndex'];
+    let at = -1;
+    for (const key of order) {
+      const i = chain.indexOf(key);
+      assert.ok(i > at, `tie-break key out of order or missing: ${key}`);
+      at = i;
+    }
+    assert.ok(chain.lastIndexOf('a.originalIndex - b.originalIndex') > chain.lastIndexOf('useCount'),
+      'original index must come last');
+  });
+
+  check('[2B] ranking never mutates the authoritative array', () => {
+    const rank = CODE.match(/const ENGINE_PM_rankPrompts = [\s\S]*?\n  \};/)[0];
+    assert.doesNotMatch(rank, /\blist\.sort\(|\barr\.sort\(|\blist\.splice\(|\barr\.splice\(|\blist\.reverse\(/,
+      'the input array must never be sorted or spliced in place');
+    assert.match(rank, /entries\.slice\(\)\.sort\(/, 'the empty-query view sorts a copy');
+  });
+
+  check('[2B] the query reaches RegExp only escaped', () => {
+    const esc = CODE.match(/const ENGINE_PM_escapeRegex = [\s\S]*?;\n/)[0];
+    assert.match(esc, /replace\(\/\[\.\*\+\?\^\$\{\}\(\)\|\[\\\]\\\\\]\/g, '\\\\\$&'\)/);
+    const wb = CODE.match(/const ENGINE_PM_hasWordBoundary = [\s\S]*?\n  \};/)[0];
+    assert.match(wb, /ENGINE_PM_escapeRegex\(qLower\)/, 'the boundary regex must escape the query');
+    assert.doesNotMatch(wb, /new RegExp\(`[^`]*\$\{qLower\}/, 'a raw query must never be interpolated');
+  });
+
+  check('[2B] no fuzzy-search or external ranking dependency', () => {
+    for (const pat of [/fuse\.?js/i, /levenshtein/i, /\bfuzzy\b/i, /require\(/, /\bimport\s+[\w{]/, /jaro|winkler|trigram/i]) {
+      assert.doesNotMatch(CODE, pat, `external/fuzzy search surface leaked: ${pat}`);
+    }
+  });
+
+  check('[2B] one shared selection path — Simple and Edit cannot diverge', () => {
+    /* [2B-perf] Four call sites now, and every one is named: the two renderers,
+     * the retained exact oracle, and the batch availability authority — which
+     * ranks the CURRENT view once so a stale DOM fails closed. All four go
+     * through the same selection path, which is what keeps the move decision in
+     * agreement with what will actually be rendered. */
+    const calls = CODE.match(/ENGINE_PM_selectPromptView\(/g) || [];
+    assert.equal(calls.length, 4, `expected exactly 4 call sites, found ${calls.length}`);
+    const oracle = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/);
+    const batch = CODE.match(/const ENGINE_PM_computeMoveAvailability = [\s\S]*?\n  \};/);
+    assert.ok(oracle && batch, 'the non-renderer callers must be the oracle and the batch authority');
+    assert.equal((oracle[0].match(/ENGINE_PM_selectPromptView\(/g) || []).length, 1);
+    assert.equal((batch[0].match(/ENGINE_PM_selectPromptView\(/g) || []).length, 1,
+      'the batch authority ranks the current view exactly once');
+    const simple = CODE.match(/    renderSimple\(root, filter\) \{[\s\S]*?\n    \},/);
+    const edit = CODE.match(/    renderEdit\(root, filter\) \{[\s\S]*?\n    \},/);
+    assert.ok(simple && edit, 'renderers not found');
+    assert.match(simple[0], /ENGINE_PM_selectPromptView\(STATE_PM\.data\.prompts, mode, q, UTIL_now\(\)\)/);
+    assert.match(edit[0], /ENGINE_PM_selectPromptView\(STATE_PM\.data\.prompts, cat, q, UTIL_now\(\)\)/);
+    // the old duplicated substring filter is gone from BOTH renderers
+    for (const [name, block] of [['renderSimple', simple[0]], ['renderEdit', edit[0]]]) {
+      assert.doesNotMatch(block, /String\(p\.title \|\| ''\)\.toLowerCase\(\)\.includes\(q\)/,
+        `${name} must not keep its own Prompt matching rule`);
+    }
+  });
+
+  check('[2B] ranking is NOT applied to the capture stores or Quick', () => {
+    const rankedNames = /ENGINE_PM_(rankPrompts|selectPromptView)\(/g;
+    // every call site must sit in a Prompt path — never in a history/draft/pasted/quick block
+    for (const block of [
+      CODE.match(/const hist = ENGINE_PM\.loadHistory\(\);[\s\S]{0,1200}/),
+      CODE.match(/const drafts = ENGINE_PM\.loadDrafts\(\);[\s\S]{0,1200}/),
+      CODE.match(/const pasted = ENGINE_PM\.loadPasted\(\);[\s\S]{0,1200}/),
+    ]) {
+      if (!block) continue;
+      assert.doesNotMatch(block[0], rankedNames, 'capture stores must keep their own filtering');
+    }
+    const sel = CODE.match(/const ENGINE_PM_selectPromptView = [\s\S]*?\n  \};/)[0];
+    assert.doesNotMatch(sel, /history|draft|pasted|quick/i, 'the Prompt selector must not know about capture stores');
+  });
+
+  check('[2B] a Favorites filter exists in BOTH Simple and Edit', () => {
+    assert.match(CODE, /const UI_PM_FILTER_FAVORITES = `\$\{SkID\}-filter-favorites`;/);
+    assert.match(CODE, /const UI_PM_EDIT_FILTER_FAVORITES = `\$\{SkID\}-edit-filter-favorites`;/);
+    assert.match(CODE, /\$\{UI_PM_FILTER_FAVORITES\}[\s\S]{0,80}Favorites</);
+    assert.match(CODE, /\$\{UI_PM_EDIT_FILTER_FAVORITES\}[\s\S]{0,80}Favorites</);
+    assert.match(CODE, /bindFilter\(UI_PM_FILTER_FAVORITES, 'favorites'\);/);
+    assert.match(CODE, /bindEditFilter\(UI_PM_EDIT_FILTER_FAVORITES, 'favorites'\);/);
+    assert.match(CODE, /\[UI_PM_FILTER_FAVORITES, 'favorites'\]/);
+    assert.match(CODE, /\[UI_PM_EDIT_FILTER_FAVORITES, 'favorites'\]/);
+  });
+
+  check('[2B] Favorites is a VIEW, not a stored bucket', () => {
+    const sel = CODE.match(/const ENGINE_PM_selectPromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(sel, /if \(cat === 'favorites' && !p\.favorite\) return false;/,
+      'the filter reads the existing favorite flag');
+    assert.doesNotMatch(sel, /commit|persist|setItem|splice|push/,
+      'entering Favorites must not move, copy or write records');
+  });
+
+  check('[2B] the canonical search query stays synchronous', () => {
+    const set = CODE.match(/    set\(value, root = \(STATE_PM\.ui\.root \|\| UI_PM\.getRoot\(\)\), except = null\) \{[\s\S]*?\n    \},/)
+             || CODE.match(/    set\([\s\S]*?STATE_PM\.ui\.searchQuery = [\s\S]*?\n    \},/);
+    assert.ok(set, 'SEARCH_PM.set not found');
+    assert.match(set[0], /STATE_PM\.ui\.searchQuery = /, 'the query is written immediately');
+    assert.match(set[0], /SEARCH_PM\.syncInputs\(root, except\);/, 'both inputs mirror it immediately');
+    assert.doesNotMatch(set[0], /setTimeout|scheduleRender/, 'set() must never be debounced');
+  });
+
+  check('[2B] exactly one owned ~80 ms search rerender timer', () => {
+    assert.match(CODE, /const PM_SEARCH_RENDER_MS = 80;/);
+    const sched = CODE.match(/    scheduleRender\(root = [\s\S]*?\n    \},/)[0];
+    assert.match(sched, /SEARCH_PM\.cancelRender\(\);/, 'a newer keystroke cancels the pending render');
+    assert.match(sched, /STATE_PM\.ui\.searchRenderTimer = CLEAN_setTimeout\(/, 'the timer must be owned');
+    assert.match(sched, /PM_SEARCH_RENDER_MS/);
+    const cancel = CODE.match(/    cancelRender\(\) \{[\s\S]*?\n    \},/)[0];
+    assert.match(cancel, /CLEAN_clearTimeout\(STATE_PM\.ui\.searchRenderTimer\)/);
+    assert.match(cancel, /STATE_PM\.ui\.searchRenderTimer = 0;/);
+    // exactly one scheduling site: typing. Filters/mode switches stay synchronous.
+    assert.match(CODE, /    scheduleRender\(root = /, 'the debounce helper is defined once');
+    const sites = CODE.match(/SEARCH_PM\.scheduleRender\(/g) || [];
+    assert.equal(sites.length, 1, `exactly one caller — typing. Found ${sites.length}`);
+    assert.match(CODE, /SEARCH_PM\.set\(el\.value, root, el\);[\s\S]{0,120}SEARCH_PM\.scheduleRender\(root\);/);
+  });
+
+  check('[2B] filter chips and mode switches still render synchronously', () => {
+    assert.match(CODE, /RENDER_PM\.setSimpleFilter\(root, type\); RENDER_PM\.renderSimple\(root, SEARCH_PM\.get\(\)\);/);
+    assert.match(CODE, /RENDER_PM\.setEditCategory\(root, type\); RENDER_PM\.renderEdit\(root, SEARCH_PM\.get\(\)\);/);
+  });
+
+  check('[2B] the empty state distinguishes "no prompts" from "no matches"', () => {
+    const e = CODE.match(/const RENDER_PM_promptEmptyHtml = [\s\S]*?\n  \};/);
+    assert.ok(e, 'promptEmptyHtml not found');
+    assert.match(e[0], /'No prompts yet\.'/);
+    assert.match(e[0], /'No matches\.'/);
+    assert.match(e[0], /if \(!anyPrompts\) return centred\('No prompts yet\.'\);/,
+      'the "nothing exists" copy is gated on there genuinely being nothing');
+    // the misleading Phase-1 copy is gone from both renderers
+    assert.doesNotMatch(CODE, /No prompts yet\. Open Settings to add\./);
+    assert.doesNotMatch(CODE, /No prompts yet\. Add one below\./);
+    const calls = CODE.match(/RENDER_PM_promptEmptyHtml\(/g) || [];
+    assert.equal(calls.length, 2, 'both Prompt renderers use the same empty copy');
+  });
+
+  check('[2B] usage counts insertion only, and never writes updatedAt', () => {
+    const cu = CODE.match(/const commitPromptUsage = \(id\) => \{[\s\S]*?\n      \};/)[0];
+    assert.match(cu, /ENGINE_PM_touchPromptUsage\(STATE_PM\.data\.prompts, id, UTIL_now\(\)\)/);
+    assert.match(cu, /FEEDBACK_PM\.say\('Storage write failed', 'error', root\)/);
+    assert.doesNotMatch(cu, /updatedAt/, 'usage is not an edit');
+    // the Phase-1 updatedAt-on-use helper is gone
+    assert.doesNotMatch(CODE, /touchPromptUpdatedAt/);
+    const sites = CODE.match(/commitPromptUsage\(id\)/g) || [];
+    assert.equal(sites.length, 2, 'exactly the two insertion paths record a use');
+  });
+
+  check('[2B] a failed insert is never counted as a use', () => {
+    for (const anchor of [
+      'const okIns = DOM_setInputText(p.body, { append: isAppend',
+      'const okIns = DOM_setInputText(p.body, { append: act === \'append\'',
+    ]) {
+      const i = CODE.indexOf(anchor);
+      assert.notEqual(i, -1, `insertion site not found: ${anchor}`);
+      const seg = CODE.slice(i, i + 700);
+      const guard = seg.indexOf('if (okIns === false) return;');
+      const use = seg.indexOf('commitPromptUsage(id)');
+      assert.ok(guard !== -1, 'the failure guard is missing');
+      assert.ok(guard < use, 'the guard must precede the usage commit');
+    }
+  });
+
+  check('[2B] no Phase 2C surface entered the module', () => {
+    for (const pat of [/\bexportPrompts\b/, /\bimportPrompts\b/, /backup:v1/, /:backup:/,
+                       /downloadBlob|createObjectURL/, /\bfolders?\b:/, /\btags\b:/,
+                       /highlightMatch|<mark>/, /commandPalette/]) {
+      assert.doesNotMatch(CODE, pat, `Phase 2C / out-of-scope surface leaked: ${pat}`);
+    }
+  });
+
+  check('[2B] Phase 2A behaviour is preserved verbatim', () => {
+    // editor, card, feedback and stale-target guards all still present
+    for (const marker of [
+      'const EDITOR_PM = {', 'const FEEDBACK_PM = {', 'const RENDER_PM_promptCard = ',
+      'EDITOR_PM_hasTarget', "PM_MSG_TARGET_GONE = 'Item no longer exists'",
+      'FEEDBACK_PM.restore(root);', 'requestBack(root) {', 'clearTransient() {',
+      "data-act=\"duplicate\"", 'ENGINE_PM_convTitle', 'ENGINE_PM_findConvDuplicate',
+      'aria-pressed', '-webkit-line-clamp',
+    ]) {
+      assert.ok(CODE.includes(marker), `Phase 2A marker missing: ${marker}`);
+    }
+    // and no native dialog came back
+    for (const pat of [/(?<!\/\/[^\n]{0,200})\bwindow\.(alert|confirm|prompt)\(/, /Sortable\.create/]) {
+      assert.doesNotMatch(CODE, pat, `regression: ${pat}`);
+    }
+  });
+
+
+  /* ══════════════ PHASE 2B — POST-MOVE VISIBILITY SAFETY ══════════════
+   * The earlier ranked-view cases asserted a PRE-move rule (does the current
+   * view equal manual order). That rule was insufficient — it allowed moves that
+   * ranking immediately undid — so it was retired, and these cases assert the
+   * proposed-move authority that replaced it. Nothing is weakened: the same
+   * guarantees are now checked against a strictly stronger rule. */
+
+  check('[2B-fix2] the proposed-move authority exists and is pure', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/);
+    assert.ok(h, 'ENGINE_PM_canMovePromptView not found');
+    assert.doesNotMatch(h[0], /commit|persist|setItem|\.sort\(|\.splice\(/,
+      'the authority must not mutate or write anything');
+    assert.doesNotMatch(CODE, /canReorderPromptView/,
+      'the superseded pre-move rule must no longer exist as an authority');
+  });
+
+  check('[2B-fix2] the candidate comes from the UNCHANGED Phase-1 reorder helper', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /const candidate = ENGINE_PM_reorderVisible\(arr, ids, targetId, dir\);/,
+      'the real persistence helper must produce the candidate');
+    assert.match(h, /if \(!candidate\) return false;/, 'a rejected candidate fails closed');
+  });
+
+  check('[2B-fix2] the candidate is reranked through the UNCHANGED shipped ranker', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /ENGINE_PM_selectPromptView\(candidate, category, query, now\)/,
+      'the same selection path the renderers use must decide what would be shown');
+  });
+
+  check('[2B-fix2] expected-vs-reranked is an exact element-wise comparison', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /const expected = ids\.slice\(\);/);
+    assert.match(h, /expected\[at\] = ids\[swapWith\];/);
+    assert.match(h, /expected\[swapWith\] = ids\[at\];/);
+    assert.match(h, /if \(reranked\.length !== expected\.length\) return false;/);
+    assert.match(h, /if \(reranked\[i\] !== expected\[i\]\) return false;/);
+    assert.match(h, /return true;/);
+  });
+
+  check('[2B-fix2] safety is not inferred from query, favourites or scores', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.doesNotMatch(h, /PM_RANK_|\.favorite|score/,
+      'the answer must come from running the real ranker, not from assumptions about it');
+    assert.doesNotMatch(h, /SEARCH_PM|searchQuery/, 'the query is an argument, not a shortcut');
+  });
+
+  check('[2B-fix2] the authority fails closed on an untrustworthy view', () => {
+    const h = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /if \(new Set\(ids\)\.size !== ids\.length\) return false;/, 'duplicate rendered id');
+    assert.match(h, /if \(seen !== 1\) return false;/, 'ghost or duplicated record');
+    assert.match(h, /if \(swapWith < 0 \|\| swapWith >= ids\.length\) return false;/, 'boundary');
+    assert.match(h, /if \(at === -1\) return false;/, 'target absent from the view');
+  });
+
+  check('[2B-perf] the renderer applies per-direction availability from ONE batch call', () => {
+    /* [2B-perf] This case previously asserted a per-card, per-direction call to
+     * the exact simulation. That was the performance blocker, so the shape it
+     * pinned is gone; the guarantee it protected — each direction decided
+     * independently — is now enforced through the occurrence-aligned batch
+     * result, and asserted here plus in the [2B-perf] regression cases below. */
+    const r = CODE.match(/const RENDER_PM_applyReorderAvailability = [\s\S]*?\n  \};/);
+    assert.ok(r, 'RENDER_PM_applyReorderAvailability not found');
+    assert.equal((r[0].match(/ENGINE_PM_computeMoveAvailability\(/g) || []).length, 1,
+      'exactly one availability computation per render');
+    assert.match(r[0], /slot\.up/, 'Up comes from the slot');
+    assert.match(r[0], /slot\.down/, 'Down comes from the slot, independently');
+    assert.match(r[0], /data-act="up"/); assert.match(r[0], /data-act="down"/);
+  });
+
+  check('[2B-fix2] disabled controls stay in the DOM and explain themselves', () => {
+    const r = CODE.match(/const RENDER_PM_applyReorderAvailability = [\s\S]*?\n  \};/)[0];
+    assert.match(r, /btn\.disabled = !can;/);
+    assert.match(r, /btn\.setAttribute\('aria-disabled', can \? 'false' : 'true'\);/);
+    assert.match(r, /btn\.setAttribute\('title', PM_MSG_RANKED_NO_REORDER\);/);
+    assert.match(r, /if \(can\) btn\.removeAttribute\('title'\);/, 'no stale explanation on an enabled control');
+    assert.doesNotMatch(r, /\.remove\(\)|innerHTML/, 'buttons are disabled, never removed');
+    assert.match(CODE, /const PM_MSG_RANKED_NO_REORDER = 'Manual order unavailable while results are ranked';/);
+  });
+
+  check('[2B-fix2] Edit rendering applies availability AFTER the cards exist', () => {
+    const edit = CODE.match(/    renderEdit\(root, filter\) \{[\s\S]*?\n    \},/)[0];
+    assert.match(edit, /RENDER_PM_applyReorderAvailability\(list, items, cat, q, UTIL_now\(\)\);/,
+      'the renderer must pass the same category/query/now the view was built with');
+    assert.ok(edit.indexOf('RENDER_PM_promptCard') < edit.indexOf('RENDER_PM_applyReorderAvailability'),
+      'availability is a post-render pass');
+  });
+
+  check('[2B-perf] renderer and handler share ONE final authority', () => {
+    const calls = CODE.match(/ENGINE_PM_computeMoveAvailability\(/g) || [];
+    assert.equal(calls.length, 2, `exactly one renderer and one handler call site; found ${calls.length}`);
+    assert.match(CODE, /const ENGINE_PM_computeMoveAvailability = /, 'defined once');
+    // the exact simulation is retained as the validators' oracle, never as a production path
+    assert.equal((CODE.match(/ENGINE_PM_canMovePromptView\(/g) || []).length, 0,
+      'the exact per-move simulation must not run in production');
+  });
+
+  check('[2B-perf] the handler re-asks for the exact occurrence and direction', () => {
+    const i = CODE.indexOf('const moveBtn = e.target.closest');
+    const end = CODE.indexOf('const starBtn = e.target.closest', i);
+    const block = CODE.slice(i, end > i ? end : i + 2400);
+    const guard = block.indexOf('if (!slot || slot.id !== id || !slot[dir])');
+    const reorder = block.indexOf('ENGINE_PM_reorderVisible(');
+    const commit = block.indexOf('ENGINE_PM.commitPrompts(');
+    const flash = block.indexOf('RENDER_PM.flashMoved(');
+    assert.ok(guard !== -1, 'handler guard missing');
+    assert.ok(guard < reorder, 'guard precedes ENGINE_PM_reorderVisible');
+    assert.ok(guard < commit, 'guard precedes commitPrompts');
+    assert.ok(guard < flash, 'guard precedes the moved flash');
+    const branch = block.slice(guard, reorder);
+    assert.match(block, /const slotIndex = Array\.from\(listEdit\.children\)\.indexOf\(card\);/,
+      'the clicked occurrence is resolved positionally, so a duplicate id cannot smuggle a row through');
+    assert.match(branch, /return;/);
+    assert.doesNotMatch(branch, /commitPrompts|reorderVisible\(|flashMoved/, 'the refused path mutates nothing');
+    assert.match(branch, /'info'/, 'informational, not a storage failure');
+    assert.doesNotMatch(branch, /'error'/);
+  });
+
+  check('[2B-fix2] the Phase-1 reorder helper is still untouched by the fix', () => {
+    const r = CODE.match(/const ENGINE_PM_reorderVisible = [\s\S]*?\n  \};/);
+    assert.ok(r, 'ENGINE_PM_reorderVisible not found');
+    assert.doesNotMatch(r[0], /canMovePromptView|PM_MSG_RANKED_NO_REORDER|selectPromptView|rankPrompts/,
+      'the fix belongs at the integration boundary, not inside the approved helper');
+  });
+
+  check('[2B-fix2] ranking behaviour is unchanged by this correction', () => {
+    for (const [name, value] of [
+      ['PM_RANK_TITLE_EXACT', 1000], ['PM_RANK_TITLE_PREFIX', 800],
+      ['PM_RANK_TITLE_WORD', 600], ['PM_RANK_TITLE_INCLUDES', 400],
+      ['PM_RANK_BODY_WORD', 200], ['PM_RANK_BODY_INCLUDES', 100],
+      ['PM_RANK_FAVORITE_BOOST', 150], ['PM_RANK_RECENT_7D_BOOST', 60],
+      ['PM_RANK_RECENT_30D_BOOST', 30], ['PM_RANK_USE_UNIT', 5], ['PM_RANK_USE_CAP', 10],
+    ]) {
+      assert.match(CODE, new RegExp(`const ${name} = ${value};`), `${name} must still be ${value}`);
+    }
+    const rank = CODE.match(/const ENGINE_PM_rankPrompts = [\s\S]*?\n  \};/)[0];
+    assert.match(rank, /favorite \? 1 : 0/, 'favourites-first pinning stays');
+    assert.match(rank, /a\.originalIndex - b\.originalIndex/, 'the final tie-break stays');
+  });
+
+
+  /* ══════════════ PHASE 2B — REORDER AVAILABILITY PERFORMANCE ══════════════
+   * These exist to stop the quadratic shape coming back: N cards x 2 directions
+   * x (full scan + full reorder + full rerank) on every debounced re-render. */
+
+  check('[2B-perf] a batch availability authority exists and is pure', () => {
+    const h = CODE.match(/const ENGINE_PM_computeMoveAvailability = [\s\S]*?\n  \};/);
+    assert.ok(h, 'ENGINE_PM_computeMoveAvailability not found');
+    assert.doesNotMatch(h[0], /commit|persist|setItem|\.sort\(|\.splice\(|\.push\(list/,
+      'the authority must not mutate or write anything');
+  });
+
+  check('[2B-perf] the batch helper validates the whole view exactly ONCE', () => {
+    const h = CODE.match(/const ENGINE_PM_computeMoveAvailability = [\s\S]*?\n  \};/)[0];
+    assert.equal((h.match(/ENGINE_PM_selectPromptView\(/g) || []).length, 1,
+      'the current view is ranked once, not once per button');
+    assert.match(h, /for \(const rec of list\)/, 'ONE pass builds the id count and lookup');
+    assert.equal((h.match(/for \(const rec of list\)/g) || []).length, 1, 'and only one such pass');
+    assert.match(h, /if \(new Set\(ids\)\.size !== n\) return denied\(\);/, 'duplicate rendered ids fail closed');
+    assert.match(h, /if \(seen\.get\(id\) !== 1\) return denied\(\);/, 'ghost or duplicated record fails closed');
+    assert.match(h, /if \(current\[i\]\.prompt\.id !== ids\[i\]\) return denied\(\);/, 'a stale view fails closed');
+  });
+
+  check('[2B-perf] adjacent-pair work uses TWO-RECORD ranking, not full reranks', () => {
+    const h = CODE.match(/const ENGINE_PM_computeMoveAvailability = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /for \(let i = 0; i \+ 1 < n; i\+\+\)/, 'N-1 adjacent pairs');
+    assert.match(h, /ENGINE_PM_rankPrompts\(\[a, b\], query, now\)/, 'the pair is ranked forward');
+    assert.match(h, /ENGINE_PM_rankPrompts\(\[b, a\], query, now\)/, 'and reversed');
+    assert.match(h, /out\[i\]\.down = true; out\[i \+ 1\]\.up = true;/, 'one verdict serves two buttons');
+    assert.doesNotMatch(h, /ENGINE_PM_reorderVisible|ENGINE_PM_canMovePromptView/,
+      'no candidate build or full simulation inside the batch helper');
+    assert.doesNotMatch(h, /PM_RANK_|\.favorite|\.lastUsedAt|\.useCount/,
+      'no ranking arithmetic is duplicated — the real ranker decides the tie');
+  });
+
+  check('[2B-perf] the render loop contains no per-button simulation', () => {
+    const r = CODE.match(/const RENDER_PM_applyReorderAvailability = [\s\S]*?\n  \};/)[0];
+    assert.doesNotMatch(r, /ENGINE_PM_canMovePromptView|ENGINE_PM_reorderVisible|ENGINE_PM_selectPromptView/,
+      'rendering must not build candidates or rerank per button');
+    assert.match(r, /const cards = Array\.from\(listEl\.children \|\| \[\]\);/,
+      'cards are walked positionally');
+    assert.doesNotMatch(r, /CSS\.escape\(id\)/, 'no per-card id lookup — a duplicate id would keep hitting card one');
+    assert.match(r, /availability\[i\]/, 'the occurrence-aligned slot drives the controls');
+  });
+
+  check('[2B-perf] availability output is occurrence-aligned', () => {
+    const h = CODE.match(/const ENGINE_PM_computeMoveAvailability = [\s\S]*?\n  \};/)[0];
+    assert.match(h, /const out = ids\.map\(id => \(\{ id, up: false, down: false \}\)\);/,
+      'one entry per rendered slot, in render order');
+    assert.match(h, /const denied = \(\) => ids\.map\(/, 'refusals keep the same shape');
+  });
+
+  check('[2B-perf] the exact simulation is retained ONLY as the validators\' oracle', () => {
+    assert.match(CODE, /const ENGINE_PM_canMovePromptView = /, 'the oracle is still defined');
+    assert.equal((CODE.match(/ENGINE_PM_canMovePromptView\(/g) || []).length, 0,
+      'and never invoked by production code');
+    // its semantics are untouched, so it remains a trustworthy oracle
+    const o = CODE.match(/const ENGINE_PM_canMovePromptView = [\s\S]*?\n  \};/)[0];
+    assert.match(o, /ENGINE_PM_reorderVisible\(arr, ids, targetId, dir\)/);
+    assert.match(o, /ENGINE_PM_selectPromptView\(candidate, category, query, now\)/);
+    assert.match(o, /if \(reranked\[i\] !== expected\[i\]\) return false;/);
   });
 
   console.log('');

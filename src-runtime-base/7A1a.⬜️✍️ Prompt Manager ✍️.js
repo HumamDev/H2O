@@ -129,6 +129,7 @@
   const UI_PM_FILTER_ALL = `${SkID}-filter-all`;
   const UI_PM_FILTER_PROMPTS = `${SkID}-filter-prompts`;
   const UI_PM_FILTER_APPEND = `${SkID}-filter-append`;
+  const UI_PM_FILTER_FAVORITES = `${SkID}-filter-favorites`;
   const UI_PM_FILTER_QUICK = `${SkID}-filter-quick`;
   const UI_PM_FILTER_HISTORY = `${SkID}-filter-history`;
   const UI_PM_FILTER_DRAFTS = `${SkID}-filter-drafts`;
@@ -138,6 +139,7 @@
   const UI_PM_EDIT_FILTER_ALL = `${SkID}-edit-filter-all`;
   const UI_PM_EDIT_FILTER_PROMPTS = `${SkID}-edit-filter-prompts`;
   const UI_PM_EDIT_FILTER_APPEND = `${SkID}-edit-filter-append`;
+  const UI_PM_EDIT_FILTER_FAVORITES = `${SkID}-edit-filter-favorites`;
   const UI_PM_EDIT_FILTER_QUICK = `${SkID}-edit-filter-quick`;
   const UI_PM_EDIT_FILTER_HISTORY = `${SkID}-edit-filter-history`;
   const UI_PM_EDIT_FILTER_DRAFTS = `${SkID}-edit-filter-drafts`;
@@ -423,8 +425,8 @@
       quickSendMode: false,
       // Canonical search query. Neither DOM input owns the query; both mirror it.
       searchQuery: '',
-      simpleTypeFilter: 'all', // all|prompt|append|quick|history|draft|pasted
-      editCategory: 'all',     // all|prompt|append|quick|history|draft|pasted
+      simpleTypeFilter: 'all', // all|prompt|append|favorites|quick|history|draft|pasted
+      editCategory: 'all',     // all|prompt|append|favorites|quick|history|draft|pasted
       /* [2A] In-panel editor. One controller drives two field shapes:
        * kind 'prompt' (title/body/type/favorite) and kind 'quick' (text only).
        * `initial` is the pristine draft used for dirty comparison; `draft` is
@@ -442,6 +444,9 @@
       },
       editorDeleteTimer: 0,
       statusTimer: 0,
+      /* [2B] One owned timer for the debounced search rerender. The canonical
+       * query itself is never debounced — only the expensive re-render is. */
+      searchRenderTimer: 0,
       /* [2A-fix F] Feedback authority. The status line used to live only in the
        * DOM, so a self-heal remount silently destroyed a persistent error and
        * the user was left with no record of a failed write. State owns the
@@ -1592,6 +1597,343 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     return { ok: true, error: '' };
   };
 
+  /* ───────────────────────────── 🔎 RETRIEVAL — deterministic ranking 📝🔓💥 ─────────────────────────────
+   * [2B] Search used to be a substring filter that returned records in manual
+   * order, duplicated in the Simple and Edit renderers. Two copies of a
+   * selection rule drift; and a library of any size makes "the thing I use"
+   * hard to reach. This block is the single source for BOTH renderers.
+   *
+   * Everything here is pure: it reads a list and returns a view. It never
+   * mutates the authoritative array, never mutates a record, and never writes
+   * storage. Integer arithmetic only — no floating-point scores, so an order
+   * is reproducible across calls and across machines.
+   *
+   * Ranking applies to SAVED PROMPT RECORDS ONLY. History, Drafts, Pasted and
+   * Quick keep the substring behaviour their own renderers already implement;
+   * their occurrence-addressed markup is a Phase 1 safety contract. */
+
+  const PM_RANK_TITLE_EXACT = 1000;
+  const PM_RANK_TITLE_PREFIX = 800;
+  const PM_RANK_TITLE_WORD = 600;
+  const PM_RANK_TITLE_INCLUDES = 400;
+  const PM_RANK_BODY_WORD = 200;
+  const PM_RANK_BODY_INCLUDES = 100;
+  const PM_RANK_NO_MATCH = 0;
+
+  const PM_RANK_FAVORITE_BOOST = 150;
+  const PM_RANK_RECENT_7D_BOOST = 60;
+  const PM_RANK_RECENT_30D_BOOST = 30;
+  const PM_RANK_USE_UNIT = 5;
+  const PM_RANK_USE_CAP = 10;          // → maximum usage boost 50
+
+  const PM_DAY_MS = 86400000;
+  const PM_RANK_WINDOW_7D = 7 * PM_DAY_MS;
+  const PM_RANK_WINDOW_30D = 30 * PM_DAY_MS;
+
+  /* Optional usage metadata. Absent is the normal case for every record written
+   * before 2B, so absence must read as zero rather than as corruption. */
+  const ENGINE_PM_normUsageTs = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const ENGINE_PM_normUseCount = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    if (!Number.isInteger(n)) return 0;
+    return n >= 0 ? n : 0;
+  };
+
+  /* A query is user text, so it reaches RegExp only escaped. `c++`, `a.b`,
+   * `(x)` and friends must match literally instead of throwing or matching
+   * something the user never typed. */
+  const ENGINE_PM_escapeRegex = (s) => String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  /* Word-boundary containment. Both sides are already lowercased by the caller.
+   * A query that cannot express a boundary (punctuation-only, say) simply
+   * reports false and the plain `includes` tiers still apply. */
+  const ENGINE_PM_hasWordBoundary = (hayLower, qLower) => {
+    if (!hayLower || !qLower) return false;
+    return SAFE_try('ENGINE_PM_hasWordBoundary', () => {
+      const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${ENGINE_PM_escapeRegex(qLower)}`, 'u');
+      return re.test(hayLower);
+    }, false);
+  };
+
+  /* Highest matching tier only — tiers never stack. 0 means "exclude". */
+  const ENGINE_PM_rankBase = (rec, qLower) => {
+    const title = String(rec && rec.title != null ? rec.title : '').toLowerCase();
+    const body = String(rec && rec.body != null ? rec.body : '').toLowerCase();
+    if (title === qLower) return PM_RANK_TITLE_EXACT;
+    if (title.startsWith(qLower)) return PM_RANK_TITLE_PREFIX;
+    if (ENGINE_PM_hasWordBoundary(title, qLower)) return PM_RANK_TITLE_WORD;
+    if (title.includes(qLower)) return PM_RANK_TITLE_INCLUDES;
+    if (ENGINE_PM_hasWordBoundary(body, qLower)) return PM_RANK_BODY_WORD;
+    if (body.includes(qLower)) return PM_RANK_BODY_INCLUDES;
+    return PM_RANK_NO_MATCH;
+  };
+
+  /* Recency is a single bucket: the 7-day and 30-day boosts never stack. */
+  const ENGINE_PM_recencyBoost = (lastUsedAt, now) => {
+    const t = ENGINE_PM_normUsageTs(lastUsedAt);
+    if (t <= 0) return 0;
+    const age = Number(now) - t;
+    if (!Number.isFinite(age) || age < 0) return 0;
+    if (age <= PM_RANK_WINDOW_7D) return PM_RANK_RECENT_7D_BOOST;
+    if (age <= PM_RANK_WINDOW_30D) return PM_RANK_RECENT_30D_BOOST;
+    return 0;
+  };
+
+  const ENGINE_PM_usageBoost = (useCount) =>
+    Math.min(ENGINE_PM_normUseCount(useCount), PM_RANK_USE_CAP) * PM_RANK_USE_UNIT;
+
+  /* Rank a list against a query.
+   *
+   * Empty query is NOT a degenerate search: it is the library view, and it is
+   * ordered by favourites-then-manual-position ONLY. Letting recency or use
+   * count reorder an unsearched library makes it feel like it moves on its own,
+   * so those signals are deliberately not consulted here.
+   *
+   * Returns view entries { prompt, originalIndex, score }; the input array and
+   * its records are never touched. */
+  const ENGINE_PM_rankPrompts = (list, query, now) => {
+    const arr = Array.isArray(list) ? list : [];
+    const entries = [];
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      if (!p || typeof p !== 'object') continue;
+      entries.push({ prompt: p, originalIndex: i, score: 0 });
+    }
+
+    const q = String(query == null ? '' : query).trim().toLowerCase();
+
+    if (!q) {
+      // Favourites pinned above the rest; manual order preserved inside each group.
+      return entries.slice().sort((a, b) => {
+        const fa = a.prompt.favorite ? 1 : 0, fb = b.prompt.favorite ? 1 : 0;
+        if (fa !== fb) return fb - fa;
+        return a.originalIndex - b.originalIndex;
+      });
+    }
+
+    const scored = [];
+    for (const e of entries) {
+      const base = ENGINE_PM_rankBase(e.prompt, q);
+      if (base === PM_RANK_NO_MATCH) continue;      // non-matches are excluded
+      const score = base
+        + (e.prompt.favorite ? PM_RANK_FAVORITE_BOOST : 0)
+        + ENGINE_PM_recencyBoost(e.prompt.lastUsedAt, now)
+        + ENGINE_PM_usageBoost(e.prompt.useCount);
+      scored.push({ prompt: e.prompt, originalIndex: e.originalIndex, score });
+    }
+
+    /* Tie-break chain, in order. The final original-index key is mandatory: it
+     * is what keeps the Phase 7 manual order authoritative whenever every
+     * ranking signal ties, and it makes the total order deterministic. */
+    return scored.sort((a, b) => {
+      if (a.score !== b.score) return b.score - a.score;
+      const fa = a.prompt.favorite ? 1 : 0, fb = b.prompt.favorite ? 1 : 0;
+      if (fa !== fb) return fb - fa;
+      const la = ENGINE_PM_normUsageTs(a.prompt.lastUsedAt), lb = ENGINE_PM_normUsageTs(b.prompt.lastUsedAt);
+      if (la !== lb) return lb - la;
+      const ua = ENGINE_PM_normUseCount(a.prompt.useCount), ub = ENGINE_PM_normUseCount(b.prompt.useCount);
+      if (ua !== ub) return ub - ua;
+      return a.originalIndex - b.originalIndex;
+    });
+  };
+
+  /* The one selection path both renderers use: category filter → favourites
+   * filter → ranking. Simple and Edit cannot disagree about what a query
+   * returns, because there is nothing left to disagree with. */
+  const ENGINE_PM_selectPromptView = (list, category, query, now) => {
+    const arr = Array.isArray(list) ? list : [];
+    const cat = String(category || 'all');
+    const filtered = arr.filter(p => {
+      if (!p || typeof p !== 'object') return false;
+      const t = p.type === 'append' ? 'append' : 'prompt';
+      if (cat === 'prompt' && t !== 'prompt') return false;
+      if (cat === 'append' && t !== 'append') return false;
+      if (cat === 'favorites' && !p.favorite) return false;
+      return true;
+    });
+    // Rank against the FILTERED list so originalIndex indexes the rendered view,
+    // while relative manual order inside the filter is preserved.
+    return ENGINE_PM_rankPrompts(filtered, query, now);
+  };
+
+  /* [2B-fix2] A manual move is only allowed when performing it actually MOVES
+   * the card the user pressed.
+   *
+   * The first closure asked "is the current view the manual order?" and, if so,
+   * allowed the move. That was insufficient, and the failure is subtle: a view
+   * can equal manual order BEFORE the move, pass, and then have ranking put the
+   * card straight back where it was. Storage changes; the screen does not.
+   *
+   *   manual [A*, B, C]   view [A, B, C]        (A is favourite, already first)
+   *   A down -> candidate [B, A*, C]            <- persistent order CHANGED
+   *   rerank             -> [A, B, C]           <- favourites-first puts A back
+   *
+   * The user sees nothing move and reasonably concludes nothing happened, while
+   * their manual order has silently been rewritten. The same thing happens under
+   * a search whose ranking happens to agree with manual order.
+   *
+   * So the authority is the PROPOSED MOVE, not the current view. For one
+   * specific (target, direction):
+   *
+   *   1. expected  - the rendered order with the target moved one visible slot
+   *   2. candidate - ENGINE_PM_reorderVisible on the real list (helper unchanged)
+   *   3. reranked  - ENGINE_PM_selectPromptView over that candidate (unchanged)
+   *   4. allow only when reranked is EXACTLY expected
+   *
+   * Nothing is inferred from query presence, from favourite flags, or from score
+   * arithmetic: the decision is made by running the real ranker over the real
+   * candidate and looking at the answer. Up and down are asked separately,
+   * because one can be honest while the other is a no-op.
+   *
+   * Pure: reorderVisible and selectPromptView both build new arrays, so no input
+   * is mutated and nothing is written. Fails closed on anything it cannot trust. */
+  const ENGINE_PM_canMovePromptView = (list, category, query, now, renderedIds, targetId, direction) => {
+    const arr = Array.isArray(list) ? list : [];
+    const ids = (Array.isArray(renderedIds) ? renderedIds : []).filter(v => typeof v === 'string' && v);
+    const dir = (direction === 'up' || direction === 'down') ? direction : null;
+    if (!dir || typeof targetId !== 'string' || !targetId) return false;
+    if (ids.length < 2) return false;                      // nothing to swap with
+
+    // Fail closed on a view we cannot trust: a repeated id, or one that does not
+    // resolve to exactly one record (stale DOM, ghost card, duplicate record).
+    if (new Set(ids).size !== ids.length) return false;
+    for (const id of ids) {
+      let seen = 0;
+      for (const p of arr) { if (p && typeof p === 'object' && p.id === id) seen++; }
+      if (seen !== 1) return false;
+    }
+
+    const at = ids.indexOf(targetId);
+    if (at === -1) return false;
+    const swapWith = (dir === 'up') ? at - 1 : at + 1;
+    if (swapWith < 0 || swapWith >= ids.length) return false;   // already at the edge
+
+    // 1. what the user is asking to see
+    const expected = ids.slice();
+    expected[at] = ids[swapWith];
+    expected[swapWith] = ids[at];
+
+    // 2. what the approved Phase-1 helper would actually persist
+    const candidate = ENGINE_PM_reorderVisible(arr, ids, targetId, dir);
+    if (!candidate) return false;
+
+    // 3. what the shipped ranker would then render
+    const reranked = ENGINE_PM_selectPromptView(candidate, category, query, now).map(v => v.prompt.id);
+
+    // 4. allow only if the move is visible, exactly as requested
+    if (reranked.length !== expected.length) return false;
+    for (let i = 0; i < expected.length; i++) {
+      if (reranked[i] !== expected[i]) return false;
+    }
+    return true;
+  };
+
+  /* [2B-perf] Batch move availability — the production authority.
+   *
+   * ENGINE_PM_canMovePromptView above remains the DEFINITION of correct: build
+   * the candidate with the real reorder helper, rerank it with the real ranker,
+   * and demand the rendered result be exactly the requested move. It is kept,
+   * unchanged, as the correctness oracle the validators compare against.
+   *
+   * It just cannot be the thing rendering calls. Asking it per button meant
+   * N cards × 2 directions × (full-array scan + full reorder + full rerank) on
+   * every keystroke-debounced re-render — quadratic in the library for a row of
+   * arrow buttons.
+   *
+   * The optimisation rests on one fact about manual reorder: swapping two rows
+   * changes ONLY their positions in the array. Title, body, type, favourite,
+   * lastUsedAt and useCount are untouched, so every ranking key ABOVE the final
+   * original-index tie-break is unchanged for every record. Two adjacent rendered
+   * rows can therefore exchange places after a swap if and only if the ranker
+   * separates them by index alone — i.e. they tie on score, favourite, recency
+   * and use count. Any stronger signal would re-impose the old order and the move
+   * would be invisible, which is exactly what the oracle rejects.
+   *
+   * That tie is not re-derived here: the pair is handed to the REAL
+   * ENGINE_PM_rankPrompts in both input orders. If the ranker returns [A,B] for
+   * [A,B] and [B,A] for [B,A], it is following input position and nothing else.
+   * No score arithmetic is copied, so the answer cannot drift from the ranker.
+   *
+   * Cost: one full-view validation and rank, plus N-1 two-record ranks. The
+   * verdict for a pair serves both row i "down" and row i+1 "up".
+   *
+   * Output is occurrence-aligned — one entry per rendered slot, in render order —
+   * so the renderer can walk cards positionally instead of querying by id, and a
+   * duplicated id fails the whole view closed rather than silently addressing the
+   * first matching card twice. Pure: nothing is mutated, nothing is written. */
+  const ENGINE_PM_computeMoveAvailability = (list, category, query, now, renderedIds) => {
+    const ids = Array.isArray(renderedIds) ? renderedIds : null;
+    if (!Array.isArray(list) || !ids) return [];
+    const n = ids.length;
+    if (n === 0) return [];
+
+    // Every refusal returns the same shape with movement denied everywhere, so a
+    // caller can apply the result without needing to know why it failed.
+    const denied = () => ids.map(id => ({ id: (typeof id === 'string' ? id : null), up: false, down: false }));
+
+    for (const id of ids) { if (typeof id !== 'string' || !id) return denied(); }
+    if (new Set(ids).size !== n) return denied();          // duplicate rendered ids
+
+    // ONE pass over the authoritative array builds both the count and the lookup.
+    const byId = new Map();
+    const seen = new Map();
+    for (const rec of list) {
+      if (!rec || typeof rec !== 'object') continue;
+      const id = rec.id;
+      if (typeof id !== 'string' || !id) continue;
+      seen.set(id, (seen.get(id) || 0) + 1);
+      if (!byId.has(id)) byId.set(id, rec);
+    }
+    for (const id of ids) { if (seen.get(id) !== 1) return denied(); }   // ghost or duplicated record
+
+    // The DOM must be showing what the ranker currently produces. Checked once,
+    // not once per button — this is what makes a stale view fail closed cheaply.
+    const current = ENGINE_PM_selectPromptView(list, category, query, now);
+    if (current.length !== n) return denied();
+    for (let i = 0; i < n; i++) { if (current[i].prompt.id !== ids[i]) return denied(); }
+
+    const out = ids.map(id => ({ id, up: false, down: false }));
+    for (let i = 0; i + 1 < n; i++) {
+      const a = byId.get(ids[i]);
+      const b = byId.get(ids[i + 1]);
+      const fwd = ENGINE_PM_rankPrompts([a, b], query, now);
+      const rev = ENGINE_PM_rankPrompts([b, a], query, now);
+      const followsInputOrder =
+        fwd.length === 2 && rev.length === 2 &&
+        fwd[0].prompt === a && fwd[1].prompt === b &&
+        rev[0].prompt === b && rev[1].prompt === a;
+      if (followsInputOrder) { out[i].down = true; out[i + 1].up = true; }
+    }
+    return out;
+  };
+
+  /* Shown on the disabled ▲▼ controls and, if a move is somehow still attempted,
+   * on the status line. Deliberately not an error: nothing failed, the action is
+   * simply not meaningful in a ranked view. */
+  const PM_MSG_RANKED_NO_REORDER = 'Manual order unavailable while results are ranked';
+
+  /* [2B] Usage metadata write. Pure: returns a candidate list, commits nothing.
+   *
+   * `updatedAt` is deliberately NOT touched. That field means "the user edited
+   * this prompt", and using a prompt is not editing it — conflating the two
+   * would make every insertion look like an authoring change. */
+  const ENGINE_PM_touchPromptUsage = (list, id, now) => {
+    const arr = Array.isArray(list) ? list : [];
+    if (id == null || id === '') return arr.slice();
+    return arr.map(p => {
+      if (!p || p.id !== id) return p;
+      return {
+        ...p,
+        lastUsedAt: ENGINE_PM_normUsageTs(now),
+        useCount: ENGINE_PM_normUseCount(p.useCount) + 1,
+      };
+    });
+  };
+
   /* [2A-fix E] Stale-target existence check.
    *
    * An editor opened on an id outlives the record it edits: another surface, a
@@ -2239,6 +2581,20 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           if (!p.type) { p.type = 'prompt'; changed = true; }
           if (!p.createdAt) { p.createdAt = UTIL_now(); changed = true; }
           if (!p.updatedAt) { p.updatedAt = UTIL_now(); changed = true; }
+          /* [2B] Optional usage metadata. ABSENT is left absent on purpose: the
+           * reader normalizes absence to 0, so writing the fields onto every
+           * legacy record would be a mass rewrite with no behavioural gain and
+           * no schema-version story. A field that is PRESENT but invalid is a
+           * different matter — Infinity/NaN/negatives are repaired here, exactly
+           * like a missing `type`, so they can never reach storage or scoring. */
+          if (p.lastUsedAt !== undefined) {
+            const nt = ENGINE_PM_normUsageTs(p.lastUsedAt);
+            if (nt !== p.lastUsedAt) { p.lastUsedAt = nt; changed = true; }
+          }
+          if (p.useCount !== undefined) {
+            const nc = ENGINE_PM_normUseCount(p.useCount);
+            if (nc !== p.useCount) { p.useCount = nc; changed = true; }
+          }
         }
         if (changed && !UTIL_storage.setJSON(KEY_PM_STATE_PROMPTS_V1, arr)) {
           ENGINE_PM_noteWriteFailure('ENGINE_PM.loadPrompts.normalizeWrite');
@@ -2671,6 +3027,9 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
    * something else, otherwise Phase 1's truthful failure reporting would be
    * quietly undone by a 2.5-second timeout. */
   const PM_STATUS_CLEAR_MS = 2500;
+  /* [2B] Typing rerender debounce. Long enough to coalesce a burst of
+   * keystrokes, short enough that the list still feels immediate. */
+  const PM_SEARCH_RENDER_MS = 80;
 
   const FEEDBACK_PM = {
     el(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
@@ -2756,6 +3115,66 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         return true;
       }, false);
     },
+  };
+
+  /* [2B-perf] Apply move availability to the rendered controls.
+   *
+   * ONE batch computation for the whole view, then a positional walk over the
+   * rendered cards. Cards are matched by render position rather than by
+   * `data-id` lookup: with a duplicated id the batch authority already denies
+   * everything, and an id query would otherwise keep finding the first card.
+   *
+   * Post-render and idempotent — it only sets `disabled`, `aria-disabled` and a
+   * title, so the shared Phase-2A card builder keeps its bytes. Buttons stay in
+   * the DOM: a control that vanishes as you type is more confusing than one that
+   * explains why it is unavailable. */
+  const RENDER_PM_applyReorderAvailability = (listEl, items, category, query, now) => {
+    return SAFE_try('RENDER_PM_applyReorderAvailability', () => {
+      if (!listEl) return false;
+      const viewIds = (Array.isArray(items) ? items : [])
+        .map(p => (p && typeof p === 'object') ? p.id : null);
+
+      const availability = ENGINE_PM_computeMoveAvailability(
+        STATE_PM.data.prompts, category, query, now, viewIds);
+
+      const setState = (btn, can) => {
+        if (!btn) return;
+        btn.disabled = !can;
+        btn.setAttribute('aria-disabled', can ? 'false' : 'true');
+        if (can) btn.removeAttribute('title');
+        else btn.setAttribute('title', PM_MSG_RANKED_NO_REORDER);
+      };
+
+      const cards = Array.from(listEl.children || []);
+      let anyEnabled = false;
+      for (let i = 0; i < cards.length; i++) {
+        const card = cards[i];
+        if (!card || !card.querySelector) continue;
+        const slot = availability[i] || { up: false, down: false };
+        setState(card.querySelector(`.cgxui-${SkID}--move[data-act="up"]`), !!slot.up);
+        setState(card.querySelector(`.cgxui-${SkID}--move[data-act="down"]`), !!slot.down);
+        anyEnabled = anyEnabled || !!slot.up || !!slot.down;
+      }
+      return anyEnabled;
+    }, false);
+  };
+
+  /* [2B] Honest empty copy for the Prompt list.
+   *
+   * The old text said "No prompts yet. Open Settings to add." even when the
+   * library was full and a query had simply matched nothing — telling the user
+   * their prompts do not exist while they are looking at a search box. The two
+   * cases are now distinguished, and the instruction to go add one is only
+   * shown when there genuinely is nothing to find. */
+  const RENDER_PM_promptEmptyHtml = (list, query, category) => {
+    const arr = Array.isArray(list) ? list : [];
+    const anyPrompts = arr.some(p => p && typeof p === 'object');
+    const q = String(query == null ? '' : query).trim();
+    const centred = (text) => `<div class="cgxui-${SkID}--prev" style="text-align:center">${UTIL_escapeHtml(text)}</div>`;
+    if (!anyPrompts) return centred('No prompts yet.');
+    if (q) return centred('No matches.');
+    if (String(category) === 'favorites') return centred('No favourites yet.');
+    return centred('No matches.');
   };
 
   /* ───────────────────────────── 🗂️ PROMPT CARD — one builder, two modes 📝🔓💥 ─────────────────────────────
@@ -3193,6 +3612,37 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       editorIsDirty: EDITOR_PM_isDirty,
       editorHasTarget: EDITOR_PM_hasTarget,
       msgTargetGone: PM_MSG_TARGET_GONE,
+      /* [2B] Retrieval helpers. Pure functions only — the validators drive the
+       * shipped ranking rather than a copy of it. Still no widening of the
+       * six-method public API. */
+      rankPrompts: ENGINE_PM_rankPrompts,
+      selectPromptView: ENGINE_PM_selectPromptView,
+      rankBase: ENGINE_PM_rankBase,
+      hasWordBoundary: ENGINE_PM_hasWordBoundary,
+      escapeRegex: ENGINE_PM_escapeRegex,
+      normUsageTs: ENGINE_PM_normUsageTs,
+      normUseCount: ENGINE_PM_normUseCount,
+      touchPromptUsage: ENGINE_PM_touchPromptUsage,
+      /* The exact simulation stays exposed as the correctness ORACLE the
+       * validators compare the optimized authority against. Production renders
+       * and clicks go through computeMoveAvailability. */
+      canMovePromptView: ENGINE_PM_canMovePromptView,
+      computeMoveAvailability: ENGINE_PM_computeMoveAvailability,
+      applyReorderAvailability: RENDER_PM_applyReorderAvailability,
+      msgRankedNoReorder: PM_MSG_RANKED_NO_REORDER,
+      recencyBoost: ENGINE_PM_recencyBoost,
+      usageBoost: ENGINE_PM_usageBoost,
+      promptEmptyHtml: RENDER_PM_promptEmptyHtml,
+      searchRenderMs: PM_SEARCH_RENDER_MS,
+      rank: Object.freeze({
+        titleExact: PM_RANK_TITLE_EXACT, titlePrefix: PM_RANK_TITLE_PREFIX,
+        titleWord: PM_RANK_TITLE_WORD, titleIncludes: PM_RANK_TITLE_INCLUDES,
+        bodyWord: PM_RANK_BODY_WORD, bodyIncludes: PM_RANK_BODY_INCLUDES,
+        noMatch: PM_RANK_NO_MATCH, favorite: PM_RANK_FAVORITE_BOOST,
+        recent7d: PM_RANK_RECENT_7D_BOOST, recent30d: PM_RANK_RECENT_30D_BOOST,
+        useUnit: PM_RANK_USE_UNIT, useCap: PM_RANK_USE_CAP,
+        day: PM_DAY_MS,
+      }),
       editor: EDITOR_PM,
       feedback: FEEDBACK_PM,
       promptCard: RENDER_PM_promptCard,
@@ -3467,6 +3917,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
                 <button type="button" class="cgxui-${SkID}--chip cgxui-${SkID}--chip-active" ${ATTR_CGXUI}="${UI_PM_FILTER_ALL}" ${ATTR_CGXUI_OWNER}="${SkID}">All</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_PROMPTS}" ${ATTR_CGXUI_OWNER}="${SkID}">Prompts</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_APPEND}" ${ATTR_CGXUI_OWNER}="${SkID}">Append</button>
+                <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_FAVORITES}" ${ATTR_CGXUI_OWNER}="${SkID}">★ Favorites</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_QUICK}" ${ATTR_CGXUI_OWNER}="${SkID}">Quick</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_HISTORY}" ${ATTR_CGXUI_OWNER}="${SkID}">History</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_FILTER_DRAFTS}" ${ATTR_CGXUI_OWNER}="${SkID}">Drafts</button>
@@ -3490,6 +3941,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
                 <button type="button" class="cgxui-${SkID}--chip cgxui-${SkID}--chip-active" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_ALL}" ${ATTR_CGXUI_OWNER}="${SkID}">All</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_PROMPTS}" ${ATTR_CGXUI_OWNER}="${SkID}">Prompts</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_APPEND}" ${ATTR_CGXUI_OWNER}="${SkID}">Append</button>
+                <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_FAVORITES}" ${ATTR_CGXUI_OWNER}="${SkID}">★ Favorites</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_QUICK}" ${ATTR_CGXUI_OWNER}="${SkID}">Quick</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_HISTORY}" ${ATTR_CGXUI_OWNER}="${SkID}">History</button>
                 <button type="button" class="cgxui-${SkID}--chip" ${ATTR_CGXUI}="${UI_PM_EDIT_FILTER_DRAFTS}" ${ATTR_CGXUI_OWNER}="${SkID}">Drafts</button>
@@ -3842,6 +4294,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         [UI_PM_FILTER_ALL, 'all'],
         [UI_PM_FILTER_PROMPTS, 'prompt'],
         [UI_PM_FILTER_APPEND, 'append'],
+        [UI_PM_FILTER_FAVORITES, 'favorites'],
         [UI_PM_FILTER_QUICK, 'quick'],
         [UI_PM_FILTER_HISTORY, 'history'],
         [UI_PM_FILTER_DRAFTS, 'draft'],
@@ -3859,6 +4312,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         [UI_PM_EDIT_FILTER_ALL, 'all'],
         [UI_PM_EDIT_FILTER_PROMPTS, 'prompt'],
         [UI_PM_EDIT_FILTER_APPEND, 'append'],
+        [UI_PM_EDIT_FILTER_FAVORITES, 'favorites'],
         [UI_PM_EDIT_FILTER_QUICK, 'quick'],
         [UI_PM_EDIT_FILTER_HISTORY, 'history'],
         [UI_PM_EDIT_FILTER_DRAFTS, 'draft'],
@@ -4007,16 +4461,12 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           return;
         }
 
-        // Prompts/Append/All
-        const items = (STATE_PM.data.prompts || []).slice().filter(p => {
-          const t = p.type || 'prompt';
-          if (mode === 'prompt' && t !== 'prompt') return false;
-          if (mode === 'append' && t !== 'append') return false;
-          return (!q || String(p.title || '').toLowerCase().includes(q) || String(p.body || '').toLowerCase().includes(q));
-        });
+        // Prompts/Append/Favorites/All — [2B] one shared selection+ranking path
+        const view = ENGINE_PM_selectPromptView(STATE_PM.data.prompts, mode, q, UTIL_now());
+        const items = view.map(v => v.prompt);
 
         if (items.length === 0) {
-          list.innerHTML = `<div class="cgxui-${SkID}--prev" style="text-align:center">No prompts yet. Open Settings to add.</div>`;
+          list.innerHTML = RENDER_PM_promptEmptyHtml(STATE_PM.data.prompts, q, mode);
           return;
         }
 
@@ -4158,17 +4608,20 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           return;
         }
 
-        // Prompts/Append/All
-        let items = (STATE_PM.data.prompts || []).slice().filter(p =>
-          (!q || String(p.title || '').toLowerCase().includes(q) || String(p.body || '').toLowerCase().includes(q))
-        );
-
-        if (cat === 'prompt') items = items.filter(p => (p.type || 'prompt') === 'prompt');
-        if (cat === 'append') items = items.filter(p => (p.type || 'prompt') === 'append');
+        // Prompts/Append/Favorites/All — [2B] identical selection to Simple
+        const view = ENGINE_PM_selectPromptView(STATE_PM.data.prompts, cat, q, UTIL_now());
+        const items = view.map(v => v.prompt);
 
         list.innerHTML = (items.length === 0)
-          ? `<div class="cgxui-${SkID}--prev" style="text-align:center">No prompts yet. Add one below.</div>`
+          ? RENDER_PM_promptEmptyHtml(STATE_PM.data.prompts, q, cat)
           : items.map(p => RENDER_PM_promptCard(p, { mode: 'edit' })).join('');
+
+        /* [2B-fix] Manual reorder only makes sense while the rendered sequence IS
+         * the manual sequence. This is a POST-RENDER control-state pass on purpose:
+         * the shared Phase-2A card builder stays byte-identical, and the buttons
+         * stay in the DOM (disabled, with an explanation) rather than disappearing
+         * and shifting the card layout under the user. */
+        RENDER_PM_applyReorderAvailability(list, items, cat, q, UTIL_now());
 
         setNewBtn('New prompt', true);
         RENDER_PM_bindPromptTooltips(list, items);
@@ -4195,6 +4648,27 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
     /* Push the canonical value into both inputs. `except` skips the element the
      * user is typing in so the caret is never disturbed. */
+    /* [2B] Debounced rerender. set() above stays synchronous, so both boxes
+     * mirror the canonical query on the very keystroke that produced it; only
+     * the expensive list rebuild waits. ONE owned timer: a newer keystroke
+     * cancels the pending render rather than queueing a second one, so timers
+     * cannot accumulate and disposal drains the single outstanding entry.
+     * Programmatic paths (mode switch, filter chip) still render synchronously. */
+    cancelRender() {
+      if (STATE_PM.ui.searchRenderTimer) {
+        CLEAN_clearTimeout(STATE_PM.ui.searchRenderTimer);
+        STATE_PM.ui.searchRenderTimer = 0;
+      }
+    },
+    scheduleRender(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      SEARCH_PM.cancelRender();
+      STATE_PM.ui.searchRenderTimer = CLEAN_setTimeout(() => {
+        STATE_PM.ui.searchRenderTimer = 0;
+        UI_PM_renderBoth(root);
+      }, PM_SEARCH_RENDER_MS);
+      return true;
+    },
+
     syncInputs(root = (STATE_PM.ui.root || UI_PM.getRoot()), except = null) {
       SAFE_try('SEARCH_PM.syncInputs', () => {
         if (!root) return;
@@ -4532,8 +5006,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       const bindSearch = (el) => {
         if (!el) return;
         const onInput = () => {
-          SEARCH_PM.set(el.value, root, el); // mirror into the other pane
-          UI_PM_renderBoth(root);
+          SEARCH_PM.set(el.value, root, el); // mirror into the other pane — synchronous
+          SEARCH_PM.scheduleRender(root);    // [2B] only the rerender is debounced
         };
         el.addEventListener('input', onInput);
         CLEAN_addFn(() => el.removeEventListener('input', onInput));
@@ -4571,6 +5045,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       bindFilter(UI_PM_FILTER_ALL, 'all');
       bindFilter(UI_PM_FILTER_PROMPTS, 'prompt');
       bindFilter(UI_PM_FILTER_APPEND, 'append');
+      bindFilter(UI_PM_FILTER_FAVORITES, 'favorites');
       bindFilter(UI_PM_FILTER_QUICK, 'quick');
       bindFilter(UI_PM_FILTER_HISTORY, 'history');
       bindFilter(UI_PM_FILTER_DRAFTS, 'draft');
@@ -4587,6 +5062,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       bindEditFilter(UI_PM_EDIT_FILTER_ALL, 'all');
       bindEditFilter(UI_PM_EDIT_FILTER_PROMPTS, 'prompt');
       bindEditFilter(UI_PM_EDIT_FILTER_APPEND, 'append');
+      bindEditFilter(UI_PM_EDIT_FILTER_FAVORITES, 'favorites');
       bindEditFilter(UI_PM_EDIT_FILTER_QUICK, 'quick');
       bindEditFilter(UI_PM_EDIT_FILTER_HISTORY, 'history');
       bindEditFilter(UI_PM_EDIT_FILTER_DRAFTS, 'draft');
@@ -4680,11 +5156,25 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         FEEDBACK_PM.say(res.duplicate ? 'Already saved' : 'Saved', 'info', root);
       };
 
-      /* Record a use without mutating the live record: clone just that entry. */
-      const touchPromptUpdatedAt = (id) => {
-        const now = UTIL_now();
-        const next = (STATE_PM.data.prompts || []).map(p => (p && p.id === id) ? { ...p, updatedAt: now } : p);
-        return ENGINE_PM.commitPrompts(next);
+      /* [2B] Record a USE, not an edit.
+       *
+       * Called only after the composer insertion actually succeeded, and never
+       * on edit/duplicate/favourite/create/convert/reorder. Clones just the one
+       * entry, so the live record is never mutated, and deliberately leaves
+       * updatedAt alone — that field is authoring metadata.
+       *
+       * Truthfulness: the insertion has ALREADY happened by the time this runs.
+       * If the metadata write fails we say so persistently and stop; we do not
+       * re-insert, do not undo the insertion, and do not pretend the counter
+       * moved. commitPrompts adopts nothing on failure, so the authoritative
+       * in-memory list keeps its previous, accurate usage values. */
+      const commitPromptUsage = (id) => {
+        const next = ENGINE_PM_touchPromptUsage(STATE_PM.data.prompts, id, UTIL_now());
+        if (!ENGINE_PM.commitPrompts(next)) {
+          FEEDBACK_PM.say('Storage write failed', 'error', root);
+          return false;
+        }
+        return true;
       };
 
       /* Toggle favourite via a cloned record, then re-render on success only. */
@@ -4810,10 +5300,13 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           if (!p) return;
           const isAppend = (p.type === 'append');
           const okIns = DOM_setInputText(p.body, { append: isAppend, autoSend: ENGINE_PM.getAutoSend() });
-          touchPromptUpdatedAt(id);
           // [2A] Feedback only — insertion semantics and Auto-send are unchanged.
           FEEDBACK_PM.say(okIns === false ? 'Insert failed' : 'Inserted', okIns === false ? 'error' : 'info', root);
-          if (ENGINE_PM.getAutoSend()) closePanel();
+          if (okIns === false) return;                      // [2B] a failed insert is not a use
+          const usageOk = commitPromptUsage(id);
+          if (ENGINE_PM.getAutoSend()) { closePanel(); return; }
+          // [2B] The panel stays open, so reflect the new usage in the ranking.
+          if (usageOk) UI_PM_renderBoth(root);
         };
 
         listSimple.addEventListener('click', on);
@@ -4955,6 +5448,24 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               .map(el => el.getAttribute?.('data-id'))
               .filter(v => typeof v === 'string' && v);
 
+            /* [2B-perf] Ask the SAME batch authority the renderer used, for the
+             * clicked OCCURRENCE and direction, immediately before mutating. A
+             * disabled button normally cannot be clicked, but this also covers
+             * stale DOM, a synthetic dispatch, and the window between render and
+             * click in which favouriting or a keystroke can re-rank the view.
+             * Resolving by rendered position rather than by id means a duplicated
+             * id cannot smuggle the wrong row through. Nothing is committed and
+             * nothing flashes: the move simply does not happen. */
+            const slotIndex = Array.from(listEdit.children).indexOf(card);
+            const availability = ENGINE_PM_computeMoveAvailability(
+              STATE_PM.data.prompts, STATE_PM.ui.editCategory, SEARCH_PM.get(),
+              UTIL_now(), visibleIds);
+            const slot = (slotIndex >= 0) ? availability[slotIndex] : null;
+            if (!slot || slot.id !== id || !slot[dir]) {
+              FEEDBACK_PM.say(PM_MSG_RANKED_NO_REORDER, 'info', root);
+              return;
+            }
+
             const next = ENGINE_PM_reorderVisible(STATE_PM.data.prompts, visibleIds, id, dir);
             if (!next) return;                          // boundary / rejected input → no-op
             if (!ENGINE_PM.commitPrompts(next)) return; // persist before adopting
@@ -4987,9 +5498,11 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
           if (act === 'insert' || act === 'append') {
             const okIns = DOM_setInputText(p.body, { append: act === 'append', autoSend: ENGINE_PM.getAutoSend() });
-            touchPromptUpdatedAt(id);
             FEEDBACK_PM.say(okIns === false ? 'Insert failed' : 'Inserted', okIns === false ? 'error' : 'info', root);
-            if (ENGINE_PM.getAutoSend()) closePanel();
+            if (okIns === false) return;                    // [2B] a failed insert is not a use
+            const usageOk = commitPromptUsage(id);
+            if (ENGINE_PM.getAutoSend()) { closePanel(); return; }
+            if (usageOk) UI_PM_renderBoth(root);
             return;
           }
 

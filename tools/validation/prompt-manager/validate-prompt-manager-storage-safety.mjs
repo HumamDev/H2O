@@ -2274,6 +2274,162 @@ function main() {
     assert.equal(store.getItem(t.keys.migDrafts), null, 'marker unset');
   });
 
+
+  /* ══════════ PHASE 2B — OPTIONAL USAGE METADATA ══════════
+   * lastUsedAt/useCount are OPTIONAL. Every record written before 2B lacks
+   * them, so the whole point of these cases is that absence is ordinary and
+   * costs nothing: no migration, no schema bump, no mass rewrite. */
+
+  const PJ = (arr) => JSON.stringify(arr);
+  const promptsKey = (t) => t.keys.prompts;
+
+  check('2B-M1: records WITHOUT usage metadata load unchanged and are not rewritten', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    const legacy = [
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 },
+      { id: 'p2', title: 'Two', body: 'b', favorite: true, type: 'append', createdAt: 2, updatedAt: 2 },
+    ];
+    const raw = PJ(legacy);
+    store._map.set(promptsKey(t), raw);
+    const loaded = t.engine.loadPrompts();
+    assert.equal(loaded.length, 2);
+    assert.equal(store.getItem(promptsKey(t)), raw,
+      'a legacy record must NOT be rewritten merely because the fields are absent');
+    assert.equal(loaded[0].lastUsedAt, undefined, 'absent stays absent in memory too');
+    assert.equal(loaded[0].useCount, undefined);
+  });
+
+  check('2B-M2: absent metadata reads as 0 through the production normalizers', () => {
+    const { t } = loadModule(makeStorage());
+    assert.equal(t.normUsageTs(undefined), 0);
+    assert.equal(t.normUseCount(undefined), 0);
+    // and therefore contributes no ranking signal
+    const rec = { id: 'a', title: 'alpha', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 };
+    assert.equal(t.rankPrompts([rec], 'alpha', 1_800_000_000_000)[0].score, t.rank.titleExact);
+  });
+
+  check('2B-M3: PRESENT but invalid metadata is repaired on load, like a missing type', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    store._map.set(promptsKey(t), PJ([
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1,
+        lastUsedAt: 'garbage', useCount: -4 },
+    ]));
+    const loaded = t.engine.loadPrompts();
+    assert.equal(loaded[0].lastUsedAt, 0, 'invalid timestamp repaired');
+    assert.equal(loaded[0].useCount, 0, 'negative count repaired');
+    const persisted = JSON.parse(store.getItem(promptsKey(t)));
+    assert.equal(persisted[0].lastUsedAt, 0, 'the repair is written back');
+    assert.equal(persisted[0].useCount, 0);
+  });
+
+  check('2B-M4: invalid metadata can never serialize as Infinity or NaN', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    store._map.set(promptsKey(t), '[{"id":"p1","title":"One","body":"b","favorite":false,"type":"prompt","createdAt":1,"updatedAt":1,"lastUsedAt":1e999,"useCount":1e999}]');
+    t.engine.loadPrompts();
+    const text = store.getItem(promptsKey(t));
+    assert.doesNotMatch(text, /Infinity|NaN/, `serialized payload: ${text}`);
+    const back = JSON.parse(text);
+    assert.equal(back[0].lastUsedAt, 0);
+    assert.equal(back[0].useCount, 0);
+  });
+
+  check('2B-M5: no destructive migration — the metadata introduces no new key and no version bump', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    store._map.set(promptsKey(t), PJ([
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 },
+    ]));
+    const keysBefore = Array.from(store._map.keys()).sort();
+    t.engine.loadPrompts();
+    const keysAfter = Array.from(store._map.keys()).sort();
+    assert.deepEqual(keysAfter, keysBefore, 'loading must not create a key');
+    assert.ok(!keysAfter.some(k => /schema|version|usage|migrate:.*usage/i.test(k)),
+      `no schema/version/usage key may appear: ${keysAfter.join(',')}`);
+  });
+
+  check('2B-M6: a successful usage commit persists both fields and is adopted', () => {
+    const store = makeStorage();
+    const { t, emitted } = loadModule(store);
+    t.state.data.prompts = [
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 7 },
+    ];
+    const NOWX = 1_800_000_000_000;
+    const before = changedEvents(emitted).length;
+    assert.equal(t.engine.commitPrompts(t.touchPromptUsage(t.state.data.prompts, 'p1', NOWX)), true);
+    assert.equal(t.state.data.prompts[0].useCount, 1, 'adopted in memory');
+    assert.equal(t.state.data.prompts[0].lastUsedAt, NOWX);
+    assert.equal(t.state.data.prompts[0].updatedAt, 7, 'usage never touches updatedAt');
+    const persisted = JSON.parse(store.getItem(promptsKey(t)));
+    assert.equal(persisted[0].useCount, 1, 'persisted');
+    assert.equal(persisted[0].lastUsedAt, NOWX);
+    assert.ok(changedEvents(emitted).length > before, 'the commit publishes changed');
+  });
+
+  check('2B-M7: a FAILED usage commit leaves authoritative in-memory metadata unchanged', () => {
+    const store = makeStorage();
+    const { t, emitted } = loadModule(store);
+    t.state.data.prompts = [
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1,
+        lastUsedAt: 500, useCount: 4 },
+    ];
+    const snapshot = PJ(t.state.data.prompts);
+    const failures = t.diag.counters.writeFailures;
+    const events = changedEvents(emitted).length;
+    store.failWrites = true;
+    const ok = t.engine.commitPrompts(t.touchPromptUsage(t.state.data.prompts, 'p1', 999999));
+    store.failWrites = false;
+    assert.equal(ok, false, 'the commit must report failure');
+    assert.equal(PJ(t.state.data.prompts), snapshot,
+      'nothing is adopted, so the authoritative usage values stay accurate');
+    assert.equal(t.state.data.prompts[0].useCount, 4);
+    assert.equal(t.state.data.prompts[0].lastUsedAt, 500);
+    assert.equal(changedEvents(emitted).length, events, 'no changed event on a failed write');
+    assert.ok(t.diag.counters.writeFailures > failures, 'the failure is counted, not hidden');
+  });
+
+  check('2B-M8: a failed usage write does not undo the insertion that already happened', () => {
+    // The insertion is a composer effect, not a storage effect, so the only way
+    // it could be undone is if the failure path re-ran or reverted it. Asserted
+    // against the shipped call site, which the production build cannot expose.
+    const src = readModuleSource();
+    const i = src.indexOf('const commitPromptUsage = (id) => {');
+    assert.notEqual(i, -1, 'commitPromptUsage not found');
+    const block = src.slice(i, src.indexOf('\n      };', i));
+    assert.match(block, /FEEDBACK_PM\.say\('Storage write failed', 'error', root\)/);
+    assert.doesNotMatch(block, /DOM_setInputText/, 'must not re-insert');
+    assert.doesNotMatch(block, /closePanel/, 'must not change panel lifecycle on failure');
+  });
+
+  check('2B-M9: usage metadata survives a load/commit round trip byte-exactly', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    const NOWX = 1_800_000_000_000;
+    store._map.set(promptsKey(t), PJ([
+      { id: 'p1', title: 'One', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1,
+        lastUsedAt: NOWX, useCount: 3 },
+    ]));
+    const loaded = t.engine.loadPrompts();
+    assert.equal(loaded[0].lastUsedAt, NOWX, 'valid metadata is left alone');
+    assert.equal(loaded[0].useCount, 3);
+    assert.equal(t.engine.commitPrompts(loaded), true);
+    const back = JSON.parse(store.getItem(promptsKey(t)));
+    assert.equal(back[0].lastUsedAt, NOWX);
+    assert.equal(back[0].useCount, 3);
+  });
+
+  check('2B-M10: quarantine and seeding remain untouched by the metadata addition', () => {
+    const store = makeStorage();
+    const { t } = loadModule(store);
+    store._map.set(promptsKey(t), '{"broken": [1,2,');
+    const out = t.engine.loadPrompts();
+    assert.deepEqual(Array.from(out), [], 'corrupt still yields an empty list');
+    assert.equal(store.getItem(promptsKey(t)), '{"broken": [1,2,', 'primary bytes preserved');
+    assert.ok(t.diag.counters.corruptReads > 0);
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {
