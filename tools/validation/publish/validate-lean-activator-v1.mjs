@@ -100,9 +100,28 @@ const P3C_SYNC_SUBJECT = "test(publish): authorize synchronized P3C history";
 const P3C_SYNC_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// FINAL Title release synchronization: one explicit merge of the exact current
+// committed main tip into the completed activation/verification/recovery branch,
+// followed by this narrow two-validator authority bridge. B2a/B2b rollback work
+// is deliberately NOT part of this release and is not an ancestor here.
+const P3C_FINAL_SYNC_MERGE_HEAD = "ca482405301ee7c669de585bf43a5aa816f021b3";
+const P3C_FINAL_SYNC_FIRST_PARENT = "74f4c272738d2fc1e48e695564f36a9a3ec96510";
+const P3C_FINAL_SYNC_MAIN_TIP = "0bec56f54ec45d67d508d1b3c83403952cfae058";
+const P3C_FINAL_SYNC_SUBJECT = "test(publish): authorize final Title release synchronization";
+const P3C_FINAL_SYNC_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
+// Batch 1.1 publisher authority at the IMMUTABLE BASE_HEAD. These never move.
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
+// The publisher the FIXTURE actually executes is whatever the current committed
+// tree carries. Until the final release synchronization these were identical to
+// the BASE_HEAD bytes, so one constant covered both roles and the distinction was
+// invisible. Main commit 0bec56f5 ("feat(publish): allow clean worktree staging
+// authority") advanced the publisher, so the two roles are now pinned separately:
+// BASE_HEAD immutability above, executed-fixture bytes here.
+const SYNCED_PUBLISHER_SHA256 = "3c3ab95938c45ffe212a9f8d221ff8923bc75c030e522c9eff74a0ae215a302b";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
 const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
@@ -237,6 +256,15 @@ function currentScopeState() {
     // rather than something inferred from a single hash.
     headParents: (git(ROOT, ["rev-parse", "HEAD^@"], { allowFailure: true }) || "")
       .split("\n").filter(Boolean),
+    // Ordered merge parents as SCALARS. classifyScope normalizes by sorting every
+    // array, which silently destroys parent order, so an array can never carry
+    // "which parent came first". These four survive normalization untouched.
+    headFirstParent: git(ROOT, ["rev-parse", "HEAD^1"], { allowFailure: true }),
+    headSecondParent: git(ROOT, ["rev-parse", "HEAD^2"], { allowFailure: true }),
+    headThirdParent: git(ROOT, ["rev-parse", "HEAD^3"], { allowFailure: true }),
+    parentFirstParent: git(ROOT, ["rev-parse", "HEAD^^1"], { allowFailure: true }),
+    parentSecondParent: git(ROOT, ["rev-parse", "HEAD^^2"], { allowFailure: true }),
+    parentThirdParent: git(ROOT, ["rev-parse", "HEAD^^3"], { allowFailure: true }),
     parentParents: (git(ROOT, ["rev-parse", "HEAD^^@"], { allowFailure: true }) || "")
       .split("\n").filter(Boolean),
     branch: git(ROOT, ["branch", "--show-current"]),
@@ -478,6 +506,30 @@ function classifyScope(state) {
     value.subject === P3C_SYNC_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_SYNC_AUTHORIZED_PATHS);
   if (p3cSyncClean) return "p3c-main-sync-committed";
+  // FINAL release synchronization. The merge's SHAPE is the authority: exactly
+  // two parents, the completed P3C tip first and the exact committed main tip
+  // second. A wrong parent, wrong subject, extra/missing path, staged path or
+  // untracked file all reject. No descendant allowance, no path tolerance.
+  // Exactly two parents, in order, and no third: first the completed P3C tip,
+  // second the exact committed main tip.
+  const finalSyncShapeOk = (first, second, third) =>
+    first === P3C_FINAL_SYNC_FIRST_PARENT && second === P3C_FINAL_SYNC_MAIN_TIP &&
+    (third ?? null) === null;
+  const p3cFinalBase = value.head === P3C_FINAL_SYNC_MERGE_HEAD &&
+    finalSyncShapeOk(value.headFirstParent, value.headSecondParent, value.headThirdParent) &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (p3cFinalBase &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify(P3C_FINAL_SYNC_AUTHORIZED_PATHS)) {
+    return "p3c-final-sync-uncommitted";
+  }
+  const p3cFinalClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === P3C_FINAL_SYNC_MERGE_HEAD &&
+    finalSyncShapeOk(value.parentFirstParent, value.parentSecondParent,
+      value.parentThirdParent) &&
+    value.subject === P3C_FINAL_SYNC_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_FINAL_SYNC_AUTHORIZED_PATHS);
+  if (p3cFinalClean) return "p3c-final-sync-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -1030,7 +1082,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-b1-uncommitted", "p3c-b1-committed",
     "p3c-a3-uncommitted", "p3c-a3-committed",
     "p3c-a3b-uncommitted", "p3c-a3b-committed",
-    "p3c-main-sync-uncommitted", "p3c-main-sync-committed"]
+    "p3c-main-sync-uncommitted", "p3c-main-sync-committed",
+    "p3c-final-sync-uncommitted", "p3c-final-sync-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1159,8 +1212,8 @@ function createRealPublisherBoundaryFixture(label) {
   assert.equal(sha256(pinnedPublisherValidator), BATCH11_VALIDATOR_SHA256,
     "Batch 1.1 publisher validator authority must remain pinned to BASE_HEAD");
   assert.equal(sha256(fs.readFileSync(path.join(repository, PUBLISHER_REL))),
-    BATCH11_PUBLISHER_SHA256,
-    "fixture must execute the exact committed Batch 1.1 publisher");
+    SYNCED_PUBLISHER_SHA256,
+    "fixture must execute the exact committed publisher of the synchronized tree");
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
   copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
   copyFile(path.join(ROOT, PAYLOAD_MODULE_REL), path.join(repository, PAYLOAD_MODULE_REL));
@@ -1746,10 +1799,17 @@ async function runRuntimeTests(api) {
       assert.equal(result.status, 0,
         `real publisher receipt rejected: ${codeOf(result)} ${String(result.stderr).trim()}`);
       const payload = JSON.parse(result.stdout);
+      // Alias evidence for the SYNCHRONIZED tree. Main commit 34dbacc1
+      // ("retire(input-dock): archive obsolete keys rail") moved exactly one
+      // source out of src-runtime-base into retired-features and dropped its
+      // dev-order row, so every count falls by exactly one regular file:
+      // dev-order 246 -> 245, src-runtime-base 151 -> 150, aliases 155 -> 154.
+      // Symlinks are untouched at 5, which is what proves the drop is that one
+      // retirement and not a broken or partial alias build.
       assert.deepEqual(publishedReceipt.validatorResult.alias,
-        { aliasCount: 155, regularFileCount: 150, symlinkCount: 5 });
-      assert.equal(payload.stage.aliases.aliasCount, 155);
-      assert.equal(payload.stage.aliases.regularFileCount, 150);
+        { aliasCount: 154, regularFileCount: 149, symlinkCount: 5 });
+      assert.equal(payload.stage.aliases.aliasCount, 154);
+      assert.equal(payload.stage.aliases.regularFileCount, 149);
       assert.equal(payload.stage.aliases.symlinkCount, 5);
       assert.equal(fs.readFileSync(published.receiptPath).equals(receiptBefore), true);
       const stagedManifestsAfter = JSON.stringify(Object.fromEntries(

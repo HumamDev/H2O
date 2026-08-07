@@ -84,6 +84,17 @@ const P3C_SYNC_SUBJECT = "test(publish): authorize synchronized P3C history";
 const P3C_SYNC_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// FINAL Title release synchronization: one explicit merge of the exact current
+// committed main tip into the completed activation/verification/recovery branch,
+// followed by this narrow two-validator authority bridge. B2a/B2b rollback work
+// is deliberately NOT part of this release and is not an ancestor here.
+const P3C_FINAL_SYNC_MERGE_HEAD = "ca482405301ee7c669de585bf43a5aa816f021b3";
+const P3C_FINAL_SYNC_FIRST_PARENT = "74f4c272738d2fc1e48e695564f36a9a3ec96510";
+const P3C_FINAL_SYNC_MAIN_TIP = "0bec56f54ec45d67d508d1b3c83403952cfae058";
+const P3C_FINAL_SYNC_SUBJECT = "test(publish): authorize final Title release synchronization";
+const P3C_FINAL_SYNC_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 const EXPECTED_SCOPE = 16;
 const EXPECTED_RUNTIME = 130;
@@ -306,6 +317,30 @@ function classifyPayloadScope(state) {
     value.subject === P3C_SYNC_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_SYNC_AUTHORIZED_PATHS);
   if (p3cSyncClean) return "p3c-main-sync-committed";
+  // FINAL release synchronization. The merge's SHAPE is the authority: exactly
+  // two parents, the completed P3C tip first and the exact committed main tip
+  // second. A wrong parent, wrong subject, extra/missing path, staged path or
+  // untracked file all reject. No descendant allowance, no path tolerance.
+  // Exactly two parents, in order, and no third: first the completed P3C tip,
+  // second the exact committed main tip.
+  const finalSyncShapeOk = (first, second, third) =>
+    first === P3C_FINAL_SYNC_FIRST_PARENT && second === P3C_FINAL_SYNC_MAIN_TIP &&
+    (third ?? null) === null;
+  const p3cFinalBase = value.head === P3C_FINAL_SYNC_MERGE_HEAD &&
+    finalSyncShapeOk(value.headFirstParent, value.headSecondParent, value.headThirdParent) &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (p3cFinalBase &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify(P3C_FINAL_SYNC_AUTHORIZED_PATHS)) {
+    return "p3c-final-sync-uncommitted";
+  }
+  const p3cFinalClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === P3C_FINAL_SYNC_MERGE_HEAD &&
+    finalSyncShapeOk(value.parentFirstParent, value.parentSecondParent,
+      value.parentThirdParent) &&
+    value.subject === P3C_FINAL_SYNC_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_FINAL_SYNC_AUTHORIZED_PATHS);
+  if (p3cFinalClean) return "p3c-final-sync-committed";
   throw new Error("P3A source scope mismatch");
 }
 
@@ -321,6 +356,15 @@ function currentScopeState() {
     // rather than something inferred from a single hash.
     headParents: (git(ROOT, ["rev-parse", "HEAD^@"], { allowFailure: true }) || "")
       .split("\n").filter(Boolean),
+    // Ordered merge parents as SCALARS. classifyScope normalizes by sorting every
+    // array, which silently destroys parent order, so an array can never carry
+    // "which parent came first". These four survive normalization untouched.
+    headFirstParent: git(ROOT, ["rev-parse", "HEAD^1"], { allowFailure: true }),
+    headSecondParent: git(ROOT, ["rev-parse", "HEAD^2"], { allowFailure: true }),
+    headThirdParent: git(ROOT, ["rev-parse", "HEAD^3"], { allowFailure: true }),
+    parentFirstParent: git(ROOT, ["rev-parse", "HEAD^^1"], { allowFailure: true }),
+    parentSecondParent: git(ROOT, ["rev-parse", "HEAD^^2"], { allowFailure: true }),
+    parentThirdParent: git(ROOT, ["rev-parse", "HEAD^^3"], { allowFailure: true }),
     parentParents: (git(ROOT, ["rev-parse", "HEAD^^@"], { allowFailure: true }) || "")
       .split("\n").filter(Boolean),
     subject: git(ROOT, ["log", "-1", "--format=%s"]),
