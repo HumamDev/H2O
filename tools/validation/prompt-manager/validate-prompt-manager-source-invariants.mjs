@@ -1126,6 +1126,527 @@ function main() {
     );
   });
 
+  /* ═══════════════════════════ PHASE 2A INVARIANTS ═══════════════════════════
+   * Every assertion below runs against CODE (comments stripped), so explanatory
+   * prose containing words like "prompt", "confirm" or "alert" can never make
+   * them pass or fail. */
+
+  check('[2A] no active native prompt()/confirm()/alert() call remains', () => {
+    // Word-boundary + call syntax, on comment-stripped code only. `.prompt(` and
+    // identifiers such as `convertToPrompt(` are deliberately excluded.
+    for (const name of ['prompt', 'confirm', 'alert']) {
+      const re = new RegExp(`(^|[^\\w.$])${name}\\s*\\(`, 'g');
+      const hits = CODE.match(re) || [];
+      assert.equal(hits.length, 0, `found ${hits.length} active ${name}( call site(s)`);
+    }
+  });
+
+  check('[2A] the editor persists only through the approved commit helpers', () => {
+    const ed = CODE.match(/const EDITOR_PM = \{[\s\S]*?\n  \};/);
+    assert.ok(ed, 'EDITOR_PM block not found');
+    assert.match(ed[0], /ENGINE_PM\.commitPrompts\(/, 'prompt writes must use commitPrompts');
+    assert.match(ed[0], /ENGINE_PM\.commitQuick\(/, 'quick writes must use commitQuick');
+    // No direct storage access from the editor.
+    assert.doesNotMatch(ed[0], /UTIL_storage\.set/, 'editor must not write storage directly');
+    assert.doesNotMatch(ed[0], /localStorage/, 'editor must not touch localStorage directly');
+  });
+
+  check('[2A] a failed editor commit never reports success', () => {
+    const ed = CODE.match(/const EDITOR_PM = \{[\s\S]*?\n  \};/)[0];
+    // Every commit call in the editor is guarded and returns false on failure.
+    const guards = ed.match(/if \(!ENGINE_PM\.commit(Prompts|Quick)\([^)]*\)\)\s*\{[^}]*return false;/g) || [];
+    assert.ok(guards.length >= 4, `expected >=4 guarded commits, found ${guards.length}`);
+    for (const g of guards) {
+      assert.match(g, /'Storage write failed', 'error'/, 'failure must raise an error-kind status');
+    }
+  });
+
+  check('[2A] Phase 2B/auto-send fields are NOT introduced', () => {
+    for (const field of ['lastUsedAt', 'useCount']) {
+      assert.doesNotMatch(CODE, new RegExp(`\\b${field}\\b`), `${field} belongs to Phase 2B`);
+    }
+    /* A per-prompt autoSend PROPERTY must not exist. The pre-existing uses are a
+     * storage-key map entry and the DOM_setInputText option bag — neither is a
+     * record field — so target object literals that also carry `favorite:`,
+     * which is what makes a literal a prompt record. */
+    const recordLiterals = CODE.match(/\{[^{}]*favorite\s*:[^{}]*\}/g) || [];
+    assert.ok(recordLiterals.length > 0, 'no prompt-record literals found to inspect');
+    for (const lit of recordLiterals) {
+      assert.doesNotMatch(lit, /autoSend/, 'prompt records must not carry autoSend in Phase 2A');
+      assert.doesNotMatch(lit, /lastUsedAt|useCount/, 'prompt records must not carry Phase 2B fields');
+    }
+  });
+
+  check('[2A] one shared prompt-card builder serves BOTH render paths', () => {
+    assert.match(CODE, /const RENDER_PM_promptCard = /, 'shared card builder missing');
+    const simple = CODE.match(/renderSimple\(root, filter\)[\s\S]*?\n    \},/);
+    const edit = CODE.match(/renderEdit\(root, filter\)[\s\S]*?\n    \},/);
+    assert.ok(simple && edit, 'renderers not found');
+    assert.match(simple[0], /RENDER_PM_promptCard\(/, 'Simple must use the shared builder');
+    assert.match(edit[0], /RENDER_PM_promptCard\(/, 'Edit must use the shared builder');
+    assert.equal((CODE.match(/RENDER_PM_promptCard\(/g) || []).length, 2,
+      'exactly two call sites — one per renderer, no third copy');
+  });
+
+  check('[2A] one shared prompt-card tooltip binder serves both renderers', () => {
+    assert.match(CODE, /const RENDER_PM_bindPromptTooltips = /);
+    assert.equal((CODE.match(/RENDER_PM_bindPromptTooltips\(/g) || []).length, 2,
+      'exactly two call sites — one per renderer, no third copy');
+  });
+
+  check('[2A] the favourite control is a button carrying aria-pressed', () => {
+    const card = CODE.match(/const RENDER_PM_promptCard = [\s\S]*?\n  \};/)[0];
+    assert.match(card, /<button[^`]*--star/, 'favourite must be a <button>');
+    assert.match(card, /aria-pressed=/, 'favourite must expose aria-pressed');
+    assert.match(card, /aria-label=/, 'favourite must expose an accessible label');
+  });
+
+  check('[2A] the prompt/append type badge is rendered', () => {
+    const card = CODE.match(/const RENDER_PM_promptCard = [\s\S]*?\n  \};/)[0];
+    assert.match(card, /--badge/, 'type badge class missing');
+    assert.match(card, /isAppend \? 'Append' : 'Prompt'/, 'badge must reflect the record type');
+  });
+
+  check('[2A] the two-line preview clamp exists in markup and CSS', () => {
+    assert.match(CODE, /--prev-clamp/, 'clamp class missing from markup');
+    assert.match(CODE, /-webkit-line-clamp:\s*2/, 'CSS clamp missing');
+    assert.match(CODE, /max-height:\s*2\.8em/, 'non-webkit fallback missing');
+  });
+
+  check('[2A] the feedback region is a polite live status region', () => {
+    assert.match(CODE, /role="status"/, 'status role missing');
+    assert.match(CODE, /aria-live="polite"/, 'aria-live missing');
+    assert.equal(CODE.split('="${UI_PM_STATUS}"').length - 1, 1,
+      'exactly one status surface is mounted');
+  });
+
+  check('[2A] error feedback does not auto-clear', () => {
+    const fb = CODE.match(/const FEEDBACK_PM = \{[\s\S]*?\n  \};/)[0];
+    assert.match(fb, /if \(kind !== 'error'\)/, 'auto-clear must be gated to non-error kinds');
+  });
+
+  check('[2A] editor and feedback timers use the OWNED timer helpers', () => {
+    const ed = CODE.match(/const EDITOR_PM = \{[\s\S]*?\n  \};/)[0];
+    const fb = CODE.match(/const FEEDBACK_PM = \{[\s\S]*?\n  \};/)[0];
+    for (const [name, blk] of [['EDITOR_PM', ed], ['FEEDBACK_PM', fb]]) {
+      assert.doesNotMatch(blk, /(^|[^\w.$])setTimeout\s*\(/, `${name} must not call raw setTimeout`);
+      assert.doesNotMatch(blk, /(^|[^\w.$])clearTimeout\s*\(/, `${name} must not call raw clearTimeout`);
+    }
+    assert.match(ed, /CLEAN_setTimeout\(/);
+    assert.match(fb, /CLEAN_setTimeout\(/);
+  });
+
+  check('[2A] Duplicate is offered on prompt cards only, in Edit mode', () => {
+    const card = CODE.match(/const RENDER_PM_promptCard = [\s\S]*?\n  \};/)[0];
+    assert.equal((card.match(/data-act="duplicate"/g) || []).length, 1,
+      'exactly one duplicate control, in the edit branch');
+    // The simple branch is the trailing return; it must not carry the action.
+    const simpleBranch = card.slice(card.lastIndexOf('return `'));
+    assert.doesNotMatch(simpleBranch, /data-act="duplicate"/, 'simple cards must not offer Duplicate');
+  });
+
+  check('[2A] duplicate persists before adopting and leaves no phantom', () => {
+    const dup = CODE.match(/if \(act === 'duplicate'\)[\s\S]*?\n          \}/);
+    assert.ok(dup, 'duplicate handler not found');
+    assert.match(dup[0], /if \(!ENGINE_PM\.commitPrompts\(next\)\)/, 'must persist before adopting');
+    assert.match(dup[0], /ENGINE_PM_buildDuplicate\(/);
+    assert.match(dup[0], /ENGINE_PM_insertAfterId\(/);
+  });
+
+  check('[2A] conversion de-duplication routes through the ONE existing helper', () => {
+    assert.equal((CODE.match(/const convertToPrompt = /g) || []).length, 1,
+      'there must remain exactly one conversion helper');
+    const conv = CODE.match(/const convertToPrompt = [\s\S]*?\n      \};/)[0];
+    assert.match(conv, /ENGINE_PM_findConvDuplicate\(/, 'dedup must live in the shared helper');
+    assert.match(conv, /ENGINE_PM_normalizeConvBody\(/);
+    assert.match(conv, /ENGINE_PM_convTitle\(/);
+  });
+
+  check('[2A] conversion duplicates require same normalized body AND same type', () => {
+    const f = CODE.match(/const ENGINE_PM_findConvDuplicate = [\s\S]*?\n  \};/)[0];
+    assert.match(f, /!== wantType\) continue;/, 'type must be part of the duplicate test');
+    assert.match(f, /ENGINE_PM_normalizeConvBody\(p\.body\) === normBody/, 'body must compare normalized');
+    assert.doesNotMatch(f, /toLowerCase\(\)/, 'case differences must remain distinct');
+    assert.doesNotMatch(f, /\.title/, 'title must never be duplication authority');
+  });
+
+  check('[2A] conversion body normalization is CRLF/CR → LF plus outer trim only', () => {
+    const n = CODE.match(/const ENGINE_PM_normalizeConvBody = [\s\S]*?;\n/)[0];
+    assert.match(n, /replace\(\/\\r\\n\?\/g, '\\n'\)/, 'CRLF and bare CR must both fold to LF');
+    assert.match(n, /\.trim\(\)/, 'outer whitespace must be trimmed');
+    assert.doesNotMatch(n, /toLowerCase|toUpperCase/, 'case must be preserved');
+  });
+
+  check('[2A] prompt and quick delete no longer use a native confirm', () => {
+    const del = CODE.match(/if \(act === 'delete' \|\| act === 'edit'\)[\s\S]*?\n          \}/g) || [];
+    assert.ok(del.length >= 1, 'combined delete/edit handler not found');
+    for (const blk of del) {
+      assert.match(blk, /EDITOR_PM\.open\(/, 'delete must route through the editor');
+      assert.doesNotMatch(blk, /(^|[^\w.$])confirm\s*\(/, 'no native confirm');
+    }
+    assert.match(CODE, /armDelete\(root\)/, 'inline two-step delete arm missing');
+  });
+
+  check('[2A] Escape is consumed by an open editor before the panel closes', () => {
+    const esc = CODE.match(/attachEscClose\(getPanelOpen, closePanel\)[\s\S]*?\n    \},/)[0];
+    assert.match(esc, /EDITOR_PM\.isOpen\(\)/, 'editor must be checked first');
+    const guardIdx = esc.indexOf('EDITOR_PM.isOpen()');
+    const closeIdx = esc.lastIndexOf('closePanel();');
+    assert.ok(guardIdx < closeIdx, 'the editor guard must precede closePanel()');
+  });
+
+  check('[2A] the old inline add-form and its tokens are fully removed', () => {
+    for (const tok of ['UI_PM_ADD_TITLE', 'UI_PM_ADD_BODY', 'UI_PM_ADD_BTN']) {
+      assert.doesNotMatch(CODE, new RegExp(`\\b${tok}\\b`), `${tok} must be gone, not merely unused`);
+    }
+  });
+
+  check('[2A] capture-surface occurrence markup was NOT folded into the card builder', () => {
+    const card = CODE.match(/const RENDER_PM_promptCard = [\s\S]*?\n  \};/)[0];
+    for (const attr of ['data-hidx', 'data-hsnap', 'data-didx', 'data-dsnap', 'data-pidx', 'data-psnap']) {
+      assert.doesNotMatch(card, new RegExp(attr), `${attr} must stay with the capture renderers`);
+    }
+  });
+
+  /* ══════════════ PHASE 2A AUDIT CORRECTIONS ══════════════ */
+
+  check('[fix A] Back consults the editor and cannot switch mode past a dirty one', () => {
+    const back = CODE.match(/if \(btnBack\) \{[\s\S]*?\n      \}/);
+    assert.ok(back, 'Back handler not found');
+    assert.match(back[0], /if \(!EDITOR_PM\.requestBack\(root\)\) return;/,
+      'Back must consult EDITOR_PM.requestBack and bail when denied');
+    const guardIdx = back[0].indexOf('EDITOR_PM.requestBack');
+    const modeIdx = back[0].indexOf("RENDER_PM.setMode(root, 'simple')");
+    assert.ok(guardIdx !== -1 && guardIdx < modeIdx,
+      'the guard must precede the mode switch, not follow it');
+  });
+
+  check('[fix A] requestBack denies on a dirty editor and permits otherwise', () => {
+    const rb = CODE.match(/requestBack\(root\) \{[\s\S]*?\n    \},/);
+    assert.ok(rb, 'requestBack not found');
+    assert.match(rb[0], /if \(!st\.open\) return true;/, 'closed editor permits Back');
+    assert.match(rb[0], /return EDITOR_PM\.cancel\(root\);/,
+      'open editor delegates to cancel(), which returns false while dirty');
+  });
+
+  check('[fix B] boot re-syncs an open editor onto the freshly mounted root', () => {
+    const boot = CODE.match(/RENDER_PM\.setMode\(root, ENGINE_PM\.getUiMode\(\)\);[\s\S]*?renderQuickTray\(root\);/);
+    assert.ok(boot, 'boot render block not found');
+    assert.match(boot[0], /EDITOR_PM\.restore\(root\);/,
+      'a remounted root must reapply surviving editor state');
+  });
+
+  check('[fix B] openPanel restores an open editor instead of focusing the list search', () => {
+    const op = CODE.match(/function UI_PM_openPanel\(opts\) \{[\s\S]*?\n  \}/);
+    assert.ok(op, 'UI_PM_openPanel not found');
+    assert.match(op[0], /const editorRestored = EDITOR_PM\.restore\(root\);/);
+    assert.match(op[0], /if \(editorRestored\) \{ EDITOR_PM\.focusPrimary\(root\); return; \}/,
+      'an open editor must receive focus, not the hidden list search box');
+  });
+
+  check('[fix B] restore() makes Edit mode authoritative before syncing', () => {
+    const r = CODE.match(/restore\(root\) \{[\s\S]*?\n    \},/);
+    assert.ok(r, 'restore not found');
+    const modeIdx = r[0].indexOf("RENDER_PM.setMode(root, 'edit')");
+    const syncIdx = r[0].indexOf('EDITOR_PM.sync(root);\n        return true;');
+    assert.ok(modeIdx !== -1, 'Edit mode must be forced');
+    assert.ok(modeIdx < r[0].lastIndexOf('EDITOR_PM.sync(root)'),
+      'mode must be set BEFORE sync so the editor is never hidden behind the list');
+  });
+
+  check('[fix B] dispose resets transient editor confirmation state', () => {
+    const d = CODE.match(/function CORE_PM_dispose\(\) \{[\s\S]*?\n  \}/);
+    assert.ok(d, 'CORE_PM_dispose not found');
+    assert.match(d[0], /EDITOR_PM\.resetTransient\(\)/,
+      'dispose must drop deleteArmed/discardArmed and the stale timer id');
+  });
+
+  check('[fix B] resetTransient clears both arms and the stale timer id', () => {
+    const rt = CODE.match(/resetTransient\(\) \{[\s\S]*?\n    \},/);
+    assert.ok(rt, 'resetTransient not found');
+    assert.match(rt[0], /st\.deleteArmed = false;/);
+    assert.match(rt[0], /st\.discardArmed = false;/);
+    assert.match(rt[0], /STATE_PM\.ui\.editorDeleteTimer = 0;/);
+    // the unsaved draft must NOT be cleared here
+    assert.doesNotMatch(rt[0], /st\.draft = null|st\.open = false/,
+      'the unsaved draft must survive a transient reset');
+  });
+
+  check('[fix C] conversion title no longer slices raw UTF-16 units', () => {
+    const ct = CODE.match(/const ENGINE_PM_convTitle = [\s\S]*?\n  \};/);
+    assert.ok(ct, 'convTitle not found');
+    assert.doesNotMatch(ct[0], /line\.slice\(0, PM_CONV_TITLE_MAX\)/,
+      'the unsafe UTF-16 slice must be gone');
+    assert.match(ct[0], /Array\.from\(line\)/, 'truncation must iterate code points');
+    assert.match(ct[0], /chars\.slice\(0, PM_CONV_TITLE_MAX\)\.join\(''\)/);
+  });
+
+  check('[fix D] manual feedback hide cancels the pending clear timer', () => {
+    const hide = CODE.match(/hide\(root = \(STATE_PM\.ui\.root \|\| UI_PM\.getRoot\(\)\)\) \{[\s\S]*?\n    \},/);
+    assert.ok(hide, 'FEEDBACK_PM.hide not found');
+    assert.match(hide[0], /FEEDBACK_PM\.clearTimer\(\);/,
+      'hide must cancel any pending owned auto-clear');
+  });
+
+  check('[fix D] closing the editor clears editor-scoped feedback', () => {
+    const close = CODE.match(/close\(root\) \{[\s\S]*?\n    \},/);
+    assert.ok(close, 'EDITOR_PM.close not found');
+    assert.match(close[0], /FEEDBACK_PM\.hide\(root\);/,
+      'a validation error must not outlive the editor that produced it');
+  });
+
+  check('[fix] favourite write failure reports through FEEDBACK_PM', () => {
+    const tf = CODE.match(/const toggleFavorite = [\s\S]*?\n      \};/);
+    assert.ok(tf, 'toggleFavorite not found');
+    assert.match(tf[0], /if \(!ENGINE_PM\.commitPrompts\(next\)\) \{[\s\S]*?FEEDBACK_PM\.say\('Storage write failed', 'error', root\);[\s\S]*?return false;/,
+      'a failed favourite commit must raise persistent error feedback');
+    // the unknown-id early return must stay silent — it never attempted a write
+    const early = tf[0].slice(0, tf[0].indexOf('const now'));
+    assert.doesNotMatch(early, /FEEDBACK_PM/,
+      'an unknown id must not report a storage failure it never attempted');
+  });
+
+  check('[fix] the corrections introduced no Phase 2B/2C surface', () => {
+    for (const pat of [/\blastUsedAt\b/, /\buseCount\b/, /LIBRARY_PM/, /schemaVersion/,
+                       /UI_PM_FILTER_FAV/, /rankPrompts/]) {
+      assert.doesNotMatch(CODE, pat, `Phase 2B/2C surface leaked: ${pat}`);
+    }
+  });
+
+  /* ══════════════ STALE TARGET + PERSISTENT FEEDBACK CLOSURE ══════════════ */
+
+  const SAVE = CODE.match(/    save\(root\) \{[\s\S]*?\n    \},/);
+  const DEL = CODE.match(/    confirmDelete\(root\) \{[\s\S]*?\n    \},/);
+
+  check('[fix E] hasTarget answers existence only, tolerating holes and bad ids', () => {
+    const h = CODE.match(/const EDITOR_PM_hasTarget = [\s\S]*?\n  \};/);
+    assert.ok(h, 'EDITOR_PM_hasTarget not found');
+    assert.match(h[0], /if \(!Array\.isArray\(list\) \|\| id == null \|\| id === ''\) return false;/,
+      'a non-array list or an empty id can never match a target');
+    assert.match(h[0], /return list\.some\(x => x && x\.id === id\);/,
+      'existence is a plain some() over ids — no dedup, no ranking, no repair');
+    // Phase 2A boundary: this must not creep into duplicate-ID policy.
+    assert.doesNotMatch(h[0], /filter|reduce|Map|Set|indexOf|lastIndexOf/,
+      'duplicate-ID semantics are explicitly out of scope for this pass');
+  });
+
+  check('[fix E] edit-mode prompt save checks target existence BEFORE commitPrompts', () => {
+    assert.ok(SAVE, 'EDITOR_PM.save not found');
+    const body = SAVE[0];
+    const tail = body.slice(body.indexOf('const list = STATE_PM.data.prompts'));
+    const guardIdx = tail.indexOf("st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)");
+    const commitIdx = tail.indexOf('ENGINE_PM.commitPrompts(next)');
+    assert.ok(guardIdx !== -1, 'the prompt save path must guard the stale target');
+    assert.ok(commitIdx !== -1 && guardIdx < commitIdx,
+      'the guard must precede the commit, never follow it');
+  });
+
+  check('[fix E] edit-mode quick save checks target existence BEFORE commitQuick', () => {
+    const body = SAVE[0];
+    const q = body.slice(body.indexOf("if (st.kind === 'quick')"), body.indexOf('const title ='));
+    const guardIdx = q.indexOf("st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)");
+    const commitIdx = q.indexOf('ENGINE_PM.commitQuick(next)');
+    assert.ok(guardIdx !== -1, 'the quick save path must guard the stale target');
+    assert.ok(commitIdx !== -1 && guardIdx < commitIdx, 'guard precedes commit');
+  });
+
+  check('[fix E] both save guards are independent and both report the same message', () => {
+    const body = SAVE[0];
+    const guards = body.match(/st\.mode === 'edit' && !EDITOR_PM_hasTarget\(/g) || [];
+    assert.equal(guards.length, 2, 'exactly one guard for Prompt and one for Quick');
+    const says = body.match(/FEEDBACK_PM\.say\(PM_MSG_TARGET_GONE, 'error', root\);/g) || [];
+    assert.equal(says.length, 2, 'each guard reports the stale target persistently');
+  });
+
+  check('[fix E] prompt delete checks target existence BEFORE its commit', () => {
+    assert.ok(DEL, 'EDITOR_PM.confirmDelete not found');
+    const body = DEL[0];
+    const p = body.slice(body.indexOf('const plist = STATE_PM.data.prompts'));
+    const guardIdx = p.indexOf('!EDITOR_PM_hasTarget(plist, st.id)');
+    const filterIdx = p.indexOf('plist.filter(');
+    const commitIdx = p.indexOf('ENGINE_PM.commitPrompts(next)');
+    assert.ok(guardIdx !== -1, 'the prompt delete path must guard the stale target');
+    assert.ok(guardIdx < filterIdx, 'the guard must precede candidate construction');
+    assert.ok(guardIdx < commitIdx, 'the guard must precede the commit');
+  });
+
+  check('[fix E] quick delete checks target existence BEFORE its commit', () => {
+    const body = DEL[0];
+    const q = body.slice(body.indexOf("if (st.kind === 'quick')"), body.indexOf('const plist ='));
+    const guardIdx = q.indexOf('!EDITOR_PM_hasTarget(list, st.id)');
+    const filterIdx = q.indexOf('.filter(q => q && q.id !== st.id)');
+    const commitIdx = q.indexOf('ENGINE_PM.commitQuick(next)');
+    assert.ok(guardIdx !== -1, 'the quick delete path must guard the stale target');
+    assert.ok(guardIdx < filterIdx, 'the guard must precede candidate construction');
+    assert.ok(guardIdx < commitIdx, 'the guard must precede the commit');
+  });
+
+  check('[fix E] a missing target cannot reach the Saved branch', () => {
+    for (const seg of [
+      SAVE[0].slice(SAVE[0].indexOf("if (st.kind === 'quick')"), SAVE[0].indexOf('const title =')),
+      SAVE[0].slice(SAVE[0].indexOf('const list = STATE_PM.data.prompts')),
+    ]) {
+      const guardIdx = seg.indexOf('EDITOR_PM_hasTarget');
+      const savedIdx = seg.indexOf("FEEDBACK_PM.say('Saved', 'info', root)");
+      assert.ok(guardIdx !== -1 && savedIdx !== -1 && guardIdx < savedIdx,
+        'the stale-target guard must dominate the Saved report');
+      // the guard's own branch must return false without committing or closing
+      const branch = seg.slice(guardIdx, seg.indexOf('const next ='));
+      assert.match(branch, /return false;/, 'the guard returns false');
+      assert.doesNotMatch(branch, /ENGINE_PM\.commit(Prompts|Quick)/, 'no commit inside the guard');
+      assert.doesNotMatch(branch, /EDITOR_PM\.close\(/, 'the editor must stay open');
+    }
+  });
+
+  check('[fix E] a missing target cannot reach the Deleted branch', () => {
+    for (const seg of [
+      DEL[0].slice(DEL[0].indexOf("if (st.kind === 'quick')"), DEL[0].indexOf('const plist =')),
+      DEL[0].slice(DEL[0].indexOf('const plist = STATE_PM.data.prompts')),
+    ]) {
+      const guardIdx = seg.indexOf('EDITOR_PM_hasTarget');
+      const delIdx = seg.indexOf("FEEDBACK_PM.say('Deleted', 'info', root)");
+      assert.ok(guardIdx !== -1 && delIdx !== -1 && guardIdx < delIdx,
+        'the stale-target guard must dominate the Deleted report');
+      const branch = seg.slice(guardIdx, seg.indexOf('const next ='));
+      assert.match(branch, /EDITOR_PM\.disarmDelete\(\);/, 'the confirmation must be disarmed');
+      assert.match(branch, /return false;/);
+      assert.doesNotMatch(branch, /ENGINE_PM\.commit(Prompts|Quick)/, 'no commit inside the guard');
+      assert.doesNotMatch(branch, /EDITOR_PM\.close\(/, 'the editor must stay open');
+    }
+  });
+
+  check('[fix E] the stale-target message is a single shared constant', () => {
+    assert.match(CODE, /const PM_MSG_TARGET_GONE = 'Item no longer exists';/,
+      'one constant, so Prompt and Quick can never drift apart');
+    const literals = CODE.match(/'Item no longer exists'/g) || [];
+    assert.equal(literals.length, 1, 'the literal appears exactly once, at its definition');
+  });
+
+  check('[fix E] a vanished item is never recreated, appended or repaired', () => {
+    for (const body of [SAVE[0], DEL[0]]) {
+      const guards = body.split('EDITOR_PM_hasTarget').slice(1);
+      for (const g of guards) {
+        const branch = g.slice(0, g.indexOf('return false;'));
+        assert.doesNotMatch(branch, /concat|push|splice|UTIL_cryptoId/,
+          'a missing target must fail, never be silently re-created');
+      }
+    }
+  });
+
+  check('[fix F] the persistent feedback authority lives in STATE_PM.ui, not storage', () => {
+    const ui = CODE.match(/    ui: \{[\s\S]*?\n    \},/);
+    assert.ok(ui, 'STATE_PM.ui not found');
+    assert.match(ui[0], /feedback: \{ message: '', kind: '' \}/,
+      'the status line needs a state authority to survive a remount');
+    // memory only — no new storage key may be introduced for it
+    assert.doesNotMatch(CODE, /KEY_PM_[A-Z_]*FEEDBACK/, 'feedback must never be persisted to storage');
+    assert.doesNotMatch(CODE, /(setItem|getItem)\([^)]*feedback/i, 'no direct feedback storage access');
+  });
+
+  check('[fix F] say() writes the authority before touching the DOM', () => {
+    const say = CODE.match(/    say\(message, kind = 'info'[\s\S]*?\n    \},/);
+    assert.ok(say, 'FEEDBACK_PM.say not found');
+    const stateIdx = say[0].indexOf('STATE_PM.ui.feedback = {');
+    const elIdx = say[0].indexOf('const el = FEEDBACK_PM.el(root);');
+    assert.ok(stateIdx !== -1, 'say must record the authority');
+    assert.ok(stateIdx < elIdx,
+      'an error raised while the root is missing must still be recorded');
+    assert.match(say[0], /kind === 'error'\) \? 'error' :/, 'the kind is normalised');
+  });
+
+  check('[fix F] say() keeps errors persistent and info auto-clearing', () => {
+    const say = CODE.match(/    say\(message, kind = 'info'[\s\S]*?\n    \},/);
+    assert.match(say[0], /if \(kind !== 'error'\) \{[\s\S]*?CLEAN_setTimeout\(/,
+      'only non-error feedback may schedule an auto-clear');
+    const timerIdx = say[0].indexOf('CLEAN_setTimeout(');
+    const guardIdx = say[0].indexOf("if (kind !== 'error')");
+    assert.ok(guardIdx !== -1 && guardIdx < timerIdx, 'the error guard dominates the timer');
+  });
+
+  check('[fix F] hide() clears the authority as well as the DOM', () => {
+    const hide = CODE.match(/    hide\(root = \(STATE_PM\.ui\.root \|\| UI_PM\.getRoot\(\)\)\) \{[\s\S]*?\n    \},/);
+    assert.ok(hide, 'FEEDBACK_PM.hide not found');
+    assert.match(hide[0], /STATE_PM\.ui\.feedback = \{ message: '', kind: '' \};/,
+      'a dismissal must not leave an error that reappears at the next remount');
+    const clearIdx = hide[0].indexOf('STATE_PM.ui.feedback = {');
+    const elIdx = hide[0].indexOf('const el = FEEDBACK_PM.el(root);');
+    assert.ok(clearIdx < elIdx, 'the authority clears even when no node is mounted');
+  });
+
+  check('[fix F] clearTransient preserves errors and drops everything else', () => {
+    const ct = CODE.match(/    clearTransient\(\) \{[\s\S]*?\n    \},/);
+    assert.ok(ct, 'FEEDBACK_PM.clearTransient not found');
+    assert.match(ct[0], /if \(!fb \|\| fb\.kind === 'error'\) return false;/,
+      'a persistent error must survive disposal');
+    assert.match(ct[0], /STATE_PM\.ui\.feedback = \{ message: '', kind: '' \};/);
+    assert.doesNotMatch(ct[0], /CLEAN_setTimeout|setTimeout/, 'clearing must never create a timer');
+  });
+
+  check('[fix F] restore() re-applies a persistent error and creates no timer', () => {
+    const r = CODE.match(/    restore\(root = \(STATE_PM\.ui\.root \|\| UI_PM\.getRoot\(\)\)\) \{[\s\S]*?\n    \},/);
+    assert.ok(r, 'FEEDBACK_PM.restore not found');
+    assert.match(r[0], /FEEDBACK_PM\.clearTransient\(\);/,
+      'transient feedback is dropped before deciding what to restore');
+    assert.match(r[0], /fb\.kind !== 'error' \|\| !fb\.message\) return false;/,
+      'only a non-empty error is restored');
+    assert.match(r[0], /status-err/, 'error styling is restored, not just the text');
+    assert.doesNotMatch(r[0], /CLEAN_setTimeout|setTimeout/,
+      'a restored error must never be scheduled away');
+    assert.doesNotMatch(r[0], /STATE_PM\.ui\.feedback = \{ message: '', kind: '' \}/,
+      'restore must not consume the authority it just restored');
+  });
+
+  check('[fix F] boot restores persistent feedback AFTER the editor is restored', () => {
+    const boot = CODE.match(/RENDER_PM\.setMode\(root, ENGINE_PM\.getUiMode\(\)\);[\s\S]*?renderQuickTray\(root\);/);
+    assert.ok(boot, 'boot render block not found');
+    const edIdx = boot[0].indexOf('EDITOR_PM.restore(root);');
+    const fbIdx = boot[0].indexOf('FEEDBACK_PM.restore(root);');
+    assert.ok(fbIdx !== -1, 'a remounted root must reapply a surviving persistent error');
+    assert.ok(edIdx !== -1 && edIdx < fbIdx,
+      'editor restoration must not run after — and so risk disturbing — the restored error');
+  });
+
+  check('[fix F] openPanel restores persistent feedback after the editor', () => {
+    const op = CODE.match(/function UI_PM_openPanel\(opts\) \{[\s\S]*?\n  \}/);
+    assert.ok(op, 'UI_PM_openPanel not found');
+    const edIdx = op[0].indexOf('const editorRestored = EDITOR_PM.restore(root);');
+    const fbIdx = op[0].indexOf('FEEDBACK_PM.restore(root);');
+    assert.ok(fbIdx !== -1 && edIdx !== -1 && edIdx < fbIdx);
+  });
+
+  check('[fix F] editor restore() is recovery, not a user action: it clears no feedback', () => {
+    const r = CODE.match(/    restore\(root\) \{[\s\S]*?\n    \},/);
+    assert.ok(r, 'EDITOR_PM.restore not found');
+    assert.doesNotMatch(r[0], /FEEDBACK_PM\.hide\(/,
+      'self-heal must not dismiss the failure the user has not seen resolved');
+    // by contrast open() — a genuine new action — still clears it
+    const open = CODE.match(/    open\(root, \{ kind = 'prompt'[\s\S]*?\n    \},/);
+    assert.ok(open, 'EDITOR_PM.open not found');
+    assert.match(open[0], /FEEDBACK_PM\.hide\(root\);/,
+      'starting a new editor action still supersedes old feedback');
+  });
+
+  check('[fix F] dispose drops transient feedback but keeps a persistent error', () => {
+    const d = CODE.match(/function CORE_PM_dispose\(\) \{[\s\S]*?\n  \}/);
+    assert.ok(d, 'CORE_PM_dispose not found');
+    assert.match(d[0], /FEEDBACK_PM\.clearTransient\(\)/,
+      'an info line whose timer was just drained must not be resurrected');
+    assert.match(d[0], /STATE_PM\.ui\.statusTimer = 0;/, 'the dead timer id is zeroed');
+    assert.doesNotMatch(d[0], /FEEDBACK_PM\.hide\(/,
+      'disposal must not dismiss a persistent error');
+    assert.doesNotMatch(d[0], /FEEDBACK_PM\.say\(/, 'disposal raises no new feedback');
+  });
+
+  check('[fix E/F] the closure introduced no out-of-scope surface', () => {
+    for (const pat of [/mergeConflict/i, /\bonStorageEvent\b/i, /BroadcastChannel/,
+                       /\bexportPrompts\b/, /\bimportPrompts\b/, /autoSend:\s*!!/]) {
+      assert.doesNotMatch(CODE, pat, `out-of-scope surface leaked: ${pat}`);
+    }
+    // duplicate-ID policy stays explicitly deferred
+    assert.doesNotMatch(CODE, /dedupeById|duplicateIdPolicy|resolveDuplicateId/,
+      'duplicate-ID redesign remains outside Phase 2A');
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {

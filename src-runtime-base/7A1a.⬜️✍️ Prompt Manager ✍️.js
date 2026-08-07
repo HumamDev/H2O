@@ -96,9 +96,29 @@
   const UI_PM_LIST_SIMPLE = `${SkID}-list-simple`;
   const UI_PM_LIST_EDIT = `${SkID}-list-edit`;
 
-  const UI_PM_ADD_TITLE = `${SkID}-add-title`;
-  const UI_PM_ADD_BODY = `${SkID}-add-body`;
-  const UI_PM_ADD_BTN = `${SkID}-add-btn`;
+
+  /* [DEFINE][UI][2A] Status line + in-panel editor.
+   * One status surface for the whole panel, and one editor that replaces the
+   * Edit-pane list region. Both live inside the existing panel: no modal, no
+   * second floating layer, no new overlay. */
+  const UI_PM_STATUS = `${SkID}-status`;
+
+  const UI_PM_EDITOR = `${SkID}-editor`;
+  const UI_PM_ED_HEADING = `${SkID}-ed-heading`;
+  const UI_PM_ED_TITLE_ROW = `${SkID}-ed-title-row`;
+  const UI_PM_ED_TITLE = `${SkID}-ed-title`;
+  const UI_PM_ED_TYPE_ROW = `${SkID}-ed-type-row`;
+  const UI_PM_ED_TYPE_PROMPT = `${SkID}-ed-type-prompt`;
+  const UI_PM_ED_TYPE_APPEND = `${SkID}-ed-type-append`;
+  const UI_PM_ED_FAV = `${SkID}-ed-fav`;
+  const UI_PM_ED_BODY = `${SkID}-ed-body`;
+  const UI_PM_ED_SAVE = `${SkID}-ed-save`;
+  const UI_PM_ED_CANCEL = `${SkID}-ed-cancel`;
+  const UI_PM_ED_DELETE = `${SkID}-ed-delete`;
+  const UI_PM_ED_DISCARD = `${SkID}-ed-discard`;
+  const UI_PM_ED_DISCARD_YES = `${SkID}-ed-discard-yes`;
+  const UI_PM_ED_DISCARD_NO = `${SkID}-ed-discard-no`;
+  const UI_PM_NEW_BTN = `${SkID}-new-btn`;
 
   const UI_PM_SETTINGS = `${SkID}-settings`;
   const UI_PM_BACK = `${SkID}-back`;
@@ -405,6 +425,29 @@
       searchQuery: '',
       simpleTypeFilter: 'all', // all|prompt|append|quick|history|draft|pasted
       editCategory: 'all',     // all|prompt|append|quick|history|draft|pasted
+      /* [2A] In-panel editor. One controller drives two field shapes:
+       * kind 'prompt' (title/body/type/favorite) and kind 'quick' (text only).
+       * `initial` is the pristine draft used for dirty comparison; `draft` is
+       * the live one. `deleteArmed` drives the inline two-step delete. */
+      editor: {
+        open: false,
+        kind: 'prompt',   // prompt|quick
+        mode: 'create',   // create|edit
+        id: null,
+        initial: null,
+        draft: null,
+        dirty: false,
+        deleteArmed: false,
+        discardArmed: false,
+      },
+      editorDeleteTimer: 0,
+      statusTimer: 0,
+      /* [2A-fix F] Feedback authority. The status line used to live only in the
+       * DOM, so a self-heal remount silently destroyed a persistent error and
+       * the user was left with no record of a failed write. State owns the
+       * message now; the DOM mirrors it. Memory only — deliberately NOT a
+       * storage key, so nothing survives a page reload. */
+      feedback: { message: '', kind: '' },
     },
     data: {
       prompts: [],
@@ -882,6 +925,20 @@
     const CLS_MOVE_BTNS = `.cgxui-${SkID}--movebtns`;
     const CLS_MOVE = `.cgxui-${SkID}--move`;
 
+    // [2A] card foundation + status + editor
+    const CLS_BADGE = `.cgxui-${SkID}--badge`;
+    const CLS_BADGE_APPEND = `.cgxui-${SkID}--badge-append`;
+    const CLS_PREV_CLAMP = `.cgxui-${SkID}--prev-clamp`;
+    const CLS_STATUS_SHOW = `.cgxui-${SkID}--status-show`;
+    const CLS_STATUS_ERR = `.cgxui-${SkID}--status-err`;
+    const CLS_EDITOR_OPEN = `.cgxui-${SkID}--editor-open`;
+    const CLS_ED_ROW = `.cgxui-${SkID}--ed-row`;
+    const CLS_ED_HEAD = `.cgxui-${SkID}--ed-head`;
+    const CLS_ED_SEG = `.cgxui-${SkID}--ed-seg`;
+    const CLS_ED_DANGER = `.cgxui-${SkID}--ed-danger`;
+    const STATUS = selScoped(UI_PM_STATUS);
+    const EDITOR = selScoped(UI_PM_EDITOR);
+
     const CLS_OVERLAY_SHOW = `.cgxui-${SkID}--overlay-show`;
     const CLS_PANEL_OPEN = `.cgxui-${SkID}--panel-open`;
     const CLS_QUICK_SHOW = `.cgxui-${SkID}--quick-show`;
@@ -1152,8 +1209,83 @@ ${CLS_STAR}{
   font-size:14px;
   user-select:none;
   transition: color .2s ease;
+  /* [2A] Now a real <button>: strip the UA chrome but keep it focusable. */
+  background: transparent;
+  border: 0;
+  padding: 0 2px;
+  line-height: 1;
+  color: inherit;
 }
 ${CLS_STAR}${CLS_STAR_ACTIVE}{ color: #fbbf24; }
+${CLS_STAR}:focus-visible{
+  outline: 2px solid var(--cgxui-${SkID}-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* [2A] Prompt/Append type badge. */
+${CLS_BADGE}{
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--cgxui-${SkID}-border);
+  opacity: .85;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+${CLS_BADGE}${CLS_BADGE_APPEND}{
+  border-color: var(--cgxui-${SkID}-accent);
+  color: var(--cgxui-${SkID}-accent);
+}
+
+/* [2A] Two-line body preview. The stored body is never truncated — this clamps
+ * presentation only, and the existing tooltip remains the path to full text. */
+${CLS_PREV}${CLS_PREV_CLAMP}{
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Fallback for engines without -webkit-line-clamp: cap the height instead. */
+  max-height: 2.8em;
+}
+
+/* [2A] One status surface for the whole panel. */
+${STATUS}{
+  display: none;
+  font-size: 11px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--cgxui-${SkID}-border);
+  background: var(--cgxui-${SkID}-btn);
+}
+${STATUS}${CLS_STATUS_SHOW}{ display: block; }
+${STATUS}${CLS_STATUS_ERR}{
+  border-color: #ef4444;
+  color: #ef4444;
+  font-weight: 700;
+}
+
+/* [2A] In-panel editor. Replaces the Edit-pane list region; it is not a modal,
+ * not an overlay, and not a second floating layer. */
+${EDITOR}{ display: none; gap: 8px; }
+${EDITOR}${CLS_EDITOR_OPEN}{ display: grid; }
+${EDITOR} textarea${CLS_INPUT}{ min-height: 168px; resize: vertical; white-space: pre-wrap; }
+${CLS_ED_ROW}{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+${CLS_ED_HEAD}{ font-weight:700; font-size:12px; letter-spacing:.2px; }
+${CLS_ED_SEG}{
+  display:inline-flex; border:1px solid var(--cgxui-${SkID}-border); border-radius:8px; overflow:hidden;
+}
+${CLS_ED_SEG} button{
+  background: transparent; border:0; color: inherit; font-size:11px; padding:4px 10px; cursor:pointer;
+}
+${CLS_ED_SEG} button[aria-pressed="true"]{
+  background: var(--cgxui-${SkID}-accent); color:#fff; font-weight:700;
+}
+${CLS_ED_DANGER}{ border-color:#ef4444 !important; color:#ef4444 !important; }
 
 ${CLS_ACTIONS}{
   display:flex !important;
@@ -1371,6 +1503,127 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     const next = list.slice();
     slots.forEach((slot, k) => { next[slot] = byId.get(ordered[k]); });
     return next;
+  };
+
+  /* ───────────────────────────── ✍️ PHASE 2A — pure editor/conversion helpers 📄🔒💧 ─────────────────────────────
+   * Deliberately pure: no DOM, no storage, no clock reads except the caller's
+   * supplied `now`. Validators drive these directly, so editor rules are proved
+   * without a browser. None of them writes — every persistence path still goes
+   * through the Phase 1 truthful commit helpers. */
+
+  /* Canonical conversion-body normalization. CRLF and bare CR become LF, outer
+   * whitespace is trimmed, and case / internal spacing / internal line breaks
+   * are preserved exactly. This is the ONLY definition of "same body" used by
+   * conversion de-duplication. */
+  const ENGINE_PM_normalizeConvBody = (text) =>
+    String(text == null ? '' : text).replace(/\r\n?/g, '\n').trim();
+
+  const PM_CONV_TITLE_MAX = 50;
+
+  /* Conversion title from an already-normalized body: first non-empty line,
+   * trimmed, capped, with a single ellipsis when it was actually cut. Falls
+   * back to the caller's label when no meaningful line exists. Manually authored
+   * titles never pass through here. */
+  const ENGINE_PM_convTitle = (normBody, fallbackTitle) => {
+    const line = String(normBody || '')
+      .split('\n')
+      .map(s => s.trim())
+      .find(s => s.length > 0);
+    if (!line) return String(fallbackTitle || 'Untitled');
+    /* [2A-fix C] Truncate by CODE POINT, not by UTF-16 unit. `slice` at a fixed
+     * unit index can cut an astral character (emoji) in half and emit a lone
+     * surrogate, which renders as U+FFFD. Array.from iterates code points, so a
+     * character crossing the boundary is either kept whole or dropped whole.
+     * Grapheme clustering (Intl.Segmenter) is deliberately out of scope here. */
+    const chars = Array.from(line);
+    return (chars.length > PM_CONV_TITLE_MAX)
+      ? `${chars.slice(0, PM_CONV_TITLE_MAX).join('')}…`
+      : line;
+  };
+
+  /* A conversion duplicate requires BOTH the same normalized body AND the same
+   * type. Case differences stay distinct; Prompt and Append stay distinct even
+   * when the text matches. Titles are never duplication authority. */
+  const ENGINE_PM_findConvDuplicate = (list, normBody, type) => {
+    if (!Array.isArray(list)) return null;
+    const wantType = (type === 'append') ? 'append' : 'prompt';
+    for (const p of list) {
+      if (!p || typeof p !== 'object') continue;
+      if (((p.type === 'append') ? 'append' : 'prompt') !== wantType) continue;
+      if (ENGINE_PM_normalizeConvBody(p.body) === normBody) return p;
+    }
+    return null;
+  };
+
+  /* Duplicate record construction. Copies body/type/favorite only — Phase 2A
+   * introduces no usage or auto-send metadata, so there is none to carry. */
+  const ENGINE_PM_buildDuplicate = (src, newId, now) => ({
+    id: String(newId),
+    title: `${String(src && src.title != null ? src.title : '')} (copy)`,
+    body: String(src && src.body != null ? src.body : ''),
+    favorite: !!(src && src.favorite),
+    type: (src && src.type === 'append') ? 'append' : 'prompt',
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  /* Insert `rec` immediately after the record carrying `afterId`. Every other
+   * absolute slot is preserved, so manual ordering stays authoritative. */
+  const ENGINE_PM_insertAfterId = (list, afterId, rec) => {
+    const arr = Array.isArray(list) ? list.slice() : [];
+    const i = arr.findIndex(p => p && p.id === afterId);
+    if (i === -1) { arr.push(rec); return arr; }
+    arr.splice(i + 1, 0, rec);
+    return arr;
+  };
+
+  /* Editor validation. Titles validate trimmed; bodies validate trimmed but are
+   * STORED with internal formatting intact, so multiline round-trips exactly. */
+  const EDITOR_PM_validate = (kind, draft) => {
+    const d = draft || {};
+    if (kind === 'quick') {
+      if (!String(d.text == null ? '' : d.text).trim()) {
+        return { ok: false, error: 'Enter quick reply text' };
+      }
+      return { ok: true, error: '' };
+    }
+    if (!String(d.title == null ? '' : d.title).trim()) return { ok: false, error: 'Enter a title' };
+    if (!String(d.body == null ? '' : d.body).trim()) return { ok: false, error: 'Enter a body' };
+    return { ok: true, error: '' };
+  };
+
+  /* [2A-fix E] Stale-target existence check.
+   *
+   * An editor opened on an id outlives the record it edits: another surface, a
+   * migration, or a second panel can remove it while the editor sits open. The
+   * previous `list.map(x => x.id === id ? {...} : x)` then matched NOTHING, the
+   * unchanged list committed successfully, and the editor closed reporting
+   * "Saved" — a mutation that never happened. Delete had the identical hole via
+   * `filter`. This is the single truth source both paths consult first.
+   *
+   * Scope is deliberately narrow: it answers "does at least one record with
+   * this id still exist", nothing more. Duplicate-ID policy and
+   * "target changed under the same id" remain out of Phase 2A. */
+  const EDITOR_PM_hasTarget = (list, id) => {
+    if (!Array.isArray(list) || id == null || id === '') return false;
+    return list.some(x => x && x.id === id);
+  };
+
+  /* Shown when an edit/delete target has vanished from authoritative state.
+   * Persistent (error kind), because the user's typed work is still on screen
+   * and the failure must not scroll away under a 2.5-second timeout. */
+  const PM_MSG_TARGET_GONE = 'Item no longer exists';
+
+  /* Dirty comparison against the pristine draft. Field-wise rather than
+   * serialized so key order can never produce a phantom dirty state. */
+  const EDITOR_PM_isDirty = (kind, initial, draft) => {
+    const a = initial || {}, b = draft || {};
+    const s = (v) => String(v == null ? '' : v);
+    if (kind === 'quick') return s(a.text) !== s(b.text);
+    return s(a.title) !== s(b.title)
+      || s(a.body) !== s(b.body)
+      || ((a.type === 'append') ? 'append' : 'prompt') !== ((b.type === 'append') ? 'append' : 'prompt')
+      || !!a.favorite !== !!b.favorite;
   };
 
   /* [ENGINE][MIGRATE] Draft migration identity.
@@ -2410,6 +2663,508 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
    * window BEFORE this module is evaluated; in a normal page nothing is defined
    * here, nothing is observed, and no behaviour changes. The six-method public
    * API is untouched either way. */
+  /* ───────────────────────────── 💬 FEEDBACK — one status surface 📝🔓💥 ─────────────────────────────
+   * A single `role="status" aria-live="polite"` line in the panel. Success and
+   * info clear themselves after a short delay through the module's OWNED timer
+   * helper, so disposal cancels them like every other timer here. Errors do NOT
+   * auto-clear: a storage write failure must stay on screen until the user does
+   * something else, otherwise Phase 1's truthful failure reporting would be
+   * quietly undone by a 2.5-second timeout. */
+  const PM_STATUS_CLEAR_MS = 2500;
+
+  const FEEDBACK_PM = {
+    el(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return root ? DOM_q(UI_PM.selOwned(UI_PM_STATUS), root) : null;
+    },
+
+    clearTimer() {
+      if (STATE_PM.ui.statusTimer) {
+        CLEAN_clearTimeout(STATE_PM.ui.statusTimer);
+        STATE_PM.ui.statusTimer = 0;
+      }
+    },
+
+    say(message, kind = 'info', root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('FEEDBACK_PM.say', () => {
+        // A new message always supersedes any pending auto-clear.
+        FEEDBACK_PM.clearTimer();
+        const text = String(message == null ? '' : message);
+        /* [2A-fix F] State first, DOM second. A write failure raised while the
+         * root is missing or mid-remount must still be recorded, otherwise the
+         * one case that most needs a persistent error is the case that loses
+         * it. Return value keeps its old meaning: "was the DOM updated". */
+        STATE_PM.ui.feedback = { message: text, kind: (kind === 'error') ? 'error' : String(kind || 'info') };
+        if (kind !== 'error') {
+          STATE_PM.ui.statusTimer = CLEAN_setTimeout(() => {
+            STATE_PM.ui.statusTimer = 0;
+            FEEDBACK_PM.hide(root);
+          }, PM_STATUS_CLEAR_MS);
+        }
+        const el = FEEDBACK_PM.el(root);
+        if (!el) return false;
+        el.textContent = text;
+        el.classList.add(`cgxui-${SkID}--status-show`);
+        el.classList.toggle(`cgxui-${SkID}--status-err`, kind === 'error');
+        return true;
+      }, false);
+    },
+
+    hide(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('FEEDBACK_PM.hide', () => {
+        /* [2A-fix D] A manual hide must also cancel any pending auto-clear, or
+         * an owned timer survives pointing at a surface that is already empty. */
+        FEEDBACK_PM.clearTimer();
+        /* [2A-fix F] hide() is a dismissal, so it clears the authority as well
+         * as the DOM — including a persistent error. Anything else and a
+         * dismissed failure would reappear at the next remount. */
+        STATE_PM.ui.feedback = { message: '', kind: '' };
+        const el = FEEDBACK_PM.el(root);
+        if (!el) return false;
+        el.textContent = '';
+        el.classList.remove(`cgxui-${SkID}--status-show`);
+        el.classList.remove(`cgxui-${SkID}--status-err`);
+        return true;
+      }, false);
+    },
+
+    /* [2A-fix F] Drop feedback that was only ever meant to be temporary.
+     * Called on disposal/root recovery: an info/success line whose auto-clear
+     * timer was just drained must not be resurrected onto the new root, while a
+     * persistent error must survive untouched. Creates no timer. */
+    clearTransient() {
+      const fb = STATE_PM.ui.feedback;
+      if (!fb || fb.kind === 'error') return false;
+      if (!fb.message && !fb.kind) return false;
+      STATE_PM.ui.feedback = { message: '', kind: '' };
+      return true;
+    },
+
+    /* [2A-fix F] Re-apply a surviving persistent error to a freshly mounted
+     * status node. This is NOT a user action: it must not clear the authority,
+     * and it must not start an auto-clear timer — an error stays until the user
+     * does something that replaces or dismisses it. */
+    restore(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('FEEDBACK_PM.restore', () => {
+        FEEDBACK_PM.clearTransient();
+        const fb = STATE_PM.ui.feedback;
+        if (!fb || fb.kind !== 'error' || !fb.message) return false;
+        const el = FEEDBACK_PM.el(root);
+        if (!el) return false;
+        el.textContent = String(fb.message);
+        el.classList.add(`cgxui-${SkID}--status-show`);
+        el.classList.add(`cgxui-${SkID}--status-err`);
+        return true;
+      }, false);
+    },
+  };
+
+  /* ───────────────────────────── 🗂️ PROMPT CARD — one builder, two modes 📝🔓💥 ─────────────────────────────
+   * Simple and Edit previously carried independent copies of this markup, so
+   * every card change had to be written twice. This is the single source for
+   * PROMPT cards only — History/Drafts/Pasted cards keep their own occurrence-
+   * addressed markup untouched, because their `data-*idx`/`data-*snap` contract
+   * is a Phase 1 safety guarantee.
+   *
+   * Every attribute existing handlers rely on is preserved: `data-id` on the
+   * card, the star class for the favourite hit-test, `data-act` on row actions
+   * and `.--move` for the ordering controls. */
+  const RENDER_PM_promptCard = (p, { mode = 'simple' } = {}) => {
+    const isAppend = (p.type === 'append');
+    const typeLabel = isAppend ? 'Append' : 'Prompt';
+    const fav = !!p.favorite;
+    const star = `<button type="button" class="cgxui-${SkID}--star ${fav ? `cgxui-${SkID}--star-active` : ''}" data-act="favorite" aria-pressed="${fav ? 'true' : 'false'}" aria-label="${fav ? 'Unfavourite' : 'Favourite'} ${UTIL_escapeHtml(p.title)}" title="Favorite">${fav ? '★' : '☆'}</button>`;
+    const badge = `<span class="cgxui-${SkID}--badge ${isAppend ? `cgxui-${SkID}--badge-append` : ''}">${typeLabel}</span>`;
+    const body = `<div class="cgxui-${SkID}--prev cgxui-${SkID}--prev-clamp">${UTIL_escapeHtml(p.body)}</div>`;
+
+    if (mode === 'edit') {
+      return `
+            <div class="cgxui-${SkID}--item" data-id="${UTIL_escapeHtml(p.id)}">
+              <div class="cgxui-${SkID}--title">
+                <span class="cgxui-${SkID}--title-left">
+                  ${star}
+                  <span>${UTIL_escapeHtml(p.title)}</span>
+                  ${badge}
+                </span>
+                <span class="cgxui-${SkID}--movebtns">
+                  <button type="button" class="cgxui-${SkID}--move" data-act="up">▲</button>
+                  <button type="button" class="cgxui-${SkID}--move" data-act="down">▼</button>
+                </span>
+              </div>
+              ${body}
+              <div class="cgxui-${SkID}--actions">
+                <button type="button" class="cgxui-${SkID}--btn" data-act="insert">Insert</button>
+                <button type="button" class="cgxui-${SkID}--btn" data-act="append">Append</button>
+                <button type="button" class="cgxui-${SkID}--btn" data-act="edit">Edit</button>
+                <button type="button" class="cgxui-${SkID}--btn" data-act="duplicate">Duplicate</button>
+                <button type="button" class="cgxui-${SkID}--btn" data-act="delete">Delete</button>
+              </div>
+            </div>
+          `.trim();
+    }
+
+    return `
+          <div class="cgxui-${SkID}--item" data-id="${UTIL_escapeHtml(p.id)}">
+            <div class="cgxui-${SkID}--title">
+              <span class="cgxui-${SkID}--title-left">
+                ${star}
+                <span>${UTIL_escapeHtml(p.title)}</span>
+                ${badge}
+              </span>
+            </div>
+            ${body}
+          </div>
+        `.trim();
+  };
+
+  /* Shared tooltip binding for PROMPT cards only. Capture-surface cards are
+   * deliberately excluded — their binding stays with their own renderer. */
+  const RENDER_PM_bindPromptTooltips = (list, items) => {
+    SAFE_try('RENDER_PM.bindPromptTooltips', () => {
+      if (!list || !Array.isArray(items)) return;
+      for (const p of items) {
+        const el = list.querySelector(`.cgxui-${SkID}--item[data-id="${CSS.escape(p.id)}"]`);
+        if (!el) continue;
+        el.addEventListener('mouseenter', (e) => UI_PM.tooltipShow(e, p.title, p.body));
+        el.addEventListener('mousemove', (e) => UI_PM.tooltipMove(e));
+        el.addEventListener('mouseleave', () => UI_PM.tooltipHide());
+      }
+    }, null);
+  };
+
+  /* ───────────────────────────── ✍️ EDITOR — one controller, two field shapes 📝🔓💥 ─────────────────────────────
+   * Replaces every native prompt()/confirm()/alert() the module used to rely on.
+   * It lives inside the existing panel and swaps the Edit-pane list region for a
+   * form; there is no modal, no overlay and no second floating layer, so the
+   * panel's Phase 1 lifecycle, inert handling and theme authority are untouched.
+   *
+   * Persistence rule inherited from Phase 1 and never relaxed: every write goes
+   * through commitPrompts/commitQuick, and a `false` return keeps the editor
+   * open with the user's typed values intact. The UI must never imply a save
+   * that did not happen. */
+  const PM_DELETE_ARM_MS = 4000;
+
+  const EDITOR_PM = {
+    st() { return STATE_PM.ui.editor; },
+    isOpen() { return !!STATE_PM.ui.editor.open; },
+
+    els(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      if (!root) return null;
+      const g = (t) => DOM_q(UI_PM.selOwned(t), root);
+      return {
+        box: g(UI_PM_EDITOR), heading: g(UI_PM_ED_HEADING),
+        titleRow: g(UI_PM_ED_TITLE_ROW), title: g(UI_PM_ED_TITLE),
+        typeRow: g(UI_PM_ED_TYPE_ROW), tPrompt: g(UI_PM_ED_TYPE_PROMPT), tAppend: g(UI_PM_ED_TYPE_APPEND),
+        fav: g(UI_PM_ED_FAV), body: g(UI_PM_ED_BODY),
+        save: g(UI_PM_ED_SAVE), cancel: g(UI_PM_ED_CANCEL), del: g(UI_PM_ED_DELETE),
+        discard: g(UI_PM_ED_DISCARD),
+        list: g(UI_PM_LIST_EDIT), filters: g(UI_PM_EDIT_FILTER_ROW), newBtn: g(UI_PM_NEW_BTN),
+      };
+    },
+
+    /* Live field values. Titles/quick text are stored trimmed; bodies keep their
+     * internal formatting so multiline round-trips byte-for-byte. */
+    readDraft(root) {
+      const e = EDITOR_PM.els(root);
+      const st = EDITOR_PM.st();
+      if (!e) return st.draft;
+      if (st.kind === 'quick') return { text: String(e.body ? e.body.value : '') };
+      return {
+        title: String(e.title ? e.title.value : ''),
+        body: String(e.body ? e.body.value : ''),
+        type: st.draft && st.draft.type === 'append' ? 'append' : 'prompt',
+        favorite: !!(st.draft && st.draft.favorite),
+      };
+    },
+
+    refreshDirty(root) {
+      const st = EDITOR_PM.st();
+      st.draft = EDITOR_PM.readDraft(root);
+      st.dirty = EDITOR_PM_isDirty(st.kind, st.initial, st.draft);
+      return st.dirty;
+    },
+
+    /* Push editor state into the DOM. */
+    sync(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('EDITOR_PM.sync', () => {
+        const e = EDITOR_PM.els(root); const st = EDITOR_PM.st();
+        if (!e || !e.box) return false;
+        const isQuick = st.kind === 'quick';
+
+        e.box.classList.toggle(`cgxui-${SkID}--editor-open`, !!st.open);
+        if (e.list) e.list.style.display = st.open ? 'none' : '';
+        if (e.filters) e.filters.style.display = st.open ? 'none' : '';
+        if (e.newBtn) e.newBtn.style.display = st.open ? 'none' : '';
+        if (!st.open) return true;
+
+        if (e.heading) {
+          e.heading.textContent = isQuick
+            ? (st.mode === 'create' ? 'Create quick reply' : 'Edit quick reply')
+            : (st.mode === 'create' ? 'Create prompt' : 'Edit prompt');
+        }
+        // Quick replies carry no title, no type and no favourite.
+        if (e.titleRow) e.titleRow.style.display = isQuick ? 'none' : '';
+        if (e.typeRow) e.typeRow.style.display = isQuick ? 'none' : '';
+
+        if (isQuick) {
+          if (e.body && e.body.value !== String(st.draft.text || '')) e.body.value = String(st.draft.text || '');
+          if (e.body) e.body.setAttribute('aria-label', 'Quick reply text');
+        } else {
+          if (e.title && e.title.value !== String(st.draft.title || '')) e.title.value = String(st.draft.title || '');
+          if (e.body && e.body.value !== String(st.draft.body || '')) e.body.value = String(st.draft.body || '');
+          if (e.body) e.body.setAttribute('aria-label', 'Prompt body');
+          const isAppend = st.draft.type === 'append';
+          if (e.tPrompt) e.tPrompt.setAttribute('aria-pressed', isAppend ? 'false' : 'true');
+          if (e.tAppend) e.tAppend.setAttribute('aria-pressed', isAppend ? 'true' : 'false');
+          if (e.fav) {
+            e.fav.setAttribute('aria-pressed', st.draft.favorite ? 'true' : 'false');
+            e.fav.textContent = st.draft.favorite ? '★ Favourite' : '☆ Favourite';
+          }
+        }
+
+        if (e.del) e.del.style.display = (st.mode === 'edit') ? '' : 'none';
+        if (e.del) e.del.textContent = st.deleteArmed ? 'Confirm delete?' : 'Delete';
+        if (e.del) e.del.classList.toggle(`cgxui-${SkID}--ed-danger`, true);
+        if (e.discard) e.discard.style.display = st.discardArmed ? '' : 'none';
+        return true;
+      }, false);
+    },
+
+    open(root, { kind = 'prompt', mode = 'create', id = null, type = 'prompt' } = {}) {
+      return SAFE_try('EDITOR_PM.open', () => {
+        const st = EDITOR_PM.st();
+        EDITOR_PM.disarmDelete();
+        let initial;
+        if (kind === 'quick') {
+          const rec = (mode === 'edit') ? (STATE_PM.data.quick || []).find(x => x && x.id === id) : null;
+          if (mode === 'edit' && !rec) return false;
+          initial = { text: rec ? String(rec.text || '') : '' };
+        } else {
+          const rec = (mode === 'edit') ? (STATE_PM.data.prompts || []).find(x => x && x.id === id) : null;
+          if (mode === 'edit' && !rec) return false;
+          initial = rec
+            ? { title: String(rec.title || ''), body: String(rec.body || ''), type: (rec.type === 'append') ? 'append' : 'prompt', favorite: !!rec.favorite }
+            : { title: '', body: '', type: (type === 'append') ? 'append' : 'prompt', favorite: false };
+        }
+        st.open = true; st.kind = kind; st.mode = mode; st.id = id;
+        st.initial = initial;
+        st.draft = JSON.parse(JSON.stringify(initial));
+        st.dirty = false; st.discardArmed = false;
+        EDITOR_PM.sync(root);
+        FEEDBACK_PM.hide(root);
+        const e = EDITOR_PM.els(root);
+        try { (kind === 'quick' ? e.body : e.title)?.focus?.(); } catch {}
+        return true;
+      }, false);
+    },
+
+    close(root) {
+      const st = EDITOR_PM.st();
+      EDITOR_PM.disarmDelete();
+      st.open = false; st.id = null; st.initial = null; st.draft = null;
+      st.dirty = false; st.discardArmed = false;
+      EDITOR_PM.sync(root);
+      /* [2A-fix D] Editor-scoped feedback (e.g. a validation error) must not
+       * outlive the editor. Callers that follow with 'Saved'/'Deleted' simply
+       * overwrite this cleared state. */
+      FEEDBACK_PM.hide(root);
+      return true;
+    },
+
+    /* [2A-fix A] Mode authority for the Edit → Simple Back action.
+     *   editor closed → true  (Back may proceed)
+     *   clean editor  → close, then true
+     *   dirty editor  → arm the inline discard strip and return FALSE, so the
+     *                   caller must NOT switch mode; otherwise the editor would
+     *                   be hidden while still open and Escape would act on it. */
+    requestBack(root) {
+      const st = EDITOR_PM.st();
+      if (!st.open) return true;
+      return EDITOR_PM.cancel(root);
+    },
+
+    /* [2A-fix B] Transient confirmation state must never survive a remount. The
+     * unsaved draft itself does survive — losing typed work to a self-heal would
+     * be worse than the stale-arm it prevents. */
+    resetTransient() {
+      EDITOR_PM.disarmDelete();
+      const st = EDITOR_PM.st();
+      st.deleteArmed = false;
+      st.discardArmed = false;
+      STATE_PM.ui.editorDeleteTimer = 0;
+    },
+
+    /* [2A-fix B] Re-apply editor state to a freshly mounted or reopened root.
+     * When the editor is open, Edit mode is made authoritative BEFORE syncing so
+     * the editor can never be left hidden behind the Simple list. */
+    restore(root) {
+      return SAFE_try('EDITOR_PM.restore', () => {
+        const st = EDITOR_PM.st();
+        EDITOR_PM.resetTransient();
+        if (!st.open) { EDITOR_PM.sync(root); return false; }
+        ENGINE_PM.setUiMode('edit');
+        RENDER_PM.setMode(root, 'edit');
+        EDITOR_PM.sync(root);
+        return true;
+      }, false);
+    },
+
+    /* Focus the field the current shape actually edits. */
+    focusPrimary(root) {
+      return SAFE_try('EDITOR_PM.focusPrimary', () => {
+        const e = EDITOR_PM.els(root); const st = EDITOR_PM.st();
+        if (!e || !st.open) return false;
+        (st.kind === 'quick' ? e.body : e.title)?.focus?.();
+        return true;
+      }, false);
+    },
+
+    /* Cancel: clean editors close at once; dirty editors arm the inline discard
+     * strip instead of calling confirm(). */
+    cancel(root) {
+      const st = EDITOR_PM.st();
+      if (!st.open) return false;
+      EDITOR_PM.refreshDirty(root);
+      if (!st.dirty) { EDITOR_PM.close(root); return true; }
+      st.discardArmed = true;
+      EDITOR_PM.sync(root);
+      return false;
+    },
+
+    keepEditing(root) {
+      EDITOR_PM.st().discardArmed = false;
+      EDITOR_PM.sync(root);
+      return true;
+    },
+
+    disarmDelete() {
+      if (STATE_PM.ui.editorDeleteTimer) {
+        CLEAN_clearTimeout(STATE_PM.ui.editorDeleteTimer);
+        STATE_PM.ui.editorDeleteTimer = 0;
+      }
+      EDITOR_PM.st().deleteArmed = false;
+    },
+
+    /* Two-step delete. The arm expires through the module's owned timer helper,
+     * so disposal cancels it with every other timer. */
+    armDelete(root) {
+      const st = EDITOR_PM.st();
+      st.deleteArmed = true;
+      EDITOR_PM.sync(root);
+      if (STATE_PM.ui.editorDeleteTimer) CLEAN_clearTimeout(STATE_PM.ui.editorDeleteTimer);
+      STATE_PM.ui.editorDeleteTimer = CLEAN_setTimeout(() => {
+        STATE_PM.ui.editorDeleteTimer = 0;
+        st.deleteArmed = false;
+        EDITOR_PM.sync(root);
+      }, PM_DELETE_ARM_MS);
+      return true;
+    },
+
+    save(root) {
+      return SAFE_try('EDITOR_PM.save', () => {
+        const st = EDITOR_PM.st();
+        if (!st.open) return false;
+        st.draft = EDITOR_PM.readDraft(root);
+
+        const v = EDITOR_PM_validate(st.kind, st.draft);
+        if (!v.ok) { FEEDBACK_PM.say(v.error, 'error', root); return false; }
+
+        const now = UTIL_now();
+
+        if (st.kind === 'quick') {
+          const text = String(st.draft.text || '').trim();
+          const list = STATE_PM.data.quick || [];
+          /* [2A-fix E] The target must still exist in AUTHORITATIVE state. With
+           * zero matches the map below is an identity transform, the commit
+           * succeeds on an unchanged list, and the editor reports a save that
+           * changed nothing. Fail truthfully instead: no commit, editor stays
+           * open, every typed field preserved. Never recreate or append. */
+          if (st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)) {
+            FEEDBACK_PM.say(PM_MSG_TARGET_GONE, 'error', root);
+            return false;
+          }
+          const next = (st.mode === 'create')
+            ? list.concat([{ id: UTIL_cryptoId(), text, order: list.length, createdAt: now, updatedAt: now }])
+            : list.map(x => (x && x.id === st.id) ? { ...x, text, updatedAt: now } : x);
+          // Truthful persistence: a failed commit keeps the editor and the values.
+          if (!ENGINE_PM.commitQuick(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+          EDITOR_PM.close(root);
+          RENDER_PM.renderEdit(root, SEARCH_PM.get());
+          RENDER_PM.renderQuickTray(root);
+          FEEDBACK_PM.say('Saved', 'info', root);
+          return true;
+        }
+
+        const title = String(st.draft.title || '').trim();
+        const body = String(st.draft.body || '');
+        const type = (st.draft.type === 'append') ? 'append' : 'prompt';
+        const favorite = !!st.draft.favorite;
+        const list = STATE_PM.data.prompts || [];
+        /* [2A-fix E] Same stale-target guard as Quick, applied independently. */
+        if (st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)) {
+          FEEDBACK_PM.say(PM_MSG_TARGET_GONE, 'error', root);
+          return false;
+        }
+        const next = (st.mode === 'create')
+          ? list.concat([{ id: UTIL_cryptoId(), title, body, favorite, type, createdAt: now, updatedAt: now }])
+          : list.map(x => (x && x.id === st.id) ? { ...x, title, body, favorite, type, updatedAt: now } : x);
+        if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+        EDITOR_PM.close(root);
+        UI_PM_renderBoth(root);
+        FEEDBACK_PM.say('Saved', 'info', root);
+        return true;
+      }, false);
+    },
+
+    confirmDelete(root) {
+      return SAFE_try('EDITOR_PM.confirmDelete', () => {
+        const st = EDITOR_PM.st();
+        if (!st.open || st.mode !== 'edit' || !st.id) return false;
+
+        if (st.kind === 'quick') {
+          const list = STATE_PM.data.quick || [];
+          /* [2A-fix E] A vanished target makes the filter below a no-op, so the
+           * unchanged list would commit and the editor would announce
+           * "Deleted". Disarm the confirmation, keep the editor, say so. */
+          if (!EDITOR_PM_hasTarget(list, st.id)) {
+            EDITOR_PM.disarmDelete();
+            /* refreshDirty before sync: sync() writes st.draft back into the
+             * fields, so without re-reading them first the guard would revert
+             * whatever the user had typed. */
+            EDITOR_PM.refreshDirty(root);
+            EDITOR_PM.sync(root);
+            FEEDBACK_PM.say(PM_MSG_TARGET_GONE, 'error', root);
+            return false;
+          }
+          const next = list
+            .filter(q => q && q.id !== st.id)
+            .map((q, i) => ({ ...q, order: i }));
+          if (!ENGINE_PM.commitQuick(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+          EDITOR_PM.close(root);
+          RENDER_PM.renderEdit(root, SEARCH_PM.get());
+          RENDER_PM.renderQuickTray(root);
+          FEEDBACK_PM.say('Deleted', 'info', root);
+          return true;
+        }
+
+        const plist = STATE_PM.data.prompts || [];
+        /* [2A-fix E] Same stale-target guard as Quick, applied independently. */
+        if (!EDITOR_PM_hasTarget(plist, st.id)) {
+          EDITOR_PM.disarmDelete();
+          EDITOR_PM.refreshDirty(root);
+          EDITOR_PM.sync(root);
+          FEEDBACK_PM.say(PM_MSG_TARGET_GONE, 'error', root);
+          return false;
+        }
+        const next = plist.filter(x => x && x.id !== st.id);
+        if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+        EDITOR_PM.close(root);
+        UI_PM_renderBoth(root);
+        FEEDBACK_PM.say('Deleted', 'info', root);
+        return true;
+      }, false);
+    },
+  };
+
   if (W.__H2O_PM_TEST__ === true) {
     MOD_OBJ.__test = Object.freeze({
       version: MOD_VERSION,
@@ -2426,6 +3181,24 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       normDraftTs: ENGINE_PM_normDraftTs,
       normDraftText: ENGINE_PM_normDraftText,
       verifyCaptureOccurrence: ENGINE_PM_verifyCaptureOccurrence,
+      /* [2A] Editor/conversion helpers. Pure functions plus the live editor
+       * controller, so validators exercise production logic rather than a copy.
+       * Nothing here widens the six-method public API. */
+      normalizeConvBody: ENGINE_PM_normalizeConvBody,
+      convTitle: ENGINE_PM_convTitle,
+      findConvDuplicate: ENGINE_PM_findConvDuplicate,
+      buildDuplicate: ENGINE_PM_buildDuplicate,
+      insertAfterId: ENGINE_PM_insertAfterId,
+      editorValidate: EDITOR_PM_validate,
+      editorIsDirty: EDITOR_PM_isDirty,
+      editorHasTarget: EDITOR_PM_hasTarget,
+      msgTargetGone: PM_MSG_TARGET_GONE,
+      editor: EDITOR_PM,
+      feedback: FEEDBACK_PM,
+      promptCard: RENDER_PM_promptCard,
+      convTitleMax: PM_CONV_TITLE_MAX,
+      deleteArmMs: PM_DELETE_ARM_MS,
+      statusClearMs: PM_STATUS_CLEAR_MS,
       readKinds: Object.freeze({ absent: PM_READ_ABSENT, corrupt: PM_READ_CORRUPT, valid: PM_READ_VALID }),
       keys: Object.freeze({
         prompts: KEY_PM_STATE_PROMPTS_V1,
@@ -2577,7 +3350,16 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
     attachEscClose(getPanelOpen, closePanel) {
       const onKey = (e) => {
-        if (e.key === 'Escape' && getPanelOpen()) closePanel();
+        if (e.key !== 'Escape' || !getPanelOpen()) return;
+        /* [2A] While the editor is open Escape means "cancel the editor", never
+         * "close the panel". A dirty editor arms the inline discard strip
+         * instead of discarding silently. */
+        if (EDITOR_PM.isOpen()) {
+          e.stopPropagation();
+          EDITOR_PM.cancel(STATE_PM.ui.root || UI_PM.getRoot());
+          return;
+        }
+        closePanel();
       };
       D.addEventListener('keydown', onKey);
       CLEAN_addFn(() => D.removeEventListener('keydown', onKey));
@@ -2669,6 +3451,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           <div ${ATTR_CGXUI}="${UI_PM_OVERLAY}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true"></div>
 
           <div ${ATTR_CGXUI}="${UI_PM_PANEL}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true" inert>
+            <div class="cgxui-${SkID}--status" ${ATTR_CGXUI}="${UI_PM_STATUS}" ${ATTR_CGXUI_OWNER}="${SkID}" role="status" aria-live="polite"></div>
+
             <div ${ATTR_CGXUI}="${UI_PM_MODE_SIMPLE}" ${ATTR_CGXUI_OWNER}="${SkID}">
               <div class="cgxui-${SkID}--top">
                 <input class="cgxui-${SkID}--input" ${ATTR_CGXUI}="${UI_PM_SEARCH_SIMPLE}" ${ATTR_CGXUI_OWNER}="${SkID}" placeholder="Search prompts…" />
@@ -2714,10 +3498,39 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
               <div class="cgxui-${SkID}--list" ${ATTR_CGXUI}="${UI_PM_LIST_EDIT}" ${ATTR_CGXUI_OWNER}="${SkID}"></div>
 
+              <div class="cgxui-${SkID}--editor" ${ATTR_CGXUI}="${UI_PM_EDITOR}" ${ATTR_CGXUI_OWNER}="${SkID}">
+                <div class="cgxui-${SkID}--ed-head" ${ATTR_CGXUI}="${UI_PM_ED_HEADING}" ${ATTR_CGXUI_OWNER}="${SkID}">Create prompt</div>
+
+                <div class="cgxui-${SkID}--ed-row" ${ATTR_CGXUI}="${UI_PM_ED_TITLE_ROW}" ${ATTR_CGXUI_OWNER}="${SkID}">
+                  <input class="cgxui-${SkID}--input" ${ATTR_CGXUI}="${UI_PM_ED_TITLE}" ${ATTR_CGXUI_OWNER}="${SkID}" placeholder="Title" aria-label="Prompt title" style="flex:1 1 auto" />
+                </div>
+
+                <div class="cgxui-${SkID}--ed-row" ${ATTR_CGXUI}="${UI_PM_ED_TYPE_ROW}" ${ATTR_CGXUI_OWNER}="${SkID}">
+                  <span class="cgxui-${SkID}--ed-seg" role="group" aria-label="Prompt type">
+                    <button type="button" ${ATTR_CGXUI}="${UI_PM_ED_TYPE_PROMPT}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-pressed="true">Prompt</button>
+                    <button type="button" ${ATTR_CGXUI}="${UI_PM_ED_TYPE_APPEND}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-pressed="false">Append</button>
+                  </span>
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_ED_FAV}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-pressed="false" aria-label="Favourite">☆ Favourite</button>
+                </div>
+
+                <textarea class="cgxui-${SkID}--input" ${ATTR_CGXUI}="${UI_PM_ED_BODY}" ${ATTR_CGXUI_OWNER}="${SkID}" placeholder="Body…" aria-label="Prompt body"></textarea>
+
+                <div class="cgxui-${SkID}--ed-row" ${ATTR_CGXUI}="${UI_PM_ED_DISCARD}" ${ATTR_CGXUI_OWNER}="${SkID}" style="display:none">
+                  <span style="font-size:11px">Discard changes?</span>
+                  <button type="button" class="cgxui-${SkID}--btn cgxui-${SkID}--ed-danger" ${ATTR_CGXUI}="${UI_PM_ED_DISCARD_YES}" ${ATTR_CGXUI_OWNER}="${SkID}">Discard</button>
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_ED_DISCARD_NO}" ${ATTR_CGXUI_OWNER}="${SkID}">Keep editing</button>
+                </div>
+
+                <div class="cgxui-${SkID}--ed-row">
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_ED_SAVE}" ${ATTR_CGXUI_OWNER}="${SkID}">Save</button>
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_ED_CANCEL}" ${ATTR_CGXUI_OWNER}="${SkID}">Cancel</button>
+                  <span style="flex:1 1 auto"></span>
+                  <button type="button" class="cgxui-${SkID}--btn cgxui-${SkID}--ed-danger" ${ATTR_CGXUI}="${UI_PM_ED_DELETE}" ${ATTR_CGXUI_OWNER}="${SkID}">Delete</button>
+                </div>
+              </div>
+
               <div style="border-top:1px solid var(--cgxui-${SkID}-border); margin-top:10px; padding-top:10px; display:grid; gap:6px;">
-                <input class="cgxui-${SkID}--input" ${ATTR_CGXUI}="${UI_PM_ADD_TITLE}" ${ATTR_CGXUI_OWNER}="${SkID}" placeholder="New prompt title" />
-                <textarea class="cgxui-${SkID}--input" ${ATTR_CGXUI}="${UI_PM_ADD_BODY}" ${ATTR_CGXUI_OWNER}="${SkID}" placeholder="New prompt body…" style="min-height:90px"></textarea>
-                <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_ADD_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}">Add Prompt</button>
+                <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_NEW_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}">New prompt</button>
               </div>
             </div>
           </div>
@@ -3207,36 +4020,25 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           return;
         }
 
-        list.innerHTML = items.map(p => `
-          <div class="cgxui-${SkID}--item" data-id="${UTIL_escapeHtml(p.id)}">
-            <div class="cgxui-${SkID}--title">
-              <span class="cgxui-${SkID}--title-left">
-                <span class="cgxui-${SkID}--star ${p.favorite ? `cgxui-${SkID}--star-active` : ''}" title="Favorite">${p.favorite ? '★' : '☆'}</span>
-                <span>${UTIL_escapeHtml(p.title)}</span>
-              </span>
-            </div>
-            <div class="cgxui-${SkID}--prev">${UTIL_escapeHtml(p.body)}</div>
-          </div>
-        `.trim()).join('');
-
-        // Tooltips
-        for (const p of items) {
-          const el = list.querySelector(`.cgxui-${SkID}--item[data-id="${CSS.escape(p.id)}"]`);
-          if (!el) continue;
-          el.addEventListener('mouseenter', (e) => UI_PM.tooltipShow(e, p.title, p.body));
-          el.addEventListener('mousemove', (e) => UI_PM.tooltipMove(e));
-          el.addEventListener('mouseleave', () => UI_PM.tooltipHide());
-        }
+        list.innerHTML = items.map(p => RENDER_PM_promptCard(p, { mode: 'simple' })).join('');
+        RENDER_PM_bindPromptTooltips(list, items);
       }, null);
     },
 
     renderEdit(root, filter) {
       SAFE_try('RENDER_PM.renderEdit', () => {
         const list = DOM_q(UI_PM.selOwned(UI_PM_LIST_EDIT), root);
-        const addTitle = DOM_q(UI_PM.selOwned(UI_PM_ADD_TITLE), root);
-        const addBody = DOM_q(UI_PM.selOwned(UI_PM_ADD_BODY), root);
-        const addBtn = DOM_q(UI_PM.selOwned(UI_PM_ADD_BTN), root);
-        if (!list || !addTitle || !addBody || !addBtn) return;
+        const newBtn = DOM_q(UI_PM.selOwned(UI_PM_NEW_BTN), root);
+        if (!list) return;
+
+        /* [2A] The old inline add-form is gone; creation now runs through
+         * EDITOR_PM. This only sets the affordance for the active category. */
+        const setNewBtn = (label, enabled) => {
+          if (!newBtn) return;
+          newBtn.textContent = label;
+          newBtn.disabled = !enabled;
+          newBtn.title = enabled ? label : 'Recorded automatically — no manual add';
+        };
 
         const q = String(filter || '').trim().toLowerCase();
         const cat = STATE_PM.ui.editCategory;
@@ -3260,11 +4062,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               </div>
             `.trim()).join('');
 
-          addTitle.disabled = false;
-          addTitle.placeholder = 'New quick reply text';
-          addBody.style.display = 'none';
-          addBtn.disabled = false;
-          addBtn.textContent = 'Add Quick Reply';
+          setNewBtn('New quick reply', true);
           return;
         }
 
@@ -3294,11 +4092,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               `.trim();
             }).join('');
 
-          addTitle.placeholder = 'History is recorded automatically (no manual add)';
-          addTitle.disabled = true;
-          addBody.style.display = 'none';
-          addBtn.disabled = true;
-          addBtn.textContent = 'Add Prompt';
+          setNewBtn('New prompt', false);
           return;
         }
 
@@ -3329,11 +4123,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               `.trim();
             }).join('');
 
-          addTitle.placeholder = 'Drafts are saved automatically on close/reload (no manual add)';
-          addTitle.disabled = true;
-          addBody.style.display = 'none';
-          addBtn.disabled = true;
-          addBtn.textContent = 'Add Prompt';
+          setNewBtn('New prompt', false);
           return;
         }
 
@@ -3364,11 +4154,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               `.trim();
             }).join('');
 
-          addTitle.placeholder = 'Pasted text is recorded automatically (no manual add)';
-          addTitle.disabled = true;
-          addBody.style.display = 'none';
-          addBtn.disabled = true;
-          addBtn.textContent = 'Add Prompt';
+          setNewBtn('New prompt', false);
           return;
         }
 
@@ -3382,42 +4168,10 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
         list.innerHTML = (items.length === 0)
           ? `<div class="cgxui-${SkID}--prev" style="text-align:center">No prompts yet. Add one below.</div>`
-          : items.map(p => `
-            <div class="cgxui-${SkID}--item" data-id="${UTIL_escapeHtml(p.id)}">
-              <div class="cgxui-${SkID}--title">
-                <span class="cgxui-${SkID}--title-left">
-                  <span class="cgxui-${SkID}--star ${p.favorite ? `cgxui-${SkID}--star-active` : ''}" title="Favorite">${p.favorite ? '★' : '☆'}</span>
-                  <span>${UTIL_escapeHtml(p.title)}</span>
-                </span>
-                <span class="cgxui-${SkID}--movebtns">
-                  <button type="button" class="cgxui-${SkID}--move" data-act="up">▲</button>
-                  <button type="button" class="cgxui-${SkID}--move" data-act="down">▼</button>
-                </span>
-              </div>
-              <div class="cgxui-${SkID}--prev">${UTIL_escapeHtml(p.body)}</div>
-              <div class="cgxui-${SkID}--actions">
-                <button type="button" class="cgxui-${SkID}--btn" data-act="insert">Insert</button>
-                <button type="button" class="cgxui-${SkID}--btn" data-act="append">Append</button>
-                <button type="button" class="cgxui-${SkID}--btn" data-act="edit">Edit</button>
-                <button type="button" class="cgxui-${SkID}--btn" data-act="delete">Delete</button>
-              </div>
-            </div>
-          `.trim()).join('');
+          : items.map(p => RENDER_PM_promptCard(p, { mode: 'edit' })).join('');
 
-        addTitle.disabled = false;
-        addTitle.placeholder = 'New prompt title';
-        addBody.style.display = 'block';
-        addBtn.disabled = false;
-        addBtn.textContent = 'Add Prompt';
-
-        // Tooltips
-        for (const p of items) {
-          const el = list.querySelector(`.cgxui-${SkID}--item[data-id="${CSS.escape(p.id)}"]`);
-          if (!el) continue;
-          el.addEventListener('mouseenter', (e) => UI_PM.tooltipShow(e, p.title, p.body));
-          el.addEventListener('mousemove', (e) => UI_PM.tooltipMove(e));
-          el.addEventListener('mouseleave', () => UI_PM.tooltipHide());
-        }
+        setNewBtn('New prompt', true);
+        RENDER_PM_bindPromptTooltips(list, items);
       }, null);
     },
   };
@@ -3484,8 +4238,21 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     SEARCH_PM.syncInputs(root);
     UI_PM_renderBoth(root);
 
+    /* [2A-fix B] If an editor was open when the panel closed, restore it rather
+     * than presenting the list. restore() makes Edit mode authoritative first,
+     * so the editor can never be left hidden behind the Simple list. */
+    const editorRestored = EDITOR_PM.restore(root);
+    /* [2A-fix F] After the status node exists and the editor has been restored,
+     * re-apply any persistent error. Order matters: restore() is a recovery
+     * step, not a user action, so it leaves the authority alone — only
+     * EDITOR_PM.open() and an explicit hide() are allowed to clear it. */
+    FEEDBACK_PM.restore(root);
+
     if (opts?.focus !== false) {
-      SAFE_try('UI_PM.openPanel.focus', () => SEARCH_PM.activeInput(root)?.focus?.(), null);
+      SAFE_try('UI_PM.openPanel.focus', () => {
+        if (editorRestored) { EDITOR_PM.focusPrimary(root); return; }
+        SEARCH_PM.activeInput(root)?.focus?.();
+      }, null);
     }
     return UI_PM_isPanelOpen();
   }
@@ -3842,6 +4609,10 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       }
       if (btnBack) {
         const on = () => {
+          /* [2A-fix A] An open editor owns this action. A dirty editor denies the
+           * mode switch and arms the inline discard strip instead of being
+           * silently hidden while still open. */
+          if (!EDITOR_PM.requestBack(root)) return;
           RENDER_PM.setMode(root, 'simple');
           SEARCH_PM.syncInputs(root);
           RENDER_PM.renderSimple(root, SEARCH_PM.get());
@@ -3875,19 +4646,38 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       /* Convert a captured item into a saved prompt.
        * One shared implementation: the candidate is built without touching the
        * live array, persisted, and adopted only on success. */
+      /* [2A] Still the ONE conversion path for History/Drafts/Pasted. Now it
+       * refuses to create a second copy of something already saved, and derives
+       * a readable title from the first non-empty line.
+       *
+       * Returns { ok, created, duplicate } so callers can report truthfully:
+       * "already saved" is a success with created=false, NOT an error. */
       const convertToPrompt = (text, act, fallbackTitle) => {
-        const body = String(text || '');
+        const type = (act === 'append') ? 'append' : 'prompt';
+        const body = ENGINE_PM_normalizeConvBody(text);
+        if (!body) return { ok: false, created: false, duplicate: false };
+
+        const dup = ENGINE_PM_findConvDuplicate(STATE_PM.data.prompts, body, type);
+        if (dup) return { ok: true, created: false, duplicate: true };
+
         const now = UTIL_now();
         const next = (STATE_PM.data.prompts || []).concat([{
           id: UTIL_cryptoId(),
-          title: (body.slice(0, 40) || fallbackTitle),
+          title: ENGINE_PM_convTitle(body, fallbackTitle),
           body,
           favorite: false,
-          type: (act === 'append') ? 'append' : 'prompt',
+          type,
           createdAt: now,
           updatedAt: now,
         }]);
-        return ENGINE_PM.commitPrompts(next);
+        const ok = ENGINE_PM.commitPrompts(next);
+        return { ok, created: ok, duplicate: false };
+      };
+
+      /* Report a conversion outcome on the shared status line. */
+      const reportConversion = (res) => {
+        if (!res || !res.ok) { FEEDBACK_PM.say('Storage write failed', 'error', root); return; }
+        FEEDBACK_PM.say(res.duplicate ? 'Already saved' : 'Saved', 'info', root);
       };
 
       /* Record a use without mutating the live record: clone just that entry. */
@@ -3903,7 +4693,14 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         if (!list.some(p => p && p.id === id)) return false;
         const now = UTIL_now();
         const next = list.map(p => (p && p.id === id) ? { ...p, favorite: !p.favorite, updatedAt: now } : p);
-        if (!ENGINE_PM.commitPrompts(next)) return false;
+        if (!ENGINE_PM.commitPrompts(next)) {
+          /* [2A-fix] Report only a genuine write failure. An unknown id returned
+           * false above without ever attempting a commit, so it stays silent.
+           * The visible favourite state is unchanged because the re-render below
+           * is skipped — persistence semantics are untouched. */
+          FEEDBACK_PM.say('Storage write failed', 'error', root);
+          return false;
+        }
         UI_PM_renderBoth(root);
         return true;
       };
@@ -3932,7 +4729,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               return;
             }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From history');
+              reportConversion(convertToPrompt(item.text, act, 'From history'));
               return;
             }
             return;
@@ -3955,7 +4752,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               return;
             }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From draft');
+              reportConversion(convertToPrompt(item.text, act, 'From draft'));
               return;
             }
             return;
@@ -3978,7 +4775,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
               return;
             }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From pasted');
+              reportConversion(convertToPrompt(item.text, act, 'From pasted'));
               return;
             }
             return;
@@ -3996,8 +4793,11 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           }
 
           // Favorite toggle
-          if (e.target.classList.contains(`cgxui-${SkID}--star`)) {
-            const card = e.target.closest(`.cgxui-${SkID}--item`);
+          const starBtn = e.target.closest(`.cgxui-${SkID}--star`);
+          if (starBtn) {
+            // Favourite must never also trigger card insertion.
+            e.stopPropagation();
+            const card = starBtn.closest(`.cgxui-${SkID}--item`);
             toggleFavorite(card?.getAttribute('data-id'));
             return;
           }
@@ -4009,8 +4809,10 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           const p = STATE_PM.data.prompts.find(x => x.id === id);
           if (!p) return;
           const isAppend = (p.type === 'append');
-          DOM_setInputText(p.body, { append: isAppend, autoSend: ENGINE_PM.getAutoSend() });
+          const okIns = DOM_setInputText(p.body, { append: isAppend, autoSend: ENGINE_PM.getAutoSend() });
           touchPromptUpdatedAt(id);
+          // [2A] Feedback only — insertion semantics and Auto-send are unchanged.
+          FEEDBACK_PM.say(okIns === false ? 'Insert failed' : 'Inserted', okIns === false ? 'error' : 'info', root);
           if (ENGINE_PM.getAutoSend()) closePanel();
         };
 
@@ -4041,7 +4843,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             const act = e.target.getAttribute('data-hact') || '';
             if (act === 'insert') { DOM_setInputText(item.text, { append: false, autoSend: false }); return; }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From history');
+              reportConversion(convertToPrompt(item.text, act, 'From history'));
               return;
             }
             if (act === 'delete') {
@@ -4073,7 +4875,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             const act = e.target.getAttribute('data-dact') || '';
             if (act === 'insert') { DOM_setInputText(item.text, { append: false, autoSend: false }); return; }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From draft');
+              reportConversion(convertToPrompt(item.text, act, 'From draft'));
               return;
             }
             if (act === 'delete') {
@@ -4103,7 +4905,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             const act = e.target.getAttribute('data-pact') || '';
             if (act === 'insert') { DOM_setInputText(item.text, { append: false, autoSend: false }); return; }
             if (act === 'prompt' || act === 'append') {
-              convertToPrompt(item.text, act, 'From pasted');
+              reportConversion(convertToPrompt(item.text, act, 'From pasted'));
               return;
             }
             if (act === 'delete') {
@@ -4128,30 +4930,11 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             const idx = STATE_PM.data.quick.findIndex(q => q.id === qid);
             if (idx === -1) return;
 
-            if (act === 'delete') {
-              if (confirm('Delete this quick reply?')) {
-                const next = STATE_PM.data.quick
-                  .filter(q => q.id !== qid)
-                  .map((q, i) => ({ ...q, order: i }));
-                if (ENGINE_PM.commitQuick(next)) {
-                  RENDER_PM.renderEdit(root, SEARCH_PM.get());
-                  RENDER_PM.renderQuickTray(root);
-                }
-              }
-              return;
-            }
-            if (act === 'edit') {
-              const cur = STATE_PM.data.quick[idx];
-              const newText = prompt('Edit quick reply:', cur.text || '');
-              if (newText === null) return;
-              const now = UTIL_now();
-              const next = STATE_PM.data.quick.map(q =>
-                (q.id === qid) ? { ...q, text: String(newText).trim(), updatedAt: now } : q
-              );
-              if (ENGINE_PM.commitQuick(next)) {
-                RENDER_PM.renderEdit(root, SEARCH_PM.get());
-                RENDER_PM.renderQuickTray(root);
-              }
+            /* [2A] Both paths now open the shared editor: delete goes through the
+             * editor's inline two-step confirmation, edit through its form. */
+            if (act === 'delete' || act === 'edit') {
+              EDITOR_PM.open(root, { kind: 'quick', mode: 'edit', id: qid });
+              if (act === 'delete') EDITOR_PM.armDelete(root);
               return;
             }
             return;
@@ -4183,8 +4966,11 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           }
 
           // Favorite
-          if (e.target.classList.contains(`cgxui-${SkID}--star`)) {
-            const card = e.target.closest(`.cgxui-${SkID}--item`);
+          const starBtn = e.target.closest(`.cgxui-${SkID}--star`);
+          if (starBtn) {
+            // Favourite must never also trigger card insertion.
+            e.stopPropagation();
+            const card = starBtn.closest(`.cgxui-${SkID}--item`);
             toggleFavorite(card?.getAttribute('data-id'));
             return;
           }
@@ -4200,30 +4986,29 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           if (!act) return;
 
           if (act === 'insert' || act === 'append') {
-            DOM_setInputText(p.body, { append: act === 'append', autoSend: ENGINE_PM.getAutoSend() });
+            const okIns = DOM_setInputText(p.body, { append: act === 'append', autoSend: ENGINE_PM.getAutoSend() });
             touchPromptUpdatedAt(id);
+            FEEDBACK_PM.say(okIns === false ? 'Insert failed' : 'Inserted', okIns === false ? 'error' : 'info', root);
             if (ENGINE_PM.getAutoSend()) closePanel();
             return;
           }
 
-          if (act === 'delete') {
-            if (confirm(`Delete prompt "${p.title}"?`)) {
-              const next = STATE_PM.data.prompts.filter(x => x.id !== p.id);
-              if (ENGINE_PM.commitPrompts(next)) RENDER_PM.renderEdit(root, SEARCH_PM.get());
-            }
+          /* [2A] Delete and Edit both open the in-panel editor. Delete arrives
+           * pre-armed so the inline two-step confirmation is the only gate. */
+          if (act === 'delete' || act === 'edit') {
+            EDITOR_PM.open(root, { kind: 'prompt', mode: 'edit', id: p.id });
+            if (act === 'delete') EDITOR_PM.armDelete(root);
             return;
           }
 
-          if (act === 'edit') {
-            const newTitle = prompt('Edit title:', p.title);
-            if (newTitle === null) return;
-            const newBody = prompt('Edit body:', p.body);
-            if (newBody === null) return;
+          if (act === 'duplicate') {
             const now = UTIL_now();
-            const next = STATE_PM.data.prompts.map(x => (x.id === p.id)
-              ? { ...x, title: String(newTitle).trim() || 'Untitled', body: String(newBody).trim(), updatedAt: now }
-              : x);
-            if (ENGINE_PM.commitPrompts(next)) RENDER_PM.renderEdit(root, SEARCH_PM.get());
+            const copy = ENGINE_PM_buildDuplicate(p, UTIL_cryptoId(), now);
+            const next = ENGINE_PM_insertAfterId(STATE_PM.data.prompts, p.id, copy);
+            // Persist before adopting: a failed commit must leave no phantom.
+            if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return; }
+            UI_PM_renderBoth(root);
+            FEEDBACK_PM.say('Duplicated', 'info', root);
             return;
           }
         };
@@ -4232,51 +5017,78 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         CLEAN_addFn(() => listEdit.removeEventListener('click', on));
       }
 
-      // Add button
-      const addBtn = DOM_q(UI_PM.selOwned(UI_PM_ADD_BTN), root);
-      if (addBtn) {
+      /* [2A] Create routes through EDITOR_PM. The former inline add-form and its
+       * two alert() validations are gone; validation now renders in the editor. */
+      const newBtn = DOM_q(UI_PM.selOwned(UI_PM_NEW_BTN), root);
+      if (newBtn) {
         const on = () => {
-          const addTitle = DOM_q(UI_PM.selOwned(UI_PM_ADD_TITLE), root);
-          const addBody = DOM_q(UI_PM.selOwned(UI_PM_ADD_BODY), root);
-          if (!addTitle || !addBody) return;
-
-          const title = String(addTitle.value || '').trim();
-          const body = String(addBody.value || '').trim();
-
-          if (STATE_PM.ui.editCategory === 'quick') {
-            if (!title) return alert('Enter quick reply text');
-            const now = UTIL_now();
-            const next = STATE_PM.data.quick.concat([{
-              id: UTIL_cryptoId(), text: title, order: STATE_PM.data.quick.length, createdAt: now, updatedAt: now,
-            }]);
-            // Clear the field only once the entry is actually persisted.
-            if (!ENGINE_PM.commitQuick(next)) return;
-            addTitle.value = '';
-            RENDER_PM.renderEdit(root, SEARCH_PM.get());
-            RENDER_PM.renderQuickTray(root);
-            return;
-          }
-
-          if (!title || !body) return alert('Fill title and body');
-
-          const now = UTIL_now();
-          const next = STATE_PM.data.prompts.concat([{
-            id: UTIL_cryptoId(),
-            title,
-            body,
-            favorite: false,
-            type: (STATE_PM.ui.editCategory === 'append') ? 'append' : 'prompt',
-            createdAt: now,
-            updatedAt: now,
-          }]);
-          if (!ENGINE_PM.commitPrompts(next)) return;
-          addTitle.value = '';
-          addBody.value = '';
-          UI_PM_renderBoth(root);
+          const cat = STATE_PM.ui.editCategory;
+          if (cat === 'history' || cat === 'draft' || cat === 'pasted') return;
+          EDITOR_PM.open(root, {
+            kind: (cat === 'quick') ? 'quick' : 'prompt',
+            mode: 'create',
+            type: (cat === 'append') ? 'append' : 'prompt',
+          });
         };
+        newBtn.addEventListener('click', on);
+        CLEAN_addFn(() => newBtn.removeEventListener('click', on));
+      }
 
-        addBtn.addEventListener('click', on);
-        CLEAN_addFn(() => addBtn.removeEventListener('click', on));
+      /* [2A] Editor controls. Every listener is registered through CLEAN_addFn so
+       * dispose() tears them down exactly like the Phase 1 listeners. */
+      {
+        const ed = EDITOR_PM.els(root);
+        const bind = (el, ev, fn) => {
+          if (!el) return;
+          el.addEventListener(ev, fn);
+          CLEAN_addFn(() => el.removeEventListener(ev, fn));
+        };
+        const markDirty = () => { EDITOR_PM.refreshDirty(root); };
+
+        bind(ed && ed.title, 'input', markDirty);
+        bind(ed && ed.body, 'input', markDirty);
+
+        bind(ed && ed.tPrompt, 'click', () => {
+          const st = EDITOR_PM.st(); if (!st.open || st.kind === 'quick') return;
+          st.draft = EDITOR_PM.readDraft(root); st.draft.type = 'prompt';
+          EDITOR_PM.sync(root); EDITOR_PM.refreshDirty(root);
+        });
+        bind(ed && ed.tAppend, 'click', () => {
+          const st = EDITOR_PM.st(); if (!st.open || st.kind === 'quick') return;
+          st.draft = EDITOR_PM.readDraft(root); st.draft.type = 'append';
+          EDITOR_PM.sync(root); EDITOR_PM.refreshDirty(root);
+        });
+        bind(ed && ed.fav, 'click', () => {
+          const st = EDITOR_PM.st(); if (!st.open || st.kind === 'quick') return;
+          const cur = !!st.draft.favorite;
+          st.draft = EDITOR_PM.readDraft(root); st.draft.favorite = !cur;
+          EDITOR_PM.sync(root); EDITOR_PM.refreshDirty(root);
+        });
+
+        bind(ed && ed.save, 'click', () => { EDITOR_PM.save(root); });
+        bind(ed && ed.cancel, 'click', () => { EDITOR_PM.cancel(root); });
+        bind(ed && ed.del, 'click', () => {
+          const st = EDITOR_PM.st();
+          if (!st.deleteArmed) { EDITOR_PM.armDelete(root); return; }
+          EDITOR_PM.confirmDelete(root);
+        });
+
+        const discardYes = DOM_q(UI_PM.selOwned(UI_PM_ED_DISCARD_YES), root);
+        const discardNo = DOM_q(UI_PM.selOwned(UI_PM_ED_DISCARD_NO), root);
+        bind(discardYes, 'click', () => { EDITOR_PM.close(root); });
+        bind(discardNo, 'click', () => { EDITOR_PM.keepEditing(root); });
+
+        /* Cmd/Ctrl+Enter saves. A bare Enter inside the textarea stays a newline
+         * so a multiline body can never be submitted by accident. */
+        const onKey = (e) => {
+          if (!EDITOR_PM.isOpen()) return;
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            EDITOR_PM.save(root);
+          }
+        };
+        bind(ed && ed.title, 'keydown', onKey);
+        bind(ed && ed.body, 'keydown', onKey);
       }
 
       // Quick tray click: insert quick bubble
@@ -4299,6 +5111,14 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       RENDER_PM.setEditCategory(root, 'all');
       SEARCH_PM.set('', root);
       UI_PM_renderBoth(root);
+      /* [2A-fix B] A self-heal remount creates a NEW root that renders closed.
+       * Re-apply the surviving editor state so an unsaved draft is visibly
+       * restored instead of existing only in memory behind the list. */
+      EDITOR_PM.restore(root);
+      /* [2A-fix F] The new root's status node is empty; a persistent error that
+       * outlived the old root is written back onto it here, after the editor so
+       * nothing in editor restoration can undo it. */
+      FEEDBACK_PM.restore(root);
       RENDER_PM.renderQuickTray(root);
       if (tray && dot && CFG_PM.QUICK_TRAY_SHOW_ON_BOOT) {
         tray.classList.add(UI_PM_CLS_QSHOW);
@@ -4360,6 +5180,19 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         SAFE_try('dispose.layoutRaf', () => W.cancelAnimationFrame(PM_LAYOUT_RAF), null);
         PM_LAYOUT_RAF = 0;
       }
+      /* [2A-fix B] Drop transient editor confirmation state. The owned timer set
+       * has just been drained, so a surviving deleteArmed/discardArmed flag or a
+       * stale timer id would arm a confirmation nothing can any longer cancel.
+       * The unsaved draft deliberately survives; restore() reapplies it. */
+      SAFE_try('dispose.editorTransient', () => EDITOR_PM.resetTransient(), null);
+      /* [2A-fix F] Same reasoning for the status line: the auto-clear timer has
+       * just been drained, so drop transient info/success and zero the dead
+       * timer id. A persistent error is deliberately kept — restore() writes it
+       * back onto the replacement root. No new timer is created. */
+      SAFE_try('dispose.feedbackTransient', () => {
+        STATE_PM.ui.statusTimer = 0;
+        FEEDBACK_PM.clearTransient();
+      }, null);
 
       // listeners
       for (const fn of STATE_PM.clean.fns.splice(0)) {
