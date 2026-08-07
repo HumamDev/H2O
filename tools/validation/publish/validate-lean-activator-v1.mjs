@@ -111,6 +111,17 @@ const P3C_FINAL_SYNC_SUBJECT = "test(publish): authorize final Title release syn
 const P3C_FINAL_SYNC_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+// Final current-main integration: one explicit merge of the exact current
+// committed main tip into the accepted release, then this two-validator bridge.
+// P3C production bytes are untouched by that merge; only main-owned Prompt
+// Manager paths arrive with it.
+const P3C_INTEGRATION_MERGE_HEAD = "9fdbae3abf78e348e5714dbac19ed96c4c7e998c";
+const P3C_INTEGRATION_FIRST_PARENT = "6724f53c35a47a83accfaf98a33235464d86cfee";
+const P3C_INTEGRATION_MAIN_TIP = "b7685527d10072204fb44f6a11f8271b77056a59";
+const P3C_INTEGRATION_SUBJECT = "test(publish): authorize final current-main Title integration";
+const P3C_INTEGRATION_AUTHORIZED_PATHS = Object.freeze([
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 // Batch 1.1 publisher authority at the IMMUTABLE BASE_HEAD. These never move.
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
@@ -530,6 +541,27 @@ function classifyScope(state) {
     value.subject === P3C_FINAL_SYNC_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_FINAL_SYNC_AUTHORIZED_PATHS);
   if (p3cFinalClean) return "p3c-final-sync-committed";
+  // Final current-main integration. Same shape authority as the sync above:
+  // exactly two ordered parents and no third, exact subject, exact two-file
+  // scope, nothing staged or untracked. No descendant allowance.
+  const integrationShapeOk = (first, second, third) =>
+    first === P3C_INTEGRATION_FIRST_PARENT && second === P3C_INTEGRATION_MAIN_TIP &&
+    (third ?? null) === null;
+  const p3cIntegrationBase = value.head === P3C_INTEGRATION_MERGE_HEAD &&
+    integrationShapeOk(value.headFirstParent, value.headSecondParent, value.headThirdParent) &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (p3cIntegrationBase &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify(P3C_INTEGRATION_AUTHORIZED_PATHS)) {
+    return "p3c-integration-uncommitted";
+  }
+  const p3cIntegrationClean = value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+    value.staged.length === 0 &&
+    value.parent === P3C_INTEGRATION_MERGE_HEAD &&
+    integrationShapeOk(value.parentFirstParent, value.parentSecondParent,
+      value.parentThirdParent) &&
+    value.subject === P3C_INTEGRATION_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(P3C_INTEGRATION_AUTHORIZED_PATHS);
+  if (p3cIntegrationClean) return "p3c-integration-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -1083,7 +1115,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-a3-uncommitted", "p3c-a3-committed",
     "p3c-a3b-uncommitted", "p3c-a3b-committed",
     "p3c-main-sync-uncommitted", "p3c-main-sync-committed",
-    "p3c-final-sync-uncommitted", "p3c-final-sync-committed"]
+    "p3c-final-sync-uncommitted", "p3c-final-sync-committed",
+    "p3c-integration-uncommitted", "p3c-integration-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
