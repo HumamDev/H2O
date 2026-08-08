@@ -102,8 +102,12 @@ const FINAL_PATHS = Object.freeze([
 ]);
 const UNCOMMITTED_MODIFIED = Object.freeze([ALIAS_WRITER_REL, ADR_REL]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([GUARD_REL, VALIDATOR_REL]);
-const EXPECTED_RUNTIME_SCENARIOS = 56;
-const EXPECTED_SCOPE_SCENARIOS = 12;
+// Live-anchor repair: exactly this validator changed on an otherwise clean committed
+// tree. Once that repair is committed the tree returns to "committed-clean" on its own,
+// so no separate committed state is needed here.
+const LIVE_ANCHOR_REPAIR_MODIFIED = Object.freeze([VALIDATOR_REL]);
+const EXPECTED_RUNTIME_SCENARIOS = 57;
+const EXPECTED_SCOPE_SCENARIOS = 14;
 const ALIAS_WRITER = path.join(ROOT, ALIAS_WRITER_REL);
 const E1_VALIDATOR_REL =
   "tools/validation/publish/validate-canonical-delivery-exclusivity-v1.mjs";
@@ -237,6 +241,14 @@ export function classifyStage1DE2AScope(state) {
     normalized.missingFinal.length === 0 &&
     sameSet(normalized.trackedFinal, FINAL_PATHS);
   if (committed) return "committed-clean";
+  // Exactly this validator modified, nothing staged, nothing untracked, every final path
+  // still present and committed. No production source and no descendant allowance.
+  const liveAnchorRepair =
+    sameSet(normalized.modifiedTracked, LIVE_ANCHOR_REPAIR_MODIFIED) &&
+    normalized.untracked.length === 0 &&
+    normalized.missingFinal.length === 0 &&
+    sameSet(normalized.trackedFinal, FINAL_PATHS);
+  if (liveAnchorRepair) return "live-anchor-repair-uncommitted";
   scopeFailure("Stage 1D-E2A scope mismatch", normalized);
 }
 
@@ -286,6 +298,42 @@ function runScopeSelfTests() {
       ),
       "committed-clean",
     );
+  });
+  scopeTest("exact one-path live-anchor repair scope is accepted", () => {
+    assert.equal(
+      classifyStage1DE2AScope(
+        baseScope({
+          modifiedTracked: [...LIVE_ANCHOR_REPAIR_MODIFIED],
+          untracked: [],
+          trackedFinal: [...FINAL_PATHS],
+        }),
+      ),
+      "live-anchor-repair-uncommitted",
+    );
+  });
+  scopeTest("live-anchor repair scope rejects staged, untracked, extra or production paths", () => {
+    for (const override of [
+      { staged: [VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { modifiedTracked: [VALIDATOR_REL, GUARD_REL].sort() },
+      { modifiedTracked: [VALIDATOR_REL, ALIAS_WRITER_REL].sort() },
+      { modifiedTracked: [GUARD_REL] },
+      { missingFinal: [ADR_REL] },
+      { trackedFinal: [ALIAS_WRITER_REL, ADR_REL] },
+    ]) {
+      assert.throws(
+        () =>
+          classifyStage1DE2AScope(
+            baseScope({
+              modifiedTracked: [...LIVE_ANCHOR_REPAIR_MODIFIED],
+              untracked: [],
+              trackedFinal: [...FINAL_PATHS],
+              ...override,
+            }),
+          ),
+        /scope mismatch|forbids staged/u,
+      );
+    }
   });
   scopeTest("staging is rejected", () => {
     assert.throws(
@@ -802,7 +850,13 @@ async function runRuntimeScenarios() {
     env: {},
     allowOverride: false,
   }).root;
-  const realAnchorInitiallyAbsent = !fs.existsSync(realAnchor);
+  // The landed activation architecture is now genuinely exercised in production, so this
+  // anchor may legitimately exist and carry activation intents, transaction records and
+  // activation receipts. That evidence is audit material. The invariant is therefore no
+  // longer "the anchor is absent" but "whatever the anchor was before this suite ran, it
+  // is exactly that afterwards" — the same initial/after model already used for the live
+  // alias directory and the generated bridge, proxy, loader and manifest outputs.
+  const initialRealAnchor = snapshotPath(realAnchor);
 
   let localFixture;
   let localResult;
@@ -1439,9 +1493,67 @@ async function runRuntimeScenarios() {
     assert.deepEqual(statusSnapshot(), initialRepository);
     assert.deepEqual(snapshotPath(liveAliasPath), initialLiveAliases);
   });
-  await test("real canonical anchor remains absent", () => {
-    assert.equal(realAnchorInitiallyAbsent, true);
-    assert.equal(fs.existsSync(realAnchor), false);
+  await test("real canonical anchor is never created, removed or mutated", () => {
+    // Legitimate pre-existing production activation history is accepted rather than
+    // treated as a failure; only a change caused by this suite is a violation.
+    assert.deepEqual(snapshotPath(realAnchor), initialRealAnchor);
+    assert.equal(fs.existsSync(realAnchor), initialRealAnchor.exists);
+    // temporaryRoots is the set this suite unconditionally rmSync's in its finally
+    // block, so the production anchor must never be, or sit beneath, a member of it.
+    assert.equal(temporaryRoots.size > 0, true, "fixture roots must exist for this proof to bite");
+    const anchor = path.resolve(realAnchor);
+    for (const root of temporaryRoots) {
+      const owned = path.resolve(root);
+      assert.notEqual(anchor, owned);
+      assert.equal(anchor.startsWith(`${owned}${path.sep}`), false);
+      assert.equal(owned.startsWith(`${anchor}${path.sep}`), false);
+    }
+    assert.equal(anchor.startsWith(`${path.resolve(os.tmpdir())}${path.sep}`), false,
+      "the production anchor must never resolve under the task temporary root");
+  });
+
+  await test("path snapshots detect added files, changed bytes and retargeted links", () => {
+    // Each mutation class is proven on its own task-owned tree, so nothing but the single
+    // intended change can explain a difference. The real production anchor is never used.
+    const build = (label) => {
+      const probe = path.join(temporaryRoot(label), ".h2o-canonical-delivery");
+      fs.mkdirSync(path.join(probe, "activations"), { recursive: true });
+      fs.writeFileSync(path.join(probe, "activations", "sample.json"), "{\"id\":\"sample\"}\n");
+      fs.writeFileSync(path.join(probe, "activations", "target.json"), "{}\n");
+      fs.symlinkSync("target.json", path.join(probe, "activations", "pointer.json"));
+      return probe;
+    };
+
+    const missing = path.join(temporaryRoot("anchor-absent"), ".h2o-canonical-delivery");
+    const absent = snapshotPath(missing);
+    assert.equal(absent.exists, false);
+    assert.deepEqual(snapshotPath(missing), absent, "absence must be deterministic");
+
+    // Control: an untouched tree snapshots identically, so the comparisons below are not
+    // trivially unequal.
+    const stable = build("anchor-stable");
+    assert.deepEqual(snapshotPath(stable), snapshotPath(stable));
+
+    const addedTree = build("anchor-added");
+    const addedBaseline = snapshotPath(addedTree);
+    assert.equal(addedBaseline.exists, true);
+    fs.writeFileSync(path.join(addedTree, "activations", "added.json"), "{}\n");
+    assert.notDeepEqual(snapshotPath(addedTree), addedBaseline,
+      "an added file must change the snapshot");
+
+    const bytesTree = build("anchor-bytes");
+    const bytesBaseline = snapshotPath(bytesTree);
+    fs.writeFileSync(path.join(bytesTree, "activations", "sample.json"), "{\"id\":\"mutated\"}\n");
+    assert.notDeepEqual(snapshotPath(bytesTree), bytesBaseline,
+      "changed regular-file bytes must change the snapshot");
+
+    const linkTree = build("anchor-link");
+    const linkBaseline = snapshotPath(linkTree);
+    const pointer = path.join(linkTree, "activations", "pointer.json");
+    fs.unlinkSync(pointer);
+    fs.symlinkSync("sample.json", pointer);
+    assert.notDeepEqual(snapshotPath(linkTree), linkBaseline,
+      "a retargeted symlink must change the snapshot");
   });
   await test("generated bridge proxy loader manifest remain unchanged", () => {
     assert.deepEqual(snapshotGenerated(), initialGenerated);
