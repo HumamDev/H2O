@@ -14,7 +14,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// Reveal / pager / scroll moved out of H2O Core into 0A3a Chat Atlas Core, so
+// the source this validator asserts on is H2O Core plus that engine. No
+// assertion changes; negative checks now span both files, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const CORE_SOURCE = `${fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 
 const fixtures = [];
 let assertions = 0;

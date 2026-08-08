@@ -9,7 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_REL = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8');
+// The Full Index diagnostic subdomain moved into 0A3a Chat Atlas Core, so the
+// source asserted on is H2O Core plus that engine. No assertion changes;
+// negative checks now span both files, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const CORE_SOURCE = `${fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 const BASE_COMMIT = '1b88533ba7f2d331dfc81370ddc26977518b41cf';
 const BASE_SOURCE = execFileSync('git', ['show', `${BASE_COMMIT}:${CORE_REL}`], {
   cwd: ROOT,

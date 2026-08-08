@@ -22,7 +22,7 @@ const PRODUCTION_SOURCE_ABS = path.join(ROOT, PRODUCTION_SOURCE_PATH);
 // before the Chat Atlas Ledger was extracted into 0A3b; the pin is a
 // precondition that throws before any fixture runs, so leaving it stale would
 // silently disable this validator's behavioural coverage rather than tighten it.
-const EXPECTED_SOURCE_SHA256 = 'b30663103a075e06d2b6bbb8d77a206fea6a4c596d99234b43cce0e5db1f6af2';
+const EXPECTED_SOURCE_SHA256 = '41aeff37c41a846273753648534981215f839522c3cce3031a56d3786d524432';
 const FIXED_NOW_ISO = '2026-07-13T12:00:00.000Z';
 const FIXED_NOW_MS = Date.parse(FIXED_NOW_ISO);
 const SAMPLE_LIMIT = 12;

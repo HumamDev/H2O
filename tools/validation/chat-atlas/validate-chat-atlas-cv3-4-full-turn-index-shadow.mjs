@@ -238,20 +238,12 @@ function instrumentCore() {
   const markerIndex = source.indexOf(marker);
   const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
+  // The Full Index subdomain moved to 0A3a and Ledger rows to 0A3b; H2O Core's
+  // export keeps only the generic turn seeding it still owns.
   const exportBlock = [
     '  globalThis.__TURN_INDEX_CORE__ = Object.freeze({',
-    '    chatAtlasFullIndexRoute,',
-    '    chatAtlasCompareFullConversationIndex,',
-    '    getConversationTurnIndexDiagnostics,',
-    '    chatAtlasTriggerFullConversationIndex,',
-    '    reset() {',
-    '      chatAtlasResetFullIndexRoute(chatAtlasFullIndexRoute(), false);',
-    '      turnState.turns = [];',
-    '    },',
+    '    reset() { turnState.turns = []; },',
     '    setCanonicalRows(rows) { turnState.turns = Array.isArray(rows) ? rows.slice() : []; },',
-    // Ledger row seeding moved to 0A3b, which owns chatAtlasLedgerState.
-
-    '    state: chatAtlasFullIndexState,',
     '  });',
     '  globalThis.__TURN_INDEX_CORE_BOOTSTRAP_SUPPRESSED__ = true;',
   ].join('\n');
@@ -265,7 +257,27 @@ function instrumentCore() {
 // evaluating 0A3b is inert (no top-level observer or rAF).
 const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
 const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
-const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const BROKER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+  const close = '\n})();';
+  const at = src.lastIndexOf(close);
+  if (at < 0) throw new Error('chat-atlas-core-iife-close-missing');
+  // chatAtlasFullIndexRoute is the route-identity spine and stays in H2O Core;
+  // 0A3a reads it through the host, so it is not anchored here.
+  for (const n of ['chatAtlasCompareFullConversationIndex', 'chatAtlasTriggerFullConversationIndex', 'chatAtlasResetFullIndexRoute', 'getConversationTurnIndexDiagnostics']) {
+    if (src.split(`  function ${n}(`).length - 1 !== 1) throw new Error(`chat-atlas-core-anchor-invalid:${n}`);
+  }
+  return `${src.slice(0, at)}
+  globalThis.__TURN_INDEX_ATLAS__ = Object.freeze({
+    chatAtlasFullIndexRoute,
+    chatAtlasCompareFullConversationIndex,
+    getConversationTurnIndexDiagnostics,
+    chatAtlasTriggerFullConversationIndex,
+    resetFullIndex() { chatAtlasResetFullIndexRoute(chatAtlasFullIndexRoute(), false); },
+    state: chatAtlasFullIndexState,
+  });
+${close}\n`;
+})();
 const LEDGER_PROGRAM = (() => {
   const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
   const close = '\n})();';
@@ -319,9 +331,9 @@ function instrumentCoreActivation() {
     throw new Error('core-activation-boundary-invalid');
   }
   const exportBlock = [
+    // Full Index state and diagnostics are owned by 0A3a now and are merged in
+    // from __TURN_INDEX_ATLAS__ at the call site; H2O Core exports what it owns.
     '  globalThis.__TURN_INDEX_ACTIVATION__ = Object.freeze({',
-    '    state: chatAtlasFullIndexState,',
-    '    diagnostics: getConversationTurnIndexDiagnostics,',
     '    canonicalCount: () => turnState.turns.length,',
     // Ledger members are read through the 0A3a broker now, exactly as the
     // production H2O Core code reads them.
@@ -472,10 +484,11 @@ function createCoreRuntime({ provider = null, miniMapRows = [] } = {}) {
   // Each owner seeds its own state; the fixture surface is unchanged.
   const coreApi = context.__TURN_INDEX_CORE__;
   const ledgerApi = context.__TURN_INDEX_LEDGER__;
-  const api = Object.assign({}, coreApi, {
+  const atlasApi = context.__TURN_INDEX_ATLAS__;
+  const api = Object.assign({}, coreApi, atlasApi, {
     setLedgerRows: (rows) => ledgerApi.setLedgerRows(rows),
-    reset() { coreApi.reset(); ledgerApi.resetLedger(); },
-    state: coreApi.state,
+    reset() { coreApi.reset(); atlasApi.resetFullIndex(); ledgerApi.resetLedger(); },
+    state: atlasApi.state,
   });
   api.reset();
   return { context, api, counters, location };
@@ -590,6 +603,10 @@ function createActivationRuntime(payload) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(coreActivationProgram, context, { filename: CORE_PATH, timeout: 3_000 });
+  // The activation runtime also needs the real Chat Atlas Core, which now owns
+  // the Full Index subdomain, and the Ledger it brokers.
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 3_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 3_000 });
   return { context, counters, listeners, networkCalls, dispatchEvent };
 }
 
@@ -2159,7 +2176,10 @@ await fixture('provider never returns its access token', () => {
 
 await fixture('real activation wiring registers provider and dedupes acquisition', async () => {
   const runtime = createActivationRuntime(fullFixture.payload);
-  const activation = runtime.context.__TURN_INDEX_ACTIVATION__;
+  const activation = Object.assign({}, runtime.context.__TURN_INDEX_ACTIVATION__, {
+    state: runtime.context.__TURN_INDEX_ATLAS__.state,
+    diagnostics: runtime.context.__TURN_INDEX_ATLAS__.getConversationTurnIndexDiagnostics,
+  });
   equal(runtime.context.__TURN_INDEX_OBSERVER_SUPPRESSED__, true);
   equal(runtime.context.__TURN_INDEX_REFRESH_SUPPRESSED__, true);
   equal(runtime.context.__TURN_INDEX_LEDGER_SUPPRESSED__, true);
