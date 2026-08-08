@@ -10,7 +10,16 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const SOURCE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const SOURCE_ABS = path.join(ROOT, SOURCE_PATH);
-const SOURCE = fs.readFileSync(SOURCE_ABS, 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. The H2O Core source read here is now
+// the aggregate of the three files the code actually lives in. No assertion
+// changes; negative checks get strictly stronger across all three files.
+const H2O_CORE_AGGREGATE_ABS = [
+  SOURCE_ABS,
+  path.join(ROOT, 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js'),
+  path.join(ROOT, 'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js'),
+];
+const SOURCE = H2O_CORE_AGGREGATE_ABS.map((abs) => fs.readFileSync(abs, 'utf8')).join('\n');
 const LEGACY_SOURCE = 'legacy-durable-cache';
 const CHAT_ID = 'fixture-chat-current-question';
 const OBSERVED = Object.freeze({
@@ -133,11 +142,6 @@ function instrumentSource() {
     '    createTurnRecord,',
     '    seedDurableTurnDrafts,',
     '    mergeDurableTurnDrafts,',
-    '    chatAtlasApplyEvidence,',
-    '    buildChatAtlasLedgerCanonicalRecords,',
-    '    getChatAtlasLedgerSnapshot,',
-    '    getChatAtlasLedgerDiagnostics,',
-    '    getChatAtlasCanonicalSource,',
     '    getRecords: () => turnState.turns,',
     '    getDurableSnapshot() {',
     '      ensureDurableTurnCache();',
@@ -152,11 +156,9 @@ function instrumentSource() {
     '      turnState.durableByKey = new Map();',
     '      turnState.durableOrder = [];',
     '      turnState.durableChatKey = String(D?.location?.pathname || "/");',
-    '      chatAtlasLedgerState.members = [];',
-    '      chatAtlasLedgerState.ready = false;',
-    '      chatAtlasLedgerState.chatKey = "";',
-    '      chatAtlasLedgerState.nextMemberId = 1;',
-    '      chatAtlasLedgerState.quarantinedAliases = new Set();',
+    // Ledger state moved to 0A3b behind the 0A3a broker. With no Ledger service
+    // registered in this sandbox the broker already reports no members / version 0,
+    // which is exactly the reset these lines performed.
     '    },',
     '  });',
     '  globalThis.__CV33_QID_BOOTSTRAP_SUPPRESSED__ = true;',
@@ -278,14 +280,42 @@ function createRuntime(name) {
   sandbox.dispatchEvent = () => true;
   sandbox.window = sandbox;
   sandbox.self = sandbox;
+
+// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
+// The Ledger physically left H2O Core. These load the real scripts the way
+// production does, preserving script isolation. Evaluating 0A3b is inert: its
+// observer and rAF only start inside chatAtlasRebindObserver /
+// scheduleChatAtlasLedgerFlush, so this validator's side-effect accounting is
+// unaffected until a fixture drives the Ledger.
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const LEDGER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  const exposed = ["chatAtlasApplyEvidence", "buildChatAtlasLedgerCanonicalRecords", "getChatAtlasLedgerSnapshot", "getChatAtlasLedgerDiagnostics", "getChatAtlasCanonicalSource"];
+  for (const n of exposed) {
+    if (src.split(`  function ${n}(`).length - 1 !== 1) {
+      throw new Error(`ledger-instrumentation-anchor-invalid:${n}`);
+    }
+  }
+  return `${src.slice(0, closeIndex)}
+  globalThis.__CV33_LEDGER__ = { ${exposed.join(', ')} };
+${close}\n`;
+})();
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, {
     name: `cv3.3-current-question:${name}`,
     codeGeneration: { strings: false, wasm: false },
   });
   vm.runInContext(INSTRUMENTED, context, { filename: SOURCE_PATH, timeout: 2_000 });
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 2_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 2_000 });
   equal(context.__CV33_QID_BOOTSTRAP_SUPPRESSED__, true, 'bootstrap must be suppressed');
-  const internals = context.__CV33_QID_INTERNALS__;
+  // Ledger-owned internals now come from 0A3b; H2O Core internals from 0A1a.
+  const internals = Object.assign({}, context.__CV33_QID_INTERNALS__, context.__CV33_LEDGER__);
   ok(internals && typeof internals === 'object', 'private production internals must be exposed');
   internals.resetFixtureState();
   return { context, internals, sideEffects };

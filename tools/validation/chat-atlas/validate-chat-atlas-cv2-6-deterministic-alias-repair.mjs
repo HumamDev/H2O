@@ -18,7 +18,11 @@ const PRODUCTION_SOURCE_ABS = path.join(ROOT, PRODUCTION_SOURCE_PATH);
 // mismatch throws before any fixture runs, so a stale pin silently disables the
 // behavioural coverage below rather than tightening it. Re-baselined to the
 // certified functional checkpoint so those fixtures execute again.
-const EXPECTED_SOURCE_SHA256 = 'ff2254f9129ec0b13225eea86982c1e1183ea48ae115c5abbc67e9e4aa3c877d';
+// Re-pinned to the final Milestone-2A H2O Core. The previous pin captured 0A1a
+// before the Chat Atlas Ledger was extracted into 0A3b; the pin is a
+// precondition that throws before any fixture runs, so leaving it stale would
+// silently disable this validator's behavioural coverage rather than tighten it.
+const EXPECTED_SOURCE_SHA256 = 'b30663103a075e06d2b6bbb8d77a206fea6a4c596d99234b43cce0e5db1f6af2';
 const FIXED_NOW_ISO = '2026-07-13T12:00:00.000Z';
 const FIXED_NOW_MS = Date.parse(FIXED_NOW_ISO);
 const SAMPLE_LIMIT = 12;
@@ -106,10 +110,13 @@ function publicMemberHasAlias(member, alias) {
   ].includes(alias);
 }
 
-function buildInstrumentedSource(productionSource) {
+function buildInstrumentedSource(coreSource, ledgerSource) {
+  // Anchors are verified across both real owners, which is stricter than the
+  // old single-file scan: a duplicate in either module still fails.
+  const combinedSource = `${coreSource}\n${ledgerSource}`;
   const anchors = [];
   const verifyUnique = (name, needle) => {
-    const count = countOccurrences(productionSource, needle);
+    const count = countOccurrences(combinedSource, needle);
     anchors.push({ name, matches: count });
     if (count !== 1) {
       throw new InstrumentationError(`anchor ${name} must match exactly once; found ${count}`);
@@ -153,20 +160,24 @@ function buildInstrumentedSource(productionSource) {
   verifyUnique('bootstrap:tail-marker', bootstrapMarker);
   verifyUnique('bootstrap:refresh-call', bootRefresh);
   verifyUnique('bootstrap:ledger-call', bootLedger);
-  if (!productionSource.endsWith(`${finalClose}\n`) && !productionSource.endsWith(finalClose)) {
+  if (!coreSource.endsWith(`${finalClose}\n`) && !coreSource.endsWith(finalClose)) {
     throw new InstrumentationError('production IIFE final close anchor is not the final source token');
   }
   anchors.push({ name: 'bootstrap:final-close', matches: 1 });
 
-  let instrumented = productionSource.replace(
-    setterAnchor,
-    `${setterAnchor}    globalThis.__CV26_GUARD_CALL__('sourceSetterCalls');\n`,
-  );
-  instrumented = instrumented.replace(
+  // Owner split: the canonical-commit guard and the bootstrap tail belong to
+  // H2O Core; the canonical-source setter guard and the pre-repair hook belong
+  // to the extracted Ledger. Each is instrumented in the module that owns it so
+  // no synthetic shared scope is required.
+  let instrumented = coreSource.replace(
     commitAnchor,
     `${commitAnchor}    globalThis.__CV26_GUARD_CALL__('canonicalCommits');\n`,
   );
-  instrumented = instrumented.replace(
+  let ledgerInstrumented = ledgerSource.replace(
+    setterAnchor,
+    `${setterAnchor}    globalThis.__CV26_GUARD_CALL__('sourceSetterCalls');\n`,
+  );
+  ledgerInstrumented = ledgerInstrumented.replace(
     preRepairAnchor,
     [
       '    if (typeof globalThis.__CV26_BEFORE_REPAIR_HOOK__ === \'function\') {',
@@ -189,8 +200,15 @@ function buildInstrumentedSource(productionSource) {
   }
 
   const exportBlock = [
-    '  globalThis.__CV26_INTERNALS__ = Object.freeze({',
+    '  globalThis.__CV26_CORE__ = Object.freeze({',
     '    chatAtlasPairEvidence,',
+    '    chatAtlasCv2CurrentIds,',
+    '  });',
+    '  globalThis.__CV26_BOOTSTRAP_SUPPRESSED__ = true;',
+  ].join('\n');
+  // Ledger-owned internals are exported from the Ledger's own module.
+  const ledgerExportBlock = [
+    '  globalThis.__CV26_LEDGER__ = Object.freeze({',
     '    chatAtlasBuildCurrentAliasOwners,',
     '    chatAtlasPrepareAliasQuarantine,',
     '    chatAtlasAbsorbHistoricalAliases,',
@@ -202,23 +220,25 @@ function buildInstrumentedSource(productionSource) {
     '    chatAtlasCv2ResetBindingEvidence,',
     '    chatAtlasRebuildResolverAliases,',
     '    chatAtlasBuildOwnerMap,',
-    '    chatAtlasCv2CurrentIds,',
     '    getChatAtlasLedgerSnapshot,',
     '    getChatAtlasLedgerDiagnostics,',
     '    getChatAtlasCanonicalSource,',
     '    getLedgerState: () => chatAtlasLedgerState,',
     '    getCanonicalSourceState: () => chatAtlasCanonicalSourceState,',
     '  });',
-    '  globalThis.__CV26_BOOTSTRAP_SUPPRESSED__ = true;',
   ].join('\n');
 
   instrumented = `${instrumented.slice(0, markerIndex)}${exportBlock}${finalClose}\n`;
   if (instrumented.includes(bootRefresh) || instrumented.includes(bootLedger)) {
     throw new InstrumentationError('bootstrap call survived suppression');
   }
+  const ledgerCloseIndex = ledgerInstrumented.lastIndexOf(finalClose);
+  if (ledgerCloseIndex < 0) throw new InstrumentationError('ledger IIFE final close anchor missing');
+  ledgerInstrumented = `${ledgerInstrumented.slice(0, ledgerCloseIndex)}\n${ledgerExportBlock}${finalClose}\n`;
 
   return {
     instrumented,
+    ledgerInstrumented,
     anchors,
     functionsExposed: [
       ...requiredFunctions,
@@ -412,6 +432,12 @@ function createVmRuntime(instrumentation, fixtureName) {
       timeout: 2_000,
       displayErrors: true,
     });
+    vm.runInContext(instrumentation.brokerProgram, context, { filename: 'src-runtime-base/0A3a', timeout: 5_000 });
+    vm.runInContext(instrumentation.ledgerInstrumented, context, { filename: 'src-runtime-base/0A3b', timeout: 5_000 });
+    // Each owner exported its own internals; the fixture surface is unchanged.
+    context.__CV26_INTERNALS__ = Object.freeze(
+      Object.assign({}, context.__CV26_CORE__, context.__CV26_LEDGER__),
+    );
   } catch (error) {
     throw new InstrumentationError(`production source VM evaluation failed: ${error.message}`);
   }
@@ -1109,7 +1135,17 @@ function main() {
         actual: productionSourceSha256,
       });
     }
-    const instrumentation = buildInstrumentedSource(productionSource);
+    // The alias-repair implementation this validator instruments now spans H2O
+    // Core plus the extracted Chat Atlas Ledger, so the instrumented text is the
+    // aggregate. The reviewed SHA pin above still covers H2O Core alone, which is
+    // what it was written to gate.
+    const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+    const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+    const instrumentation = buildInstrumentedSource(
+      productionSource,
+      fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8'),
+    );
+    instrumentation.brokerProgram = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
     const run = runFixtures(instrumentation);
     const forbiddenTotals = [
       'domWrites',

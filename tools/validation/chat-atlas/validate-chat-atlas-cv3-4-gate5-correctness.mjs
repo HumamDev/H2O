@@ -14,7 +14,20 @@ const archivePath = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engi
 const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const baselineSha = 'be9fcf7369ef66c8db6d2e9acde6b9357fbd58a7';
 const feedbackBaselineSha = '87098eb7cc6ca4edb7eab8617ece92a11df42c53';
-const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(root, rel), 'utf8'))
+  .join('\n');
 const paginationSource = fs.readFileSync(path.join(root, paginationPath), 'utf8');
 const archiveSource = fs.readFileSync(path.join(root, archivePath), 'utf8');
 const miniMapSource = fs.readFileSync(path.join(root, miniMapPath), 'utf8');

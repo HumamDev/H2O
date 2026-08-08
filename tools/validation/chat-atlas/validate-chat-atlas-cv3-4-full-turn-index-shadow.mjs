@@ -11,7 +11,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const ARCHIVE_PATH = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const archiveSource = fs.readFileSync(path.join(ROOT, ARCHIVE_PATH), 'utf8');
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
 const A545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
@@ -234,21 +247,10 @@ function instrumentCore() {
     '    reset() {',
     '      chatAtlasResetFullIndexRoute(chatAtlasFullIndexRoute(), false);',
     '      turnState.turns = [];',
-    '      chatAtlasLedgerState.members = [];',
     '    },',
     '    setCanonicalRows(rows) { turnState.turns = Array.isArray(rows) ? rows.slice() : []; },',
-    '    setLedgerRows(rows) {',
-    '      chatAtlasLedgerState.members = (Array.isArray(rows) ? rows : []).map((row, index) => ({',
-    '        turnNo: index + 1,',
-    '        logicalMemberKey: `fixture:${index + 1}`,',
-    '        noAnswer: row?.noAnswer === true,',
-    '        question: { qId: row?.qId || null, currentAliases: row?.qId ? [row.qId] : [] },',
-    '        answer: {',
-    '          currentAnswerIds: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],',
-    '          currentAliases: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],',
-    '        },',
-    '      }));',
-    '    },',
+    // Ledger row seeding moved to 0A3b, which owns chatAtlasLedgerState.
+
     '    state: chatAtlasFullIndexState,',
     '  });',
     '  globalThis.__TURN_INDEX_CORE_BOOTSTRAP_SUPPRESSED__ = true;',
@@ -256,6 +258,37 @@ function instrumentCore() {
   return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
+
+// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
+// Ledger rows are seeded inside the Ledger's own module now; H2O Core keeps
+// seeding only the generic turn rows it owns. Script isolation is preserved and
+// evaluating 0A3b is inert (no top-level observer or rAF).
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const LEDGER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  return `${src.slice(0, closeIndex)}
+  globalThis.__TURN_INDEX_LEDGER__ = Object.freeze({
+    resetLedger() { chatAtlasLedgerState.members = []; },
+    setLedgerRows(rows) {
+      chatAtlasLedgerState.members = (Array.isArray(rows) ? rows : []).map((row, index) => ({
+        turnNo: index + 1,
+        logicalMemberKey: \`fixture:\${index + 1}\`,
+        noAnswer: row?.noAnswer === true,
+        question: { qId: row?.qId || null, currentAliases: row?.qId ? [row.qId] : [] },
+        answer: {
+          currentAnswerIds: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],
+          currentAliases: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],
+        },
+      }));
+    },
+  });
+${close}\n`;
+})();
 const coreProgram = instrumentCore();
 
 function instrumentCoreActivation() {
@@ -290,7 +323,9 @@ function instrumentCoreActivation() {
     '    state: chatAtlasFullIndexState,',
     '    diagnostics: getConversationTurnIndexDiagnostics,',
     '    canonicalCount: () => turnState.turns.length,',
-    '    ledgerCount: () => chatAtlasLedgerState.members.length,',
+    // Ledger members are read through the 0A3a broker now, exactly as the
+    // production H2O Core code reads them.
+    '    ledgerCount: () => chatAtlasCoreLedgerMembers().length,',
     '  });',
     '  globalThis.__TURN_INDEX_OBSERVER_SUPPRESSED__ = true;',
   ].join('\n');
@@ -430,9 +465,18 @@ function createCoreRuntime({ provider = null, miniMapRows = [] } = {}) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(coreProgram, context, { filename: CORE_PATH, timeout: 3_000 });
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 3_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 3_000 });
   equal(context.__TURN_INDEX_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core bootstrap is suppressed');
   if (provider) context.H2O.archiveBoot = { fetchConversationTurnIndex: provider };
-  const api = context.__TURN_INDEX_CORE__;
+  // Each owner seeds its own state; the fixture surface is unchanged.
+  const coreApi = context.__TURN_INDEX_CORE__;
+  const ledgerApi = context.__TURN_INDEX_LEDGER__;
+  const api = Object.assign({}, coreApi, {
+    setLedgerRows: (rows) => ledgerApi.setLedgerRows(rows),
+    reset() { coreApi.reset(); ledgerApi.resetLedger(); },
+    state: coreApi.state,
+  });
   api.reset();
   return { context, api, counters, location };
 }

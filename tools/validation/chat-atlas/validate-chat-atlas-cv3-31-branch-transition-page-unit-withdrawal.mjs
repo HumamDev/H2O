@@ -47,7 +47,20 @@ const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const TITLE_SOURCE = fs.readFileSync(path.join(ROOT, TITLE_PATH), 'utf8');
 const SKIN_SOURCE = fs.readFileSync(path.join(ROOT, SKIN_PATH), 'utf8');
 const CORE0_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const CORE0_SOURCE = fs.readFileSync(path.join(ROOT, CORE0_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const CORE0_SOURCE = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 
 const CHAT_ID = 'chat-branch-transition';
 const ROUTE_KEY = '/c/chat-branch-transition';
@@ -1246,8 +1259,16 @@ function failWorld({ txState, txToken, acqToken = 't1' }) {
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
+  // chatAtlasSelectedPathFail reads the Ledger version through the 0A3a broker
+  // now, so the real broker helpers are extracted alongside it. No Ledger is
+  // registered in this sandbox, which the broker reports as version 0 - exactly
+  // the state this fixture previously produced with an empty Ledger.
+  sandbox.W = sandbox;
+  sandbox.top = sandbox;
   new vm.Script(
     extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathFail')
+    + '\n' + extractFunction(CORE0_SOURCE, 'chatAtlasCoreApi')
+    + '\n' + extractFunction(CORE0_SOURCE, 'chatAtlasCoreLedgerVersion')
     + '\nglobalThis.__fail = chatAtlasSelectedPathFail;',
   ).runInContext(sandbox);
   return { fail: sandbox.__fail, acquisition };

@@ -11,7 +11,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const ARCHIVE_PATH = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const archiveSource = fs.readFileSync(path.join(ROOT, ARCHIVE_PATH), 'utf8');
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const ROUTE_KEY = `/c/${CHAT_ID}`;
 const BRANCH_2_A17 = '7b695490-e7a4-4af6-8ad9-4e15977917bb';
@@ -275,12 +288,11 @@ function instrumentCore(source = coreSource) {
   globalThis.__CV35_CORE__ = Object.freeze({
     configure(rawIndex, identityGraph, options = {}) {
       chatAtlasClearSelectedPathAcquisition('fixture-reset');
-      chatAtlasLedgerState.members = [];
-      chatAtlasLedgerState.ready = false;
-      chatAtlasLedgerState.version = 0;
-      chatAtlasLedgerState.chatKey = '';
-      chatAtlasLedgerState.nextMemberId = 1;
-      chatAtlasLedgerState.quarantinedAliases = new Set();
+      // The Ledger now lives in 0A3b behind the 0A3a broker, so this fixture no
+      // longer reaches into its private state. With no Ledger service registered
+      // in this sandbox the broker reports exactly what these lines used to set:
+      // no members, not ready, version 0. The reset is therefore already true,
+      // and the Atlas code under test reads it through the real broker path.
       const normalized = chatAtlasNormalizeCompleteIndexEnvelope(rawIndex, rawIndex?.chatId, { source: 'host' });
       if (!normalized.ok) throw new Error('fixture-index-invalid:' + normalized.errorCode);
       completeTurnIndexAuthorityState.enabled = options.enabled !== false;
@@ -342,7 +354,8 @@ function instrumentCore(source = coreSource) {
       });
     },
     apply(read, reason = 'cv35-fixture') {
-      return chatAtlasApplyEvidence(read, reason, true);
+      // chatAtlasApplyEvidence now lives in 0A3b; drive the real Ledger there.
+      return globalThis.__CV35_LEDGER__.applyEvidence(read, reason, true);
     },
     capture(event) {
       return chatAtlasRecordTrustedNativeBranchSelection(event);
@@ -360,7 +373,8 @@ function instrumentCore(source = coreSource) {
     refreshStatus() {
       return completeIndexRefreshCoordinator?.getStatus?.() || null;
     },
-    evaluate(members = chatAtlasLedgerState.members) {
+    // Ledger members come from 0A3b now; H2O Core reads them through the broker.
+    evaluate(members = chatAtlasCoreLedgerMembers()) {
       return chatAtlasSelectedPathEvaluate(members);
     },
     status: getSelectedPathAcquisitionStatus,
@@ -434,6 +448,33 @@ function instrumentCore(source = coreSource) {
   return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
+
+// ── Real 0A3a broker + real 0A3b Ledger, as separate programs ──────────────
+// The Ledger physically left H2O Core, so this harness now loads the three real
+// scripts the way production does instead of reaching into one lexical scope.
+// Evaluating 0A3b is inert: its MutationObserver and requestAnimationFrame only
+// appear inside chatAtlasRebindObserver / scheduleChatAtlasLedgerFlush, so the
+// side-effect counters this validator asserts on are untouched until a fixture
+// deliberately drives the Ledger.
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const brokerProgram = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+function instrumentLedger() {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  if (countOccurrences(src, '  function chatAtlasApplyEvidence(') !== 1) {
+    throw new Error('ledger-instrumentation-anchor-invalid:chatAtlasApplyEvidence');
+  }
+  const exportBlock = `
+  globalThis.__CV35_LEDGER__ = Object.freeze({
+    applyEvidence(read, reason, force) { return chatAtlasApplyEvidence(read, reason, force); },
+  });
+`;
+  return `${src.slice(0, closeIndex)}${exportBlock}${close}\n`;
+}
+const ledgerProgram = instrumentLedger();
 const coreProgram = instrumentCore();
 const AGE_PROTECTION_NEEDLE = '      && !requestOwnedRefetch\n';
 if (countOccurrences(coreSource, AGE_PROTECTION_NEEDLE) !== 1) {
@@ -550,6 +591,8 @@ function createCoreRuntime(program = coreProgram) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
+  vm.runInContext(brokerProgram, context, { filename: BROKER_REL, timeout: 8_000 });
+  vm.runInContext(ledgerProgram, context, { filename: LEDGER_REL, timeout: 8_000 });
   equal(context.__CV35_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core boot side effects are suppressed');
   for (const key of Object.keys(counters)) counters[key] = 0;
   return {

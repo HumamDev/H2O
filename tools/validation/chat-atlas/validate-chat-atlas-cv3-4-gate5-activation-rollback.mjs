@@ -8,7 +8,20 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const corePath = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(root, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const PREF_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
 const CACHE_KEY = `h2o:prm:cgx:chat-atlas:complete-turn-index:v1:chat:${CHAT_ID}`;
@@ -266,18 +279,37 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const setterAnchor = '  function setChatAtlasCanonicalSource(value) {\n';
   const publishAnchor = '  function chatAtlasPublishCompleteIndex(envelope, source) {\n';
-  let programSource = coreSource
-    .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`)
-    .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`);
-  const closeIndex = programSource.lastIndexOf('})();');
-  if (closeIndex < 0) throw new Error('core-iife-close-missing');
-  programSource = `${programSource.slice(0, closeIndex)}
+  // The canonical-return function moved to 0A3b while the authority generation it
+  // checks is still owned by 0A1a. Each half of the fixture hook is therefore
+  // spliced into the module that actually owns what it touches, and the three
+  // real programs run in order exactly as production loads them.
+  const spliceExport = (src, block) => {
+    const at = src.lastIndexOf('})();');
+    if (at < 0) throw new Error('iife-close-missing');
+    return `${src.slice(0, at)}${block}${src.slice(at)}`;
+  };
+  const coreOnly = spliceExport(
+    H2O_CORE_AGGREGATE_SOURCES[0] === undefined ? '' : fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[0]), 'utf8')
+      .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`),
+    `
+  globalThis.__GATE5_BUMP_GENERATION__ = () => { completeTurnIndexAuthorityState.generation += 1; };
+`,
+  );
+  const brokerOnly = fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[1]), 'utf8');
+  const ledgerOnly = spliceExport(
+    fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[2]), 'utf8')
+      .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`),
+    `
   globalThis.__GATE5_CANONICAL_RETURN__ = Object.freeze({
     apply: (members) => chatAtlasClearBranchSelectionStaleOnCanonicalReturn(members),
-    bumpGeneration: () => { completeTurnIndexAuthorityState.generation += 1; },
+    bumpGeneration: () => globalThis.__GATE5_BUMP_GENERATION__(),
   });
-${programSource.slice(closeIndex)}`;
+`,
+  );
+  const programSource = coreOnly;
   vm.runInContext(programSource, context, { filename: corePath, timeout: 8_000 });
+  vm.runInContext(brokerOnly, context, { filename: H2O_CORE_AGGREGATE_SOURCES[1], timeout: 8_000 });
+  vm.runInContext(ledgerOnly, context, { filename: H2O_CORE_AGGREGATE_SOURCES[2], timeout: 8_000 });
   const runtime = {
     context,
     api: context.H2O.turnRuntime,

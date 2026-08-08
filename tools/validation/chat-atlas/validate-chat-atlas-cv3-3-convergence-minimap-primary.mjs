@@ -98,15 +98,9 @@ function buildInstrumentedSource(source) {
 
   const exports = [
     '  globalThis.__CV33_CONVERGENCE_INTERNALS__ = Object.freeze({',
-    '    getChatAtlasConvergenceParity,',
-    '    chatAtlasConvergenceMatch,',
-    '    chatAtlasConvergenceMiniMapPrimaryMismatch,',
-    '    setFixtureState({ members, turns, ready = true, chatKey = "fixture-chat" }) {',
-    '      chatAtlasLedgerState.members = members;',
-    '      chatAtlasLedgerState.ready = ready;',
-    '      chatAtlasLedgerState.chatKey = chatKey;',
-    '      turnState.turns = turns;',
-    '    },',
+    // Convergence parity and the Ledger fixture state moved to 0A3b; H2O Core
+    // keeps only the generic turn seeding it still owns.
+    '    setCoreFixtureState({ turns }) { turnState.turns = turns; },',
     '  });',
     '  globalThis.__CV33_BOOTSTRAP_SUPPRESSED__ = true;',
   ].join('\n');
@@ -293,6 +287,34 @@ function createRuntime(instrumentation, name, { miniMapDiagnostics = null } = {}
   sandbox.window = sandbox;
   sandbox.self = sandbox;
   sandbox.top = sandbox;
+
+// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
+// Convergence parity is Ledger-owned now, so it is exported from the Ledger's
+// own module instead of H2O Core's scope. Script isolation is preserved.
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const LEDGER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  for (const n of ['getChatAtlasConvergenceParity', 'chatAtlasConvergenceMatch', 'chatAtlasConvergenceMiniMapPrimaryMismatch']) {
+    if (src.split(`  function ${n}(`).length - 1 !== 1) throw new Error(`ledger-anchor-invalid:${n}`);
+  }
+  return `${src.slice(0, closeIndex)}
+  globalThis.__CV33_LEDGER__ = Object.freeze({
+    getChatAtlasConvergenceParity,
+    chatAtlasConvergenceMatch,
+    chatAtlasConvergenceMiniMapPrimaryMismatch,
+    setLedgerFixtureState({ members, ready = true, chatKey = 'fixture-chat' }) {
+      chatAtlasLedgerState.members = members;
+      chatAtlasLedgerState.ready = ready;
+      chatAtlasLedgerState.chatKey = chatKey;
+    },
+  });
+${close}\n`;
+})();
   sandbox.globalThis = sandbox;
 
   const context = vm.createContext(sandbox, {
@@ -303,8 +325,18 @@ function createRuntime(instrumentation, name, { miniMapDiagnostics = null } = {}
     filename: SOURCE_PATH,
     timeout: 2_000,
   });
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 2_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 2_000 });
   if (context.__CV33_BOOTSTRAP_SUPPRESSED__ !== true) throw new Error('bootstrap suppression marker missing');
-  const internals = context.__CV33_CONVERGENCE_INTERNALS__;
+  const coreInternals = context.__CV33_CONVERGENCE_INTERNALS__;
+  const ledgerInternals = context.__CV33_LEDGER__;
+  const internals = Object.assign({}, coreInternals, ledgerInternals, {
+    // Each owner seeds its own state; the fixture contract is unchanged.
+    setFixtureState({ members, turns, ready = true, chatKey = 'fixture-chat' }) {
+      ledgerInternals.setLedgerFixtureState({ members, ready, chatKey });
+      coreInternals.setCoreFixtureState({ turns });
+    },
+  });
   if (typeof internals?.getChatAtlasConvergenceParity !== 'function') throw new Error('convergence probe was not exported');
   if (typeof internals?.chatAtlasConvergenceMatch !== 'function') throw new Error('convergence matcher was not exported');
   if (typeof internals?.chatAtlasConvergenceMiniMapPrimaryMismatch !== 'function') throw new Error('semantic helper was not exported');
@@ -420,7 +452,16 @@ function singleFixture(options = {}) {
   };
 }
 
-const source = fs.readFileSync(SOURCE_ABS, 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. The H2O Core source read here is now
+// the aggregate of the three files the code actually lives in. No assertion
+// changes; negative checks get strictly stronger across all three files.
+const H2O_CORE_AGGREGATE_ABS = [
+  SOURCE_ABS,
+  path.join(ROOT, 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js'),
+  path.join(ROOT, 'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js'),
+];
+const source = H2O_CORE_AGGREGATE_ABS.map((abs) => fs.readFileSync(abs, 'utf8')).join('\n');
 const instrumentation = buildInstrumentedSource(source);
 const fixtures = [];
 
