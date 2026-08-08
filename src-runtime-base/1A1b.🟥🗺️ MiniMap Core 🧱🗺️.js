@@ -998,7 +998,25 @@ function UM_PUBLIC() {
     try {
       const status = getCompleteIndexProjectionStatus();
       if (status.enabled !== true) return null;
-      key = `${status.chatId || ''}|${status.routeGeneration || 0}|${status.fingerprint || ''}|${status.count || 0}`;
+      // Badges are computed from the EFFECTIVE path, so the cache is keyed by
+      // it. Canonical fingerprint/count alone cannot express a selected-branch
+      // change that leaves the canonical envelope untouched.
+      const effective = typeof getEffectivePathIdentity === 'function'
+        ? getEffectivePathIdentity()
+        : { effectivePathRevision: null, effectiveCount: 0, effectiveSource: 'canonical', overlayActive: false };
+      key = [
+        status.chatId || '',
+        status.routeGeneration || 0,
+        status.fingerprint || '',
+        status.count || 0,
+        effective.effectivePathRevision || '',
+        effective.effectiveCount || 0,
+        // effectiveSource is a distinct authority axis from overlayActive: the
+        // same overlay flag can be reached from different sources, and a source
+        // change alone must still invalidate the badge cache.
+        effective.effectiveSource || 'canonical',
+        effective.overlayActive ? 'overlay' : 'canonical',
+      ].join('|');
     } catch { return null; }
     if (key && branchBadgeCache.key === key) return branchBadgeCache.byQId;
     const byQId = new Map();
@@ -6375,6 +6393,35 @@ function UM_PUBLIC() {
     return status.overlayActive === true
       && status.source === 'selected-path-overlay'
       && status.count > 0;
+  }
+
+  // The pinned projection status cannot carry effective-path identity, so the
+  // dedicated accessor supplies it. Absent (older Core) => canonical fallback,
+  // which reproduces the historical behaviour exactly.
+  function getEffectivePathIdentity() {
+    try {
+      const v = getTurnRuntimeApi()?.getChatAtlasEffectivePathIdentity?.();
+      if (v && typeof v === 'object') {
+        return {
+          available: true,
+          effectiveCount: Math.max(0, Number(v.effectiveCount || 0) || 0),
+          effectiveFingerprint: String(v.effectiveFingerprint || '') || null,
+          effectivePathIdentity: String(v.effectivePathIdentity || '') || null,
+          effectivePathRevision: String(v.effectivePathRevision || '') || null,
+          effectiveSource: String(v.effectiveSource || 'canonical'),
+          overlayActive: v.overlayActive === true,
+        };
+      }
+    } catch {}
+    return {
+      available: false,
+      effectiveCount: 0,
+      effectiveFingerprint: null,
+      effectivePathIdentity: null,
+      effectivePathRevision: null,
+      effectiveSource: 'canonical',
+      overlayActive: false,
+    };
   }
 
   function getCompleteIndexProjectionStatus() {
@@ -12512,9 +12559,24 @@ function unbindChatPageDividerBridge() {
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
       let retainedListForPersistence = list;
+      // A trusted branch transition in flight means pending drafts describe a
+      // path the effective authority has not accepted; counting them renders a
+      // hybrid the effective index never published (the 19-effective /
+      // 20-MiniMap split). During a transition the MiniMap tracks the effective
+      // count exactly and otherwise fails closed. Outside a transition the
+      // historical projected boundary stands, so ordinary live append is
+      // unchanged.
+      const effectiveIdentity = typeof getEffectivePathIdentity === 'function'
+        ? getEffectivePathIdentity()
+        : { available: false, effectiveCount: 0 };
+      const branchTransitionInFlight = completeIndex.branchSelectionStale === true
+        || completeIndex.trustedSelectionIntentActive === true
+        || completeIndex.branchTransactionPending === true;
       const expectedPresentationCount = overlayActive
         ? effectivePresentation.count
-        : completeIndex.projectedCount;
+        : ((branchTransitionInFlight && effectiveIdentity.available)
+          ? effectiveIdentity.effectiveCount
+          : completeIndex.projectedCount);
       // Canonical-only regression contract: when no overlay is active this is
       // exactly the historical `list.length !== completeIndex.projectedCount`
       // boundary; the effective count is consulted only for proven overlays.

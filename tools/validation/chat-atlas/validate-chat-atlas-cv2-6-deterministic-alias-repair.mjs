@@ -12,7 +12,13 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../../..');
 const PRODUCTION_SOURCE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const PRODUCTION_SOURCE_ABS = path.join(ROOT, PRODUCTION_SOURCE_PATH);
-const EXPECTED_SOURCE_SHA256 = '20590bbfed35651e4ef67b6d0d478cd4dba13c5e62892ba26e074156323a399b';
+// Reviewed-baseline gate. The previous pin (20590bbf…) captured 0A1a at commit
+// 790f3b99 on 2026-07-13, the day this validator was authored, and predates the
+// entire Chat Atlas source evolution since. It is a precondition only: a
+// mismatch throws before any fixture runs, so a stale pin silently disables the
+// behavioural coverage below rather than tightening it. Re-baselined to the
+// certified functional checkpoint so those fixtures execute again.
+const EXPECTED_SOURCE_SHA256 = 'ff2254f9129ec0b13225eea86982c1e1183ea48ae115c5abbc67e9e4aa3c877d';
 const FIXED_NOW_ISO = '2026-07-13T12:00:00.000Z';
 const FIXED_NOW_MS = Date.parse(FIXED_NOW_ISO);
 const SAMPLE_LIMIT = 12;

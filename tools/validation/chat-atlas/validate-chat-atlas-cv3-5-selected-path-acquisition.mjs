@@ -963,6 +963,11 @@ await expectFailure(
     graph.nodes.push(forkQ);
     nodes.get('branch-2-tool-17').childIds.push(forkQ.nodeId);
     graph.nodeCount += 1;
+    // Case C: the fork must be REAL ambiguity, not stale evidence. Park
+    // current_node inside the selected answer's subtree but ABOVE the fork,
+    // so the graph proves the anchor (no pre-click refresh handoff) while
+    // containment still cannot elect either equal candidate.
+    graph.currentNode = 'branch-2-tool-17';
   },
   'fork-unresolved',
   { includeQ18: false },

@@ -298,6 +298,15 @@ function instrumentCore(source) {
     refreshStatus() {
       return completeIndexRefreshCoordinator?.getStatus?.() || null;
     },
+    installClientChainDom(elements) {
+      return document.__cv38InstallClientChain(elements);
+    },
+    readClientChain(graph, selectedAnswerId) {
+      return chatAtlasNativeClientSelectedChain(graph, selectedAnswerId);
+    },
+    clientChainProves(chain, selectedAnswerId) {
+      return chatAtlasClientChainProvesAnchor(chain, selectedAnswerId);
+    },
     setProvider(provider) {
       H2O.archiveBoot = H2O.archiveBoot || {};
       H2O.archiveBoot.fetchConversationTurnIndex = provider;
@@ -969,6 +978,24 @@ function stage2mIdentityGraph() {
   });
 }
 
+// The same Stage-2m topology with current_node moved onto the selected route.
+// stage2mIdentityGraph() is deliberately PRE-CLICK (current_node = A19, the
+// outgoing 19-turn chain) and cannot prove the selected downstream forks; this
+// is its post-click counterpart, used for the refreshed-graph phase. Only
+// current_node differs — no node is added, removed or re-parented.
+//
+// LIVE_A39 is the selected route's terminal: LIVE_LONG_A_IDS[12] is null, so
+// order 38 is the legitimate unanswered row and canonical-a-38 is spliced out,
+// while LIVE_LONG_A_IDS[13] = LIVE_A39 survives under LIVE_Q39 (q38 -> LIVE_Q39
+// -> LIVE_A39).
+function stage2mPostClickGraph() {
+  const source = stage2mIdentityGraph();
+  return Object.freeze({
+    ...source,
+    currentNode: LIVE_A39,
+  });
+}
+
 function stage2mAmbiguousGraph() {
   const source = stage2mIdentityGraph();
   const nodes = source.nodes.map((node) => ({
@@ -1003,6 +1030,26 @@ function stage2mAmbiguousGraph() {
     childIds: Object.freeze(node.childIds.slice()),
   })));
   return Object.freeze({ ...source, nodeCount: frozenNodes.length, nodes: frozenNodes });
+}
+
+// Case C shape. current_node PROVES the selected anchor -- it sits inside the
+// A17_SELECTED subtree -- but stops ABOVE the tie at canonical-a-25, so
+// containment cannot elect either equal route. That is REAL ambiguity, not
+// pre-click evidence, so it must still fail closed with no refresh handoff.
+function stage2mAmbiguousProvenGraph() {
+  const source = stage2mAmbiguousGraph();
+  return Object.freeze({ ...source, currentNode: 'canonical-a-25' });
+}
+
+// Post-click counterpart of stage2mAmbiguousGraph(). The graph keeps BOTH
+// equal terminal-complete routes — the original LIVE_Q26 subtree ending at
+// LIVE_A39, and its `stage2m-tie-` clone ending at `stage2m-tie-<LIVE_A39>`.
+// Only current_node moves, onto route A's terminal, so publication is
+// permitted at all; the two-route ambiguity the fixture depends on is
+// untouched, and production must still fail closed on it.
+function stage2mPostClickAmbiguousGraph() {
+  const source = stage2mAmbiguousGraph();
+  return Object.freeze({ ...source, currentNode: LIVE_A39 });
 }
 
 function stage2mLongTurns() {
@@ -1202,13 +1249,27 @@ function createRuntime(program = CORE_PROGRAM) {
     querySelector() { return null; },
     querySelectorAll() { return []; },
   };
+  const clientChainDom = { elements: [] };
   const document = {
     location,
     body,
     documentElement: body,
     visibilityState: 'visible',
-    querySelector() { return null; },
-    querySelectorAll() { return []; },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
+    querySelectorAll(selector) {
+      const text = String(selector || '');
+      if (text.includes('data-message-id') || text.includes('data-conversation-screenshot-content')) {
+        return clientChainDom.elements;
+      }
+      return [];
+    },
+    // Bridge: the fixture api is injected into the Core source and evaluated
+    // inside the vm, so it cannot close over this module's scope. The shared
+    // document object is the one thing both sides already hold.
+    __cv38InstallClientChain(elements) {
+      clientChainDom.elements = Array.isArray(elements) ? elements : [];
+      return clientChainDom.elements.length;
+    },
     getElementById() { return null; },
     addEventListener() {},
     removeEventListener() {},
@@ -1984,17 +2045,30 @@ await fixture('nine graph-return authority mutations are killed by live-shaped b
   scopeControl.api.patchRetainedGraph({ captureIdentity: 'djb2:foreign-graph' });
   equal(scopeControl.api.returnExpansionWindow().active, false, 'production rejects graph-capture drift');
 
-  const directionProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasCaptureBranchReturnCandidate', (body) => body.replace(
+  // Native pager order under Q17 is [A17_CANONICAL, A17_SELECTED] — the raw
+  // graph childIds order the host's own pager walks as 1/2, 2/2, and exactly
+  // the order the live Turn-17 pager reported. A real native Next therefore
+  // departs A17_CANONICAL (the 39-turn canonical branch the user was on) and
+  // lands on A17_SELECTED; departing A17_SELECTED has no Next neighbour at
+  // all, so anchoring the case there exercised no adjacency the pager can
+  // actually perform.
+  const directionProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasResolveNativeReturnTarget', (body) => body.replace(
     "const targetIndexValue = priorIndexValue + (direction === 'previous' ? -1 : 1);",
     'const targetIndexValue = priorIndexValue - 1;',
   ));
-  const directionPrior = selectedPriorWithAnchorVariants([A17_SELECTED, A17_CANONICAL], A17_CANONICAL);
+  const directionPrior = canonicalIndex(39);
+  const directionNext = { direction: 'next', priorAnswerId: A17_CANONICAL };
   const directionControl = createRuntime();
   directionControl.api.configure(directionPrior, identityGraph(39, { selectedCount: 19 }));
-  equal(directionControl.api.captureCandidate({ direction: 'next' }, directionPrior).classification, 'expanding', 'production honors next direction');
+  const directionResolved = directionControl.api.captureCandidate(directionNext, directionPrior);
+  equal(directionResolved.targetVariantAnswerId, A17_SELECTED, 'production honors next direction against native pager order');
+  equal(directionResolved.derivedTargetCount, 19, 'the native next neighbour derives its own 19-turn route');
+  equal(directionResolved.classification, 'not-expanding', 'and that route contracts away from the 39-turn prior');
   const directionMutant = createRuntime(directionProgram);
   directionMutant.api.configure(directionPrior, identityGraph(39, { selectedCount: 19 }));
-  equal(directionMutant.api.captureCandidate({ direction: 'next' }, directionPrior).classification, 'invalid', 'direction-ignoring mutant is killed');
+  const directionKilled = directionMutant.api.captureCandidate(directionNext, directionPrior);
+  equal(directionKilled.classification, 'invalid', 'direction-ignoring mutant is killed');
+  equal(directionKilled.reason, 'capture-direction-neighbor-unavailable', 'and cannot reach any neighbour at all');
 
   const recomputeProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasClearBranchSelectionStaleOnCanonicalReturn', (body) => body.replace(
     'const candidate = intent?.returnTargetCandidate || null;',
@@ -2534,9 +2608,24 @@ await fixture('unchanged host envelope publishes once when its retained full gra
   // This is the exact post-provider boundary: the coordinator has retained
   // the returned graph, but its 19-turn envelope is byte-identical and will
   // not trigger another ordinary publication callback.
-  const graphArrival = runtime.api.retainAndPublishGraph(stage2mIdentityGraph());
+  // PHASE 1 — pre-click retained evidence. current_node is still on the
+  // outgoing 19-turn chain, so it cannot prove the selected downstream route.
+  // Retention happens; publication must not.
+  const preClick = runtime.api.retainAndPublishGraph(stage2mIdentityGraph());
+  const contained = runtime.api.snapshot();
+  equal(preClick.retained, true, 'the one complete graph acquisition is retained');
+  equal(preClick.publication.published, false, 'a pre-click retained graph cannot publish');
+  equal(contained.complete.branchTransactionStateCode, 'pending', 'the exact transaction stays pending');
+  equal(contained.overlay.overlayActive, false, 'no selected-path overlay is installed yet');
+  equal(contained.effective.turns.length, 19, 'the effective path does not switch on unproven evidence');
+  ok(contained.effective.turns.length !== 20 && contained.effective.turns.length !== 21,
+    'no partial 20/21 hybrid can settle while the transaction is contained');
+
+  // PHASE 3 — the refreshed post-click graph proves the selected route; the
+  // original success expectations apply here unchanged.
+  const graphArrival = runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
   const resolved = runtime.api.snapshot();
-  equal(graphArrival.retained, true, 'the one complete graph acquisition is retained');
+  equal(graphArrival.retained, true, 'the refreshed graph acquisition is retained');
   equal(graphArrival.publication.published, true, 'graph retention re-evaluates the exact transaction once');
   equal(resolved.overlay.overlayActive, true, 'retained graph arrival publishes the selected overlay locally');
   equal(resolved.effective.turns.length, 39, 'unchanged host envelope cannot strand the complete 39-turn graph');
@@ -2554,11 +2643,16 @@ await fixture('a graph retained before capture publishes at the post-event trust
   // current. The next native click must consume that retained graph locally;
   // no new provider envelope is required to rediscover identical bytes.
   const runtime = createRuntime();
+  // PHASE 1 — the graph retained at reload is PRE-CLICK: current_node still
+  // sits on the outgoing branch, so it cannot prove the selection the user
+  // has just made.
   runtime.api.configure(selectedHostIndex(19), stage2mIdentityGraph());
   let providerCalls = 0;
+  // PHASE 2 — the bounded host refresh supplies the post-click graph. This is
+  // the one refresh opportunity this trusted token owns.
   runtime.api.setProvider(() => {
     providerCalls += 1;
-    return Promise.resolve({ ok: true, index: selectedHostIndex(19) });
+    return Promise.resolve({ ok: true, index: selectedHostIndex(19), identityGraph: stage2mPostClickGraph() });
   });
   equal(runtime.api.capture(branchEvent({
     direction: 'previous',
@@ -2567,21 +2661,703 @@ await fixture('a graph retained before capture publishes at the post-event trust
   })), true, 'trusted capture opens the exact branch transaction');
   equal(runtime.api.snapshot().overlay.count, 19, 'publication waits for the existing post-event checkpoint');
   await runtime.fireReconcile();
+  const contained = runtime.api.snapshot();
+  equal(contained.overlay.overlayActive, false, 'pre-click retained evidence does not publish at reconcile');
+  equal(contained.complete.branchTransactionStateCode, 'pending', 'the transaction stays pending and contained');
+  ok(contained.effective.turns.length !== 20 && contained.effective.turns.length !== 21,
+    'no partial 20/21 hybrid settles while the refresh is outstanding');
+  // PHASE 3 — the refreshed post-click graph arrives and proves the route.
+  const graphArrival = runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
+  equal(graphArrival.publication.published, true, 'the refreshed post-click graph publishes');
   const resolved = runtime.api.snapshot();
-  equal(resolved.overlay.count, 39, 'post-event reconcile publishes the retained complete route');
+  equal(resolved.overlay.count, 39, 'post-click reconcile publishes the complete route');
   equal(resolved.effective.turns.length, 39, 'effective authority is atomically complete');
   equal(resolved.complete.branchTransactionStateCode, 'published', 'transaction closes only after retained-graph publication');
-  equal(resolved.derivation.publicationDecision.source, 'trusted-native-retained-graph', 'diagnostics identify the pre-capture graph handoff');
   equal(resolved.derivation.publicationDecision.acceptedCount, 39, 'only the complete route is accepted');
-  equal(providerCalls, 0, 'no duplicate graph or host fetch is needed');
+  ok(providerCalls <= 1, 'the bounded refresh runs at most once for this trusted token');
   equal(resolved.coreTurns.length, 39, 'Core consumes the complete retained route');
   equal(resolved.ledgerTurns.length, 39, 'Ledger consumes the same retained route');
+  // PHASE 2 is a real refresh opportunity, not a no-op: the graph retained at
+  // reload is PRE-CLICK, so the post-event handoff stays pending and hands off
+  // to the coordinator's existing debounce. That handoff is the only thing that
+  // could ever bring post-click evidence in the live browser, so it must be
+  // scheduled; PHASE 3 simply lands first, which is why the provider is never
+  // called. Account for the one sanctioned debounce explicitly instead of
+  // letting the safety sweep assume no timer exists at all.
+  const debounced = runtime.activeTimers();
+  equal(debounced.length, 1, 'exactly one refresh is outstanding, not a storm');
+  ok(debounced[0].delay > 0, 'and it is the existing debounce, never a poll');
+  equal(runtime.counters.boundedGraphRefetchCalls, 0, 'no bounded graph refetch is started');
+  runtime.counters.generalTimers = 0;
+  assertSafe(runtime);
+});
+
+// Stale-retained-graph -> bounded-refresh handoff. Live shape: the host has
+// already applied a trusted Answer-17 switch, but the retained identity graph
+// still carries the PRE-CLICK current_node, so the fork below the newly
+// selected answer is unresolvable by containment. Derivation must not reach a
+// terminal verdict against that graph; it must stay contained and pending so
+// refreshed evidence can arrive.
+function openStaleGraphSelection() {
+  const runtime = createRuntime();
+  runtime.api.configure(selectedHostIndex(19), null);
+  equal(runtime.api.capture(branchEvent({
+    direction: 'previous',
+    timeStamp: 731,
+    answerIds: [A17_SELECTED],
+  })), true, 'the trusted branch transaction opens');
+  // Pre-click evidence: current_node sits outside the A17_SELECTED subtree.
+  const arrival = runtime.api.retainAndPublishGraph(stage2mAmbiguousGraph());
+  return { runtime, arrival, state: runtime.api.snapshot() };
+}
+
+const staleTrace = (state) => (state.complete.branchTransactionTrace || []).map((entry) => entry.code);
+
+// A. Pre-click retained graph whose derivation would otherwise be terminal.
+await fixture('a pre-click retained graph is held pending instead of failing closed', () => {
+  const { runtime, arrival, state } = openStaleGraphSelection();
+  equal(arrival.retained, true, 'the pre-click graph is retained like any other');
+  equal(state.complete.branchTransactionStateCode, 'pending', 'the transaction stays open');
+  equal(state.complete.branchTransactionPending, true, 'ownership and containment are preserved');
+  equal(
+    state.derivation.publicationDecision.reason,
+    'branch-transaction-graph-pending',
+    'the publication decision reports graph-pending, not a derivation verdict',
+  );
+  equal(state.derivation.publicationDecision.published, false, 'and publishes nothing');
+  equal(state.derivation.derivation.ok, false, 'the derivation itself still cannot resolve the fork');
+  equal(state.derivation.derivation.reason, 'fork-unresolved', 'for the exact live reason');
+  const trace = staleTrace(state);
+  ok(trace.includes('tx-graph-pending'), 'the stale classification is recorded on the transaction');
+  ok(!trace.includes('tx-fail-closed'), 'nothing closes the transaction while evidence is pre-click');
+  equal(state.overlay.count, 19, 'the previous complete authority is untouched');
+  equal(state.overlay.overlayActive, false, 'no overlay is installed on stale evidence');
+  equal(state.ledgerTurns.length, 19, 'Ledger is not mutated');
+  // Repetition must not escalate: the hold is stable, not a race.
+  runtime.api.publish(stage2mPrefixIndex(), 'stale-graph-repeat-prefix');
+  runtime.api.retainAndPublishGraph(stage2mAmbiguousGraph());
+  const repeated = runtime.api.snapshot();
+  equal(repeated.complete.branchTransactionStateCode, 'pending', 'repeats keep the transaction open');
+  equal(repeated.overlay.count, 19, 'and never publish a route');
+  assertSafe(runtime);
+});
+
+// B. Refreshed post-click graph: current_node proves the anchor, parity resolves.
+await fixture('a refreshed post-click graph completes the held selection', () => {
+  const { runtime } = openStaleGraphSelection();
+  const refreshed = runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
+  equal(refreshed.retained, true, 'the refreshed graph replaces the pre-click evidence');
+  const state = runtime.api.snapshot();
+  equal(
+    state.complete.branchTransactionStateCode,
+    'published',
+    'the held transaction publishes rather than failing closed',
+  );
+  equal(state.overlay.count, 39, 'the complete hidden branch becomes authority');
+  equal(state.overlay.overlayActive, true, 'the overlay is installed only on proven evidence');
+  equal(state.coreTurns.length, 39, 'Core is rebuilt atomically on the refreshed path');
+  equal(state.derivation.derivation.ok, true, 'the refreshed current_node resolves the fork');
+  equal(
+    state.derivation.derivation.tailNodeId,
+    LIVE_A39,
+    'and lands on the proven terminal identity',
+  );
+});
+
+// C. Refreshed post-click graph that is STILL genuinely ambiguous.
+await fixture('a refreshed graph that proves the anchor still fails closed on real ambiguity', () => {
+  const { runtime, state: held } = openStaleGraphSelection();
+  // Proves the anchor, but stops above the tie: containment cannot elect
+  // either equal route, so this is real ambiguity and must be terminal.
+  runtime.api.retainAndPublishGraph(stage2mAmbiguousProvenGraph());
+  const state = runtime.api.snapshot();
+  equal(
+    state.complete.branchTransactionStateCode,
+    'fail-closed',
+    'the transaction closes once the evidence is current',
+  );
+  equal(
+    state.derivation.publicationDecision.reason,
+    'fork-unresolved',
+    'and reports the genuine derivation verdict, not graph-pending',
+  );
+  equal(state.overlay.count, 19, 'no ambiguous route ever becomes authority');
+  equal(state.overlay.overlayActive, false, 'and no overlay is installed');
+  equal(state.coreTurns.length, held.coreTurns.length, 'Core stays on the previous complete authority');
+  // No retry loop: a further arrival cannot reopen a closed transaction.
+  const before = staleTrace(state).length;
+  runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
+  const after = runtime.api.snapshot();
+  equal(
+    after.complete.branchTransactionStateCode,
+    'fail-closed',
+    'a later arrival cannot reopen a terminally closed selection',
+  );
+  equal(after.overlay.count, 19, 'and cannot publish through it');
+  ok(staleTrace(after).length >= before, 'the trace stays bounded and append-only');
+});
+
+// D. The hold is bounded, and evidence whose scope has drifted stays inert.
+await fixture('the pending hold is bounded and drifted evidence stays inert', () => {
+  const { runtime, state: held } = openStaleGraphSelection();
+  // The refreshed graph now arrives AFTER the route generation moved on. It
+  // must not mutate authority, install an overlay, or revive the selection.
+  runtime.api.setGeneration(2);
+  runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
+  const drifted = runtime.api.snapshot();
+  equal(drifted.overlay.count, 19, 'a drifted arrival publishes nothing');
+  equal(drifted.overlay.overlayActive, false, 'and installs no overlay');
+  equal(drifted.coreTurns.length, held.coreTurns.length, 'Core is untouched by out-of-scope evidence');
+  ok(drifted.acquisition.status !== 'proven', 'a drifted arrival can never prove a selection');
+  ok(
+    drifted.complete.branchTransactionStateCode !== 'published',
+    'and can never publish the held transaction',
+  );
+  assertSafe(runtime);
+});
+
+// ---- Native client selected-chain authority --------------------------------
+// Backend current_node is proven not to follow a native variant switch, so the
+// page's own linearized selected-message chain is the manual-session authority.
+// The fixture graph mirrors the live shape exactly: A17_SELECTED descends
+// through structural tool/system nodes to its own q/a turns, with no shell
+// alias on the route, so a chain of genuine product message ids is what a real
+// ChatGPT client would expose -- production validation is never relaxed here.
+
+// Root-to-leaf product message ids for a chosen terminal, read from the graph
+// so no id sequence is ever hand-written.
+function clientChainIdsTo(graph, terminalNodeId) {
+  const byNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  const ids = [];
+  let cursor = byNodeId.get(terminalNodeId);
+  let guard = 0;
+  while (cursor && guard < 4096) {
+    if (cursor.productUser === true || cursor.productAnswer === true) ids.push(cursor.messageId);
+    if (!cursor.parentId) break;
+    cursor = byNodeId.get(cursor.parentId);
+    guard += 1;
+  }
+  return ids.reverse();
+}
+
+// The graph's genuine conversation root. Live this is `client-created-root`,
+// the leading wrapper of every host chain.
+function graphRootId(graph) {
+  const root = graph.nodes.find((node) => !node.parentId);
+  return root ? root.nodeId : null;
+}
+
+// LIVE SHAPE A — an assistant turn rendered as MULTIPLE messages. The host
+// names the turn by its FIRST message; the rendered answer, and the node the
+// next question descends from, is the LAST product answer of that run.
+//   Q -> firstAnswer -> (non-product) -> finalAnswer -> nextQ
+function withMultiMessageAssistantRun(graph, answerMessageId, prefix) {
+  const nodes = graph.nodes.map((node) => ({ ...node, childIds: node.childIds.slice() }));
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const first = byId.get(answerMessageId);
+  const kids = first.childIds.slice();
+  const midId = `${prefix}-run-mid`;
+  const finalId = `${prefix}-run-final`;
+  first.childIds = [midId];
+  for (const kid of kids) byId.get(kid).parentId = finalId;
+  nodes.push({
+    nodeId: midId, parentId: first.nodeId, childIds: [finalId], role: 'tool', messageId: midId,
+    productUser: false, productAnswer: false, branchShellAlias: false, stopped: false,
+  }, {
+    nodeId: finalId, parentId: midId, childIds: kids, role: 'assistant', messageId: finalId,
+    productUser: false, productAnswer: true, branchShellAlias: false, stopped: false,
+  });
+  const frozen = Object.freeze(nodes.map((node) => Object.freeze({
+    ...node, childIds: Object.freeze(node.childIds.slice()),
+  })));
+  return {
+    graph: Object.freeze({ ...graph, nodeCount: frozen.length, nodes: frozen }),
+    firstAnswerId: answerMessageId, finalAnswerId: finalId, midId,
+  };
+}
+
+// LIVE SHAPE B — an assistant turn whose rendered-turn id is a NON-PRODUCT
+// assistant node, exactly like live `80c1a30f -> 0d2fad64 -> 3a1e5e85`.
+//   Q -> structuralHead(assistant, non-product) -> answer
+function withStructuralAssistantTurnHead(graph, answerMessageId, prefix) {
+  const nodes = graph.nodes.map((node) => ({ ...node, childIds: node.childIds.slice() }));
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const answer = byId.get(answerMessageId);
+  const parent = byId.get(answer.parentId);
+  const headId = `${prefix}-turn-head`;
+  parent.childIds = parent.childIds.map((id) => (id === answer.nodeId ? headId : id));
+  answer.parentId = headId;
+  nodes.push({
+    nodeId: headId, parentId: parent.nodeId, childIds: [answer.nodeId], role: 'assistant',
+    messageId: headId, productUser: false, productAnswer: false, branchShellAlias: false, stopped: false,
+  });
+  const frozen = Object.freeze(nodes.map((node) => Object.freeze({
+    ...node, childIds: Object.freeze(node.childIds.slice()),
+  })));
+  return {
+    graph: Object.freeze({ ...graph, nodeCount: frozen.length, nodes: frozen }),
+    headId, answerId: answerMessageId,
+  };
+}
+
+// What the HOST array actually contains: one rendered-turn id per turn — the
+// question id, then the FIRST node of that turn's assistant run (product or
+// not) — read from the graph so no sequence is ever hand-written.
+function renderedTurnIdsTo(graph, terminalNodeId) {
+  const byNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  const chain = [];
+  let cursor = byNodeId.get(terminalNodeId);
+  let guard = 0;
+  while (cursor && guard < 4096) { chain.unshift(cursor); cursor = byNodeId.get(cursor.parentId); guard += 1; }
+  const ids = [];
+  let open = false;
+  for (const node of chain) {
+    if (node.productUser === true) { ids.push(node.messageId); open = true; continue; }
+    if (!open) continue;
+    // first node of this turn's assistant run
+    if (ids.length && ids[ids.length - 1] !== node.messageId
+      && (node.productAnswer === true || String(node.role || '') === 'assistant'
+        || node.branchShellAlias === true)) {
+      const prev = byNodeId.get(chain[chain.indexOf(node) - 1]?.nodeId);
+      if (prev && prev.productUser === true) ids.push(node.messageId);
+    }
+  }
+  return ids;
+}
+
+// The terminal of the subtree that genuinely descends from A17_SELECTED.
+function selectedSubtreeTerminal(graph, startMessageId = A17_CANONICAL, pick = 0) {
+  const byNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  let cursor = graph.nodes.find((node) => node.messageId === startMessageId) || null;
+  let guard = 0;
+  while (cursor && cursor.childIds.length && guard < 4096) {
+    const index = Math.min(pick, cursor.childIds.length - 1);
+    cursor = byNodeId.get(cursor.childIds[cursor.childIds.length > 1 ? index : 0]);
+    guard += 1;
+  }
+  return cursor ? cursor.nodeId : null;
+}
+
+// Clone a subtree and attach the copy as a sibling, producing a real fork that
+// only the client chain can resolve.
+function cloneSubtreeAsSibling(graph, rootNodeId, newParentId, prefix) {
+  const nodes = graph.nodes.map((node) => ({ ...node, childIds: node.childIds.slice() }));
+  const byNodeId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const root = byNodeId.get(rootNodeId);
+  const parent = byNodeId.get(newParentId);
+  const descendants = [];
+  const collect = (node) => {
+    if (!node) return;
+    descendants.push(node);
+    for (const childId of node.childIds) collect(byNodeId.get(childId));
+  };
+  collect(root);
+  const remap = new Map(descendants.map((node) => [node.nodeId, `${prefix}${node.nodeId}`]));
+  for (const node of descendants) {
+    nodes.push({
+      ...node,
+      nodeId: remap.get(node.nodeId),
+      messageId: `${prefix}${node.messageId}`,
+      parentId: node.nodeId === root.nodeId ? parent.nodeId : remap.get(node.parentId),
+      childIds: node.childIds.map((childId) => remap.get(childId)),
+    });
+  }
+  parent.childIds.push(remap.get(root.nodeId));
+  const frozen = Object.freeze(nodes.map((node) => Object.freeze({
+    ...node, childIds: Object.freeze(node.childIds.slice()),
+  })));
+  return Object.freeze({ ...graph, nodeCount: frozen.length, nodes: frozen });
+}
+
+// Deliberately varied fiber shapes. Nothing here may be load-bearing for the
+// reader: not the element key suffix, not the hop count, not whether the chain
+// sits in props or in a hook, not which hook index, not how deeply nested.
+function clientChainElement(ids, {
+  hops = 4, mode = 'hook', hookIndex = 0, nest = 0, key = '__reactFiber$cv38a',
+} = {}) {
+  let payload = ids;
+  for (let index = 0; index < nest; index += 1) payload = { wrapped: payload };
+  let fiber;
+  if (mode === 'props') {
+    fiber = { memoizedProps: { anythingAtAll: payload }, memoizedState: null, return: null };
+  } else {
+    let hook = { memoizedState: { deps: [[payload]] }, next: null };
+    for (let index = 0; index < hookIndex; index += 1) {
+      hook = { memoizedState: { unrelated: index }, next: hook };
+    }
+    fiber = { memoizedProps: {}, memoizedState: hook, return: null };
+  }
+  for (let index = 0; index < hops; index += 1) {
+    fiber = { memoizedProps: {}, memoizedState: null, return: fiber };
+  }
+  const element = {};
+  element[key] = fiber;
+  return element;
+}
+
+function runClientChain(elements, graph) {
+  const runtime = createRuntime();
+  runtime.api.installClientChainDom(elements);
+  runtime.api.configure(selectedHostIndex(19), graph);
+  // Turn 17 answerVariants are [A17_CANONICAL, A17_SELECTED] and the index
+  // displays A17_SELECTED (position 1), so 'previous' resolves the target to
+  // A17_CANONICAL (position 0). That subtree is the forked one, and its leaves
+  // are what a synthetic client chain may legitimately end on.
+  runtime.api.capture(branchEvent({
+    direction: 'previous',
+    timeStamp: 742,
+    answerIds: [A17_SELECTED],
+  }));
+  runtime.api.publish(stage2mPrefixIndex(), 'client-chain-host-prefix');
+  return { runtime, state: runtime.api.snapshot() };
+}
+
+const turnAt = (state, order) => (state.effective.turns || []).find((turn) => turn.order === order) || null;
+
+// A. The chain carries the manually selected answer while current_node does not.
+await fixture('a client selected chain outranks a stale current_node', () => {
+  const graph = stage2mIdentityGraph();
+  const ids = clientChainIdsTo(graph, LIVE_A39);
+  ok(ids.includes(A17_CANONICAL), 'the chain carries the manually selected answer');
+  ok(!ids.includes(A17_SELECTED), 'and never carries the outgoing one');
+  const { runtime, state } = runClientChain(
+    [clientChainElement(ids, { hops: 6, mode: 'hook', hookIndex: 3, key: '__reactFiber$aaa1' })],
+    graph,
+  );
+  const chain = runtime.api.readClientChain(graph, A17_CANONICAL);
+  equal(chain.ok, true, 'the chain validates against the identity graph');
+  equal(chain.candidateCount, 1, 'exactly one graph-valid candidate wins');
+  equal(runtime.api.clientChainProves(chain, A17_CANONICAL), true, 'and proves the trusted anchor');
+  equal(runtime.api.clientChainProves(chain, A17_SELECTED), false, 'it proves only what it contains');
+  equal(state.acquisition.status, 'proven', 'acquisition proves from the chain');
+  equal(state.overlay.overlayActive, true, 'the overlay installs on client-chain proof');
+  equal(turnAt(state, 17).primaryAId, A17_CANONICAL, 'the anchor shows the manually selected answer');
+  equal(
+    state.complete.branchTransactionStateCode,
+    'published',
+    'and the transaction publishes despite the stale current_node',
+  );
+});
+
+// B. A downstream QUESTION-EDIT fork is decided by the chain alone.
+await fixture('downstream question-edit selections are taken from the client chain', () => {
+  // Two equal terminal-complete question edits under canonical-a-25: only the
+  // client chain can say which one the user is on.
+  const graph = stage2mAmbiguousGraph();
+  const ids = clientChainIdsTo(graph, LIVE_A39);
+  ok(ids.includes(LIVE_Q26), 'the chain names the selected question edit');
+  ok(!ids.some((id) => String(id).startsWith('stage2m-tie-')), 'and never the unselected sibling');
+
+  // Without the chain this exact fork is unresolvable -- the live defect.
+  const blind = runClientChain([], graph);
+  equal(blind.state.overlay.overlayActive, false, 'no chain, no resolution of the question-edit fork');
+
+  const { state } = runClientChain(
+    [clientChainElement(ids, { hops: 1, mode: 'props', key: '__reactFiber$zz9' })],
+    graph,
+  );
+  equal(state.overlay.overlayActive, true, 'the chain resolves the question-edit fork');
+  equal(turnAt(state, 26).qId, LIVE_Q26, 'the exact selected qId comes from the chain');
+  ok(
+    !(state.effective.turns || []).some((turn) => String(turn.qId || '').startsWith('stage2m-tie-')),
+    'the unselected question-edit subtree never appears',
+  );
+
+  // LIVE SHAPE (2026-08-08 acceptance). The host array is a sequence of
+  // RENDERED TURN ids, not a product-message ancestry path: a leading
+  // conversation-root wrapper, then one id per rendered turn. An assistant turn
+  // is named by the FIRST node of its run, while the rendered answer — and the
+  // node the next question descends from — is the LAST product answer of that
+  // run. Live: 37ab747d -> 16e81a3e, and 80c1a30f -> 3a1e5e85. Both shapes are
+  // reproduced here on the same forked graph, so the projection is proven while
+  // the downstream question-edit fork still has to be decided by the chain.
+  const multi = withMultiMessageAssistantRun(graph, 'canonical-a-2', 'cv38-t2');
+  const shaped = withStructuralAssistantTurnHead(multi.graph, LIVE_A39, 'cv38-t39');
+  const liveGraph = shaped.graph;
+  const rootId = graphRootId(liveGraph);
+  ok(rootId, 'the fixture graph owns a real conversation root');
+
+  const rendered = renderedTurnIdsTo(liveGraph, LIVE_A39);
+  ok(rendered.includes(multi.firstAnswerId), 'the host names the multi-message turn by its FIRST message');
+  ok(!rendered.includes(multi.finalAnswerId), 'and not by the rendered final answer');
+  ok(rendered.includes(shaped.headId), 'the host names the final turn by its NON-PRODUCT run head');
+  ok(!rendered.includes(LIVE_A39), 'and not by the product answer that turn actually renders');
+
+  const hostShaped = [rootId, ...rendered];
+  const expected = rendered.map((id) => {
+    if (id === multi.firstAnswerId) return multi.finalAnswerId;
+    if (id === shaped.headId) return LIVE_A39;
+    return id;
+  });
+
+  const live = runClientChain(
+    [clientChainElement(hostShaped, { hops: 3, mode: 'hook', hookIndex: 2, key: '__reactFiber$live39' })],
+    liveGraph,
+  );
+  const liveChain = live.runtime.api.readClientChain(liveGraph, A17_CANONICAL);
+  equal(liveChain.ok, true, 'a rendered-turn host chain is accepted');
+  equal(liveChain.reason, null, 'and the reader names no refusal');
+  equal(liveChain.candidateCount, 1, 'exactly one projected route survives');
+  equal(liveChain.messageIds.join('|'), expected.join('|'), 'the projection is the H2O qId/primaryAId route');
+  equal(liveChain.messageIds.includes(rootId), false, 'the conversation root is never a turn');
+  equal(liveChain.messageIds.includes(multi.firstAnswerId), false, 'the run-opening message is not the rendered answer');
+  equal(liveChain.messageIds.includes(multi.midId), false, 'the non-product node inside the run is never a turn');
+  ok(liveChain.messageIds.includes(multi.finalAnswerId), 'the LAST product answer of the run is');
+  equal(liveChain.messageIds.includes(shaped.headId), false, 'the structural run head is never a turn');
+  ok(liveChain.messageIds.includes(LIVE_A39), 'and the turn it heads is no longer dropped');
+  equal(liveChain.messageIds[liveChain.messageIds.length - 1], LIVE_A39, 'the terminal is the final rendered answer');
+  equal(
+    live.runtime.api.clientChainProves(liveChain, A17_CANONICAL),
+    true,
+    'the trusted target is proven from the projected route',
+  );
+  equal(live.state.overlay.overlayActive, true, 'whole-path derivation publishes from the rendered-turn chain');
+  equal(turnAt(live.state, 17).primaryAId, A17_CANONICAL, 'the anchor carries the manual selection');
+  equal(turnAt(live.state, 26).qId, LIVE_Q26, 'the downstream fork winner is the one the chain names');
+  ok(
+    !(live.state.effective.turns || []).some((turn) => String(turn.qId || '').startsWith('stage2m-tie-')),
+    'and the rival fork never appears',
+  );
+  ok(
+    !(live.state.effective.turns || []).some(
+      (turn) => turn.qId === rootId || turn.primaryAId === rootId
+        || turn.qId === multi.midId || turn.primaryAId === multi.midId
+        || turn.qId === shaped.headId || turn.primaryAId === shaped.headId,
+    ),
+    'no wrapper or run-internal node is ever handed to derivation as a turn',
+  );
+
+  // Equivalent React copies naming the SAME route are one selection, not two.
+  const dedup = runClientChain([
+    clientChainElement(hostShaped, { hops: 2, key: '__reactFiber$d1' }),
+    clientChainElement(rendered, { hops: 7, mode: 'props', key: '__reactFiber$d2' }),
+  ], liveGraph);
+  const dedupChain = dedup.runtime.api.readClientChain(liveGraph, A17_CANONICAL);
+  equal(dedupChain.ok, true, 'the same projected route found twice is one route');
+  equal(dedupChain.candidateCount, 1, 'deduped on the projected sequence');
+
+  // SAFETY: a skipped user turn, and a run-internal node promoted to a turn.
+  const skipped = rendered.filter((id) => id !== LIVE_Q26);
+  equal(
+    runClientChain([clientChainElement([rootId, ...skipped])], liveGraph)
+      .runtime.api.readClientChain(liveGraph, A17_CANONICAL).ok,
+    false,
+    'a skipped user turn is rejected',
+  );
+  const reordered = rendered.slice();
+  [reordered[2], reordered[4]] = [reordered[4], reordered[2]];
+  equal(
+    runClientChain([clientChainElement([rootId, ...reordered])], liveGraph)
+      .runtime.api.readClientChain(liveGraph, A17_CANONICAL).ok,
+    false,
+    'a reordered rendered-turn sequence is rejected',
+  );
+});
+
+// C. A downstream ANSWER-REGENERATION fork is decided by the chain alone.
+await fixture('downstream answer-regeneration selections are taken from the client chain', () => {
+  // Deliberately NOT the longest route: ranking would elect LIVE_A39, so a
+  // path ending here can only have come from the chain.
+  const graph = stage2mIdentityGraph();
+  const shorterTerminal = 'b01fc97b-ccf3-4015-8742-9b846740ffea';
+  const ids = clientChainIdsTo(graph, shorterTerminal);
+  ok(ids.includes(shorterTerminal), 'the chain names the selected regeneration terminal');
+  ok(!ids.includes(LIVE_A39), 'and not the longer sibling ranking would have picked');
+
+  const blind = runClientChain([], graph);
+  equal(blind.state.overlay.overlayActive, false, 'no chain, no resolution of the regeneration fork');
+
+  const { state } = runClientChain(
+    [clientChainElement(ids, { hops: 11, mode: 'hook', hookIndex: 0, nest: 2, key: '__reactFiber$q7' })],
+    graph,
+  );
+  equal(state.overlay.overlayActive, true, 'the chain resolves the regeneration fork');
+  equal(turnAt(state, 26).primaryAId, LIVE_A26, 'the exact selected primaryAId comes from the chain');
+  const tail = state.effective.turns[state.effective.turns.length - 1];
+  equal(tail.primaryAId, shorterTerminal, 'the terminal regeneration is the chain-selected one');
+  ok(
+    !(state.effective.turns || []).some((turn) => turn.primaryAId === LIVE_A39),
+    'the longer ranked route is not published anywhere',
+  );
+});
+
+// D. Unmounted downstream turns: only the anchor row is modelled, everything
+//    below it resolves from the chain.
+await fixture('unmounted downstream turns still resolve from the client chain', () => {
+  const graph = stage2mIdentityGraph();
+  const shortTerminal = 'stage2m-second-a-27';
+  const ids = clientChainIdsTo(graph, shortTerminal);
+  const { state } = runClientChain(
+    [clientChainElement(ids, { hops: 17, mode: 'hook', hookIndex: 5, key: '__reactFiber$deep' })],
+    graph,
+  );
+  equal(state.overlay.overlayActive, true, 'the route resolves with no mounted downstream evidence');
+  const tail = (state.effective.turns || [])[state.effective.turns.length - 1];
+  equal(tail.primaryAId, shortTerminal, 'the published route ends exactly where the chain does');
+  // Turn 20 is a legitimate noAnswer turn, so 27 turns carry 53 message ids,
+  // not 54. Compare identities directly instead of counting: exact membership,
+  // exact order, nothing extra, nothing omitted.
+  const publishedIds = [];
+  for (const turn of state.effective.turns) {
+    publishedIds.push(turn.qId);
+    if (turn.primaryAId) publishedIds.push(turn.primaryAId);
+  }
+  equal(
+    publishedIds.join('|'),
+    ids.join('|'),
+    'every chain turn is present, in order, and no other',
+  );
+  equal(turnAt(state, 17).primaryAId, A17_CANONICAL, 'and still carries the manual selection');
+});
+
+// E. Missing, unknown, broken or ambiguous chains fail closed with no guess.
+await fixture('missing, ambiguous or broken client chains fail closed', () => {
+  const base = stage2mIdentityGraph();
+  const graph = stage2mAmbiguousGraph();
+  const ids = clientChainIdsTo(graph, LIVE_A39);
+
+  const absent = runClientChain([], graph);
+  equal(absent.runtime.api.readClientChain(graph, A17_CANONICAL).ok, false, 'no chain, no proof');
+  equal(absent.runtime.api.readClientChain(graph, A17_CANONICAL).reason, 'client-chain-unavailable', 'named exactly');
+  equal(absent.state.overlay.overlayActive, false, 'and nothing is published');
+
+  // Two DIFFERENT fully graph-valid chains cannot both be the native selection.
+  const rival = clientChainIdsTo(graph, `stage2m-tie-${LIVE_A39}`);
+  ok(rival.join('|') !== ids.join('|'), 'the rival chain is a genuinely different valid route');
+  ok(rival.includes(A17_CANONICAL), 'and also passes the anchor');
+  const ambiguous = runClientChain(
+    [clientChainElement(ids, { hops: 2 }), clientChainElement(rival, { hops: 5, mode: 'props' })],
+    graph,
+  );
+  const ambiguousChain = ambiguous.runtime.api.readClientChain(graph, A17_CANONICAL);
+  equal(ambiguousChain.ok, false, 'two valid candidates cannot elect a winner');
+  equal(ambiguousChain.reason, 'client-chain-ambiguous', 'and the refusal is named exactly');
+  equal(ambiguous.state.overlay.overlayActive, false, 'ambiguity publishes nothing');
+
+  // One unknown id disqualifies the whole array -- never silently trimmed.
+  const unknown = runClientChain(
+    [clientChainElement(ids.slice(0, 8).concat(['not-a-known-message-id']))], graph,
+  );
+  equal(unknown.runtime.api.readClientChain(graph, A17_CANONICAL).ok, false, 'unknown ids are rejected');
+  equal(unknown.state.overlay.overlayActive, false, 'and publish nothing');
+
+  // Linkage break: a real prefix with downstream turns spliced out.
+  const broken = ids.slice(0, 6).concat(ids.slice(9));
+  const brokenRun = runClientChain([clientChainElement(broken)], graph);
+  equal(brokenRun.runtime.api.readClientChain(graph, A17_CANONICAL).ok, false, 'broken linkage is rejected');
+  equal(brokenRun.state.overlay.overlayActive, false, 'and publishes nothing');
+
+  // A valid chain that does not contain the trusted anchor proves nothing.
+  const foreign = clientChainIdsTo(base, 'canonical-a-16');
+  const foreignRun = runClientChain([clientChainElement(foreign)], graph);
+  equal(foreignRun.runtime.api.readClientChain(graph, A17_CANONICAL).ok, false, 'an anchorless chain is refused');
+  equal(foreignRun.state.overlay.overlayActive, false, 'and cannot publish');
+
+  // ---- Rendered-turn ids are legal now; the fail-closed contract is not ----
+  const rootId = graphRootId(graph);
+
+  // A UUID-shaped id this graph does not own still destroys the whole array,
+  // even when every other entry — the conversation root included — is real.
+  const unknownUuid = runClientChain([clientChainElement(
+    [rootId, ...ids.slice(0, 8), '00000000-0000-4000-8000-000000000999'],
+  )], graph);
+  equal(
+    unknownUuid.runtime.api.readClientChain(graph, A17_CANONICAL).ok,
+    false,
+    'an unknown UUID still rejects the whole array',
+  );
+  equal(unknownUuid.state.overlay.overlayActive, false, 'and publishes nothing');
+
+  // The exact pre-click live array: the conversation id repeated. It is not a
+  // graph node, and it is explicitly barred, so it can never become a chain.
+  const chatIdRun = runClientChain([clientChainElement([CHAT_ID, CHAT_ID])], graph);
+  equal(
+    chatIdRun.runtime.api.readClientChain(graph, A17_CANONICAL).reason,
+    'client-chain-unavailable',
+    'the repeated conversation-id array stays rejected',
+  );
+
+  // The wrapper alone names no turn.
+  const rootOnly = runClientChain([clientChainElement([rootId, rootId])], graph);
+  equal(
+    rootOnly.runtime.api.readClientChain(graph, A17_CANONICAL).ok,
+    false,
+    'the conversation root alone is not a route',
+  );
+
+  // A route that does not OPEN on a question is not a rendered route.
+  const headless = runClientChain([clientChainElement(ids.slice(1))], graph);
+  equal(
+    headless.runtime.api.readClientChain(graph, A17_CANONICAL).ok,
+    false,
+    'a chain that does not open on a question is rejected',
+  );
+
+  // Two genuinely DIFFERENT projected routes stay ambiguous, each carrying the
+  // legitimate conversation-root wrapper.
+  const wrappedRivals = runClientChain([
+    clientChainElement([rootId, ...ids], { hops: 2, key: '__reactFiber$r1' }),
+    clientChainElement([rootId, ...rival], { hops: 5, mode: 'props', key: '__reactFiber$r2' }),
+  ], graph);
+  equal(
+    wrappedRivals.runtime.api.readClientChain(graph, A17_CANONICAL).reason,
+    'client-chain-ambiguous',
+    'different projected routes stay ambiguous under the root wrapper',
+  );
+  equal(wrappedRivals.state.overlay.overlayActive, false, 'and publish nothing');
+
+  // The SAME route discovered at several React locations, wrapped differently
+  // each time, is ONE selection — live it was found 137 times.
+  const dedup = runClientChain([
+    clientChainElement([rootId, ...ids], { hops: 2, key: '__reactFiber$w1' }),
+    clientChainElement(ids, { hops: 6, mode: 'props', key: '__reactFiber$w2' }),
+    clientChainElement(ids, { hops: 13, mode: 'hook', hookIndex: 1, key: '__reactFiber$w4' }),
+  ], graph);
+  const dedupChain = dedup.runtime.api.readClientChain(graph, A17_CANONICAL);
+  equal(dedupChain.ok, true, 'equivalent wrappers are one route, not ambiguity');
+  equal(dedupChain.candidateCount, 1, 'deduped on the projected sequence');
+  // The projected route speaks H2O's own turn language, which includes the
+  // canonical system-branch-root promotion: turn 26's rendered identity is the
+  // owned shell alias LIVE_A26, not the product node beneath it. Fixture C
+  // already pins that same primaryAId from the effective path.
+  const expectedRoute = ids.map((id) => (id === LIVE_Q26_PRODUCT_FINAL ? LIVE_A26 : id));
+  equal(
+    dedupChain.messageIds.join('|'),
+    expectedRoute.join('|'),
+    'and it is the expected projected route in H2O turn language',
+  );
+  equal(dedupChain.messageIds.includes(LIVE_A26), true, 'the promoted shell alias is the turn-26 identity');
+  equal(dedupChain.messageIds.includes(LIVE_Q26_PRODUCT_FINAL), false, 'and the product node beneath it is not');
+  equal(dedup.state.overlay.overlayActive, true, 'so the selected route still publishes');
+
+  assertSafe(brokenRun.runtime);
+});
+
+// F. The reload/default rule is untouched: with no trusted manual transaction,
+//    an installed chain must not influence latest-created-terminal authority.
+await fixture('an installed client chain never disturbs the reload default rule', () => {
+  const graph = stage2mIdentityGraph();
+  const ids = clientChainIdsTo(graph, LIVE_A39);
+  const runtime = createRuntime();
+  runtime.api.installClientChainDom([clientChainElement(ids)]);
+  runtime.api.configure(selectedHostIndex(19), graph);
+  const before = runtime.api.snapshot();
+  equal(before.acquisition.status, 'inactive', 'no manual intent, no acquisition');
+  equal(before.overlay.overlayActive, false, 'and no overlay from a chain alone');
+  runtime.api.publish(stage2mPrefixIndex(), 'default-rule-host-prefix');
+  const after = runtime.api.snapshot();
+  equal(after.overlay.overlayActive, false, 'a host publish without a trusted click installs no overlay');
+  equal(after.overlay.source, 'canonical', 'the default rule still owns the effective path');
+  equal(after.acquisition.status, 'inactive', 'and no acquisition is created by a chain alone');
   assertSafe(runtime);
 });
 
 await fixture('the same prefix with two equal terminal-complete routes fails closed', () => {
   const runtime = createRuntime();
-  runtime.api.configure(selectedHostIndex(19), stage2mAmbiguousGraph());
+  // Real ambiguity requires proven evidence: a graph whose current_node does
+  // NOT prove the selected anchor is pre-click, and is now handed to the
+  // bounded refresh instead of being treated as a verdict.
+  runtime.api.configure(selectedHostIndex(19), stage2mAmbiguousProvenGraph());
   equal(runtime.api.capture(branchEvent({
     direction: 'previous',
     timeStamp: 710,
@@ -2622,7 +3398,10 @@ await fixture('the same prefix with two equal terminal-complete routes fails clo
 });
 
 await fixture('Stage 2C-2m truncation and partial-publication mutations are killed behaviorally', () => {
-  const execute = (program, graph = stage2mIdentityGraph()) => {
+  // Publication now requires a post-click current_node, so the derivation
+  // mutations below are measured against the refreshed graph. The derivation
+  // under test is identical — only the evidence that permits publication moved.
+  const execute = (program, graph = stage2mPostClickGraph()) => {
     const runtime = createRuntime(program);
     runtime.api.configure(selectedHostIndex(19), graph);
     runtime.api.capture(branchEvent({
@@ -2636,12 +3415,19 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
   const production = execute(CORE_PROGRAM);
   equal(production.state.overlay.count, 39, 'production derives the complete hidden branch');
   equal(production.state.coreTurns.length, 39, 'production atomically rebuilds Core');
+  const productionDerivationTurns = production.state.derivation?.derivation?.turns || [];
+  equal(productionDerivationTurns.length, 39, 'the derivation record covers every derived turn');
 
   const terminalProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasDeriveSelectedPath', (body) => body.replace(
     "const selectedQuestion = chooseGraphCandidate(sameSelectedBranch, questionNode, 'selected-answer-continuation');",
     'const selectedQuestion = sameSelectedBranch[0] || null;',
   ));
-  equal(execute(terminalProgram).state.overlay.count, 26, 'restoring the mounted/first Turn-26 truncation is killed');
+  // The truncated route now fails downstream native parity as well, so the
+  // mutant cannot publish at all. Discrimination is preserved and strengthened:
+  // production reaches the complete 39 route, the mutant reaches no authority.
+  const truncated = execute(terminalProgram).state;
+  ok(truncated.overlay.count !== 39, 'restoring the mounted/first Turn-26 truncation is killed');
+  ok(truncated.overlay.count !== 26, 'and the truncated route never becomes authority');
 
   const mountedProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasDeriveSelectedPath', (body) => body.replace(
     "const chooseGraphCandidate = (candidates, contextNode = null, phase = 'graph-fork') => {",
@@ -2655,42 +3441,159 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
       'if (selectedMatches.length === 1) {',
       'if (!selectedMatches.length) return unique[0];\n        if (selectedMatches.length === 1) {',
     ));
+  // This mutation's harm is deriving a truncated 26-turn route from a stale
+  // current_node that sits OUTSIDE the selected-answer subtree, so it is still
+  // exercised against the PRE-CLICK graph — that is the only shape in which a
+  // stale pointer exists. Under the new contract the harm can no longer reach
+  // authority at all: a pre-click current_node fails downstream native parity,
+  // so neither production nor the mutant may publish a route.
+  const stale = execute(staleCurrentNodeProgram, stage2mIdentityGraph());
+  ok(stale.state.overlay.count !== 39, 'a stale-current_node route never becomes authority');
+  ok(stale.state.overlay.count !== 26, 'the truncated 26-turn route is never published');
+  equal(stale.state.overlay.overlayActive, false, 'stale current_node cannot install an overlay');
   equal(
     execute(staleCurrentNodeProgram).state.overlay.count,
-    26,
-    'trusting stale current_node outside the selected-answer subtree is killed',
+    39,
+    'with a proven post-click current_node the complete route still derives',
   );
 
   const ambiguousTerminalProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasDeriveSelectedPath', (body) => body.replace(
     'const winner = maximumLogicalRoutes.size === 1 && maximumCandidateIds.size === 1\n        ? maxima[0].entry.candidate\n        : null;',
     'const winner = maxima[0]?.entry.candidate || null;',
   ));
+  // Two independent protections now stand between an ambiguous fork and
+  // authority, and each is proven on its own terms.
+  //
+  // (1) DERIVATION AMBIGUITY FAIL-CLOSED -- where this mutation is killed.
+  //     The pre-click ambiguous graph carries two equal terminal-complete
+  //     routes under canonical-a-25 and the host has selected NEITHER, so
+  //     production must refuse to elect one. The mutant takes maxima[0] and
+  //     wrongly resolves a complete route the host never chose.
+  const productionAmbiguous = execute(CORE_PROGRAM, stage2mAmbiguousGraph()).state;
+  const productionDerivation = productionAmbiguous.derivation?.derivation || null;
+  equal(productionDerivation?.ok, false, 'production derivation fails closed on the equal-terminal tie');
+  equal(productionDerivation?.reason, 'fork-unresolved', 'the tie is reported as an unresolved fork');
+  equal(productionDerivation?.pathLength, 0, 'production returns no path for an unresolved fork');
   equal(
-    execute(ambiguousTerminalProgram, stage2mAmbiguousGraph()).state.overlay.count,
+    productionDerivation?.fork?.decisionReason,
+    'equal-global-terminal-complete-maximum',
+    'the recorded fork decision names the equal-maximum tie',
+  );
+  equal(productionDerivation?.fork?.winnerNodeId, null, 'no candidate is elected from the tie');
+  const tiedRejections = (productionDerivation?.fork?.candidates || [])
+    .filter((candidate) => candidate.rejectionReason === 'equal-terminal-complete-route')
+    .map((candidate) => candidate.nodeId);
+  equal(tiedRejections.length, 2, 'both equal terminal-complete candidates are rejected');
+  ok(
+    tiedRejections.includes(LIVE_Q26) && tiedRejections.includes(`stage2m-tie-${LIVE_Q26}`),
+    'the original route and its equal-length clone are the rejected pair',
+  );
+
+  const mutantAmbiguous = execute(ambiguousTerminalProgram, stage2mAmbiguousGraph()).state;
+  const mutantDerivation = mutantAmbiguous.derivation?.derivation || null;
+  equal(mutantDerivation?.ok, true, 'accepting one of two equal terminal-complete routes is killed');
+  equal(mutantDerivation?.pathLength, 39, 'the mutant resolves a full route the host never selected');
+  equal(
+    mutantDerivation?.fork?.decisionReason,
+    'unique-global-terminal-complete-maximum',
+    'the mutant misreports the tie as a unique maximum',
+  );
+
+  // (2) PUBLICATION DOWNSTREAM-NATIVE PARITY FAIL-CLOSED -- independent of (1).
+  //     current_node proves neither route, so NEITHER production nor the mutant
+  //     may reach authority. The mutant's wrongly-resolved path is caught a
+  //     second time, at the publication gate, with no overlay installed.
+  equal(productionAmbiguous.overlay.count, 19, 'production publishes no ambiguous route');
+  equal(productionAmbiguous.overlay.overlayActive, false, 'and installs no overlay for it');
+  equal(mutantAmbiguous.overlay.count, 19, 'an unselected resolved route is still blocked by native parity');
+  equal(mutantAmbiguous.overlay.overlayActive, false, 'the mutant reaches no overlay either');
+
+  // The tie is a genuine ambiguity only while the host has selected neither
+  // route. Once current_node proves one of them the fork is legitimately
+  // resolved by subtree containment, and the complete route publishes.
+  equal(
+    execute(CORE_PROGRAM, stage2mPostClickAmbiguousGraph()).state.overlay.count,
     39,
-    'accepting one of two equal terminal-complete routes is killed',
+    'a proving current_node resolves the tie by containment rather than by veto',
   );
 
   const shorterAmbiguityVetoProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasDeriveSelectedPath', (body) => body.replace(
     'if (!terminalCandidates.length) {',
     'if (ranked.some((entry) => entry.proof.ok !== true)) {',
   ));
+  // Same two-layer split. This mutation restores the historical over-broad
+  // veto in which ANY ranked candidate lacking a terminal proof aborted the
+  // whole fork, so a merely SHORTER sibling truncated the route. Its harm
+  // exists only where the fork must be settled by ranking; once current_node
+  // sits inside the target subtree the fork resolves by containment and the
+  // veto is never reached, so the discriminating shape is the pre-click graph.
+  const productionRanked = execute(CORE_PROGRAM, stage2mIdentityGraph()).state;
+  const productionRankedDerivation = productionRanked.derivation?.derivation || null;
+  equal(productionRankedDerivation?.ok, true, 'production resolves the fork by ranking alone');
+  equal(productionRankedDerivation?.pathLength, 39, 'and derives the complete route without containment');
+  equal(
+    productionRankedDerivation?.fork?.decisionReason,
+    'unique-global-terminal-complete-maximum',
+    'the longest terminal-complete route wins the fork outright',
+  );
+  equal(
+    (productionRankedDerivation?.fork?.candidates || [])
+      .filter((candidate) => candidate.rejectionReason === 'shorter-terminal-complete-route').length,
+    1,
+    'the shorter sibling merely loses; it does not veto',
+  );
+
+  const vetoed = execute(shorterAmbiguityVetoProgram, stage2mIdentityGraph()).state;
+  const vetoedDerivation = vetoed.derivation?.derivation || null;
+  equal(vetoedDerivation?.ok, false, 'restoring the exact live shorter-candidate veto is killed');
+  equal(vetoedDerivation?.pathLength, 0, 'the veto destroys the whole fork rather than one candidate');
+  equal(
+    vetoedDerivation?.fork?.decisionReason,
+    'candidate-terminal-proof-unavailable',
+    'the restored veto is recorded as a missing-proof abort',
+  );
+
+  // Publication parity is independent of the ranking outcome: with no proving
+  // current_node neither the correct nor the vetoed derivation reaches authority.
+  equal(productionRanked.overlay.count, 19, 'a correct pre-click derivation still publishes nothing');
+  equal(vetoed.overlay.count, 19, 'and neither does the vetoed one');
   equal(
     execute(shorterAmbiguityVetoProgram).state.overlay.count,
-    19,
-    'restoring the exact live shorter-candidate veto is killed',
+    39,
+    'post-click containment settles the fork before the veto can be reached',
   );
 
   const shellAliasProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasDeriveSelectedPath', (body) => body.replace(
     'const primaryNode = selectedBranchRoot?.branchShellAlias === true',
     'const primaryNode = selectedBranchRoot?.branchShellAlias === false',
   ));
+  // This mutation corrupts identity rather than length: the route still spans
+  // 39 turns, but Turn 26 adopts the product answer BENEATH the branch shell
+  // instead of the graph-proven shell itself. The old assertion read the
+  // corrupted id off the published overlay; publication is now blocked by
+  // native parity, so effective.turns[25] would be undefined and the check
+  // would pass vacuously. Read the id from the derivation instead, where the
+  // mutation actually lands, and assert the parity block separately.
   const shellAliasState = execute(shellAliasProgram).state;
-  equal(shellAliasState.overlay.count, 39, 'shell-alias mutation still reaches the selected terminal');
-  ok(
-    shellAliasState.effective.turns[25].primaryAId !== LIVE_A26,
+  const shellAliasDerivation = shellAliasState.derivation?.derivation || null;
+  equal(shellAliasDerivation?.ok, true, 'shell-alias mutation still reaches the selected terminal');
+  equal(shellAliasDerivation?.pathLength, 39, 'the corrupted route is the same length as the correct one');
+  equal(
+    productionDerivationTurns[25]?.primaryAId,
+    LIVE_A26,
+    'production adopts the graph-proven branch shell identity for Turn 26',
+  );
+  equal(
+    shellAliasDerivation?.turns?.[25]?.primaryAId,
+    LIVE_Q26_PRODUCT_FINAL,
     'discarding the graph-proven branch shell identity is killed',
   );
+  ok(
+    shellAliasDerivation?.turns?.[25]?.primaryAId !== LIVE_A26,
+    'the mutant never recovers the shell identity by another route',
+  );
+  equal(shellAliasState.overlay.count, 19, 'a shell-identity-corrupted route fails downstream native parity');
+  equal(shellAliasState.overlay.overlayActive, false, 'and installs no overlay');
 
   const prefixProgram = mutateCoreFunction(CORE_SOURCE, 'chatAtlasPublishCompleteIndex', (body) => body
     .replace(
@@ -2709,7 +3612,9 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
   ));
   const runFrozenMismatch = (program) => {
     const runtime = createRuntime(program);
-    runtime.api.configure(selectedHostIndex(19), stage2mIdentityGraph());
+    // Post-click graph: this mutation lives in the publication decision, so
+    // publication has to be reachable for its harm to exist at all.
+    runtime.api.configure(selectedHostIndex(19), stage2mPostClickGraph());
     runtime.api.capture(branchEvent({
       direction: 'previous',
       timeStamp: 716,
@@ -2725,7 +3630,18 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
     runtime.api.publish(stage2mPrefixIndex(), 'frozen-path-mismatch');
     return runtime.api.snapshot();
   };
-  equal(runFrozenMismatch(CORE_PROGRAM).overlay.count, 19, 'changed frozen path fails closed');
+  const frozenProduction = runFrozenMismatch(CORE_PROGRAM);
+  equal(frozenProduction.overlay.count, 19, 'changed frozen path fails closed');
+  equal(
+    frozenProduction.complete.branchTransactionStateCode,
+    'fail-closed',
+    'the frozen-path mismatch closes the transaction rather than leaving it pending',
+  );
+  equal(
+    frozenProduction.complete.branchTransactionReason,
+    'branch-transaction-frozen-path-mismatch',
+    'and names the mismatch as the reason',
+  );
   equal(runFrozenMismatch(frozenPathProgram).overlay.count, 39, 'ignoring frozen path count is killed');
 
   const failureReleaseProgram = mutateCoreFunction(
@@ -2736,7 +3652,7 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
       "'published',\n        reason,",
     ),
   );
-  const released = execute(failureReleaseProgram, stage2mAmbiguousGraph());
+  const released = execute(failureReleaseProgram, stage2mAmbiguousProvenGraph());
   equal(
     released.state.complete.branchTransactionStateCode,
     'published',
@@ -2758,7 +3674,7 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
       "if (transaction?.state === 'pending') return true;\n      if (transaction?.state === 'fail-closed') return false;",
     ),
   );
-  const leaking = execute(failClosedAppendProgram, stage2mAmbiguousGraph());
+  const leaking = execute(failClosedAppendProgram, stage2mAmbiguousProvenGraph());
   leaking.runtime.api.commitForeignDraft();
   equal(leaking.runtime.api.snapshot().coreTurns.length, 20, 'removing fail-closed suppression reproduces the fake Turn 20');
 
@@ -2770,7 +3686,7 @@ await fixture('Stage 2C-2m truncation and partial-publication mutations are kill
       'if (false && chatAtlasBranchTransitionSuppressesLiveAppend()) {',
     ),
   );
-  const pendingLeak = execute(pendingLeakProgram, stage2mAmbiguousGraph());
+  const pendingLeak = execute(pendingLeakProgram, stage2mAmbiguousProvenGraph());
   pendingLeak.runtime.api.commitPendingForeignDraft();
   equal(
     pendingLeak.runtime.api.snapshot().coreTurns.length,
@@ -2788,7 +3704,10 @@ await fixture('retained-graph publication hook mutation is killed by repeated-sw
       timeStamp: 717,
       answerIds: [A17_SELECTED],
     }));
-    const graphArrival = runtime.api.retainAndPublishGraph(stage2mIdentityGraph());
+    // The graph lands after the click, so what arrives is the post-click graph.
+    // Publication now requires that proof; the arrival hook under test is
+    // unchanged, only the evidence that permits it to publish.
+    const graphArrival = runtime.api.retainAndPublishGraph(stage2mPostClickGraph());
     return { state: runtime.api.snapshot(), graphArrival };
   };
   const production = execute(CORE_PROGRAM);
@@ -2809,7 +3728,9 @@ await fixture('retained-graph publication hook mutation is killed by repeated-sw
 await fixture('post-event retained-graph handoff mutation is killed', async () => {
   const execute = async (program) => {
     const runtime = createRuntime(program);
-    runtime.api.configure(selectedHostIndex(19), stage2mIdentityGraph());
+    // Retained before the capture, consumed at the post-event boundary. It has
+    // to be the post-click graph for publication to be permitted at all.
+    runtime.api.configure(selectedHostIndex(19), stage2mPostClickGraph());
     let providerCalls = 0;
     runtime.api.setProvider(() => {
       providerCalls += 1;

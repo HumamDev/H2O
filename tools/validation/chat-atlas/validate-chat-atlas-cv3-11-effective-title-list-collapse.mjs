@@ -678,9 +678,16 @@ await fixture('safety and consumer boundaries remain narrow', () => {
     '--glob',
     '!chrome/**',
   ], { cwd: ROOT, encoding: 'utf8' }).trim().split('\n').filter(Boolean).sort();
+  // The boundary is an allow-list of sanctioned consumers, not a ban on literal
+  // references. 0A1a defines the API; the page controller is the one sanctioned
+  // consumer (its join-built accessors are asserted immediately below). Its
+  // rendered-boundary/collapse-range surfaces now call the API by its real name
+  // instead of the older join-only indirection, which is a readability change,
+  // not a new consumer. Any THIRD file appearing here is still a failure.
   equal(consumers, [
     'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
-  ], 'literal API boundary remains compatible with the established presentation-consumer validators');
+    'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js',
+  ], 'literal API boundary stays limited to the definer plus the sanctioned page-controller consumer');
   equal(PAGE_SOURCE.includes("STATUS: ['get', 'Effective', 'PresentationStatus'].join('')"), true, 'page controller consumes the effective status API');
   equal(PAGE_SOURCE.includes("INDEX: ['get', 'Effective', 'PresentationIndex'].join('')"), true, 'page controller consumes the effective index API');
   equal(PAGE_SOURCE.includes("BY_QID: ['get', 'Effective', 'TurnRecordByQId'].join('')"), true, 'page controller consumes exact effective qId lookup');

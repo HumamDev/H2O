@@ -6785,7 +6785,51 @@
     });
   }
 
+  // ── Publication ownership (Stage 2C-2aj2) ────────────────────────────────
+  // Once a trusted token's branch transaction carries a genuinely successful
+  // publication decision, that acquisition record is publication-owned: no
+  // ordinary lifecycle writer may demote it or clear its proof/path/anchor.
+  // Only an explicit reset boundary may. The rule lives in the two mutating
+  // primitives (and the one direct mutation in chatAtlasRetainIdentityGraph)
+  // so it cannot be bypassed by adding another call site.
+  //
+  // Genuine reset boundaries, classified from the architecture's own callers:
+  // route change, generation/authority reset, chat/route ownership mismatch,
+  // canonical-fingerprint replacement, and identity-graph scope drift. Every
+  // other reason is ordinary lifecycle cleanup.
+  const CHAT_ATLAS_ACQUISITION_RESET_REASONS = Object.freeze(new Set([
+    'route-changed',
+    'authority-reset',
+    'route-reset',
+    'chat-mismatch',
+    'route-mismatch',
+    'generation-mismatch',
+    'canonical-fingerprint-changed',
+    'identity-graph-refetch-scope-drift',
+    'selected-path-ownership-changed',
+  ]));
+
+  function chatAtlasAcquisitionResetBoundary(reason) {
+    return CHAT_ATLAS_ACQUISITION_RESET_REASONS.has(
+      chatAtlasCompleteIndexCode(reason, 'cleared', 64),
+    );
+  }
+
+  // The record currently held is publication-owned when its own token has a
+  // successful publication decision still in scope.
+  function chatAtlasAcquisitionPublicationOwned() {
+    const token = String(selectedPathAcquisitionState.token || '');
+    if (!token) return false;
+    return chatAtlasSelectedPathPublishedForToken(token);
+  }
+
   function chatAtlasClearSelectedPathAcquisition(reason = 'cleared', options = {}) {
+    // Ordinary lifecycle cleanup — trusted-intent disappearance, expiry,
+    // supersession — must leave a published selection intact.
+    if (
+      !chatAtlasAcquisitionResetBoundary(reason)
+      && chatAtlasAcquisitionPublicationOwned()
+    ) return getSelectedPathAcquisitionStatus();
     const retainedGraph = options?.preserveGraph === true
       ? selectedPathAcquisitionState.graph
       : null;
@@ -6813,6 +6857,39 @@
   }
 
   function chatAtlasSelectedPathFail(reason, intent, selectedAnswerId = '') {
+    // Two distinct situations reach this function while a transaction is open,
+    // and they require opposite handling.
+    //
+    // A GENUINE derivation failure (anchor-not-in-graph, fork-unresolved,
+    // descent-variant-ambiguous, …) must still be recorded while the
+    // transaction is pending: that record is what keeps containment and stops
+    // a 20/21 hybrid settling on the outgoing branch. CV-3.8 owns that
+    // invariant and it is deliberately left untouched.
+    //
+    // 'selected-answer-not-changed' is not a derivation failure at all. It is
+    // an artefact of re-deriving from live DOM after the native branch has
+    // already switched: the anchor's mounted answer then legitimately equals
+    // the intent's prior answer. The branch transaction is opened
+    // synchronously inside the trusted click, a macrotask before any
+    // publication evidence exists, so the pending transaction is the only
+    // signal available this early. Suppressing only this reason leaves every
+    // genuine failure path exactly as it was.
+    const failToken = String(intent?.token || '')
+      || String(selectedPathAcquisitionState.token || '');
+    const transaction = completeTurnIndexAuthorityState.branchTransactionState;
+    const matchesTransaction = !!failToken
+      && !!transaction
+      && String(transaction.token || '') === failToken;
+    if (
+      matchesTransaction
+      && transaction.state === 'pending'
+      && chatAtlasCompleteIndexCode(reason, 'selected-path-failed', 64) === 'selected-answer-not-changed'
+    ) return getSelectedPathAcquisitionStatus();
+    // A published transaction proves nothing on its own; only a genuinely
+    // publication-owned record is protected here.
+    if (chatAtlasAcquisitionPublicationOwned()) {
+      return getSelectedPathAcquisitionStatus();
+    }
     chatAtlasBranchTransactionTrace('acq-fail', { reason });
     selectedPathAcquisitionState.status = 'failed';
     selectedPathAcquisitionState.reason = chatAtlasCompleteIndexCode(reason, 'selected-path-failed', 64);
@@ -7522,6 +7599,7 @@
       'selected-path-overlay-active',
       String(candidate.token || ''),
     );
+
     // The presentation event is the existing downstream reconciliation
     // checkpoint. Retire the exact request owner before emitting it so Page
     // units observe the accepted immutable branch, not the just-completed
@@ -7756,7 +7834,14 @@
         ...selectedPathAcquisitionState.proof,
         graphCapturedAt: String(graph.capturedAt || ''),
       });
-    } else if (selectedPathAcquisitionState.status === 'proven') {
+    } else if (
+      selectedPathAcquisitionState.status === 'proven'
+      // An ordinary post-publication re-capture replaces the graph object
+      // without invalidating the published path. Only a genuine scope change
+      // (chat/route/generation) may retire a published selection here, and
+      // that arrives through the reset boundary instead.
+      && !chatAtlasAcquisitionPublicationOwned()
+    ) {
       selectedPathAcquisitionState.status = 'inactive';
       selectedPathAcquisitionState.reason = 'graph-replaced';
       selectedPathAcquisitionState.path = null;
@@ -7911,6 +7996,407 @@
     return byQId;
   }
 
+  // ---- Native client selected-chain authority ------------------------------
+  // The host backend's current_node is proven NOT to follow a native variant
+  // switch: a successful 30s no-store refetch returned the pre-click node while
+  // the page was visibly on the new answer. ChatGPT itself renders the thread
+  // from a client-side linearized chain of selected message ids, which does
+  // follow the switch immediately and covers unmounted turns. That chain is the
+  // manual-session authority; the graph remains the validator, never the guess.
+  const CHAT_ATLAS_CLIENT_CHAIN_MAX_FIBER_HOPS = 80;
+  const CHAT_ATLAS_CLIENT_CHAIN_MAX_SCAN_NODES = 24000;
+  const CHAT_ATLAS_CLIENT_CHAIN_MAX_DEPTH = 9;
+  const CHAT_ATLAS_CLIENT_CHAIN_MIN_LENGTH = 2;
+
+  // Structural discovery only. Minified component names, hop counts and hook
+  // indices all rotate on any host deploy, so none of them may be relied on:
+  // every ancestor fiber's props and full hook chain are scanned generically,
+  // and a candidate is kept only if every string it holds is a message id this
+  // graph already knows.
+  // `isKnownChainId` decides whether ONE raw string may belong to a candidate.
+  // It is deliberately wider than "product message": the host's own selected
+  // chain is a root-to-leaf walk and legitimately carries structural graph node
+  // ids at its endpoints (live shape: `client-created-root` at index 0 and a
+  // structural terminal at index 38 of a 39-entry chain whose other 37 entries
+  // are product messages). Requiring every entry to be a product message threw
+  // that entire chain away on its FIRST element. The all-or-nothing rule below
+  // is unchanged and still fail-closed — what widened is only what counts as
+  // provably owned by this identity graph.
+  function chatAtlasClientChainCollectCandidates(isKnownChainId) {
+    const found = [];
+    const D = typeof document === 'undefined' ? null : document;
+    if (!D || typeof D.querySelectorAll !== 'function') return found;
+    const anchors = [];
+    try {
+      const thread = D.querySelector('[data-conversation-screenshot-content]');
+      if (thread) anchors.push(thread);
+      const mounted = D.querySelectorAll('[data-message-id]');
+      for (let index = 0; index < mounted.length && anchors.length < 6; index += 1) {
+        anchors.push(mounted[index]);
+      }
+    } catch { return found; }
+    const signatures = new Set();
+    let budget = CHAT_ATLAS_CLIENT_CHAIN_MAX_SCAN_NODES;
+    const consider = (value) => {
+      const ids = [];
+      for (const entry of value) {
+        if (typeof entry !== 'string') continue;
+        const id = chatAtlasCompleteIndexIdentity(entry);
+        // An id this graph does not uniquely own disqualifies the whole array;
+        // partial matches are never silently trimmed.
+        if (!id || !isKnownChainId(id)) return;
+        ids.push(id);
+      }
+      if (ids.length < CHAT_ATLAS_CLIENT_CHAIN_MIN_LENGTH) return;
+      const signature = ids.join('|');
+      if (signatures.has(signature)) return;
+      signatures.add(signature);
+      found.push(Object.freeze(ids));
+    };
+    const scan = (root) => {
+      const seen = new Set();
+      const walk = (node, depth) => {
+        if (budget <= 0 || depth > CHAT_ATLAS_CLIENT_CHAIN_MAX_DEPTH) return;
+        if (!node || typeof node !== 'object') return;
+        if (seen.has(node)) return;
+        seen.add(node);
+        budget -= 1;
+        if (Array.isArray(node)) {
+          consider(node);
+          for (let index = 0; index < node.length && index < 60; index += 1) {
+            walk(node[index], depth + 1);
+          }
+          return;
+        }
+        let keys;
+        try { keys = Object.keys(node); } catch { return; }
+        for (let index = 0; index < keys.length && index < 60; index += 1) {
+          let child;
+          try { child = node[keys[index]]; } catch { continue; }
+          walk(child, depth + 1);
+        }
+      };
+      walk(root, 0);
+    };
+    for (const element of anchors) {
+      let fiberKey = null;
+      try {
+        for (const key of Object.keys(element)) {
+          if (key.slice(0, 13) === '__reactFiber$') { fiberKey = key; break; }
+        }
+      } catch { fiberKey = null; }
+      if (!fiberKey) continue;
+      let fiber = null;
+      try { fiber = element[fiberKey]; } catch { fiber = null; }
+      let hops = 0;
+      while (fiber && hops < CHAT_ATLAS_CLIENT_CHAIN_MAX_FIBER_HOPS && budget > 0) {
+        try { scan(fiber.memoizedProps); } catch {}
+        let hook = null;
+        try { hook = fiber.memoizedState; } catch { hook = null; }
+        let index = 0;
+        while (hook && index < 30 && budget > 0) {
+          try { scan(hook.memoizedState); } catch {}
+          try { hook = hook.next; } catch { hook = null; }
+          index += 1;
+        }
+        try { fiber = fiber.return; } catch { fiber = null; }
+        hops += 1;
+      }
+    }
+    return found;
+  }
+
+  // Consecutive chain entries must be linked in the graph with no intervening
+  // product message. Shells, tool and system nodes may sit between them; a
+  // second product node may not, because that would mean the chain skipped a
+  // turn it never proved.
+  function chatAtlasClientChainLinked(byNodeId, previous, next) {
+    if (!previous || !next) return false;
+    let cursor = next;
+    let guard = 0;
+    while (cursor && guard < 4096) {
+      if (!cursor.parentId) return false;
+      const parent = byNodeId.get(cursor.parentId);
+      if (!parent) return false;
+      if (parent.nodeId === previous.nodeId) return true;
+      if (parent.productUser === true || parent.productAnswer === true) return false;
+      cursor = parent;
+      guard += 1;
+    }
+    return false;
+  }
+
+  function chatAtlasNativeClientSelectedChain(graph, selectedAnswerIdRaw) {
+    const empty = (reason) => chatAtlasFreeze({
+      ok: false, reason, messageIds: null, nodes: null, closure: null, candidateCount: 0,
+    });
+    if (!Array.isArray(graph?.nodes) || !graph.nodes.length) {
+      return empty('client-chain-graph-unavailable');
+    }
+    const target = chatAtlasCompleteIndexIdentity(selectedAnswerIdRaw);
+    if (!target) return empty('client-chain-target-unavailable');
+    const byNodeId = new Map();
+    const byMessageId = new Map();
+    const ambiguous = new Set();
+    // Every id this graph owns uniquely, product or structural, resolved back
+    // to its ONE node. A node contributes both its nodeId and its messageId
+    // (usually equal; a branch shell alias makes them differ), and registering
+    // the same node twice is not ambiguity — only two DIFFERENT nodes claiming
+    // one id is.
+    const chainById = new Map();
+    const chainAmbiguous = new Set();
+    const graphChatId = chatAtlasCompleteIndexIdentity(graph?.chatId);
+    const registerChainId = (rawId, node) => {
+      const id = chatAtlasCompleteIndexIdentity(rawId);
+      if (!id) return;
+      const existing = chainById.get(id);
+      if (existing && existing !== node) { chainAmbiguous.add(id); return; }
+      if (!existing) chainById.set(id, node);
+    };
+    for (const node of graph.nodes) {
+      byNodeId.set(node.nodeId, node);
+      registerChainId(node?.nodeId, node);
+      registerChainId(node?.messageId, node);
+      if (node?.productUser !== true && node?.productAnswer !== true) continue;
+      const id = chatAtlasCompleteIndexIdentity(node?.messageId);
+      if (!id) continue;
+      if (byMessageId.has(id)) { ambiguous.add(id); continue; }
+      byMessageId.set(id, node);
+    }
+    // The conversation id is never a chain member. Live, the only array the
+    // fiber walk found before the real chain was the chat id repeated twice;
+    // it must stay rejected however the mapping is shaped.
+    const known = (id) => (
+      id !== graphChatId && chainById.has(id) && !chainAmbiguous.has(id)
+    );
+    let candidates = [];
+    try { candidates = chatAtlasClientChainCollectCandidates(known); } catch { candidates = []; }
+    // ── Rendered-turn projection ────────────────────────────────────────────
+    // The host array is a sequence of RENDERED TURN ids, not a product-message
+    // ancestry path. An assistant turn is named by the FIRST message of its
+    // run, while the message actually rendered — and the one the graph's next
+    // question descends from — is the LAST product answer in that run. Live:
+    //   37ab747d (productAnswer) -> 50cee12f (non-product) -> 16e81a3e  => 16e81a3e
+    //   80c1a30f (non-product)   -> 0d2fad64 (non-product) -> 3a1e5e85  => 3a1e5e85
+    // This is exactly the window chatAtlasTurnsFromChain already applies, so
+    // the projection speaks the qId/primaryAId language the rest of the
+    // architecture consumes. Graph-only: no DOM, so virtualized turns project
+    // identically to mounted ones.
+    const projectAssistantRun = (start) => {
+      let cursor = start;
+      let last = start.productAnswer === true ? start : null;
+      let guard = 0;
+      while (cursor && guard < 4096) {
+        const continuations = (cursor.childIds || [])
+          .map((childId) => byNodeId.get(childId))
+          .filter((child) => !!child && child.productUser !== true);
+        // The run ends immediately before the next question, or at a leaf.
+        if (!continuations.length) break;
+        // Two viable continuations are two possible rendered runs: never guess.
+        if (continuations.length > 1) return null;
+        cursor = continuations[0];
+        guard += 1;
+        if (cursor.productAnswer === true) last = cursor;
+      }
+      return last;
+    };
+    // ── The route H2O itself derives, from the same graph ───────────────────
+    // chatAtlasChainToRoot + chatAtlasTurnsFromChain is the ONE turn model in
+    // this architecture, including its canonical system-branch-root promotion.
+    // The projection below never re-derives an answer identity of its own: it
+    // adopts whatever this model says, so the reader emits exactly the
+    // qId/primaryAId language every downstream consumer already speaks.
+    const modelRouteFor = (terminalNode) => {
+      let fullChain = null;
+      try { fullChain = chatAtlasChainToRoot(byNodeId, terminalNode); } catch { fullChain = null; }
+      if (!fullChain) return null;
+      const modelTurns = chatAtlasTurnsFromChain(fullChain, byNodeId);
+      if (!Array.isArray(modelTurns) || !modelTurns.length) return null;
+      const flat = [];
+      const nodes = [];
+      for (const turn of modelTurns) {
+        const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+        const qNode = qId ? byMessageId.get(qId) : null;
+        if (!qId || !qNode) return null;
+        flat.push(qId); nodes.push(qNode);
+        const primaryAId = chatAtlasCompleteIndexIdentity(turn?.primaryAId);
+        if (!primaryAId) continue;
+        // A promoted branch-shell alias is a legitimate answer identity that is
+        // not a product node, so it is resolved through the ownership index.
+        const aNode = byMessageId.get(primaryAId) || chainById.get(primaryAId) || null;
+        if (!aNode) return null;
+        flat.push(primaryAId); nodes.push(aNode);
+      }
+      return { flat, nodes, fullChain, turns: modelTurns };
+    };
+    // ── Rendered-turn validation ────────────────────────────────────────────
+    // THIS is the linkage proof for a rendered-turn candidate, and it is
+    // STRICTLY STRONGER than the pairwise walk. Every raw entry must name a
+    // node ON the model route, in strictly increasing route order; every user
+    // entry must open the next model turn in sequence; every assistant entry
+    // must fall inside the window of the turn just opened; and every model turn
+    // must be named exactly once. A skipped turn, a reorder, a cross-branch
+    // splice or an invented answer all fail it. chatAtlasClientChainLinked is
+    // left untouched and still guards every other caller.
+    const validateCandidate = (ids) => {
+      const rawNodes = [];
+      let seenTurn = false;
+      for (const id of ids) {
+        if (!known(id)) return null;
+        const node = chainById.get(id);
+        if (!node) return null;
+        // A genuine graph ROOT wrapper ahead of the first rendered turn is
+        // validation evidence and names no turn. Only the real root qualifies —
+        // an arbitrary structural id is never a wrapper.
+        if (!seenTurn && node.productUser !== true && !node.parentId) continue;
+        seenTurn = true;
+        rawNodes.push(node);
+      }
+      // A rendered route always opens on a question.
+      if (!rawNodes.length || rawNodes[0].productUser !== true) return null;
+      const lastRaw = rawNodes[rawNodes.length - 1];
+      const terminal = lastRaw.productUser === true ? lastRaw : projectAssistantRun(lastRaw);
+      if (!terminal) return null;
+      const model = modelRouteFor(terminal);
+      if (!model) return null;
+      if (model.flat.length < CHAT_ATLAS_CLIENT_CHAIN_MIN_LENGTH) return null;
+      const routeIndex = new Map(model.fullChain.map((node, index) => [node.nodeId, index]));
+      const questionIndex = model.turns.map((turn) => {
+        const qNode = byMessageId.get(chatAtlasCompleteIndexIdentity(turn?.qId));
+        return qNode ? routeIndex.get(qNode.nodeId) : null;
+      });
+      if (questionIndex.some((index) => index == null)) return null;
+      let turnAt = 0;
+      let lastRouteIndex = -1;
+      for (const node of rawNodes) {
+        const index = routeIndex.get(node.nodeId);
+        if (index == null) return null;            // names a node off this route
+        if (index <= lastRouteIndex) return null;  // repeat or reorder
+        lastRouteIndex = index;
+        if (node.productUser === true) {
+          if (index !== questionIndex[turnAt]) return null;  // skipped/wrong turn
+          turnAt += 1;
+          continue;
+        }
+        if (turnAt < 1) return null;                          // answer before any question
+        const nextQuestion = questionIndex[turnAt];
+        if (nextQuestion != null && index >= nextQuestion) return null;  // outside its turn window
+      }
+      if (turnAt !== model.turns.length) return null;         // a turn was never named
+      return { messageIds: model.flat, nodes: model.nodes, fullChain: model.fullChain };
+    };
+    const accepted = [];
+    const acceptedSignatures = new Set();
+    for (const ids of candidates) {
+      const projected = validateCandidate(ids);
+      if (!projected) continue;
+      // Target proof is against the PROJECTED identities only.
+      if (!projected.messageIds.includes(target)) continue;
+      // Dedupe on the PROJECTED sequence. One selected route found at several
+      // React locations, or named through different but equally valid turn
+      // ids, is one route — not an ambiguity. Two genuinely different projected
+      // routes still fail closed below.
+      const signature = projected.messageIds.join('|');
+      if (acceptedSignatures.has(signature)) continue;
+      acceptedSignatures.add(signature);
+      accepted.push({
+        ids: projected.messageIds,
+        nodes: projected.nodes,
+        fullChain: projected.fullChain,
+      });
+    }
+    if (!accepted.length) return empty('client-chain-unavailable');
+    if (accepted.length > 1) return empty('client-chain-ambiguous');
+    const winner = accepted[0];
+    // Closure = the validated root->terminal chain itself. It carries the
+    // selected route's real structural and product ancestry and no rival
+    // branch, so chooseGraphCandidate can still resolve every fork on the
+    // route by membership alone and never guesses.
+    const closure = new Set(winner.fullChain.map((node) => node.nodeId));
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      messageIds: Object.freeze(winner.ids.slice()),
+      nodes: Object.freeze(winner.nodes.slice()),
+      closure,
+      candidateCount: accepted.length,
+    });
+  }
+
+  // Convert a proven client chain into the downstream tail of the selected
+  // path. This is deliberately NOT a second pairing implementation: the node
+  // chain is rebuilt with chatAtlasChainToRoot and paired with
+  // chatAtlasTurnsFromChain, exactly as the parity gate does.
+  function chatAtlasClientChainDerivedTail(chain, nodeById, context) {
+    const bad = (reason) => Object.freeze({ ok: false, reason, turns: null, tailNodeId: null });
+    if (!chain || chain.ok !== true || !Array.isArray(chain.nodes) || !chain.nodes.length) return null;
+    const anchorOrder = Number(context?.anchorOrder || 0);
+    const anchorQId = chatAtlasCompleteIndexIdentity(context?.anchorQId);
+    const anchorAnswerId = chatAtlasCompleteIndexIdentity(context?.anchorAnswerId);
+    const canonicalPrefix = Array.isArray(context?.canonicalPrefix) ? context.canonicalPrefix : [];
+    if (anchorOrder < 1 || !anchorQId || !anchorAnswerId) return bad('client-chain-path-mismatch');
+    const terminalNode = nodeById.get(chain.nodes[chain.nodes.length - 1]?.nodeId) || null;
+    if (!terminalNode) return bad('client-chain-path-mismatch');
+    let chainNodes = null;
+    try { chainNodes = chatAtlasChainToRoot(nodeById, terminalNode); } catch { chainNodes = null; }
+    if (!chainNodes) return bad('client-chain-path-mismatch');
+    const chainTurns = chatAtlasTurnsFromChain(chainNodes, nodeById);
+    if (!Array.isArray(chainTurns) || chainTurns.length < anchorOrder) {
+      return bad('client-chain-path-mismatch');
+    }
+    const anchorTurn = chainTurns[anchorOrder - 1];
+    if (chatAtlasCompleteIndexIdentity(anchorTurn?.qId) !== anchorQId) {
+      return bad('client-chain-path-mismatch');
+    }
+    if (chatAtlasCompleteIndexIdentity(anchorTurn?.primaryAId) !== anchorAnswerId) {
+      return bad('client-chain-path-mismatch');
+    }
+    // The prefix is matched by question identity. Answer identity before the
+    // anchor legitimately differs: the canonical index carries the previously
+    // accepted answers, while the chain carries what the page is showing.
+    for (let index = 0; index < canonicalPrefix.length; index += 1) {
+      if (
+        chatAtlasCompleteIndexIdentity(chainTurns[index]?.qId)
+        !== chatAtlasCompleteIndexIdentity(canonicalPrefix[index]?.qId)
+      ) return bad('client-chain-path-mismatch');
+    }
+    const tail = [];
+    for (let index = anchorOrder; index < chainTurns.length; index += 1) {
+      const turn = chainTurns[index];
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      if (!qId) return bad('client-chain-path-mismatch');
+      tail.push(chatAtlasFreeze({
+        order: index + 1,
+        qId,
+        turnId: `turn:${qId}`,
+        primaryAId: chatAtlasCompleteIndexIdentity(turn?.primaryAId) || null,
+        answerVariants: Array.isArray(turn?.answerVariants) ? turn.answerVariants.slice() : [],
+        noAnswer: turn?.noAnswer === true,
+        stopped: turn?.stopped === true,
+        // The client chain decides WHICH graph route is authoritative; the
+        // turns themselves are still reconstructed from the identity graph by
+        // chatAtlasChainToRoot + chatAtlasTurnsFromChain, so their construction
+        // provenance is graph-descent. And a downstream turn that is not
+        // mounted cannot claim direct native confirmation.
+        provenance: 'graph-descent',
+        confirmedByNativeEvidence: false,
+      }));
+    }
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      turns: Object.freeze(tail),
+      tailNodeId: terminalNode.nodeId,
+      chainTurns: Object.freeze(chainTurns),
+    });
+  }
+
+  function chatAtlasClientChainProvesAnchor(chain, selectedAnswerIdRaw) {
+    const target = chatAtlasCompleteIndexIdentity(selectedAnswerIdRaw);
+    if (!target || !chain || chain.ok !== true) return false;
+    return Array.isArray(chain.messageIds) && chain.messageIds.includes(target);
+  }
+
   function chatAtlasSelectedPathGraphAnchorNode(graph, selectedAnswerIdRaw) {
     const selectedAnswerId = chatAtlasCompleteIndexIdentity(selectedAnswerIdRaw);
     if (!selectedAnswerId || !Array.isArray(graph?.nodes)) return null;
@@ -7919,6 +8405,49 @@
       && chatAtlasCompleteIndexIdentity(node?.messageId) === selectedAnswerId
     ));
     return matches.length === 1 ? matches[0] : null;
+  }
+
+  // Does this graph's current_node chain PROVE the newly selected anchor
+  // answer? A trusted manual switch the host has already applied leaves
+  // current_node inside the selected answer's subtree. A graph captured BEFORE
+  // the click leaves it in the previous sibling's subtree, so nothing below
+  // the new anchor can be resolved by containment. Presence of the anchor node
+  // is not proof: sibling variants are always present in the same graph.
+  // Bounded ancestor walk from current_node; equality counts as proof.
+  function chatAtlasSelectedPathGraphProvesAnchor(graph, selectedAnswerIdRaw) {
+    const anchorAnswerNode = chatAtlasSelectedPathGraphAnchorNode(graph, selectedAnswerIdRaw);
+    if (!anchorAnswerNode || !Array.isArray(graph?.nodes)) return false;
+    const currentNodeId = chatAtlasCompleteIndexIdentity(graph.currentNode);
+    if (!currentNodeId) return false;
+    const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    const seen = new Set();
+    let cursor = nodeById.get(currentNodeId) || null;
+    let visits = 0;
+    while (cursor && visits <= 4096) {
+      visits += 1;
+      if (cursor.nodeId === anchorAnswerNode.nodeId) return true;
+      if (seen.has(cursor.nodeId)) return false;
+      seen.add(cursor.nodeId);
+      if (!cursor.parentId) return false;
+      cursor = nodeById.get(cursor.parentId) || null;
+    }
+    return false;
+  }
+
+  // Only derivation reasons whose resolution genuinely depends on current_node
+  // containment qualify for the stale-evidence handoff. Every other reason is
+  // a structural fault a fresher graph cannot repair, and must stay terminal.
+  const CHAT_ATLAS_STALE_GRAPH_DERIVATION_REASONS = Object.freeze(new Set([
+    'fork-unresolved',
+  ]));
+
+  // Pre-click evidence, or a real verdict? This is the whole distinction:
+  //   graph does NOT prove the selected anchor -> stale/pre-click -> pending
+  //   graph DOES prove it and the fork is still equal -> real -> fail closed
+  function chatAtlasSelectedPathStaleGraphEvidence(graph, selectedAnswerIdRaw, reason) {
+    return CHAT_ATLAS_STALE_GRAPH_DERIVATION_REASONS.has(
+      chatAtlasCompleteIndexCode(reason, 'derivation-failed', 64),
+    ) && !chatAtlasSelectedPathGraphProvesAnchor(graph, selectedAnswerIdRaw);
   }
 
   function chatAtlasDeriveSelectedPath(graph, intent, selectedAnswerIdRaw) {
@@ -8083,6 +8612,10 @@
       }
       return { ok: true, answers, answerIdentities, users, leaves, stopped };
     };
+    const clientChainClosure = intent?.clientSelectedChainClosure instanceof Set
+      && intent.clientSelectedChainClosure.size
+      ? intent.clientSelectedChainClosure
+      : null;
     const currentGraphNode = nodeById.get(chatAtlasCompleteIndexIdentity(graph.currentNode)) || null;
     const currentNodeInsideSelectedAnswer = nodeDescendsFrom(
       currentGraphNode,
@@ -8202,6 +8735,18 @@
       }
       if (unique.length === 1) return unique[0];
       if (!unique.length) return null;
+      // NATIVE CLIENT SELECTION WINS. When the page's own selected chain is
+      // proven for this manual selection it decides every fork below the
+      // anchor -- question edits and answer regenerations alike -- by
+      // membership, never by ranking. A fork the chain does not name is a
+      // fork it never proved, so it fails closed rather than guessing.
+      if (clientChainClosure) {
+        const onChain = unique.filter(
+          (candidate) => clientChainClosure.has(candidate?.nodeId),
+        );
+        if (onChain.length === 1) return onChain[0];
+        return null;
+      }
       const candidateType = (candidate) => {
         if (candidate?.productUser === true) return 'product-user';
         if (candidate?.branchShellAlias === true) return 'branch-shell-alias';
@@ -8375,7 +8920,28 @@
     // Set when a no-answer mid-turn already identified the next question, so
     // the walk continues from it instead of re-collecting an answer boundary.
     let pendingQuestion = null;
-    while (true) {
+    // WHOLE-PATH NATIVE CLIENT AUTHORITY. A validated client chain is the path
+    // for this trusted manual selection, not merely a fork tie-breaker. A
+    // fork-free continuation never reaches chooseGraphCandidate, so constraining
+    // forks alone let derivation walk a completely different route while the
+    // page was on another one. When the chain is present it supplies the tail
+    // and the independent descent below does not run at all.
+    const clientTail = chatAtlasClientChainDerivedTail(
+      intent?.clientSelectedChain || null,
+      nodeById,
+      {
+        anchorOrder,
+        anchorQId: qId,
+        anchorAnswerId: selectedAnswerId,
+        canonicalPrefix: turns.slice(0, anchorOrder - 1),
+      },
+    );
+    if (clientTail && clientTail.ok !== true) return fail(clientTail.reason);
+    if (clientTail) {
+      for (const turn of clientTail.turns) path.push(turn);
+      tailNodeId = clientTail.tailNodeId;
+    }
+    while (!clientTail) {
       if (path.length > 512) return fail('derivation-bounds-exceeded');
       let questionNode = pendingQuestion;
       pendingQuestion = null;
@@ -8481,6 +9047,26 @@
       || path.some((turn, index) => turn.order !== index + 1)
       || new Set(path.map((turn) => turn.qId)).size !== path.length
     ) return fail(path.length > 512 ? 'derivation-bounds-exceeded' : 'duplicate-qid');
+    // Exact whole-path parity against the client chain: identical count,
+    // per-turn question identity across the route, per-turn answer identity
+    // from the anchor down, and the same terminal. Any divergence fails closed
+    // with its own reason rather than publishing a guessed route.
+    if (clientTail) {
+      const chainTurns = clientTail.chainTurns;
+      if (path.length !== chainTurns.length) return fail('client-chain-path-mismatch');
+      for (let index = 0; index < path.length; index += 1) {
+        if (
+          chatAtlasCompleteIndexIdentity(path[index]?.qId)
+          !== chatAtlasCompleteIndexIdentity(chainTurns[index]?.qId)
+        ) return fail('client-chain-path-mismatch');
+        if (
+          index >= anchorOrder - 1
+          && chatAtlasCompleteIndexIdentity(path[index]?.primaryAId)
+            !== chatAtlasCompleteIndexIdentity(chainTurns[index]?.primaryAId)
+        ) return fail('client-chain-path-mismatch');
+      }
+      if (tailNodeId !== clientTail.tailNodeId) return fail('client-chain-path-mismatch');
+    }
     const pathFingerprint = chatAtlasCompleteIndexFingerprint(path);
     const diagnosticTurns = path.map((turn) => {
       const questionNodes = graph.nodes.filter((node) => (
@@ -8589,7 +9175,18 @@
     try {
       let result = null;
       try {
-        result = await provider(intent.chatId, { includeIdentityGraph: true });
+        // The provider's ambient 12s budget aborts mid-body on a conversation
+        // this large; the archive engine swallows that abort while parsing and
+        // reports 'mapping-invalid', so the one bounded refetch is spent
+        // without ever obtaining fresh current_node evidence. This is the
+        // single trusted, user-initiated, once-per-selection request in the
+        // system, so it is the one call entitled to wait longer than ambient.
+        // Scoped deliberately to this call: TURN_INDEX_FETCH_TIMEOUT_MS and
+        // every other consumer's budget stay untouched.
+        result = await provider(intent.chatId, {
+          includeIdentityGraph: true,
+          timeoutMs: 30000,
+        });
       } catch {}
       const currentIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
       const scopeCurrent = currentIntent?.token === token
@@ -8635,9 +9232,57 @@
     }
   }
 
+  // A trusted selection whose branch transaction has already PUBLISHED is a
+  // completed selection. Re-deriving it from live DOM evidence afterwards can
+  // only produce a contradiction — the native DOM has by then settled onto the
+  // new branch, so the anchor's answer legitimately equals the intent's prior
+  // answer and the derivation reports 'selected-answer-not-changed' for a
+  // selection that in fact succeeded. The published transaction is the
+  // authority for its own token; this returns the outcome it already recorded.
+  function chatAtlasSelectedPathPublishedForToken(token) {
+    const wanted = String(token || '');
+    if (!wanted) return false;
+    const transaction = completeTurnIndexAuthorityState.branchTransactionState;
+    if (transaction?.state !== 'published') return false;
+    if (String(transaction.token || '') !== wanted) return false;
+    if (String(selectedPathAcquisitionState.token || '') !== wanted) return false;
+    // The published-path evidence is the PUBLICATION DECISION itself. Keying
+    // on an active overlay was circular: chatAtlasSelectedPathOverlayEvaluate
+    // refuses to build a candidate while the acquisition is unproven, so the
+    // overlay can never be the thing that proves the acquisition.
+    const decision = selectedPathAcquisitionState.lastPublicationDecision;
+    if (decision?.published !== true) return false;
+    if (!(Number(decision.acceptedCount || 0) > 0)) return false;
+    if (!chatAtlasCompleteIndexIdentity(decision.acceptedFingerprint)) return false;
+    // The retained graph that produced it must still be the current scope.
+    const retained = selectedPathAcquisitionState.graph;
+    return !!retained
+      && retained.chatId === String(completeTurnIndexAuthorityState.chatId || '')
+      && retained.routeKey === String(completeTurnIndexAuthorityState.routeKey || '')
+      && Number(retained.generation || 0) === Number(completeTurnIndexAuthorityState.generation || 0);
+  }
+
+  // A published selection owns its acquisition record for the lifetime of that
+  // publication. Every demotion path in the evaluator — the
+  // 'trusted-intent-unavailable' clear as well as the later
+  // 'selected-answer-not-changed' derivation — is gated behind this, BEFORE any
+  // of them can mutate state. The token comes from the ACQUISITION, not the
+  // intent: the intent legitimately disappears once the selection completes,
+  // and its disappearance must not erase the completed outcome.
+  function chatAtlasSelectedPathHoldPublished() {
+    const token = String(selectedPathAcquisitionState.token || '')
+      || String(completeTurnIndexAuthorityState.trustedSelectedPathIntent?.token || '');
+    if (!chatAtlasSelectedPathPublishedForToken(token)) return null;
+    // No restorative mutation: the primitives can no longer damage a
+    // published record, so there is nothing to repair here.
+    return getSelectedPathAcquisitionStatus();
+  }
+
   function chatAtlasSelectedPathEvaluate(members = []) {
     const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     const index = completeTurnIndexAuthorityState.index;
+    const held = chatAtlasSelectedPathHoldPublished();
+    if (held) return held;
     if (
       completeTurnIndexAuthorityState.enabled !== true
       || !chatAtlasCompleteIndexAuthorityActive()
@@ -8741,12 +9386,53 @@
         selectedAnswerId,
       ]);
     }
+    // Native client selected chain first. It is the only evidence that follows
+    // a manual switch immediately; the graph still validates every entry.
+    const clientChain = chatAtlasNativeClientSelectedChain(retained.identityGraph, selectedAnswerId);
+    const clientProves = chatAtlasClientChainProvesAnchor(clientChain, selectedAnswerId);
+    if (clientProves) {
+      chatAtlasBranchTransactionTrace('acq-client-chain', { count: clientChain.messageIds.length });
+    }
     const derived = chatAtlasDeriveSelectedPath(
       retained.identityGraph,
-      Object.freeze({ ...intent, mountedEvidence: evidence }),
+      Object.freeze({
+        ...intent,
+        mountedEvidence: evidence,
+        clientSelectedChainClosure: clientProves ? clientChain.closure : null,
+        clientSelectedChain: clientProves ? clientChain : null,
+      }),
       selectedAnswerId,
     );
-    if (!derived.ok) return chatAtlasSelectedPathFail(derived.reason, intent, selectedAnswerId);
+    if (!derived.ok) {
+      // Derivation is not allowed to reach a terminal verdict against a graph
+      // that is known to be pre-click for THIS trusted selection. Keep the
+      // transaction open and hand off to the one bounded host refresh, then
+      // re-derive against the refreshed current_node chain.
+      if (
+        !clientProves
+        && chatAtlasSelectedPathStaleGraphEvidence(
+          retained.identityGraph,
+          selectedAnswerId,
+          derived.reason,
+        )
+      ) {
+        // Refresh already in flight for this exact selection: stay pending
+        // rather than racing it to a failure it is about to make obsolete.
+        if (selectedPathAcquisitionState.refetchActiveForToken === intent.token) {
+          return getSelectedPathAcquisitionStatus();
+        }
+        if (selectedPathAcquisitionState.refetchAttemptedForToken !== intent.token) {
+          chatAtlasBranchTransactionTrace('acq-graph-pending', { reason: derived.reason });
+          selectedPathAcquisitionState.status = 'inactive';
+          selectedPathAcquisitionState.reason = 'branch-transaction-graph-pending';
+          void chatAtlasSelectedPathRefetch(intent);
+          return getSelectedPathAcquisitionStatus();
+        }
+        // The one bounded refresh is spent. Refreshed evidence is the best
+        // this selection will ever get, so the verdict is now genuine.
+      }
+      return chatAtlasSelectedPathFail(derived.reason, intent, selectedAnswerId);
+    }
     if (!chatAtlasSelectedPathProofValid(derived)) {
       return chatAtlasSelectedPathFail('proof-ownership-invalid', intent, selectedAnswerId);
     }
@@ -8844,6 +9530,28 @@
     const qId = chatAtlasCompleteIndexIdentity(context?.qId);
     const priorAnswerId = chatAtlasCompleteIndexIdentity(context?.priorAnswerId);
     const direction = String(context?.direction || '');
+    // A trusted click whose exact native sibling order is not yet provable is
+    // NOT a failed capture. The click itself — qId, prior answer, direction and
+    // the trusted transaction scope — is fully proven; only the identity of the
+    // answer the pager moved to is still unknown, and it is resolved exactly
+    // once at the retained-graph publication handoff. Nothing is ever guessed
+    // from turn.answerVariants, which is presentation-ordered and moves
+    // primaryAId last, so index ±1 on it is not a pager position at all.
+    const deferred = (reason) => Object.freeze({
+      classification: 'pending',
+      reason: chatAtlasCompleteIndexCode(reason, 'capture-return-target-pending', 64),
+      qId,
+      priorAnswerId,
+      direction,
+      targetResolved: false,
+      targetVariantAnswerId: '',
+      graphCaptureIdentity: '',
+      graphCapturedAt: '',
+      derivedTargetCount: 0,
+      derivedPathIdentity: '',
+      derivedPathMembers: Object.freeze([]),
+      priorPresentationSource: String(context?.priorPresentationSource || ''),
+    });
     const turns = Array.isArray(priorIndex?.turns) ? priorIndex.turns : [];
     const priorCount = Number(context?.priorEffectiveCount || 0);
     const priorFingerprint = String(context?.priorEffectiveFingerprint || '');
@@ -8878,21 +9586,36 @@
         ? 'capture-prior-answer-ambiguous'
         : 'capture-prior-answer-absent');
     }
-    const priorIndexValue = variants.indexOf(priorAnswerId);
-    const targetIndexValue = priorIndexValue + (direction === 'previous' ? -1 : 1);
-    const targetVariantAnswerId = chatAtlasCompleteIndexIdentity(variants[targetIndexValue]);
-    if (!targetVariantAnswerId) return invalid('capture-direction-neighbor-unavailable');
-
+    // Retained-graph scope is the trustworthiness gate for native sibling
+    // order, so it is proven BEFORE any adjacency is attempted. The two
+    // outcomes are deliberately different: a retained graph that is simply
+    // ABSENT is deferrable evidence unavailability, while a retained graph
+    // that exists but is out of scope or invalid is a containment failure and
+    // stays terminal — it must never gain return ownership.
     const retained = selectedPathAcquisitionState.graph;
-    const graphCaptureIdentity = String(retained?.captureIdentity || '');
     const graph = retained?.identityGraph || null;
+    if (!retained || !Array.isArray(graph?.nodes) || !graph.nodes.length) {
+      return deferred('capture-native-order-deferred');
+    }
+    const graphCaptureIdentity = String(retained.captureIdentity || '');
     if (
       !graphCaptureIdentity
-      || retained?.chatId !== String(context?.chatId || '')
-      || retained?.routeKey !== String(context?.routeKey || '')
-      || Number(retained?.generation || 0) !== Number(context?.generation || 0)
+      || retained.chatId !== String(context?.chatId || '')
+      || retained.routeKey !== String(context?.routeKey || '')
+      || Number(retained.generation || 0) !== Number(context?.generation || 0)
       || !chatAtlasIdentityGraphValid(graph, context?.chatId)
-    ) return invalid('capture-graph-scope-invalid', { targetVariantAnswerId });
+    ) return invalid('capture-graph-scope-invalid');
+    // Adjacency is resolved against the host's NATIVE sibling order, never
+    // against the presentation-ordered variant list above. The checks on
+    // `variants` remain as the canonical well-formedness precondition.
+    const resolvedTarget = chatAtlasResolveNativeReturnTarget(
+      graph,
+      qId,
+      priorAnswerId,
+      direction,
+    );
+    if (resolvedTarget.ok !== true) return invalid(resolvedTarget.reason);
+    const targetVariantAnswerId = resolvedTarget.targetVariantAnswerId;
     const canonical = chatAtlasCanonicalPresentationIndex();
     if (
       !canonical
@@ -9911,6 +10634,128 @@
     return (parent.childIds || [])
       .map((childId) => byId.get(childId))
       .filter((node) => node?.productUser === true);
+  }
+
+  // Native pager sibling order for one question's answer variants. Raw graph
+  // childIds order IS the host's own sibling order -- the order the native
+  // pager walks as 1/N, 2/N -- and it is never re-sorted by which answer is
+  // currently primary. turn.answerVariants must NOT be used for this: it is
+  // presentation-ordered and deliberately moves primaryAId last, so index+/-1
+  // on it does not correspond to pager positions at all.
+  //
+  // Each root is mapped through chatAtlasAnswerIdentityForRoot, so a branch
+  // shell alias resolves to the answer identity the pager actually moves to
+  // rather than the shell's own node id.
+  //
+  // Graph-wide by construction: it resolves the clicked question directly,
+  // so it stays correct when that question is not on the current or default
+  // route -- which is exactly the case after a manual switch.
+  //
+  // The graph is supplied EXPLICITLY. Both callers already hold the exact
+  // retained graph they have proven to be in scope, and neither may silently
+  // fall back to whatever unrelated graph global state happens to hold.
+  function chatAtlasNativeOrderedAnswerVariantIdsFromGraph(graph, qIdRaw) {
+    const bad = (reason) => Object.freeze({ ok: false, reason, ids: Object.freeze([]) });
+    const qId = chatAtlasCompleteIndexIdentity(qIdRaw);
+    if (!qId) return bad('capture-anchor-invalid');
+    if (!Array.isArray(graph?.nodes) || !graph.nodes.length) {
+      return bad('capture-native-order-unavailable');
+    }
+    const byId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    const questionNode = chatAtlasConvergenceUniqueNode(graph, qId, 'productUser');
+    if (!questionNode) return bad('capture-anchor-ambiguous');
+    const roots = chatAtlasConvergenceAnswerVariantRoots(questionNode, byId);
+    // Fewer than two answer roots in a graph that IS trustworthy is positive
+    // proof that this question has no pager neighbour at all -- it is not the
+    // absence of evidence, so it must never be deferred.
+    if (!Array.isArray(roots) || roots.length < 2) {
+      return bad('capture-direction-neighbor-unavailable');
+    }
+    const ids = [];
+    for (const root of roots) {
+      const identity = chatAtlasCompleteIndexIdentity(
+        chatAtlasAnswerIdentityForRoot(root, byId),
+      );
+      if (!identity) return bad('capture-native-order-unresolved');
+      if (ids.includes(identity)) return bad('capture-answer-variants-malformed');
+      ids.push(identity);
+    }
+    return Object.freeze({ ok: true, reason: null, ids: Object.freeze(ids) });
+  }
+
+  // Current-scope wrapper: the same native ordering read from whatever graph
+  // the convergence primitives currently own. Convergence planning already
+  // works exclusively in the current scope, so it needs no explicit graph.
+  function chatAtlasNativeOrderedAnswerVariantIds(qIdRaw) {
+    let scope = null;
+    try { scope = chatAtlasConvergenceGraphScope(); } catch { scope = null; }
+    if (!scope || scope.ok !== true) {
+      return Object.freeze({
+        ok: false,
+        reason: 'capture-native-order-unavailable',
+        ids: Object.freeze([]),
+      });
+    }
+    return chatAtlasNativeOrderedAnswerVariantIdsFromGraph(scope.graph, qIdRaw);
+  }
+
+  // The one place a captured trusted click (qId + prior answer + direction)
+  // becomes the exact answer identity the native pager moved to. Both the
+  // capture-time resolution and the deferred graph-arrival resolution call
+  // THIS, so a single arithmetic owns pager adjacency.
+  function chatAtlasResolveNativeReturnTarget(graph, qIdRaw, priorAnswerIdRaw, directionRaw) {
+    const bad = (reason) => Object.freeze({
+      ok: false,
+      reason,
+      targetVariantAnswerId: '',
+      nativeOrderedIds: Object.freeze([]),
+    });
+    const priorAnswerId = chatAtlasCompleteIndexIdentity(priorAnswerIdRaw);
+    const direction = String(directionRaw || '');
+    if (!priorAnswerId) return bad('capture-anchor-invalid');
+    if (!['previous', 'next'].includes(direction)) return bad('capture-direction-invalid');
+    const nativeOrder = chatAtlasNativeOrderedAnswerVariantIdsFromGraph(graph, qIdRaw);
+    if (nativeOrder.ok !== true) return bad(nativeOrder.reason);
+    const nativeIds = nativeOrder.ids;
+    const priorIndexValue = nativeIds.indexOf(priorAnswerId);
+    if (priorIndexValue < 0) return bad('capture-prior-answer-absent');
+    const targetIndexValue = priorIndexValue + (direction === 'previous' ? -1 : 1);
+    const targetVariantAnswerId = targetIndexValue >= 0 && targetIndexValue < nativeIds.length
+      ? chatAtlasCompleteIndexIdentity(nativeIds[targetIndexValue])
+      : '';
+    if (!targetVariantAnswerId) return bad('capture-direction-neighbor-unavailable');
+    return Object.freeze({
+      ok: true,
+      reason: null,
+      targetVariantAnswerId,
+      nativeOrderedIds: nativeIds,
+    });
+  }
+
+  // A capture whose exact native sibling order was not yet provable. Only this
+  // shape may be resolved later; an `invalid` capture is terminal.
+  function chatAtlasReturnTargetCandidatePending(candidate) {
+    return candidate?.classification === 'pending'
+      && candidate?.targetResolved !== true
+      && !chatAtlasCompleteIndexIdentity(candidate?.targetVariantAnswerId);
+  }
+
+  function chatAtlasResolvedReturnTargetCandidate(candidate, targetVariantAnswerId, retained) {
+    return Object.freeze({
+      ...candidate,
+      classification: 'resolved',
+      reason: 'graph-arrival-resolved-return',
+      targetResolved: true,
+      targetVariantAnswerId: chatAtlasCompleteIndexIdentity(targetVariantAnswerId),
+      graphCaptureIdentity: String(retained?.captureIdentity || ''),
+      graphCapturedAt: String(retained?.identityGraph?.capturedAt || ''),
+      // Deliberately left unresolved: a deferred capture froze NO route, so the
+      // frozen-path guard has nothing legitimate to compare against and must
+      // stay inert rather than veto against a route that was never captured.
+      derivedTargetCount: 0,
+      derivedPathIdentity: '',
+      derivedPathMembers: Object.freeze([]),
+    });
   }
 
   function chatAtlasBuildNativeBranchSelectionPlan() {
@@ -14674,7 +15519,14 @@
         return null;
       }
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
-      if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
+      // Expiry retires the INTENT, not the outcome. A selection whose branch
+      // transaction already published owns the acquisition record until the
+      // normal route/generation reset clears it; clearing here rewrote a
+      // completed selection into a false 'trusted-intent-expired'.
+      if (
+        typeof chatAtlasClearSelectedPathAcquisition === 'function'
+        && !chatAtlasSelectedPathPublishedForToken(intent.token)
+      ) {
         chatAtlasClearSelectedPathAcquisition(
           ageExpired ? 'trusted-intent-expired' : 'trusted-intent-scope-changed',
           { preserveGraph: true },
@@ -15352,6 +16204,38 @@
 
   // Branch metadata for the turns on the effective path, keyed by qId. One
   // entry per branching turn; alternatives never become extra entries.
+  // ── Effective-path identity accessor (Stage 2C-2aj2) ─────────────────────
+  // A NEW getter. getCompleteTurnIndexProjectionStatus() is a pinned surface
+  // and stays byte-identical; consumers that must notice a selected-branch
+  // change which leaves the canonical envelope untouched read this instead.
+  // Read-only and content-free: counts, enums and hashes.
+  function getChatAtlasEffectivePathIdentity() {
+    let effective = null;
+    let status = null;
+    try { effective = getEffectivePresentationIndex(); } catch {}
+    try { status = getEffectivePresentationStatus(); } catch {}
+    const turns = Array.isArray(effective?.turns) ? effective.turns : [];
+    const identity = chatAtlasPathIdentityKey(turns);
+    return chatAtlasFreeze({
+      version: 1,
+      available: true,
+      effectiveCount: turns.length,
+      effectiveFingerprint: String(effective?.sourceFingerprint || '') || null,
+      effectivePathIdentity: `djb2:${chatAtlasCompleteIndexStableHash(identity)}`,
+      // Folds in chat, generation and overlay-vs-canonical so a selected-branch
+      // change is visible even when the canonical envelope is unchanged.
+      effectivePathRevision: `djb2:${chatAtlasCompleteIndexStableHash(JSON.stringify([
+        String(completeTurnIndexAuthorityState.chatId || ''),
+        Number(completeTurnIndexAuthorityState.generation || 0),
+        status?.overlayActive === true ? 'overlay' : 'canonical',
+        identity,
+      ]))}`,
+      effectiveSource: String(status?.source || 'canonical'),
+      overlayActive: status?.overlayActive === true,
+      overlayPathLength: Number(status?.pathLength || 0),
+    });
+  }
+
   function getChatAtlasBranchBadges() {
     const out = [];
     try {
@@ -15570,6 +16454,92 @@
     });
   }
 
+  // ── Downstream native parity (Stage 2C-2aj2) ─────────────────────────────
+  // The manual anchor is the user's deliberate change and is exempt. Every
+  // fork BELOW it must match the host's own selection: the derivation is free
+  // to pick a valid sibling continuation, and publishing that sibling is how
+  // a 39-turn overlay came to be shown while native was still on a 36-turn
+  // chain. Parity is proven by identity (qId + primaryAId) against the host
+  // current_node chain, reusing chatAtlasChainToRoot and
+  // chatAtlasTurnsFromChain — no second traversal model.
+  //
+  // No newest-created, longest-path, first/last-answer or DOM-order
+  // tie-breaker is consulted here: below the anchor the host chain is the
+  // only authority, and an unprovable comparison fails closed.
+  function chatAtlasDownstreamNativeParity(derivedPath, anchorQId, targetAnswerId, graph, byId, clientChain = null) {
+    const fail = (reason) => Object.freeze({ ok: false, reason, comparedTurns: 0 });
+    const path = Array.isArray(derivedPath) ? derivedPath : [];
+    const anchor = chatAtlasCompleteIndexIdentity(anchorQId);
+    if (!path.length || !anchor) return fail('downstream-parity-scope-unavailable');
+    const anchorIndex = path.findIndex(
+      (turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === anchor,
+    );
+    if (anchorIndex < 0) return fail('downstream-parity-anchor-missing');
+    // Nothing below the anchor: the manual change is the tail, so there is no
+    // downstream fork to disagree about.
+    if (anchorIndex === path.length - 1) {
+      return Object.freeze({ ok: true, reason: null, comparedTurns: 0 });
+    }
+    // A proven client selected chain is the manual-session reference: it is
+    // the only source that follows a native switch immediately. current_node
+    // remains the reference for everything else.
+    const clientProven = clientChain && clientChain.ok === true
+      && Array.isArray(clientChain.nodes) && clientChain.nodes.length;
+    let hostChain = null;
+    if (clientProven) {
+      // clientChain.nodes carries product message nodes only. Pairing needs the
+      // complete structural root-to-leaf chain -- tool, system and shell nodes
+      // included -- which is exactly what the fallback branch below builds, so
+      // build it the same way from the client chain's own terminal.
+      const terminal = clientChain.nodes[clientChain.nodes.length - 1];
+      try { hostChain = chatAtlasChainToRoot(byId, terminal); } catch { hostChain = null; }
+    } else {
+      const currentNode = byId.get(chatAtlasCompleteIndexIdentity(graph?.currentNode));
+      if (!currentNode) return fail('downstream-parity-current-node-unresolved');
+      try { hostChain = chatAtlasChainToRoot(byId, currentNode); } catch { hostChain = null; }
+    }
+    if (!hostChain) return fail('downstream-parity-host-chain-unresolved');
+    const hostTurns = chatAtlasTurnsFromChain(hostChain, byId);
+    if (!hostTurns) return fail('downstream-parity-host-path-invalid');
+    // POST-CLICK PROOF. A retained graph captured BEFORE the click still has
+    // current_node on the outgoing branch, so it carries no host selection
+    // below the new anchor to compare against. Requiring the anchor's newly
+    // selected answer to be present on this very chain is what proves the
+    // capture is already current. Without it the retained graph is simply not
+    // authority for a manual publication yet.
+    const target = chatAtlasCompleteIndexIdentity(targetAnswerId);
+    const hostAnchor = hostTurns.find(
+      (turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === anchor,
+    ) || null;
+    if (!hostAnchor) return fail('retained-graph-pre-click');
+    if (target) {
+      const hostAnchorAnswer = chatAtlasCompleteIndexIdentity(hostAnchor.primaryAId);
+      const hostAnchorVariants = (hostAnchor.answerVariants || [])
+        .map((id) => chatAtlasCompleteIndexIdentity(id));
+      if (hostAnchorAnswer !== target && !hostAnchorVariants.includes(target)) {
+        return fail('retained-graph-pre-click');
+      }
+    }
+    const hostByQId = new Map(hostTurns.map(
+      (turn) => [chatAtlasCompleteIndexIdentity(turn?.qId), turn],
+    ));
+    let compared = 0;
+    for (let index = anchorIndex + 1; index < path.length; index += 1) {
+      const turn = path[index];
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      const hostTurn = qId ? hostByQId.get(qId) : null;
+      // A question the host never selected: the derivation took a different
+      // question-edit fork below the anchor.
+      if (!hostTurn) return fail('downstream-question-fork-differs');
+      if (
+        chatAtlasCompleteIndexIdentity(turn?.primaryAId)
+        !== chatAtlasCompleteIndexIdentity(hostTurn?.primaryAId)
+      ) return fail('downstream-answer-fork-differs');
+      compared += 1;
+    }
+    return Object.freeze({ ok: true, reason: null, comparedTurns: compared });
+  }
+
   function chatAtlasBranchTransactionPublicationDecision(envelope, source) {
     const transaction = chatAtlasBranchTransactionCurrent();
     const incomingCount = Array.isArray(envelope?.turns) ? envelope.turns.length : 0;
@@ -15607,16 +16577,6 @@
       && completeTurnIndexAuthorityState.branchSelectionStale === true
       && Number(intent.staleRevision || 0)
         === Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0);
-    const targetAnswerId = chatAtlasCompleteIndexIdentity(
-      intent?.returnTargetCandidate?.targetVariantAnswerId
-        || selectedPathAcquisitionState.anchorSelectedAId,
-    );
-    const graphCurrent = scopeCurrent
-      && targetAnswerId
-      && retained?.chatId === intent.chatId
-      && retained?.routeKey === intent.routeKey
-      && Number(retained?.generation || 0) === Number(intent.generation || 0)
-      && chatAtlasIdentityGraphValid(retained?.identityGraph, intent.chatId);
     const remember = (decision) => {
       selectedPathAcquisitionState.lastPublicationDecision = chatAtlasFreeze({
         source: String(source || ''),
@@ -15626,6 +16586,20 @@
       });
       return Object.freeze({ handled: true, ...decision });
     };
+    // A decision that stays PENDING for more evidence has not evaluated this
+    // graph to a conclusion, so it must not leave a completed-evaluation record
+    // behind: chatAtlasScheduleCompleteIndexRefresh would then treat the
+    // retained pre-click graph as already evaluated and skip the one bounded
+    // refresh this trusted token owns — starving the selection exactly as the
+    // live defect did. Whatever the acquisition lane recorded is restored
+    // untouched.
+    const priorGraphCaptureIdentity = String(transaction.graphCaptureIdentity || '');
+    const priorGraphEvaluationKey = String(transaction.graphEvaluationKey || '');
+    const holdPending = (reason) => {
+      transaction.graphCaptureIdentity = priorGraphCaptureIdentity;
+      transaction.graphEvaluationKey = priorGraphEvaluationKey;
+      return remember({ published: false, reason });
+    };
     if (!scopeCurrent) {
       chatAtlasCloseBranchTransaction(
         'fail-closed',
@@ -15634,12 +16608,74 @@
       );
       return remember({ published: false, reason: 'branch-transaction-scope-invalid' });
     }
+    const graphScopeCurrent = retained?.chatId === intent.chatId
+      && retained?.routeKey === intent.routeKey
+      && Number(retained?.generation || 0) === Number(intent.generation || 0)
+      && chatAtlasIdentityGraphValid(retained?.identityGraph, intent.chatId);
+    // ── Deferred native pager target resolution ──────────────────────────────
+    // The trusted click retained qId, prior answer and direction; the exact
+    // answer the pager moved to could not be proven at capture because no
+    // trustworthy graph existed yet. THIS retained graph — the one already
+    // being evaluated here, never unrelated global graph state — is that
+    // evidence, and it resolves the target exactly once.
+    const capturedCandidate = intent.returnTargetCandidate || null;
+    const capturedTarget = chatAtlasCompleteIndexIdentity(
+      capturedCandidate?.targetVariantAnswerId,
+    );
+    let activeCandidate = capturedCandidate;
+    let resolvedDeferredTarget = '';
+    if (
+      !capturedTarget
+      && graphScopeCurrent
+      && chatAtlasReturnTargetCandidatePending(capturedCandidate)
+    ) {
+      const resolved = chatAtlasResolveNativeReturnTarget(
+        retained.identityGraph,
+        capturedCandidate.qId || intent.qId,
+        capturedCandidate.priorAnswerId || intent.priorAnswerId,
+        capturedCandidate.direction || intent.direction,
+      );
+      if (resolved.ok !== true) {
+        // Trustworthy graph evidence now exists. Failure to establish a valid
+        // unique neighbour is a genuine verdict, never another deferral.
+        const reason = chatAtlasCompleteIndexCode(
+          resolved.reason,
+          'capture-candidate-invalid',
+          64,
+        );
+        chatAtlasCloseBranchTransaction(
+          'fail-closed',
+          reason,
+          String(transaction.token || ''),
+        );
+        return remember({ published: false, reason });
+      }
+      resolvedDeferredTarget = resolved.targetVariantAnswerId;
+      activeCandidate = chatAtlasResolvedReturnTargetCandidate(
+        capturedCandidate,
+        resolvedDeferredTarget,
+        retained,
+      );
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
+        ...intent,
+        returnTargetCandidate: activeCandidate,
+      });
+      chatAtlasBranchTransactionTrace('tx-return-target-resolved', {
+        token: resolvedDeferredTarget,
+      });
+    }
+    const targetAnswerId = chatAtlasCompleteIndexIdentity(
+      capturedTarget
+        || resolvedDeferredTarget
+        || selectedPathAcquisitionState.anchorSelectedAId,
+    );
+    const graphCurrent = graphScopeCurrent && !!targetAnswerId;
     if (!graphCurrent) {
       // The ordinary refresh can finish before the one bounded graph
       // acquisition. Retain the previous complete authority and the exact
       // transaction owner; absence is temporary, never permission to publish
       // the host's current_node prefix and never an immediate terminal error.
-      return remember({ published: false, reason: 'branch-transaction-graph-pending' });
+      return holdPending('branch-transaction-graph-pending');
     }
 
     transaction.graphCaptureIdentity = String(retained.captureIdentity || '');
@@ -15649,13 +16685,39 @@
       targetAnswerId,
     ]);
 
+    const clientChain = chatAtlasNativeClientSelectedChain(retained.identityGraph, targetAnswerId);
+    const clientProves = chatAtlasClientChainProvesAnchor(clientChain, targetAnswerId);
     const derived = chatAtlasDeriveSelectedPath(
       retained.identityGraph,
-      Object.freeze({ ...intent, mountedEvidence: new Map() }),
+      Object.freeze({
+        ...intent,
+        mountedEvidence: new Map(),
+        clientSelectedChainClosure: clientProves ? clientChain.closure : null,
+        clientSelectedChain: clientProves ? clientChain : null,
+      }),
       targetAnswerId,
     );
     if (!derived.ok || !chatAtlasSelectedPathProofValid(derived)) {
       const reason = derived.ok ? 'branch-transaction-proof-invalid' : derived.reason;
+      // Same distinction as the acquisition path, enforced at the one site
+      // that actually closes the transaction. A graph whose current_node chain
+      // does not prove the newly selected anchor is pre-click evidence, so an
+      // unresolved fork below that anchor is an artefact of the graph's age
+      // rather than real ambiguity. Stay contained and pending exactly as the
+      // downstream-parity gate below does, so the bounded refresh runs. A
+      // graph that DOES prove the anchor still fails closed here.
+      if (
+        !derived.ok
+        && !clientProves
+        && chatAtlasSelectedPathStaleGraphEvidence(
+          retained.identityGraph,
+          targetAnswerId,
+          reason,
+        )
+      ) {
+        chatAtlasBranchTransactionTrace('tx-graph-pending', { reason });
+        return holdPending('branch-transaction-graph-pending');
+      }
       chatAtlasCloseBranchTransaction(
         'fail-closed',
         reason,
@@ -15663,11 +16725,39 @@
       );
       return remember({ published: false, reason });
     }
-    const candidate = intent.returnTargetCandidate || null;
+    const parity = chatAtlasDownstreamNativeParity(
+      derived.path,
+      intent.qId,
+      targetAnswerId,
+      retained.identityGraph,
+      new Map((retained.identityGraph?.nodes || []).map((node) => [node.nodeId, node])),
+      clientProves ? clientChain : null,
+    );
+    if (parity.ok !== true) {
+      // Contained, NOT terminal: the transaction stays pending so the bounded
+      // host refresh runs and the derivation is re-proven against a refreshed
+      // current_node chain. 20/21 containment is preserved precisely because
+      // the transaction remains open and nothing partial is published.
+      selectedPathAcquisitionState.downstreamParityReason = parity.reason;
+      return holdPending('branch-transaction-graph-pending');
+    }
+    selectedPathAcquisitionState.downstreamParityReason = null;
+    const candidate = activeCandidate;
     const derivedMembers = chatAtlasBranchReturnPathMembers(derived.path);
     const derivedIdentity = chatAtlasBranchReturnPathIdentity(derivedMembers);
+    // The frozen route is captured BEFORE any client-chain authority exists,
+    // by the independent ranked derivation. When a unique validated client
+    // chain has since proven the target and supplied the whole path, that
+    // frozen pair describes a route the user is demonstrably not on, so it
+    // must not veto the client-selected one. Protection is not lost: the
+    // client path was already validated turn-by-turn against the chain inside
+    // chatAtlasDeriveSelectedPath (exact length, per-turn qId and primaryAId,
+    // exact terminal, no extra or omitted turns) and fails closed as
+    // client-chain-path-mismatch. With no proven chain this guard is
+    // unchanged, byte for byte.
     if (
-      Number(candidate?.derivedTargetCount || 0) > 0
+      !clientProves
+      && Number(candidate?.derivedTargetCount || 0) > 0
       && (
         Number(candidate.derivedTargetCount) !== derived.path.length
         || String(candidate.derivedPathIdentity || '') !== derivedIdentity
@@ -16897,6 +17987,7 @@
     getConversationTurnIndexDiagnostics,
     getCompleteTurnIndexProjectionStatus,
     getChatAtlasBranchBadges,
+    getChatAtlasEffectivePathIdentity,
     getChatAtlasDefaultLatestCreatedPath,
     getSelectedPathAcquisitionStatus,
     getSelectedPathDerivationDiagnostics,

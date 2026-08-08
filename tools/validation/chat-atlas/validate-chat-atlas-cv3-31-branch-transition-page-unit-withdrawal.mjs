@@ -22,6 +22,7 @@
 // themselves remain owned by CV-3.22 and CV-3.29.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -929,6 +930,371 @@ await fixture('29 a current selected-path overlay settles page units despite sta
   equal(make({ ...staleIntent, selectedPathRequestLeaseActive: true }, overlayOn), true, 'a pending request lease still withholds settlement');
   equal(make({ ...staleIntent, branchExpansionPending: true }, overlayOn), true, 'pending expansion still withholds settlement');
   equal(make({ ...staleIntent, branchTransactionPending: true }, overlayOn), true, 'a pending branch transaction dominates every other flag');
+});
+
+// ── Stage 2C Items 1-2 — effective-path identity, badge cache, transition
+// authority. Owned here because this validator already owns branch-transition
+// authority and already executes the real 1A1b bodies. Every assertion below
+// runs extracted production source, not a pattern match.
+await fixture('stage-2c items 1-2: effective-path identity is separate, guarded and authoritative', () => {
+  // (1)(3) The accessor is its own function and the pinned getter is untouched
+  // by it: neither body references the other, so nothing was replaced.
+  const accessorSrc = extractFunction(CORE0_SOURCE, 'getChatAtlasEffectivePathIdentity');
+  const pinnedSrc = extractFunction(CORE0_SOURCE, 'getCompleteTurnIndexProjectionStatus');
+  ok(accessorSrc.length > 0, 'accessor exists independently in Core');
+  equal(pinnedSrc.includes('getChatAtlasEffectivePathIdentity'), false,
+    'pinned projection getter does not call or wrap the new accessor');
+  equal(accessorSrc.includes('function getCompleteTurnIndexProjectionStatus'), false,
+    'accessor does not redefine the pinned getter');
+  equal(createHash('sha256').update(pinnedSrc, 'utf8').digest('hex'),
+    '5183fc701d98db7d57c544b1dfd832545d8abe66465b36a2b7d655012db8fcb7',
+    'pinned projection getter body is byte-identical to its accepted bytes');
+
+  // (2) exported on the public runtime api
+  ok(/\n\s{4}getChatAtlasEffectivePathIdentity,\n/.test(CORE0_SOURCE),
+    'accessor is exported on the public api surface');
+
+  // (4)(5) Run the REAL accessor body with controlled dependencies.
+  const ctx = {
+    getEffectivePresentationIndex: () => ({ turns: [{ qId: 'q1' }, { qId: 'q2' }], sourceFingerprint: 'fp-eff' }),
+    getEffectivePresentationStatus: () => ({ source: 'selected-path-overlay', overlayActive: true, pathLength: 2 }),
+    chatAtlasPathIdentityKey: (t) => `k:${t.length}`,
+    chatAtlasCompleteIndexStableHash: (v) => `h${String(v).length}`,
+    chatAtlasFreeze: (o) => Object.freeze(o),
+    completeTurnIndexAuthorityState: { chatId: 'c1', generation: 7 },
+    JSON, String, Number, Array, Object,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(`${accessorSrc}\nglobalThis.__out = getChatAtlasEffectivePathIdentity();`, ctx);
+  const out = ctx.__out;
+  ok(Object.isFrozen(out), 'accessor result is frozen');
+  equal(out.effectiveCount, 2, 'effectiveCount reflects the effective path length');
+  equal(out.effectiveSource, 'selected-path-overlay', 'effectiveSource is exposed');
+  equal(out.overlayActive, true, 'overlayActive is exposed');
+  ok(typeof out.effectivePathRevision === 'string' && out.effectivePathRevision.startsWith('djb2:'),
+    'effectivePathRevision is exposed as a hash');
+  ok(Object.values(out).every((v) => v === null || ['string', 'number', 'boolean'].includes(typeof v)),
+    'accessor result is content-free: primitives only');
+
+  // Fail-closed: a throwing dependency must not throw out of the accessor.
+  const ctx2 = { ...ctx, getEffectivePresentationIndex: () => { throw new Error('x'); },
+    getEffectivePresentationStatus: () => { throw new Error('x'); } };
+  vm.createContext(ctx2);
+  vm.runInContext(`${accessorSrc}\nglobalThis.__out = getChatAtlasEffectivePathIdentity();`, ctx2);
+  equal(ctx2.__out.effectiveCount, 0, 'accessor fails closed to zero effective count');
+  equal(ctx2.__out.overlayActive, false, 'accessor fails closed to non-overlay');
+});
+
+await fixture('stage-2c item 2: badge cache follows effective-path authority', () => {
+  const mapSrc = extractFunction(CORE_SOURCE, 'getBranchBadgeMap');
+  let rebuilds = 0;
+  const base = { effectivePathRevision: 'djb2:r1', effectiveCount: 18, effectiveSource: 'selected-path-overlay', overlayActive: true };
+  let eff = { ...base };
+  const ctx = {
+    getCompleteIndexProjectionStatus: () => ({ enabled: true, chatId: CHAT_ID, routeGeneration: 3, fingerprint: CANONICAL_FP, count: 39 }),
+    getEffectivePathIdentity: () => eff,
+    branchBadgeCache: { key: '', byQId: null },
+    getTurnRuntimeApi: () => ({ getChatAtlasBranchBadges: () => { rebuilds += 1; return [{ qId: 'q1', primaryAId: 'a1' }]; } }),
+    Map, String, Object, Array, Number,
+  };
+  vm.createContext(ctx);
+  const run = `${mapSrc}\nglobalThis.__m = getBranchBadgeMap();`;
+  vm.runInContext(run, ctx); equal(rebuilds, 1, 'first badge map computes once');
+  vm.runInContext(run, ctx); equal(rebuilds, 1, 'unchanged effective identity hits the cache');
+  // (6)(7) each effective axis alone must invalidate
+  for (const [field, next, label] of [
+    ['effectivePathRevision', 'djb2:r2', 'effectivePathRevision'],
+    ['effectiveCount', 19, 'effectiveCount'],
+    ['effectiveSource', 'canonical', 'effectiveSource'],
+    ['overlayActive', false, 'overlayActive'],
+  ]) {
+    const before = rebuilds;
+    eff = { ...base, [field]: next };
+    vm.runInContext(run, ctx);
+    equal(rebuilds, before + 1, `${label} change alone invalidates the badge cache`);
+    eff = { ...base };
+    vm.runInContext(run, ctx);
+  }
+});
+
+await fixture('stage-2c item 2: MiniMap authority during and outside trusted transition', () => {
+  // The real presentation-count expression, evaluated with controlled inputs.
+  const i = CORE_SOURCE.indexOf('const expectedPresentationCount = overlayActive');
+  ok(i > 0, 'presentation-count authority expression exists in production source');
+  const expr = CORE_SOURCE.slice(i, CORE_SOURCE.indexOf(';', CORE_SOURCE.indexOf('projectedCount', i)) + 1);
+  const gateI = CORE_SOURCE.indexOf('const branchTransitionInFlight =');
+  ok(gateI > 0, 'transition gate exists in production source');
+  const gate = CORE_SOURCE.slice(gateI, CORE_SOURCE.indexOf(';', gateI) + 1);
+  const evaluate = (completeIndex, effectiveIdentity, overlayActive, effectivePresentation) => {
+    const ctx = { completeIndex, effectiveIdentity, overlayActive, effectivePresentation };
+    vm.createContext(ctx);
+    vm.runInContext(`${gate}\n${expr}\nglobalThis.__c = expectedPresentationCount;`, ctx);
+    return ctx.__c;
+  };
+  const eff = { available: true, effectiveCount: 19 };
+  const quiet = { projectedCount: 20, branchSelectionStale: false, trustedSelectionIntentActive: false, branchTransactionPending: false };
+  // (9) each established transition signal alone selects effective authority
+  for (const flag of ['branchSelectionStale', 'trustedSelectionIntentActive', 'branchTransactionPending']) {
+    equal(evaluate({ ...quiet, [flag]: true }, eff, false, { count: 0 }), 19,
+      `${flag} alone makes effectiveCount the MiniMap authority`);
+  }
+  // (8) projected count is not presentation authority during a transition
+  equal(evaluate({ ...quiet, branchSelectionStale: true }, eff, false, { count: 0 }) === quiet.projectedCount, false,
+    'projected count is not used as authority during a trusted transition');
+  // (10) outside a transition the historical projected boundary stands
+  equal(evaluate(quiet, eff, false, { count: 0 }), 20, 'outside a transition projectedCount remains authoritative');
+  // overlay path is unchanged by the transition gate
+  equal(evaluate({ ...quiet, branchSelectionStale: true }, eff, true, { count: 39 }), 39,
+    'a published overlay still supplies the effective presentation count');
+  // (11) accessor-unavailable fallback reproduces historical behaviour
+  equal(evaluate({ ...quiet, branchSelectionStale: true }, { available: false, effectiveCount: 0 }, false, { count: 0 }), 20,
+    'older Core without the accessor falls back to historical projectedCount');
+});
+
+await fixture('stage-2c items 1-2: invariant surface unchanged', () => {
+  // (12)(13) The trusted-selection subsystem adds no persistence of any kind.
+  for (const [label, src] of [['Core', CORE0_SOURCE], ['MiniMap', CORE_SOURCE]]) {
+    for (const api of ['sessionStorage', 'indexedDB', 'chrome.storage']) {
+      equal(src.includes(api), false, `${label} introduces no ${api} persistence`);
+    }
+    equal(/addEventListener\(\s*['"]pagehide['"]/.test(src), false, `${label} adds no pagehide persistence`);
+    equal(/addEventListener\(\s*['"]visibilitychange['"]/.test(src), false, `${label} adds no visibilitychange persistence`);
+  }
+  const accessorSrc = extractFunction(CORE0_SOURCE, 'getChatAtlasEffectivePathIdentity');
+  const bridgeSrc = extractFunction(CORE_SOURCE, 'getEffectivePathIdentity');
+  for (const [label, src] of [['accessor', accessorSrc], ['MiniMap bridge', bridgeSrc]]) {
+    equal(/setItem|removeItem|localStorage|sessionStorage|indexedDB/.test(src), false,
+      `${label} performs zero storage writes`);
+  }
+});
+
+
+// ── Stage 2C — acquisition-state truthfulness ────────────────────────────
+// A trusted selection whose branch transaction has PUBLISHED must never be
+// rewritten into a failure by a later DOM re-derivation, nor by intent expiry.
+// The real chatAtlasSelectedPathPublishedForToken body is executed here.
+function extractConstBlock(source, name) {
+  const at = source.indexOf(`const ${name}`);
+  if (at < 0) throw new Error(`const-missing:${name}`);
+  return source.slice(at, source.indexOf(']))', at) + 3);
+}
+
+function truthWorld({ txState, txToken, acqToken, acqStatus,
+                     published = true, acceptedCount = 39, acceptedFingerprint = 'djb2:ok',
+                     graphChat = 'c', graphRoute = '/c/c', graphGeneration = 1 }) {
+  const sandbox = {
+    completeTurnIndexAuthorityState: {
+      branchTransactionState: txState ? { state: txState, token: txToken } : null,
+      chatId: 'c', routeKey: '/c/c', generation: 1,
+    },
+    selectedPathAcquisitionState: {
+      token: acqToken, status: acqStatus,
+      lastPublicationDecision: published === null ? null
+        : { published, acceptedCount, acceptedFingerprint },
+      graph: graphChat === null ? null
+        : { chatId: graphChat, routeKey: graphRoute, generation: graphGeneration },
+    },
+    chatAtlasCompleteIndexIdentity: (v) => {
+      const id = String(v || '').trim();
+      return /^[a-z0-9._:-]{1,256}$/i.test(id) ? id : '';
+    },
+    String, Number, Object, Array,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(
+    extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathPublishedForToken')
+    + '\nglobalThis.__f = chatAtlasSelectedPathPublishedForToken;',
+  ).runInContext(sandbox);
+  return sandbox.__f;
+}
+
+await fixture('stage-2c A: publication ownership is enforced at the primitives', () => {
+  // The rule now lives inside the two mutating primitives and the one direct
+  // mutation, so it cannot be bypassed by adding another call site.
+  const fail = extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathFail');
+  // selectedPathFail uses the EARLIER signal — the transaction lifecycle —
+  // because publication evidence does not exist yet when it can first run.
+  const guardAt = fail.indexOf("transaction.state === 'pending'");
+  ok(guardAt >= 0, 'selectedPathFail consults the transaction lifecycle');
+  ok(fail.includes("=== 'selected-answer-not-changed'"),
+    'the pending guard is scoped to the post-switch artefact only');
+  ok(fail.includes('chatAtlasAcquisitionPublicationOwned()'),
+    'published transactions are gated by publication ownership, not state alone');
+  for (const sentinel of ["status = 'failed'", 'path = null', 'proof = null']) {
+    ok(fail.indexOf(sentinel) > guardAt, `the guard precedes ${sentinel}`);
+  }
+
+  const clear = extractFunction(CORE0_SOURCE, 'chatAtlasClearSelectedPathAcquisition');
+  const clearGuard = clear.indexOf('chatAtlasAcquisitionPublicationOwned()');
+  ok(clearGuard >= 0, 'the clear primitive consults publication ownership');
+  ok(clear.includes('chatAtlasAcquisitionResetBoundary(reason)'),
+    'and exempts explicit reset boundaries');
+  for (const sentinel of ["token = null", 'path = null', 'proof = null']) {
+    ok(clear.indexOf(sentinel) > clearGuard, `the guard precedes ${sentinel}`);
+  }
+
+  const retain = extractFunction(CORE0_SOURCE, 'chatAtlasRetainIdentityGraph');
+  ok(retain.includes('!chatAtlasAcquisitionPublicationOwned()'),
+    'ordinary graph re-capture cannot destroy a published record');
+  const gr = retain.indexOf("reason = 'graph-replaced'");
+  ok(retain.indexOf('!chatAtlasAcquisitionPublicationOwned()') < gr,
+    'the guard precedes the graph-replaced demotion');
+
+  // Reset boundaries are classified, not string-whitelisted at call sites.
+  const resets = extractConstBlock(CORE0_SOURCE, 'CHAT_ATLAS_ACQUISITION_RESET_REASONS');
+  for (const r of ['route-changed', 'authority-reset', 'canonical-fingerprint-changed',
+    'identity-graph-refetch-scope-drift']) {
+    ok(resets.includes(r), `${r} is a genuine reset boundary`);
+  }
+  for (const r of ['trusted-intent-unavailable', 'trusted-intent-expired',
+    'trusted-intent-superseded']) {
+    ok(!resets.includes(r), `${r} is ordinary lifecycle cleanup, not a reset`);
+  }
+
+  // The compensating restores are gone: prevention, not repair.
+  const hold = extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathHoldPublished');
+  ok(!hold.includes("status = 'proven'"), 'the hold no longer restores status');
+  const install = extractFunction(CORE0_SOURCE, 'chatAtlasInstallSelectedPathOverlay');
+  ok(!install.includes("selectedPathAcquisitionState.status = 'proven'"),
+    'restore-on-publish is removed');
+});
+
+await fixture('stage-2c B: an unpublished selection keeps the not-changed failure', () => {
+  const f = truthWorld({ txState: 'pending', txToken: 't1', acqToken: 't1', acqStatus: 'proven' });
+  equal(f('t1'), false, 'a pending transaction is not a completed selection');
+  const g = truthWorld({ txState: null, txToken: '', acqToken: '', acqStatus: 'inactive' });
+  equal(g('t1'), false, 'no transaction at all is never treated as published');
+});
+
+await fixture('stage-2c C: stale or ambiguous publication still fails closed', () => {
+  const base = { txState: 'published', txToken: 't1', acqToken: 't1', acqStatus: 'failed' };
+  equal(truthWorld(base)('t1'), true, 'a real published decision holds even from a demoted record');
+  equal(truthWorld({ ...base, published: false })('t1'), false, 'an unpublished decision proves nothing');
+  equal(truthWorld({ ...base, published: null })('t1'), false, 'a missing decision proves nothing');
+  equal(truthWorld({ ...base, acceptedCount: 0 })('t1'), false, 'an empty accepted path proves nothing');
+  equal(truthWorld({ ...base, acceptedFingerprint: '' })('t1'), false, 'no accepted fingerprint, no proof');
+  equal(truthWorld({ ...base, txState: 'pending' })('t1'), false, 'a pending transaction is not complete');
+  equal(truthWorld({ ...base, txState: 'fail-closed' })('t1'), false, 'a fail-closed transaction is never complete');
+  equal(truthWorld({ ...base, txToken: 'other' })('t1'), false, 'a transaction for another token proves nothing');
+  equal(truthWorld({ ...base, acqToken: 'other' })('t1'), false, 'an acquisition bound elsewhere proves nothing');
+  equal(truthWorld({ ...base, graphChat: null })('t1'), false, 'no retained graph, no proof');
+  equal(truthWorld({ ...base, graphChat: 'other' })('t1'), false, 'a graph from another chat is out of scope');
+  equal(truthWorld({ ...base, graphGeneration: 2 })('t1'), false, 'a graph from another generation is stale');
+  equal(truthWorld(base)(''), false, 'an empty token never matches');
+});
+
+await fixture('stage-2c D: intent expiry does not rewrite a completed selection', () => {
+  const body = extractFunction(CORE0_SOURCE, 'chatAtlasCurrentTrustedNativeBranchSelection');
+  ok(body.includes('&& !chatAtlasSelectedPathPublishedForToken(intent.token)'),
+    'expiry clears the acquisition only when the selection did not publish');
+  const guarded = body.indexOf("&& !chatAtlasSelectedPathPublishedForToken(intent.token)");
+  const guardedClear = body.indexOf('chatAtlasClearSelectedPathAcquisition', guarded);
+  ok(guarded >= 0 && guardedClear > guarded,
+    'the expiry clear is inside the guarded branch, not before it');
+  ok(body.slice(guarded, guardedClear).indexOf('}') < 0,
+    'no block closes between the guard and the clear it protects');
+  ok(body.includes('completeTurnIndexAuthorityState.trustedSelectedPathIntent = null'),
+    'the INTENT is still retired on expiry');
+});
+
+await fixture('stage-2c E: route reset still clears acquisition normally', () => {
+  const reset = extractFunction(CORE0_SOURCE, 'chatAtlasResetCompleteIndexRoute');
+  ok(reset.length > 0, 'the route reset path is intact');
+  const clear = extractFunction(CORE0_SOURCE, 'chatAtlasClearSelectedPathAcquisition');
+  ok(!clear.includes('chatAtlasSelectedPathPublishedForToken'),
+    'the clear primitive itself is unguarded, so resets still work');
+});
+
+
+// ── Stage 2C — selectedPathFail transaction-lifecycle guard ───────────────
+// The real chatAtlasSelectedPathFail body is executed against a sandbox that
+// models only what the guard reads, so the assertions are behavioural.
+function failWorld({ txState, txToken, acqToken = 't1' }) {
+  const acquisition = {
+    token: acqToken, status: 'proven', reason: 'selected-path-proven',
+    path: [1, 2, 3], proof: { ok: true }, anchorQId: 'q', anchorSelectedAId: 'a',
+    provenAt: 'ts', evaluatedLedgerVersion: 0,
+    lastPublicationDecision: null, graph: null,
+  };
+  const sandbox = {
+    completeTurnIndexAuthorityState: {
+      branchTransactionState: txState ? { state: txState, token: txToken } : null,
+      chatId: 'c', routeKey: '/c/c', generation: 1,
+    },
+    selectedPathAcquisitionState: acquisition,
+    chatAtlasLedgerState: { version: 7 },
+    chatAtlasBranchTransactionTrace: () => {},
+    chatAtlasCompleteIndexCode: (v, f) => String(v || f || ''),
+    chatAtlasCompleteIndexIdentity: (v) => String(v || '').trim(),
+    getSelectedPathAcquisitionStatus: () => ({
+      status: acquisition.status, reason: acquisition.reason,
+      pathLength: Array.isArray(acquisition.path) ? acquisition.path.length : 0,
+    }),
+    chatAtlasSelectedPathPublishedForToken: () => false,
+    chatAtlasAcquisitionPublicationOwned: () => false,
+    String, Number, Object, Array,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(
+    extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathFail')
+    + '\nglobalThis.__fail = chatAtlasSelectedPathFail;',
+  ).runInContext(sandbox);
+  return { fail: sandbox.__fail, acquisition };
+}
+
+await fixture('stage-2c F: a pending transaction blocks only the post-switch artefact', () => {
+  const w = failWorld({ txState: 'pending', txToken: 't1' });
+  const out = w.fail('selected-answer-not-changed', { token: 't1', qId: 'q' }, 'a');
+  equal(w.acquisition.status, 'proven', 'selected-answer-not-changed leaves status untouched');
+  equal(w.acquisition.path.length, 3, 'and leaves path intact');
+  ok(w.acquisition.proof, 'and leaves proof intact');
+  equal(out.status, 'proven', 'the caller sees the unchanged record');
+
+  // CV-3.8 containment: genuine derivation failures must still be recorded
+  // while the transaction is pending, or a 20/21 hybrid could settle.
+  for (const reason of ['anchor-not-in-graph', 'fork-unresolved',
+    'descent-variant-ambiguous', 'proof-ownership-invalid']) {
+    const g = failWorld({ txState: 'pending', txToken: 't1' });
+    g.fail(reason, { token: 't1', qId: 'q' }, 'a');
+    equal(g.acquisition.status, 'failed', `${reason} is still recorded while pending`);
+    equal(g.acquisition.path, null, `${reason} still clears path`);
+  }
+
+  // A published transaction alone is NOT evidence — ownership decides.
+  const pub = failWorld({ txState: 'published', txToken: 't1' });
+  pub.fail('selected-answer-not-changed', { token: 't1', qId: 'q' }, 'a');
+  equal(pub.acquisition.status, 'failed',
+    'published alone does not suppress; publication ownership does');
+});
+
+await fixture('stage-2c G: a legitimate failure is never suppressed', () => {
+  const cases = [
+    ['fail-closed transaction', { txState: 'fail-closed', txToken: 't1' }],
+    ['wrong-token transaction', { txState: 'pending', txToken: 'other' }],
+    ['no transaction at all', { txState: null, txToken: '' }],
+  ];
+  for (const [label, opts] of cases) {
+    const w = failWorld(opts);
+    w.fail('selected-answer-not-changed', { token: 't1', qId: 'q' }, 'a');
+    equal(w.acquisition.status, 'failed', `${label}: the failure still lands`);
+    equal(w.acquisition.path, null, `${label}: path is cleared as before`);
+    equal(w.acquisition.proof, null, `${label}: proof is cleared as before`);
+  }
+});
+
+await fixture('stage-2c H: the guard asserts nothing about success', () => {
+  const body = extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathFail');
+  const at = body.indexOf("transaction.state === 'pending'");
+  ok(at >= 0, 'the transaction-lifecycle guard exists');
+  const before = body.slice(0, body.indexOf('return getSelectedPathAcquisitionStatus();', at));
+  const code = before.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  for (const forbidden of ["status = 'proven'", 'lastPublicationDecision =',
+    'setTimeout(', 'schedule(', 'Schedule(']) {
+    ok(!code.includes(forbidden), `the guard never uses ${forbidden}`);
+  }
+  ok(body.indexOf("status = 'failed'") > at, 'the guard precedes every mutation');
 });
 
 const failed = fixtures.filter((f) => !f.ok);
