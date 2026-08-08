@@ -107,8 +107,15 @@ const P3C_INTEGRATION_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
-const EXPECTED_SCOPE = 16;
-const EXPECTED_RUNTIME = 130;
+// P3C-C1 live-anchor repair. Production activation is now genuinely exercised, so the
+// accepted final-integration commit is the base for a validator-only change that proves
+// non-mutation of the real canonical anchor instead of asserting its absence.
+const ACCEPTED_P3C_INTEGRATION_HEAD = "8b82c85666e4a3be2307316d7b342ed3388065ef";
+const P3C_LIVE_ANCHOR_AUTHORIZED_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const P3C_LIVE_ANCHOR_SUBJECT =
+  "test(publish): prove the payload validator never mutates the live canonical anchor";
+const EXPECTED_SCOPE = 19;
+const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
 const scopeResults = [];
@@ -167,6 +174,66 @@ function normalized(target) {
 function sha256Bytes(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
+
+/* --------------------------------------------------------------------- *
+ * Real canonical delivery anchor — non-mutation authority
+ *
+ * The landed activation architecture is now genuinely exercised in production, so
+ * this anchor may legitimately exist and carry activation intents, transaction
+ * sequence records and activation receipts. That evidence is audit material: this
+ * validator must never create, remove or alter any of it. The invariant is therefore
+ * NOT "the anchor is absent" but "whatever the anchor was before this suite ran, it
+ * is byte-for-byte the same afterwards".
+ * --------------------------------------------------------------------- */
+
+const REAL_CANONICAL_ANCHOR =
+  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery";
+
+/**
+ * Deterministic read-only manifest of a canonical delivery anchor, sufficient to detect
+ * any mutation. Absence is a first-class stable state rather than a failure. Entries are
+ * sorted by path so filesystem enumeration order cannot alter the result. Only
+ * content-bearing metadata is captured — directory and file timestamps are deliberately
+ * excluded because they would produce false positives without adding any
+ * mutation-detection value.
+ */
+function snapshotCanonicalAnchor(anchorRoot = REAL_CANONICAL_ANCHOR) {
+  if (!fs.existsSync(anchorRoot)) return Object.freeze({ exists: false, entries: [] });
+  const entries = [];
+  const walk = (directory) => {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const absolute = path.join(directory, name);
+      const relative = path.relative(anchorRoot, absolute).split(path.sep).join("/");
+      const stat = fs.lstatSync(absolute);
+      if (stat.isSymbolicLink()) {
+        entries.push({ path: relative, type: "symlink", target: fs.readlinkSync(absolute) });
+        continue;
+      }
+      if (stat.isDirectory()) {
+        entries.push({ path: relative, type: "directory" });
+        walk(absolute);
+        continue;
+      }
+      entries.push({
+        path: relative,
+        type: "file",
+        bytes: stat.size,
+        sha256: sha256Bytes(fs.readFileSync(absolute)),
+      });
+    }
+  };
+  walk(anchorRoot);
+  entries.sort((left, right) => left.path.localeCompare(right.path, "en"));
+  return Object.freeze({ exists: true, entries });
+}
+
+function canonicalAnchorDigest(snapshot) {
+  return sha256Bytes(JSON.stringify({ exists: snapshot.exists, entries: snapshot.entries }));
+}
+
+// Captured at module load, before any fixture is created, so the post-suite comparison
+// proves this validator left real production activation evidence untouched.
+const REAL_ANCHOR_BASELINE = snapshotCanonicalAnchor();
 
 /* --------------------------------------------------------------------- *
  * Scope model — the same four authorized paths as the activator validator
@@ -373,6 +440,25 @@ function classifyPayloadScope(state) {
     value.subject === P3C_INTEGRATION_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_INTEGRATION_AUTHORIZED_PATHS);
   if (p3cIntegrationClean) return "p3c-integration-committed";
+  // P3C-C1 live-anchor repair: exactly the payload validator, on the accepted
+  // final-integration head. Nothing staged, nothing untracked, no production source and
+  // no descendant allowance. The committed counterpart pins the exact repair subject so
+  // the classifier does not go red the moment the repair lands.
+  const p3cLiveAnchorBase = value.head === ACCEPTED_P3C_INTEGRATION_HEAD &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (p3cLiveAnchorBase &&
+      JSON.stringify(value.modifiedTracked) ===
+        JSON.stringify([...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS])) {
+    return "p3c-live-anchor-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.staged.length === 0 &&
+      value.parent === ACCEPTED_P3C_INTEGRATION_HEAD &&
+      value.subject === P3C_LIVE_ANCHOR_SUBJECT &&
+      JSON.stringify(value.committedPaths) ===
+        JSON.stringify([...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS])) {
+    return "p3c-live-anchor-committed";
+  }
   throw new Error("P3A source scope mismatch");
 }
 
@@ -540,6 +626,51 @@ function runScopeTests() {
       assert.throws(() => classifyPayloadScope(baseScope({
         head: "future-p3c-a1", parent: INTEGRATED_P3B_HEAD, subject: P3C_A1_SUBJECT,
         modifiedTracked: [], untracked: [], committedPaths: [...P3C_A1_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
+  scopeTest("exact one-path P3C-C1 live-anchor dirty state is accepted", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: ACCEPTED_P3C_INTEGRATION_HEAD, parent: P3C_INTEGRATION_MERGE_HEAD,
+      subject: P3C_INTEGRATION_SUBJECT,
+      modifiedTracked: [...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS], untracked: [],
+      committedPaths: [...P3C_INTEGRATION_AUTHORIZED_PATHS],
+    })), "p3c-live-anchor-uncommitted");
+  });
+  scopeTest("P3C-C1 live-anchor scope rejects production source, extra, staged or untracked paths", () => {
+    for (const override of [
+      { modifiedTracked: [PAYLOAD_MODULE_REL] },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, PAYLOAD_MODULE_REL].sort() },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, ACTIVATOR_REL].sort() },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, PACKAGE_REL].sort() },
+      { untracked: ["stray.mjs"] },
+      { staged: [PAYLOAD_VALIDATOR_REL] },
+      { head: P3C_INTEGRATION_MERGE_HEAD },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: ACCEPTED_P3C_INTEGRATION_HEAD, parent: P3C_INTEGRATION_MERGE_HEAD,
+        subject: P3C_INTEGRATION_SUBJECT,
+        modifiedTracked: [...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS], untracked: [],
+        committedPaths: [...P3C_INTEGRATION_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+  });
+  scopeTest("committed P3C-C1 live-anchor state pins parent, subject and the single path", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: "future-p3c-c1", parent: ACCEPTED_P3C_INTEGRATION_HEAD,
+      subject: P3C_LIVE_ANCHOR_SUBJECT,
+      modifiedTracked: [], untracked: [],
+      committedPaths: [...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS],
+    })), "p3c-live-anchor-committed");
+    for (const override of [
+      { parent: P3C_INTEGRATION_MERGE_HEAD },
+      { subject: P3C_INTEGRATION_SUBJECT },
+      { committedPaths: [PAYLOAD_VALIDATOR_REL, PAYLOAD_MODULE_REL].sort() },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: "future-p3c-c1", parent: ACCEPTED_P3C_INTEGRATION_HEAD,
+        subject: P3C_LIVE_ANCHOR_SUBJECT, modifiedTracked: [], untracked: [],
+        committedPaths: [...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS], ...override,
       })), /scope mismatch/u);
     }
   });
@@ -2453,10 +2584,83 @@ async function runRuntimeTests(api) {
   });
 
   await test("receipt publication touches no real canonical or anchor path", () => {
-    const realAnchor = "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery";
-    assert.equal(fs.existsSync(realAnchor), false, "the real canonical anchor must not exist");
+    // The production anchor may legitimately exist and hold activation audit evidence.
+    // Absence is no longer the invariant; non-mutation by this suite is.
+    const after = snapshotCanonicalAnchor();
+    assert.equal(after.exists, REAL_ANCHOR_BASELINE.exists,
+      "this suite must neither create nor remove the real canonical anchor");
+    assert.deepEqual(after.entries, REAL_ANCHOR_BASELINE.entries,
+      "this suite must not alter real canonical anchor contents");
+    assert.equal(canonicalAnchorDigest(after), canonicalAnchorDigest(REAL_ANCHOR_BASELINE));
     assert.equal(temporaryRoots.every((root) =>
       normalized(root).startsWith(normalized(os.tmpdir()))), true);
+    // No fixture root may be, or contain, the real anchor.
+    const real = normalized(REAL_CANONICAL_ANCHOR);
+    for (const root of temporaryRoots) {
+      assert.equal(real === normalized(root), false);
+      assert.equal(real.startsWith(`${normalized(root)}${path.sep}`), false);
+    }
+  });
+
+  await test("anchor snapshot of an absent path is deterministic and empty", () => {
+    const absent = path.join(tempRoot("anchor-absent"), ".h2o-canonical-delivery");
+    const first = snapshotCanonicalAnchor(absent);
+    const second = snapshotCanonicalAnchor(absent);
+    assert.equal(first.exists, false);
+    assert.deepEqual(first.entries, []);
+    assert.deepEqual(second, first);
+    assert.equal(canonicalAnchorDigest(first), canonicalAnchorDigest(second));
+  });
+
+  await test("anchor snapshot detects an added file and changed regular-file bytes", () => {
+    const anchor = path.join(tempRoot("anchor-mutate"), ".h2o-canonical-delivery");
+    fs.mkdirSync(path.join(anchor, "activations"), { recursive: true });
+    const record = path.join(anchor, "activations", "sample.json");
+    fs.writeFileSync(record, "{\"activationId\":\"sample\"}\n");
+    const baseline = snapshotCanonicalAnchor(anchor);
+    assert.equal(baseline.exists, true);
+    assert.equal(baseline.entries.some((entry) => entry.path === "activations/sample.json"), true);
+
+    const added = path.join(anchor, "activations", "added.json");
+    fs.writeFileSync(added, "{}\n");
+    assert.notEqual(canonicalAnchorDigest(snapshotCanonicalAnchor(anchor)),
+      canonicalAnchorDigest(baseline), "an added file must change the snapshot");
+    fs.rmSync(added);
+    assert.deepEqual(snapshotCanonicalAnchor(anchor).entries, baseline.entries,
+      "removing the addition must restore the original snapshot");
+
+    fs.writeFileSync(record, "{\"activationId\":\"sample-mutated\"}\n");
+    assert.notEqual(canonicalAnchorDigest(snapshotCanonicalAnchor(anchor)),
+      canonicalAnchorDigest(baseline), "changed regular-file bytes must change the snapshot");
+  });
+
+  await test("anchor snapshot ordering is independent of filesystem enumeration order", () => {
+    const names = ["seq-000002.json", "seq-000001.json", "seq-000010.json"];
+    const build = (label, order) => {
+      const anchor = path.join(tempRoot(label), ".h2o-canonical-delivery");
+      fs.mkdirSync(path.join(anchor, "transactions"), { recursive: true });
+      for (const name of order) {
+        fs.writeFileSync(path.join(anchor, "transactions", name), `{"n":"${name}"}\n`);
+      }
+      return anchor;
+    };
+    const forward = snapshotCanonicalAnchor(build("anchor-order-a", names));
+    const reverse = snapshotCanonicalAnchor(build("anchor-order-b", [...names].reverse()));
+    assert.deepEqual(forward.entries, reverse.entries);
+    assert.equal(canonicalAnchorDigest(forward), canonicalAnchorDigest(reverse));
+    assert.deepEqual(forward.entries.map((entry) => entry.path),
+      [...forward.entries.map((entry) => entry.path)].sort((a, b) => a.localeCompare(b, "en")));
+  });
+
+  await test("the production anchor is never a task-owned disposable fixture root", () => {
+    assert.equal(temporaryRoots.length > 0, true, "fixture roots must exist for this proof to bite");
+    const real = normalized(REAL_CANONICAL_ANCHOR);
+    assert.equal(real.startsWith(`${normalized(os.tmpdir())}${path.sep}`), false,
+      "the production anchor must never resolve under the task temporary root");
+    for (const root of temporaryRoots) {
+      assert.equal(real === normalized(root), false);
+      assert.equal(real.startsWith(`${normalized(root)}${path.sep}`), false);
+    }
   });
 }
 
