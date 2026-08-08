@@ -17,7 +17,15 @@ const BASE = '14bacca24c2cf67ac333434fa26b457bbfc9adec';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const PAGINATION_SOURCE = fs.readFileSync(path.join(ROOT, PAGINATION_PATH), 'utf8');
 const UNMOUNT_SOURCE = fs.readFileSync(path.join(ROOT, UNMOUNT_PATH), 'utf8');
-const DIVIDER_SOURCE = fs.readFileSync(path.join(ROOT, DIVIDER_PATH), 'utf8');
+// The chat page's structural implementation moved out of MiniMap Core into
+// 0C3a Chat Page Structure Engine, so the MiniMap source read here is that
+// file plus the engine the code now lives in. No assertion below is altered:
+// positive checks and by-name function extraction still find the code, and
+// negative checks get strictly stronger, because a forbidden pattern must now
+// be absent from both files instead of from MiniMap Core alone.
+const STRUCTURE_PATH = 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js';
+const STRUCTURE_SOURCE = fs.readFileSync(path.join(ROOT, STRUCTURE_PATH), 'utf8');
+const DIVIDER_SOURCE = `${fs.readFileSync(path.join(ROOT, DIVIDER_PATH), 'utf8')}\n${STRUCTURE_SOURCE}`;
 
 const fixtures = [];
 let assertionCount = 0;

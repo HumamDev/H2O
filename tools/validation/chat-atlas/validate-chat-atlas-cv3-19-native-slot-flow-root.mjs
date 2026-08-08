@@ -10,7 +10,15 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const PAGE_PATH = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js';
 const CORE_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
-const CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The chat page's structural implementation moved out of MiniMap Core into
+// 0C3a Chat Page Structure Engine, so the MiniMap source read here is that
+// file plus the engine the code now lives in. No assertion below is altered:
+// positive checks and by-name function extraction still find the code, and
+// negative checks get strictly stronger, because a forbidden pattern must now
+// be absent from both files instead of from MiniMap Core alone.
+const STRUCTURE_PATH = 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js';
+const STRUCTURE_SOURCE = fs.readFileSync(path.join(ROOT, STRUCTURE_PATH), 'utf8');
+const CORE_SOURCE = `${fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8')}\n${STRUCTURE_SOURCE}`;
 const BASE_PAGE_SOURCE = fs.readFileSync(path.join(
   '/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/worktrees',
   'h2o-cp-native-turn-slot-collapse-806501b6-20260729T211749Z',

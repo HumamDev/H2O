@@ -499,9 +499,15 @@ await fixture('15 title-stack rows keep their Pages-Controller-owned ordinal', (
 // question among the ~19 MOUNTED user sections of a 39-turn branch.
 const MM_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const MM_SOURCE = fs.readFileSync(path.join(ROOT, MM_PATH), 'utf8');
+// ensureNoAnswerTitleBar and its display-number helper moved out of MiniMap
+// Core into 0C3a Chat Page Structure Engine. The assertions below are
+// unchanged; only the file the production text is read from follows the code.
+const MM_STRUCTURE_PATH = 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js';
+const MM_STRUCTURE_SOURCE = fs.readFileSync(path.join(ROOT, MM_STRUCTURE_PATH), 'utf8');
 
 function fnDeclaration(source, name) {
   const token = `  function ${name}(`;
+  if (source.indexOf(token) < 0 && MM_STRUCTURE_SOURCE.indexOf(token) >= 0) source = MM_STRUCTURE_SOURCE;
   const start = source.indexOf(token);
   if (start < 0) throw new Error(`production-function-missing:${name}`);
   const brace = source.indexOf('{', source.indexOf(')', start));

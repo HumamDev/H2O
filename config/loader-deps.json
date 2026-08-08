@@ -2168,6 +2168,22 @@
       "provides": [],
       "critical": false,
       "optionalDependsOn": []
+    },
+    "0C3a._Chat_Page_Structure_Engine_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0C1a._Pagination_Windowing_Engine_.js",
+        "0C1b._Pagination_Windowing_(Chat_Adapter)_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chat.page.structure"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
     }
   }
 }

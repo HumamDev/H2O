@@ -33,7 +33,16 @@ const CORE_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js
 const PAGE_PATH = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js';
 const TITLE_PATH = 'src-runtime-base/1C1a.🟥📛 Turn Title Bar 📛.js';
 const SKIN_PATH = 'src-runtime-base/1A1e.🟥🗺️ MiniMap Skin 🖐🗺️.js';
-const CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The chat page's structural implementation moved out of MiniMap Core into
+// 0C3a Chat Page Structure Engine. This validator asserts on that
+// implementation, so CORE_SOURCE is the MiniMap Core file plus the engine it
+// now lives in. Nothing about what is asserted changes: positive checks and
+// function extraction still find the code, and the negative checks below get
+// strictly stronger, since the forbidden pattern must now be absent from both
+// files rather than from MiniMap Core alone.
+const STRUCTURE_PATH = 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js';
+const STRUCTURE_SOURCE = fs.readFileSync(path.join(ROOT, STRUCTURE_PATH), 'utf8');
+const CORE_SOURCE = `${fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8')}\n${STRUCTURE_SOURCE}`;
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const TITLE_SOURCE = fs.readFileSync(path.join(ROOT, TITLE_PATH), 'utf8');
 const SKIN_SOURCE = fs.readFileSync(path.join(ROOT, SKIN_PATH), 'utf8');
