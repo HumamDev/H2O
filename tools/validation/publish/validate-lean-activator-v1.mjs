@@ -123,6 +123,14 @@ const P3C_INTEGRATION_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
+// Current-main activator baseline. Protected publication authority remained
+// unchanged while main advanced through later non-publish repository work.
+// This fresh port intentionally pins that current authority and authorizes
+// exactly one narrow phase: this validator alone, on the current main head.
+const ACCEPTED_CURRENT_MAIN_HEAD = "81ea28259c1399b92214f76f8ac43f44bfdaee4b";
+const CURRENT_BASELINE_AUTHORIZED_PATHS = Object.freeze([VALIDATOR_REL]);
+const CURRENT_BASELINE_SUBJECT =
+  "test(publish): authorize current-main activator baseline after live-anchor repairs";
 // Batch 1.1 publisher authority at the IMMUTABLE BASE_HEAD. These never move.
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
@@ -138,8 +146,8 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 55;
-const EXPECTED_RUNTIME = 220;
+const EXPECTED_SCOPE = 58;
+const EXPECTED_RUNTIME = 222;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
@@ -177,6 +185,8 @@ const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
 ].sort());
 
 const temporaryRoots = [];
+const TEMPORARY_ROOT_CLEANUP_MAX_RETRIES = 3;
+const TEMPORARY_ROOT_CLEANUP_RETRY_DELAY_MS = 50;
 const scopeResults = [];
 const runtimeResults = [];
 const structuralResults = [];
@@ -187,16 +197,21 @@ function tempRoot(label) {
   return root;
 }
 
-function disposeTemporaryRoot(root) {
+function disposeTemporaryRoot(root, { remove = fs.rmSync } = {}) {
   const stat = fs.lstatSync(root);
   const resolvedRoot = fs.realpathSync(root);
   const resolvedTemporary = fs.realpathSync(os.tmpdir());
   if (stat.isSymbolicLink() || !resolvedRoot.startsWith(resolvedTemporary + path.sep)) {
     throw new Error(`refusing to dispose non-owned fixture root: ${root}`);
   }
+  remove(root, {
+    recursive: true,
+    force: true,
+    maxRetries: TEMPORARY_ROOT_CLEANUP_MAX_RETRIES,
+    retryDelay: TEMPORARY_ROOT_CLEANUP_RETRY_DELAY_MS,
+  });
   const index = temporaryRoots.lastIndexOf(root);
   if (index >= 0) temporaryRoots.splice(index, 1);
-  fs.rmSync(root, { recursive: true, force: true });
 }
 
 function git(repository, args, { allowFailure = false } = {}) {
@@ -236,6 +251,26 @@ function normalizedGuardPath(target) {
   }
   const base = fs.existsSync(cursor) ? fs.realpathSync.native(cursor) : cursor;
   return path.resolve(base, ...suffix);
+}
+
+function alternateDarwinPathSpelling(value) {
+  const originalPath = String(value);
+  const aliases = [
+    ["/private/var/", "/var/"],
+    ["/var/", "/private/var/"],
+    ["/private/tmp/", "/tmp/"],
+    ["/tmp/", "/private/tmp/"],
+  ];
+  for (const [from, to] of aliases) {
+    if (originalPath.startsWith(from)) return `${to}${originalPath.slice(from.length)}`;
+  }
+  const error = new Error("path-spelling-alternate-unavailable");
+  error.code = "path-spelling-alternate-unavailable";
+  error.details = {
+    originalPath,
+    checkedAliasRoots: aliases.flat(),
+  };
+  throw error;
 }
 
 function sameOrWithin(root, candidate) {
@@ -562,6 +597,27 @@ function classifyScope(state) {
     value.subject === P3C_INTEGRATION_SUBJECT &&
     JSON.stringify(value.committedPaths) === JSON.stringify(P3C_INTEGRATION_AUTHORIZED_PATHS);
   if (p3cIntegrationClean) return "p3c-integration-committed";
+  // Current-main activator baseline repair. Exactly this validator, on the accepted
+  // current-main head, with every authorized path present. Nothing staged, nothing
+  // untracked, no production source and no descendant allowance. The committed
+  // counterpart is required because "committed-clean" above is pinned to the far older
+  // ACCEPTED_P1_HEAD, so it can never describe a commit made on this head.
+  const currentBaselineBase = value.head === ACCEPTED_CURRENT_MAIN_HEAD &&
+    value.untracked.length === 0 && value.staged.length === 0 &&
+    JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
+  if (currentBaselineBase &&
+      JSON.stringify(value.modifiedTracked) ===
+        JSON.stringify([...CURRENT_BASELINE_AUTHORIZED_PATHS])) {
+    return "current-baseline-uncommitted";
+  }
+  const currentBaselineClean = value.modifiedTracked.length === 0 &&
+    value.untracked.length === 0 && value.staged.length === 0 &&
+    value.parent === ACCEPTED_CURRENT_MAIN_HEAD &&
+    value.subject === CURRENT_BASELINE_SUBJECT &&
+    JSON.stringify(value.committedPaths) ===
+      JSON.stringify([...CURRENT_BASELINE_AUTHORIZED_PATHS]) &&
+    JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
+  if (currentBaselineClean) return "current-baseline-committed";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -1054,6 +1110,60 @@ function runScopeTests() {
       committedPaths: [...P23_AUTHORIZED_PATHS],
     })), /scope mismatch/u);
   });
+  scopeTest("exact one-path current-main baseline scope is accepted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: ACCEPTED_CURRENT_MAIN_HEAD, parent: "287b7604d9ccefe38651a3badcc6514af679617d",
+      subject: "test(publish): prove writer enforcement never mutates the live canonical anchor",
+      acceptedP1Ancestor: true,
+      modifiedTracked: [...CURRENT_BASELINE_AUTHORIZED_PATHS], untracked: [],
+      finalPaths: [...AUTHORIZED_PATHS],
+      committedPaths: ["tools/validation/publish/validate-canonical-writer-enforcement-v1.mjs"],
+    })), "current-baseline-uncommitted");
+  });
+  scopeTest("current-main baseline rejects production, extra, staged, untracked or missing paths", () => {
+    for (const override of [
+      { modifiedTracked: [ACTIVATOR_REL] },
+      { modifiedTracked: [VALIDATOR_REL, ACTIVATOR_REL].sort() },
+      { modifiedTracked: [VALIDATOR_REL, PACKAGE_REL].sort() },
+      { modifiedTracked: [] },
+      { staged: [VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { finalPaths: [PACKAGE_REL, VALIDATOR_REL].sort() },
+      { head: "287b7604d9ccefe38651a3badcc6514af679617d" },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: ACCEPTED_CURRENT_MAIN_HEAD, parent: "287b7604d9ccefe38651a3badcc6514af679617d",
+        subject: "test(publish): prove writer enforcement never mutates the live canonical anchor",
+        acceptedP1Ancestor: true,
+        modifiedTracked: [...CURRENT_BASELINE_AUTHORIZED_PATHS], untracked: [],
+        finalPaths: [...AUTHORIZED_PATHS],
+        committedPaths: ["tools/validation/publish/validate-canonical-writer-enforcement-v1.mjs"],
+        ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+  });
+  scopeTest("committed current-main baseline pins parent, subject and the single path", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: "future-current-baseline", parent: ACCEPTED_CURRENT_MAIN_HEAD,
+      subject: CURRENT_BASELINE_SUBJECT, acceptedP1Ancestor: true,
+      modifiedTracked: [], untracked: [], finalPaths: [...AUTHORIZED_PATHS],
+      committedPaths: [...CURRENT_BASELINE_AUTHORIZED_PATHS],
+    })), "current-baseline-committed");
+    for (const override of [
+      { parent: "287b7604d9ccefe38651a3badcc6514af679617d" },
+      { subject: P3C_INTEGRATION_SUBJECT },
+      { committedPaths: [VALIDATOR_REL, ACTIVATOR_REL].sort() },
+      { committedPaths: [ACTIVATOR_REL] },
+      { finalPaths: [PACKAGE_REL, VALIDATOR_REL].sort() },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: "future-current-baseline", parent: ACCEPTED_CURRENT_MAIN_HEAD,
+        subject: CURRENT_BASELINE_SUBJECT, acceptedP1Ancestor: true,
+        modifiedTracked: [], untracked: [], finalPaths: [...AUTHORIZED_PATHS],
+        committedPaths: [...CURRENT_BASELINE_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
   scopeTest("exact committed four-path P3A state is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: "future-p3a", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
@@ -1116,7 +1226,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-a3b-uncommitted", "p3c-a3b-committed",
     "p3c-main-sync-uncommitted", "p3c-main-sync-committed",
     "p3c-final-sync-uncommitted", "p3c-final-sync-committed",
-    "p3c-integration-uncommitted", "p3c-integration-committed"]
+    "p3c-integration-uncommitted", "p3c-integration-committed",
+    "current-baseline-uncommitted", "current-baseline-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1552,6 +1663,56 @@ function writeLock(lockDirectory, value) {
 }
 
 async function runAuthorityModelTests() {
+  await test("temporary-root cleanup is bounded, task-owned and failure-preserving", () => {
+    const empty = tempRoot("cleanup-empty");
+    disposeTemporaryRoot(empty);
+    assert.equal(fs.existsSync(empty), false);
+
+    const nested = tempRoot("cleanup-nested");
+    fs.mkdirSync(path.join(nested, "one", "two"), { recursive: true });
+    fs.writeFileSync(path.join(nested, "one", "two", "fixture.txt"), "fixture\n");
+    disposeTemporaryRoot(nested);
+    assert.equal(fs.existsSync(nested), false);
+
+    const metadata = tempRoot("cleanup-ds-store");
+    fs.writeFileSync(path.join(metadata, ".DS_Store"), "static fixture metadata\n");
+    disposeTemporaryRoot(metadata);
+    assert.equal(fs.existsSync(metadata), false);
+
+    const symlinkTarget = tempRoot("cleanup-symlink-target");
+    fs.writeFileSync(path.join(symlinkTarget, "preserved.txt"), "preserved\n");
+    const symlinkFixture = tempRoot("cleanup-symlink-fixture");
+    fs.symlinkSync(symlinkTarget, path.join(symlinkFixture, "external-link"));
+    disposeTemporaryRoot(symlinkFixture);
+    assert.equal(fs.existsSync(symlinkFixture), false);
+    assert.equal(fs.readFileSync(path.join(symlinkTarget, "preserved.txt"), "utf8"), "preserved\n");
+    disposeTemporaryRoot(symlinkTarget);
+
+    let unauthorizedRemovalCalled = false;
+    assert.throws(() => disposeTemporaryRoot(ROOT, {
+      remove: () => { unauthorizedRemovalCalled = true; },
+    }), /refusing to dispose non-owned fixture root/u);
+    assert.equal(unauthorizedRemovalCalled, false);
+
+    const persistent = tempRoot("cleanup-persistent-failure");
+    fs.writeFileSync(path.join(persistent, "residue.txt"), "persistent fixture residue\n");
+    const persistentError = Object.assign(new Error("injected persistent cleanup failure"), {
+      code: "ENOTEMPTY",
+    });
+    let observedOptions = null;
+    assert.throws(() => disposeTemporaryRoot(persistent, {
+      remove: (_root, options) => {
+        observedOptions = options;
+        throw persistentError;
+      },
+    }), (error) => error === persistentError);
+    assert.deepEqual(observedOptions, {
+      recursive: true, force: true, maxRetries: 3, retryDelay: 50,
+    });
+    assert.equal(fs.existsSync(persistent), true);
+    assert.equal(temporaryRoots.includes(persistent), true);
+    disposeTemporaryRoot(persistent);
+  });
   await test("isolated accepted candidate may provision from main fixed at Batch 1.1", () => {
     assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
       mainHead: BASE_HEAD,
@@ -1561,6 +1722,33 @@ async function runAuthorityModelTests() {
   });
   await test("integrated main exactly at accepted P0/P1 is authorized", () => {
     assert.equal(evaluateRegisteredMainAuthority(authorityEvidence()), "integrated");
+  });
+  await test("current-main baseline scopes integrate narrowly without weakening main cleanliness", () => {
+    const currentBaselineEvidence = {
+      mainHead: ACCEPTED_CURRENT_MAIN_HEAD,
+      executionHead: ACCEPTED_CURRENT_MAIN_HEAD,
+      executionWorktree: "/fixture/current-baseline",
+    };
+    for (const executionScope of ["current-baseline-uncommitted", "current-baseline-committed"]) {
+      assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
+        ...currentBaselineEvidence, executionScope,
+      })), "integrated");
+    }
+    assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+      ...currentBaselineEvidence,
+      executionScope: "current-baseline-unknown",
+    })), (error) => error.code === "execution-scope-not-integrated-authority");
+    for (const [field, code] of [
+      ["mainTrackedClean", "registered-main-dirty"],
+      ["mainIndexEmpty", "registered-main-index-not-empty"],
+      ["mainUntrackedClean", "registered-main-untracked-source"],
+    ]) {
+      assert.throws(() => evaluateRegisteredMainAuthority(authorityEvidence({
+        ...currentBaselineEvidence,
+        executionScope: "current-baseline-uncommitted",
+        [field]: false,
+      })), (error) => error.code === code);
+    }
   });
   await test("clean exact validator-only descendant is authorized", () => {
     assert.equal(evaluateRegisteredMainAuthority(authorityEvidence({
@@ -1832,17 +2020,15 @@ async function runRuntimeTests(api) {
       assert.equal(result.status, 0,
         `real publisher receipt rejected: ${codeOf(result)} ${String(result.stderr).trim()}`);
       const payload = JSON.parse(result.stdout);
-      // Alias evidence for the SYNCHRONIZED tree. Main commit 34dbacc1
-      // ("retire(input-dock): archive obsolete keys rail") moved exactly one
-      // source out of src-runtime-base into retired-features and dropped its
-      // dev-order row, so every count falls by exactly one regular file:
-      // dev-order 246 -> 245, src-runtime-base 151 -> 150, aliases 155 -> 154.
-      // Symlinks are untouched at 5, which is what proves the drop is that one
-      // retirement and not a broken or partial alias build.
+      // Alias evidence measured from the CURRENT_BASE publisher fixture:
+      // src-runtime-base has 154 regular files (153 JavaScript sources),
+      // dev-order has 249 physical rows and 153 active entries, and loader-deps
+      // describes 153 scripts. The staged alias manifest therefore contains
+      // 153 regular files and the same 5 compatibility symlinks.
       assert.deepEqual(publishedReceipt.validatorResult.alias,
-        { aliasCount: 154, regularFileCount: 149, symlinkCount: 5 });
-      assert.equal(payload.stage.aliases.aliasCount, 154);
-      assert.equal(payload.stage.aliases.regularFileCount, 149);
+        { aliasCount: 158, regularFileCount: 153, symlinkCount: 5 });
+      assert.equal(payload.stage.aliases.aliasCount, 158);
+      assert.equal(payload.stage.aliases.regularFileCount, 153);
       assert.equal(payload.stage.aliases.symlinkCount, 5);
       assert.equal(fs.readFileSync(published.receiptPath).equals(receiptBefore), true);
       const stagedManifestsAfter = JSON.stringify(Object.fromEntries(
@@ -4033,13 +4219,21 @@ async function runP3cA2Tests() {
     const context = await createVerifiedActivation("spelling");
     // The fixture repository name already contains spaces and an emoji.
     assert.match(context.fixture.repository, /repository with spaces 🧪/u);
+    assert.equal(alternateDarwinPathSpelling("/private/var/example"), "/var/example");
+    assert.equal(alternateDarwinPathSpelling("/var/example"), "/private/var/example");
+    assert.equal(alternateDarwinPathSpelling("/private/tmp/example"), "/tmp/example");
+    assert.equal(alternateDarwinPathSpelling("/tmp/example"), "/private/tmp/example");
+    for (const unsupported of ["/private/tmp2/example", "/opt/example"]) {
+      assert.throws(() => alternateDarwinPathSpelling(unsupported),
+        (error) => error?.code === "path-spelling-alternate-unavailable" &&
+          error?.details?.originalPath === unsupported);
+    }
     const first = context.api.verifyCanonicalFromReceipt(context.receiptPath,
       { environment: cleanEnvironment() });
-    // /var and /private/var are equivalent spellings of the same receipt.
-    const alternate = context.receiptPath.startsWith("/private/var/")
-      ? context.receiptPath.replace("/private/var/", "/var/")
-      : context.receiptPath.replace(/^\/var\//u, "/private/var/");
+    // Darwin exposes both /var and /tmp through equivalent /private spellings.
+    const alternate = alternateDarwinPathSpelling(context.receiptPath);
     assert.notEqual(alternate, context.receiptPath);
+    assert.equal(fs.realpathSync.native(alternate), fs.realpathSync.native(context.receiptPath));
     const second = context.api.verifyCanonicalFromReceipt(alternate, { environment: cleanEnvironment() });
     assert.equal(second.verified, true);
     assert.equal(second.activationReceiptSha256, first.activationReceiptSha256);
