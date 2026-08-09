@@ -61,6 +61,14 @@ const H2O_CORE_AGGREGATE_SOURCES = [
 const CORE0_SOURCE = H2O_CORE_AGGREGATE_SOURCES
   .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
   .join('\n');
+// The central Chat Atlas authority — including everything this validator drives
+// through the broker — now lives in 0A3a. Binding-level extraction reads that
+// owner directly rather than the aggregate, so a same-named binding in another
+// owner can never be picked up by mistake.
+const ATLAS_CORE_SOURCE = fs.readFileSync(
+  path.join(ROOT, 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js'),
+  'utf8',
+);
 
 const CHAT_ID = 'chat-branch-transition';
 const ROUTE_KEY = '/c/chat-branch-transition';
@@ -95,6 +103,33 @@ function extractFunction(source, name) {
     else if (c === '}' && --d === 0) return source.slice(start, i + 1);
   }
   throw new Error(`function-boundary-invalid:${name}`);
+}
+
+// 0A3a declares its Ledger-service forwards as `const x = (...) => ...` rather
+// than function declarations, precisely so they cannot collide with the real
+// implementations under a `  function <name>(` scan. Extracting them needs its
+// own anchor: newline-anchored so a deeper-indented binding of the same name is
+// not mistaken for the module-level one, and terminated by `;` at depth 0.
+function extractBinding(source, name) {
+  const anchor = `\n  const ${name} = `;
+  const found = source.indexOf(anchor);
+  if (found < 0 || source.indexOf(anchor, found + anchor.length) >= 0) throw new Error(`binding-anchor-invalid:${name}`);
+  const start = found + 1;
+  let d = 0, q = '', esc = false, lc = false, bc = false;
+  for (let i = found + anchor.length; i < source.length; i += 1) {
+    const c = source[i], n = source[i + 1];
+    if (lc) { if (c === '\n') lc = false; continue; }
+    if (bc) { if (c === '*' && n === '/') { bc = false; i += 1; } continue; }
+    if (q) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === q) q = ''; continue; }
+    if (c === '/' && n === '/') { lc = true; i += 1; continue; }
+    if (c === '/' && n === '*') { bc = true; i += 1; continue; }
+    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+    if (c === '{' || c === '(' || c === '[') d += 1;
+    else if (c === '}' || c === ')' || c === ']') d -= 1;
+    else if (c === ';' && d === 0) return source.slice(start, i + 1);
+    if (d < 0) throw new Error(`binding-boundary-invalid:${name}`);
+  }
+  throw new Error(`binding-boundary-invalid:${name}`);
 }
 
 // ── DOM with real connection semantics ────────────────────────────────────
@@ -972,8 +1007,14 @@ await fixture('stage-2c items 1-2: effective-path identity is separate, guarded 
     '5183fc701d98db7d57c544b1dfd832545d8abe66465b36a2b7d655012db8fcb7',
     'pinned projection getter body is byte-identical to its accepted bytes');
 
-  // (2) exported on the public runtime api
-  ok(/\n\s{4}getChatAtlasEffectivePathIdentity,\n/.test(CORE0_SOURCE),
+  // (2) exported on the public runtime api. The accessor and its export both
+  // moved to 0A3a, which adopts H2O.turnRuntime through Object.assign(rt, {...}),
+  // so the export is a shorthand property at that block's indentation instead of
+  // H2O Core's old four-space list. The requirement is unchanged — the name must
+  // reach the public runtime surface — and scoping the match to the adoption
+  // block keeps it from passing on any incidental mention.
+  const rtAdoption = ATLAS_CORE_SOURCE.slice(ATLAS_CORE_SOURCE.indexOf('Object.assign(rt, {'));
+  ok(/\n\s+getChatAtlasEffectivePathIdentity,\n/.test(rtAdoption),
     'accessor is exported on the public api surface');
 
   // (4)(5) Run the REAL accessor body with controlled dependencies.
@@ -1258,17 +1299,18 @@ function failWorld({ txState, txToken, acqToken = 't1' }) {
     String, Number, Object, Array,
   };
   sandbox.globalThis = sandbox;
+  // chatAtlasSelectedPathFail is 0A3a-owned and reads the Ledger version through
+  // 0A3a's own service registry, so the whole resolution path is extracted from
+  // 0A3a and given the registry's backing store. No Ledger is registered here,
+  // which the registry reports as version 0 — exactly the state this fixture
+  // previously produced with an empty Ledger.
+  sandbox.services = Object.create(null);
   vm.createContext(sandbox);
-  // chatAtlasSelectedPathFail reads the Ledger version through the 0A3a broker
-  // now, so the real broker helpers are extracted alongside it. No Ledger is
-  // registered in this sandbox, which the broker reports as version 0 - exactly
-  // the state this fixture previously produced with an empty Ledger.
-  sandbox.W = sandbox;
-  sandbox.top = sandbox;
   new vm.Script(
-    extractFunction(CORE0_SOURCE, 'chatAtlasSelectedPathFail')
-    + '\n' + extractFunction(CORE0_SOURCE, 'chatAtlasCoreApi')
-    + '\n' + extractFunction(CORE0_SOURCE, 'chatAtlasCoreLedgerVersion')
+    extractFunction(ATLAS_CORE_SOURCE, 'chatAtlasSelectedPathFail')
+    + '\n' + extractFunction(ATLAS_CORE_SOURCE, 'getService')
+    + '\n' + ['LEDGER_SERVICE', 'ledger', 'getLedgerVersion', 'chatAtlasCoreLedgerVersion']
+      .map((n) => extractBinding(ATLAS_CORE_SOURCE, n)).join('\n')
     + '\nglobalThis.__fail = chatAtlasSelectedPathFail;',
   ).runInContext(sandbox);
   return { fail: sandbox.__fail, acquisition };

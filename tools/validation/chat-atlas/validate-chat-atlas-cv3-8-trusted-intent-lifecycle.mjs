@@ -128,7 +128,55 @@ function extractFunction(source, name) {
   throw new Error(`function-boundary-invalid:${name}`);
 }
 
-function instrumentCore(source) {
+// 0A3a deliberately declares its broker forwards as `const x = (...) => ...`
+// rather than function declarations, precisely so they cannot collide with the
+// real implementations under a `  function <name>(` scan. Extracting them needs
+// its own anchor: a single-statement const-arrow terminated by `;` at depth 0.
+function extractBinding(source, name) {
+  // Newline-anchored: a plain `  const x = ` is also a substring of a deeper
+  // `    const x = `, which would make a module-level binding read as ambiguous.
+  const anchor = `\n  const ${name} = `;
+  const found = source.indexOf(anchor);
+  if (found < 0 || source.indexOf(anchor, found + anchor.length) >= 0) {
+    throw new Error(`binding-anchor-invalid:${name}`);
+  }
+  const start = found + 1;
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  // `anchor` carries the leading newline, so the first character of the
+  // initialiser is at found + anchor.length, not start + anchor.length.
+  for (let index = found + anchor.length; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (lineComment) { if (char === '\n') lineComment = false; continue; }
+    if (blockComment) {
+      if (char === '*' && next === '/') { blockComment = false; index += 1; }
+      continue;
+    }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = '';
+      continue;
+    }
+    if (char === '/' && next === '/') { lineComment = true; index += 1; continue; }
+    if (char === '/' && next === '*') { blockComment = true; index += 1; continue; }
+    if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
+    if (char === '{' || char === '(' || char === '[') depth += 1;
+    else if (char === '}' || char === ')' || char === ']') depth -= 1;
+    else if (char === ';' && depth === 0) return source.slice(start, index + 1);
+    if (depth < 0) throw new Error(`binding-boundary-invalid:${name}`);
+  }
+  throw new Error(`binding-boundary-invalid:${name}`);
+}
+
+// The eleven load-bearing implementations must each exist exactly once across
+// the owners, whichever file each now lives in. This runs against the aggregate
+// corpus, so a duplicate introduced in ANY owner still fails it.
+function assertCoreAnchors(source) {
   const required = [
     'chatAtlasRecordTrustedNativeBranchSelection',
     'chatAtlasCurrentTrustedNativeBranchSelection',
@@ -147,12 +195,32 @@ function instrumentCore(source) {
       + count(source, `  async function ${name}(`);
     if (occurrences !== 1) throw new Error(`core-anchor-invalid:${name}:${occurrences}`);
   }
+}
+
+// Accepted-parent source only. There the Ledger and the whole central Chat Atlas
+// pipeline were still lexically inside 0A1a, so a single program carries both the
+// implementation and this fixture surface.
+function instrumentCore(source, options = {}) {
+  const exportsText = options.exportsText || coreExportsBlock('commitTurnDrafts');
+  if (options.assertAnchors !== false) assertCoreAnchors(source);
   const marker = '  /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */';
   const close = '\n})();';
   const markerIndex = source.indexOf(marker);
   const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
-  const exports = `
+  return `${source.slice(0, markerIndex)}${exportsText}${CORE_BOOTSTRAP_SUPPRESSED}${close}\n`;
+}
+
+const CORE_BOOTSTRAP_SUPPRESSED = '  globalThis.__CV38_CORE_BOOTSTRAP_SUPPRESSED__ = true;\n';
+
+// The fixture-facing surface, shared verbatim by both runtimes so no expectation
+// can drift between them. The single parameter is how it reaches H2O Core's
+// generic commitTurnDrafts: on the accepted parent that name is in the same
+// lexical scope, while on current source this block is evaluated inside 0A3a,
+// which has no lexical access to 0A1a and must cross the owner boundary through
+// the harness surface each owner publishes for itself.
+function coreExportsBlock(commitDrafts) {
+  return `
   globalThis.__CV38_CORE__ = Object.freeze({
     configure(rawIndex, identityGraph) {
       chatAtlasClearSelectedPathOverlay('fixture-reset');
@@ -412,7 +480,7 @@ function instrumentCore(source) {
         },
         live: { qEl: null, primaryAEl: null, answerEls: [], connected: true },
       };
-      commitTurnDrafts(canonicalDrafts, canonicalDrafts.concat(foreign));
+      ${commitDrafts}(canonicalDrafts, canonicalDrafts.concat(foreign));
       return turnState.turns.slice();
     },
     commitPendingForeignDraft(qId = 'cv38-pending-foreign-q-20') {
@@ -443,7 +511,7 @@ function instrumentCore(source) {
       };
       completeTurnIndexAuthorityState.pendingDrafts.set(qId, foreign);
       const pendingDrafts = chatAtlasCompleteIndexPendingCanonicalDrafts(effective);
-      commitTurnDrafts(canonicalDrafts.concat(pendingDrafts), canonicalDrafts.concat(pendingDrafts));
+      ${commitDrafts}(canonicalDrafts.concat(pendingDrafts), canonicalDrafts.concat(pendingDrafts));
       return turnState.turns.slice();
     },
     suppressesLiveAppend() {
@@ -483,9 +551,7 @@ function instrumentCore(source) {
       return failure;
     },
   });
-  globalThis.__CV38_CORE_BOOTSTRAP_SUPPRESSED__ = true;
 `;
-  return `${source.slice(0, markerIndex)}${exports}${close}\n`;
 }
 
 
@@ -525,14 +591,82 @@ function mutateLedgerFunction(name, mutate) {
   if (!replacement || replacement === original) throw new Error(`ledger-mutation-not-applied:${name}`);
   return instrumentLedger(LEDGER_SOURCE.replace(original, replacement));
 }
-const CORE_PROGRAM = instrumentCore(CORE_SOURCE);
+// ── Owner-separated current-source runtime ────────────────────────────────
+// The central Chat Atlas pipeline this validator asserts on now lives in 0A3a,
+// and 0A1a keeps only the generic turn model. The fixture surface therefore has
+// to be evaluated inside 0A3a, where those implementations actually are: the
+// aggregate text above stays a SEARCH corpus for the by-name and absence scans,
+// and is never evaluated as one scope.
+//
+// Each owner publishes its own harness surface from inside its own program:
+//   0A1a -> __CV38_H2O__   (generic commitTurnDrafts, the one thing 0A1a owns
+//                           that the fixtures drive, and which is deliberately
+//                           NOT on the production host surface)
+//   0A3a -> __CV38_CORE__  (the whole central Chat Atlas fixture surface)
+//   0A3b -> __CV38_LEDGER__
+// Nothing gains lexical reach it does not have in production: Chat Atlas Core
+// still reads generic H2O only through H2O_CHAT_ATLAS_HOST_V1, and the Ledger
+// still reaches Core only through the 0A3a service registry.
+const H2O_CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+const H2O_EXPORTS_BLOCK = `
+  globalThis.__CV38_H2O__ = Object.freeze({
+    commitTurnDrafts(canonicalDrafts, liveDrafts) {
+      return commitTurnDrafts(canonicalDrafts, liveDrafts);
+    },
+  });
+`;
+
+function instrumentH2OCore(src) {
+  return instrumentCore(src, { exportsText: H2O_EXPORTS_BLOCK, assertAnchors: false });
+}
+
+// 0A3a is evaluated whole — it is already loaded whole today, so this adds no
+// boot side effects — with the fixture surface appended inside its outer IIFE.
+function instrumentAtlasCore(src) {
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('atlas-bootstrap-boundary-invalid');
+  return `${src.slice(0, closeIndex)}
+${coreExportsBlock('globalThis.__CV38_H2O__.commitTurnDrafts')}${close}\n`;
+}
+
+const CORE_PROGRAM = Object.freeze({
+  h2o: instrumentH2OCore(H2O_CORE_SOURCE),
+  atlas: instrumentAtlasCore(BROKER_PROGRAM),
+});
+// The accepted parent predates every extraction, so it stays a single program.
 const PARENT_CORE_PROGRAM = instrumentCore(PARENT_CORE_SOURCE);
+assertCoreAnchors(CORE_SOURCE);
+
+// A mutation has to be applied to the owner that actually declares the target,
+// and that owner's program rebuilt. Applying it to the aggregate text would be
+// silently discarded, because the aggregate is never evaluated.
+// A name can legitimately appear in two owners: 0A1a keeps a const-arrow FORWARD
+// for several Chat Atlas policy reads whose real implementation is in 0A3a. Only
+// the function declaration is the implementation, so ownership resolves on that
+// and an ambiguity between two real declarations is still an error.
+function coreOwnerOf(name) {
+  const implements_ = (src) => src.includes(`  function ${name}(`)
+    || src.includes(`  async function ${name}(`);
+  const h2o = implements_(H2O_CORE_SOURCE);
+  const atlas = implements_(BROKER_PROGRAM);
+  if (h2o && atlas) throw new Error(`mutation-owner-ambiguous:${name}`);
+  if (atlas) return 'atlas';
+  if (h2o) return 'h2o';
+  throw new Error(`mutation-owner-unresolved:${name}`);
+}
 
 function mutateCoreFunction(source, name, mutate) {
-  const original = extractFunction(source, name);
+  if (source !== CORE_SOURCE) throw new Error(`mutation-source-unexpected:${name}`);
+  const owner = coreOwnerOf(name);
+  const ownerSource = owner === 'atlas' ? BROKER_PROGRAM : H2O_CORE_SOURCE;
+  const original = extractFunction(ownerSource, name);
   const replacement = mutate(original);
   if (!replacement || replacement === original) throw new Error(`mutation-not-applied:${name}`);
-  return instrumentCore(source.replace(original, replacement));
+  const mutated = ownerSource.replace(original, replacement);
+  return owner === 'atlas'
+    ? Object.freeze({ ...CORE_PROGRAM, atlas: instrumentAtlasCore(mutated) })
+    : Object.freeze({ ...CORE_PROGRAM, h2o: instrumentH2OCore(mutated) });
 }
 
 function canonicalRows() {
@@ -1419,11 +1553,15 @@ function createRuntime(program = CORE_PROGRAM, ledgerProgram = LEDGER_PROGRAM) {
   sandbox.top = sandbox;
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
-  // Every current-source program (including mutation variants) needs the real
-  // broker + Ledger. Only the parent-source runtime still has the Ledger inline.
-  if (program !== PARENT_CORE_PROGRAM) {
-    vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 8_000 });
+  // Current source is three owner programs in production's own loader order:
+  // 0A1a H2O Core, then 0A3a Chat Atlas Core, then 0A3b Chat Atlas Ledger. Each
+  // is its own scope, exactly as the page loads them. The accepted-parent source
+  // predates the extractions and is still a single program.
+  if (typeof program === 'string') {
+    vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
+  } else {
+    vm.runInContext(program.h2o, context, { filename: CORE_PATH, timeout: 8_000 });
+    vm.runInContext(program.atlas, context, { filename: BROKER_REL, timeout: 8_000 });
     vm.runInContext(ledgerProgram, context, { filename: LEDGER_REL, timeout: 8_000 });
   }
   equal(context.__CV38_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core boot effects are suppressed');
@@ -2531,13 +2669,24 @@ await fixture('stale branch transition suppresses unmatched mounted-turn appends
   // Source contract: commitTurnDrafts consults the guard before appending an
   // unmatched live draft, so a hybrid "previous branch + one mounted foreign
   // turn" count can never publish while the transition is stale.
-  const commit = extractFunction(CORE_SOURCE, 'commitTurnDrafts');
+  const commit = extractFunction(H2O_CORE_SOURCE, 'commitTurnDrafts');
   const appendIndex = commit.indexOf('for (const draft of unmatchedLiveDrafts)');
   const guardIndex = commit.indexOf('chatAtlasBranchTransitionSuppressesLiveAppend()');
   const pushIndex = commit.indexOf('nextRecords.push(record);', appendIndex);
   ok(appendIndex >= 0, 'unmatched append loop exists');
   ok(guardIndex > appendIndex && guardIndex < pushIndex, 'the guard runs inside the loop before any push');
-  ok(commit.indexOf('branchTransitionSuppressedLiveAppendCount += 1', guardIndex) > 0, 'suppression is counted');
+  // The count is Chat-Atlas-owned state, so H2O Core no longer increments it
+  // inline: it reports the suppression through the 0A3a command seam and 0A3a
+  // owns the increment. Both halves are proven here, so the end-to-end
+  // requirement — a suppressed append is always counted — is unchanged.
+  const noteIndex = commit.indexOf('noteBranchTransitionSuppressedLiveAppend()', guardIndex);
+  ok(
+    noteIndex > guardIndex
+      && noteIndex < pushIndex
+      && /noteBranchTransitionSuppressedLiveAppend\(\)\s*\{\s*completeTurnIndexAuthorityState\.branchTransitionSuppressedLiveAppendCount \+= 1;/
+        .test(BROKER_PROGRAM),
+    'suppression is counted',
+  );
 });
 
 await fixture('screenshot regression: client-side switch with stale current_node resolves the full selected branch', async () => {
@@ -4305,27 +4454,39 @@ function buildNestedHarness(options = {}) {
     chatAtlasBranchTransactionCurrent: () => state.branchTransactionState,
     chatAtlasBranchTransactionTrace: (code, detail) => traces.push({ code, detail }),
     chatAtlasNotifyCompleteIndexState: () => {},
-    // Ledger members now reach H2O Core through the 0A3a broker, so this
-    // sandbox registers a harness-only Ledger service double on the real
-    // broker global instead of injecting the private state object.
-    H2O_CHAT_ATLAS_CORE: {
-      getLedgerMembers: () => turns.map((t) => ({ qId: t.qId })),
-      getLedgerVersion: () => 0,
+    // The Ledger is reached through 0A3a's OWN service registry now, not through
+    // a window global. This sandbox therefore supplies the registry's backing
+    // store and registers a harness-only Ledger double into it below: only the
+    // Ledger itself is a double, while every hop that resolves it — registerService,
+    // getService, ledger(), getLedgerMembers/Version and the two const-arrow
+    // forwards — is the genuine 0A3a implementation, extracted from 0A3a.
+    services: Object.create(null),
+    __ledgerDouble: {
+      getMembers: () => turns.map((t) => ({ qId: t.qId })),
+      getVersion: () => 0,
     },
     CHAT_ATLAS_CONVERGENCE_MINIMAP_ROOT_SEL: '[data-h2o-minimap-root]',
     CHAT_ATLAS_CONVERGENCE_MINIMAP_BOX_SEL: '[data-turn-idx]',
   };
   sandbox.globalThis = sandbox;
-  // The real broker resolver reads (W.top || W).H2O_CHAT_ATLAS_CORE, so point W
-  // at the sandbox and extract the genuine 0A1a broker helpers. The Ledger
-  // service above is a harness double, but the resolution path is production's.
   sandbox.W = sandbox;
   sandbox.top = sandbox;
   vm.createContext(sandbox);
-  const CVG_BROKER_NAMES = ['chatAtlasCoreApi', 'chatAtlasCoreLedgerMembers', 'chatAtlasCoreLedgerVersion'];
-  const code = CVG_FUNCTION_NAMES.concat(CVG_BROKER_NAMES).map((n) => extractFunction(CORE_SOURCE, n)).join('\n')
-    + `\nglobalThis.__cvg = { ${CVG_FUNCTION_NAMES.join(', ')} };`;
-  new vm.Script(code, { filename: CORE_PATH }).runInContext(sandbox);
+  // Declared as const-arrows in 0A3a specifically so they cannot collide with a
+  // `  function <name>(` scan, so they need the binding extractor rather than the
+  // function extractor.
+  const CVG_BROKER_FUNCTIONS = ['registerService', 'getService'];
+  const CVG_BROKER_BINDINGS = [
+    'LEDGER_SERVICE', 'ledger', 'getLedgerMembers', 'getLedgerVersion',
+    'chatAtlasCoreLedgerMembers', 'chatAtlasCoreLedgerVersion',
+  ];
+  const code = CVG_FUNCTION_NAMES.map((n) => extractFunction(BROKER_PROGRAM, n))
+    .concat(CVG_BROKER_FUNCTIONS.map((n) => extractFunction(BROKER_PROGRAM, n)))
+    .concat(CVG_BROKER_BINDINGS.map((n) => extractBinding(BROKER_PROGRAM, n)))
+    .join('\n')
+    + `\nglobalThis.__cvg = { ${CVG_FUNCTION_NAMES.join(', ')} };`
+    + '\nregisterService(LEDGER_SERVICE, globalThis.__ledgerDouble);';
+  new vm.Script(code, { filename: BROKER_REL }).runInContext(sandbox);
   return {
     api: sandbox.__cvg,
     state,

@@ -263,7 +263,10 @@ function buildOverflowPayload() {
   };
 }
 
-function instrumentCore(source = coreSource) {
+// The eight load-bearing implementations must each exist exactly once across the
+// owners, whichever file each now lives in. This runs against the aggregate
+// corpus, so a duplicate introduced in ANY owner still fails it.
+function assertCoreAnchors(source = coreSource) {
   const required = [
     'chatAtlasApplyEvidence',
     'chatAtlasRetainIdentityGraph',
@@ -279,12 +282,28 @@ function instrumentCore(source = coreSource) {
       throw new Error(`core-instrumentation-anchor-invalid:${name}`);
     }
   }
+}
+
+// 0A1a is still loaded first and as its own program — it publishes the host
+// surface 0A3a reads — but it no longer carries the fixture surface, because
+// every implementation that surface drives has moved to 0A3a.
+function instrumentH2OCore(source) {
   const marker = '  /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */';
   const close = '\n})();';
   const markerIndex = source.indexOf(marker);
   const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
-  const exportBlock = `
+  return `${source.slice(0, markerIndex)}
+  globalThis.__CV35_CORE_BOOTSTRAP_SUPPRESSED__ = true;
+${close}\n`;
+}
+
+// Evaluated inside 0A3a, which is where every implementation this surface drives
+// now lives. Nothing in it reaches a 0A1a internal: Chat Atlas Core still reads
+// generic H2O only through H2O_CHAT_ATLAS_HOST_V1, and the Ledger only through
+// 0A3a's service registry.
+function coreExportBlock() {
+  return `
   globalThis.__CV35_CORE__ = Object.freeze({
     configure(rawIndex, identityGraph, options = {}) {
       chatAtlasClearSelectedPathAcquisition('fixture-reset');
@@ -443,9 +462,7 @@ function instrumentCore(source = coreSource) {
       chatAtlasClearSelectedPathAcquisition('feature-disabled');
     },
   });
-  globalThis.__CV35_CORE_BOOTSTRAP_SUPPRESSED__ = true;
 `;
-  return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
 
@@ -475,16 +492,40 @@ function instrumentLedger() {
   return `${src.slice(0, closeIndex)}${exportBlock}${close}\n`;
 }
 const ledgerProgram = instrumentLedger();
-const coreProgram = instrumentCore();
+
+// 0A3a is evaluated whole — it is already loaded whole today, so this adds no
+// boot side effects — with the fixture surface appended inside its outer IIFE.
+function instrumentAtlasCore(src) {
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('atlas-bootstrap-boundary-invalid');
+  return `${src.slice(0, closeIndex)}${coreExportBlock()}${close}\n`;
+}
+
+const H2O_CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+assertCoreAnchors(coreSource);
+// Production's own loader order, each owner its own scope: 0A1a, then 0A3a,
+// then 0A3b.
+const coreProgram = Object.freeze({
+  h2o: instrumentH2OCore(H2O_CORE_SOURCE),
+  atlas: instrumentAtlasCore(brokerProgram),
+});
+
 const AGE_PROTECTION_NEEDLE = '      && !requestOwnedRefetch\n';
-if (countOccurrences(coreSource, AGE_PROTECTION_NEEDLE) !== 1) {
+// Both age-protection guards are 0A3a-owned now, so the mutant is built from
+// that owner's source and only that owner's program is rebuilt. Applying it to
+// the aggregate corpus would be silently discarded — the corpus is never run.
+if (countOccurrences(brokerProgram, AGE_PROTECTION_NEEDLE) !== 1) {
   throw new Error('age-protection-mutation-anchor-invalid');
 }
-const ageProtectionRemovedProgram = instrumentCore(
-  coreSource
-    .replace(AGE_PROTECTION_NEEDLE, '')
-    .replace('      && !transactionOwned\n', ''),
-);
+const ageProtectionRemovedProgram = Object.freeze({
+  ...coreProgram,
+  atlas: instrumentAtlasCore(
+    brokerProgram
+      .replace(AGE_PROTECTION_NEEDLE, '')
+      .replace('      && !transactionOwned\n', ''),
+  ),
+});
 
 function sideEffects() {
   return {
@@ -590,8 +631,8 @@ function createCoreRuntime(program = coreProgram) {
   sandbox.top = sandbox;
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
-  vm.runInContext(brokerProgram, context, { filename: BROKER_REL, timeout: 8_000 });
+  vm.runInContext(program.h2o, context, { filename: CORE_PATH, timeout: 8_000 });
+  vm.runInContext(program.atlas, context, { filename: BROKER_REL, timeout: 8_000 });
   vm.runInContext(ledgerProgram, context, { filename: LEDGER_REL, timeout: 8_000 });
   equal(context.__CV35_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core boot side effects are suppressed');
   for (const key of Object.keys(counters)) counters[key] = 0;
