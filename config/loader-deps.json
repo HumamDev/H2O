@@ -2213,6 +2213,22 @@
       ],
       "critical": false,
       "optionalDependsOn": []
+    },
+    "0A3c._Chat_Atlas_Reveal_Engine_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0A3a._Chat_Atlas_Core_.js"
+      ],
+      "after": [
+        "0A3b._Chat_Atlas_Ledger_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chatatlas.reveal"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
     }
   }
 }

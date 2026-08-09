@@ -688,14 +688,17 @@ await fixture('safety and consumer boundaries remain narrow', () => {
   // Ledger reaches it through 0A3a's host surface rather than consuming it
   // independently. Any file beyond these three is still a failure.
   // 0A3a appears for the same reason 0A3b does: its broker shim names the API it
-  // forwards to. Reveal and Full Index reach it through the host surface rather
-  // than consuming it independently. A fourth file is still a failure.
+  // forwards to. Full Index reaches it through the host surface rather than
+  // consuming it independently. 0A3c is the same case again — Reveal moved into
+  // its own engine and its broker shim names the API it forwards to, still
+  // reaching it through 0A3a's Reveal host surface. A fifth file is a failure.
   equal(consumers, [
     'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
     'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
     'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+    'src-runtime-base/0A3c.⬛️🔭 Chat Atlas Reveal Engine 🔭.js',
     'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js',
-  ], 'literal API boundary stays limited to the definer, the two Chat Atlas broker shims and the sanctioned page-controller consumer');
+  ], 'literal API boundary stays limited to the definer, the three Chat Atlas broker shims and the sanctioned page-controller consumer');
   equal(PAGE_SOURCE.includes("STATUS: ['get', 'Effective', 'PresentationStatus'].join('')"), true, 'page controller consumes the effective status API');
   equal(PAGE_SOURCE.includes("INDEX: ['get', 'Effective', 'PresentationIndex'].join('')"), true, 'page controller consumes the effective index API');
   equal(PAGE_SOURCE.includes("BY_QID: ['get', 'Effective', 'TurnRecordByQId'].join('')"), true, 'page controller consumes exact effective qId lookup');
