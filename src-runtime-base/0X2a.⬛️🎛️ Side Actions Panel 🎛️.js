@@ -34,6 +34,7 @@
   const PANEL_TOP_FALLBACK_PX = 132;
   const PANEL_EDGE_OFFSET_PX = 12;
   const PANEL_GAP_PX = 10;
+  const PANEL_VIEWPORT_MARGIN_PX = 12;
   const PANEL_REPOS_MS = 900;
   const ADOPT_POLL_MS = 1100;
   const TAB_PLACEMENT_PAGE_RIGHT = "page-right";
@@ -53,6 +54,7 @@
   const TAB_OTHER = "other";
   const COMPLETE_TURN_INDEX_REFRESH_ACTION_ID = "minimap.complete-turn-index.refresh";
   const COMPLETE_TURN_INDEX_STATE_EVENT = "evt:h2o:complete-turn-index:state";
+  const CORE_TURN_UPDATED_EVENT = "h2o:turn:updated";
 
   const DEFAULT_TABS = [
     { id: TAB_HIGHLIGHTS, label: "Highlights", order: 100 },
@@ -88,6 +90,8 @@
     bridgeInstalled: false,
     bridgeMoved: new Set(),
     edgeMask: null,
+    panelViewportHandler: null,
+    panelVisualViewport: null,
   };
 
   function warn(...args) {
@@ -197,13 +201,51 @@
     try { return runtime.getCompleteTurnIndexProjectionStatus() || null; } catch { return null; }
   }
 
+  function sideActionsEffectivePresentationStatus() {
+    const runtime = sideActionsCompleteTurnIndexRuntime();
+    const getter = runtime?.[["getEffective", "PresentationStatus"].join("")];
+    if (typeof getter !== "function") return null;
+    try { return getter.call(runtime) || null; } catch { return null; }
+  }
+
+  function sideActionsSelectedPathPresentationStatus(
+    canonicalStatus = sideActionsCompleteTurnIndexStatus(),
+    effectiveStatus = sideActionsEffectivePresentationStatus(),
+  ) {
+    const effectiveCount = Number(effectiveStatus?.count);
+    const canonicalCount = Number(canonicalStatus?.completeCount);
+    if (
+      effectiveStatus?.overlayActive !== true
+      || effectiveStatus?.source !== "selected-path-overlay"
+      || !Number.isInteger(effectiveCount)
+      || effectiveCount <= 0
+      || !Number.isInteger(canonicalCount)
+      || canonicalCount <= 0
+      || effectiveCount === canonicalCount
+    ) {
+      return null;
+    }
+    return Object.freeze({
+      title: "Viewing selected branch",
+      detail: `${effectiveCount} turns · canonical conversation has ${canonicalCount} turns`,
+      effectiveCount,
+      canonicalCount,
+    });
+  }
+
   function sideActionsCompleteTurnIndexEnabled() {
     return sideActionsCompleteTurnIndexStatus()?.enabled === true;
   }
 
-  function sideActionsApplyMiniMapBranchStaleIndicator(el, status = sideActionsCompleteTurnIndexStatus()) {
+  function sideActionsApplyMiniMapBranchStaleIndicator(
+    el,
+    status = sideActionsCompleteTurnIndexStatus(),
+    selectedPathStatus = null,
+  ) {
     if (!el) return false;
-    const stale = status?.enabled === true && status?.branchSelectionStale === true;
+    const stale = !selectedPathStatus
+      && status?.enabled === true
+      && status?.branchSelectionStale === true;
     const indicator = el.querySelector?.(".sa-branch-stale");
     if (indicator) {
       indicator.textContent = "Branch changed — refresh MiniMap";
@@ -226,6 +268,21 @@
     el.setAttribute?.("aria-busy", status === "refreshing" ? "true" : "false");
   }
 
+  function sideActionsApplyMiniMapSelectedPathStatus(el, selectedPathStatus = null) {
+    if (!el) return false;
+    const detail = el.querySelector?.(".sa-selected-path-detail");
+    const active = !!selectedPathStatus;
+    if (detail) {
+      detail.textContent = active ? selectedPathStatus.detail : "";
+      detail.hidden = !active;
+    }
+    el.dataset.selectedPathPresentation = active ? "true" : "false";
+    if (active) {
+      sideActionsSetMiniMapRefreshFeedback(el, selectedPathStatus.title, "selected-path");
+    }
+    return active;
+  }
+
   async function sideActionsRefreshCompleteTurnIndex({ el } = {}) {
     const runtime = sideActionsCompleteTurnIndexRuntime();
     if (typeof runtime?.refreshCompleteTurnIndexProjection !== "function" || !sideActionsCompleteTurnIndexEnabled()) {
@@ -240,14 +297,28 @@
       const status = String(result?.status || currentStatus?.status || "");
       const failed = status.includes("failed") || status.includes("unavailable");
       const branchStale = currentStatus?.branchSelectionStale === true;
-      sideActionsSetMiniMapRefreshFeedback(
-        el,
-        failed ? "Refresh failed safely" : (branchStale ? "Branch still differs" : "MiniMap refreshed"),
-        failed ? "failed" : (branchStale ? "stale" : "refreshed"),
-      );
-      sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus);
+      const selectedPathStatus = !failed
+        && typeof sideActionsSelectedPathPresentationStatus === "function"
+        ? sideActionsSelectedPathPresentationStatus(currentStatus)
+        : null;
+      if (selectedPathStatus && typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(el, selectedPathStatus);
+      } else {
+        if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+          sideActionsApplyMiniMapSelectedPathStatus(el, null);
+        }
+        sideActionsSetMiniMapRefreshFeedback(
+          el,
+          failed ? "Refresh failed safely" : (branchStale ? "Branch still differs" : "MiniMap refreshed"),
+          failed ? "failed" : (branchStale ? "stale" : "refreshed"),
+        );
+      }
+      sideActionsApplyMiniMapBranchStaleIndicator(el, currentStatus, selectedPathStatus);
       return result;
     } catch {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(el, null);
+      }
       sideActionsSetMiniMapRefreshFeedback(el, "Refresh failed safely", "failed");
       sideActionsApplyMiniMapBranchStaleIndicator(el);
       return { ok: false, errorCode: "complete-index-refresh-failed" };
@@ -276,8 +347,23 @@
     if (!rec?.node) return;
     const status = sideActionsCompleteTurnIndexStatus();
     rec.node.disabled = status?.enabled !== true;
-    const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status);
-    if (stale && rec.node.dataset.refreshStatus !== "refreshing") {
+    const selectedPathStatus = typeof sideActionsSelectedPathPresentationStatus === "function"
+      ? sideActionsSelectedPathPresentationStatus(status)
+      : null;
+    const stale = sideActionsApplyMiniMapBranchStaleIndicator(rec.node, status, selectedPathStatus);
+    if (selectedPathStatus && rec.node.dataset.refreshStatus !== "refreshing") {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(rec.node, selectedPathStatus);
+      }
+    } else {
+      if (typeof sideActionsApplyMiniMapSelectedPathStatus === "function") {
+        sideActionsApplyMiniMapSelectedPathStatus(rec.node, null);
+      }
+      if (rec.node.dataset.refreshStatus === "selected-path") {
+        sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", stale ? "stale" : "idle");
+      }
+    }
+    if (stale && rec.node.dataset.refreshStatus !== "refreshing" && rec.node.dataset.refreshStatus !== "failed") {
       sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "stale");
     } else if (!stale && rec.node.dataset.refreshStatus === "stale") {
       sideActionsSetMiniMapRefreshFeedback(rec.node, "Refresh MiniMap", "idle");
@@ -364,11 +450,12 @@
 .h2o-side-actions-root .sidebarEdgeMask{position:fixed;top:0;bottom:0;left:calc(var(--h2o-side-actions-sidebar-edge-px,0px) - var(--h2o-side-actions-sidebar-mask-w,11px));width:var(--h2o-side-actions-sidebar-mask-w,11px);background:var(--h2o-side-actions-sidebar-mask-bg,rgba(24,24,24,.98));pointer-events:none;opacity:0;z-index:3;transition:opacity .18s ease,left .18s ease}
 .h2o-side-actions-root[data-tab-placement="sidebar-edge"] .sidebarEdgeMask{opacity:1}
 .h2o-side-actions-panel{
-  position:relative;
+  position:fixed;
   z-index:4;
   width:100%;
+  max-width:calc(100vw - ${PANEL_VIEWPORT_MARGIN_PX * 2}px);
   min-height:${PANEL_MIN_H_PX}px;
-  max-height:min(${PANEL_MAX_H_VH}vh, calc(100vh - 28px));
+  max-height:min(${PANEL_MAX_H_VH}vh, calc(100vh - ${PANEL_VIEWPORT_MARGIN_PX * 2}px));
   display:grid;
   grid-template-rows:auto auto 1fr;
   gap:8px;
@@ -378,6 +465,7 @@
   background:linear-gradient(180deg,var(--h2o-side-actions-bg-2),var(--h2o-side-actions-bg));
   box-shadow:0 18px 34px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.04) inset;
   backdrop-filter:blur(16px) saturate(138%);
+  overflow:hidden;
   opacity:0;
   visibility:hidden;
   pointer-events:none;
@@ -392,7 +480,7 @@
   transform-origin:top right;
 }
 .h2o-side-actions-root.is-open .h2o-side-actions-panel{
-  position:relative;
+  position:fixed;
   z-index:3;
   opacity:1;
   visibility:visible;
@@ -475,7 +563,8 @@
 }
 .h2o-side-actions-body{
   min-height:0;
-  overflow:auto;
+  overflow-y:auto;
+  overflow-x:hidden;
   display:grid;
   align-content:start;
   gap:8px;
@@ -551,6 +640,13 @@
   white-space:normal;
 }
 .h2o-side-actions-action .sa-branch-stale[hidden]{display:none}
+.h2o-side-actions-action .sa-selected-path-detail{
+  flex:1 0 100%;
+  color:var(--h2o-side-actions-gold);
+  font:600 10px/1.35 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;
+  white-space:normal;
+}
+.h2o-side-actions-action .sa-selected-path-detail[hidden]{display:none}
 .h2o-side-actions-action.has-branch-stale{flex-wrap:wrap}
 `;
     D.head?.appendChild(style);
@@ -756,6 +852,193 @@
     return null;
   }
 
+  function sideActionsVisualViewportBounds() {
+    const visual = W.visualViewport;
+    const visualWidth = Number(visual?.width);
+    const visualHeight = Number(visual?.height);
+    const hasVisualViewport = Number.isFinite(visualWidth)
+      && visualWidth > 0
+      && Number.isFinite(visualHeight)
+      && visualHeight > 0;
+    const left = hasVisualViewport && Number.isFinite(Number(visual?.offsetLeft))
+      ? Number(visual.offsetLeft)
+      : 0;
+    const top = hasVisualViewport && Number.isFinite(Number(visual?.offsetTop))
+      ? Number(visual.offsetTop)
+      : 0;
+    const width = hasVisualViewport
+      ? visualWidth
+      : Math.max(Number(W.innerWidth || 0), Number(D.documentElement?.clientWidth || 0), 1);
+    const height = hasVisualViewport
+      ? visualHeight
+      : Math.max(Number(W.innerHeight || 0), Number(D.documentElement?.clientHeight || 0), 1);
+    return Object.freeze({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      source: hasVisualViewport ? "visual-viewport" : "layout-viewport",
+    });
+  }
+
+  function sideActionsComposerExclusionRect() {
+    const selectors = [
+      '[data-ho-composer="true"]',
+      '[data-ho-chatgpt-footer="true"]',
+      '[data-composer-surface="true"]',
+    ];
+    for (const selector of selectors) {
+      const node = D.querySelector(selector);
+      if (!node || node.isConnected === false) continue;
+      try {
+        const style = getComputedStyle(node);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = node.getBoundingClientRect();
+        if (
+          !Number.isFinite(Number(rect?.top))
+          || !Number.isFinite(Number(rect?.bottom))
+          || Number(rect?.height || 0) <= 2
+          || Number(rect?.width || 0) <= 2
+        ) {
+          continue;
+        }
+        return rect;
+      } catch {}
+    }
+    return null;
+  }
+
+  function sideActionsPositionPanelWithinViewport() {
+    const panel = state.panel;
+    const trigger = state.launcher;
+    if (!state.open || !panel || !trigger || panel.isConnected === false || trigger.isConnected === false) return null;
+
+    // Clear only the temporary measurement constraints owned by this helper.
+    panel.style.width = "";
+    panel.style.maxWidth = "";
+    panel.style.minHeight = "";
+    panel.style.maxHeight = "";
+    panel.style.left = "";
+    panel.style.right = "";
+    panel.style.top = "";
+    panel.style.bottom = "";
+
+    let triggerRect;
+    let panelRect;
+    try {
+      triggerRect = trigger.getBoundingClientRect();
+      panelRect = panel.getBoundingClientRect();
+    } catch {
+      return null;
+    }
+    const viewport = sideActionsVisualViewportBounds();
+    const composerRect = sideActionsComposerExclusionRect();
+    const safeLeft = viewport.left + PANEL_VIEWPORT_MARGIN_PX;
+    const safeTop = viewport.top + PANEL_VIEWPORT_MARGIN_PX;
+    const safeRight = Math.max(safeLeft, viewport.right - PANEL_VIEWPORT_MARGIN_PX);
+    let safeBottom = Math.max(safeTop, viewport.bottom - PANEL_VIEWPORT_MARGIN_PX);
+    let composerExcluded = false;
+    if (
+      composerRect
+      && Number(composerRect.bottom) > safeTop
+      && Number(composerRect.top) < safeBottom
+    ) {
+      safeBottom = Math.max(safeTop, Math.min(safeBottom, Number(composerRect.top) - PANEL_GAP_PX));
+      composerExcluded = true;
+    }
+
+    const availableWidth = Math.max(0, safeRight - safeLeft);
+    const panelWidth = Math.max(0, Math.min(
+      PANEL_W_PX,
+      availableWidth,
+      Math.max(Number(panelRect.width || 0), PANEL_W_PX),
+    ));
+    const naturalHeight = Math.max(
+      Number(panelRect.height || 0),
+      Number(panel.scrollHeight || 0),
+      1,
+    );
+    const belowTop = Number(triggerRect.bottom || 0) + PANEL_GAP_PX;
+    const aboveBottom = Number(triggerRect.top || 0) - PANEL_GAP_PX;
+    const belowAvailable = Math.max(0, safeBottom - belowTop);
+    const aboveAvailable = Math.max(0, aboveBottom - safeTop);
+    const fitsBelow = naturalHeight <= belowAvailable;
+    const fitsAbove = naturalHeight <= aboveAvailable;
+    const placement = fitsBelow
+      ? "below"
+      : (fitsAbove || aboveAvailable >= belowAvailable ? "above" : "below");
+    const sideAvailable = placement === "above" ? aboveAvailable : belowAvailable;
+    const panelHeight = Math.max(0, Math.min(naturalHeight, sideAvailable));
+    const preferredLeft = (state.tabPlacement || readTabPlacement()) === TAB_PLACEMENT_SIDEBAR_EDGE
+      ? Number(triggerRect.left || 0)
+      : Number(triggerRect.right || 0) - panelWidth;
+    const maxLeft = Math.max(safeLeft, safeRight - panelWidth);
+    const left = Math.max(safeLeft, Math.min(preferredLeft, maxLeft));
+    const preferredTop = placement === "above"
+      ? aboveBottom - panelHeight
+      : belowTop;
+    const maxTop = Math.max(safeTop, safeBottom - panelHeight);
+    const top = Math.max(safeTop, Math.min(preferredTop, maxTop));
+
+    panel.style.position = "fixed";
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.right = "auto";
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.bottom = "auto";
+    panel.style.width = `${Math.round(panelWidth)}px`;
+    panel.style.maxWidth = `${Math.round(availableWidth)}px`;
+    panel.style.minHeight = `${Math.round(Math.min(PANEL_MIN_H_PX, panelHeight))}px`;
+    panel.style.maxHeight = `${Math.round(panelHeight)}px`;
+    panel.style.overflow = "hidden";
+    if (state.body) {
+      state.body.style.overflowY = "auto";
+      state.body.style.overflowX = "hidden";
+    }
+    panel.dataset.viewportPlacement = placement;
+    panel.dataset.composerExcluded = composerExcluded ? "true" : "false";
+
+    return Object.freeze({
+      placement,
+      left: Math.round(left),
+      top: Math.round(top),
+      width: Math.round(panelWidth),
+      height: Math.round(panelHeight),
+      safeLeft: Math.round(safeLeft),
+      safeTop: Math.round(safeTop),
+      safeRight: Math.round(safeRight),
+      safeBottom: Math.round(safeBottom),
+      composerExcluded,
+      viewportSource: viewport.source,
+    });
+  }
+
+  function sideActionsBindPanelViewportListeners() {
+    if (state.panelViewportHandler) return false;
+    const handler = () => {
+      if (state.open) sideActionsPositionPanelWithinViewport();
+    };
+    const visual = W.visualViewport || null;
+    state.panelViewportHandler = handler;
+    state.panelVisualViewport = visual;
+    W.addEventListener("scroll", handler, true);
+    visual?.addEventListener?.("resize", handler, { passive: true });
+    visual?.addEventListener?.("scroll", handler, { passive: true });
+    return true;
+  }
+
+  function sideActionsUnbindPanelViewportListeners() {
+    const handler = state.panelViewportHandler;
+    if (!handler) return false;
+    W.removeEventListener("scroll", handler, true);
+    state.panelVisualViewport?.removeEventListener?.("resize", handler);
+    state.panelVisualViewport?.removeEventListener?.("scroll", handler);
+    state.panelViewportHandler = null;
+    state.panelVisualViewport = null;
+    return true;
+  }
+
   function positionRoot() {
     const root = state.root;
     if (!root) return;
@@ -812,6 +1095,7 @@
       : LAUNCHER_BOTTOM_DEFAULT_PX;
     state.launcherBottomPx = bottom;
     launcher.style.bottom = `${bottom}px`;
+    if (state.open) sideActionsPositionPanelWithinViewport();
   }
 
   function applyTabPlacement(placementRaw, persist = false) {
@@ -930,7 +1214,7 @@
     btn.className = "h2o-side-actions-action";
     if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) btn.classList.add("has-branch-stale");
     btn.innerHTML = rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID
-      ? `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span><span id="h2o-side-actions-minimap-branch-stale" class="sa-branch-stale" role="status" aria-live="polite" hidden>Branch changed — refresh MiniMap</span>`
+      ? `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span><span id="h2o-side-actions-minimap-branch-stale" class="sa-branch-stale" role="status" aria-live="polite" hidden>Branch changed — refresh MiniMap</span><span class="sa-selected-path-detail" role="status" aria-live="polite" hidden></span>`
       : `<span class="sa-label"></span><span class="sa-badge" aria-hidden="true"></span>`;
     btn.addEventListener("click", (ev) => {
       if (btn.disabled) return;
@@ -970,7 +1254,10 @@
     const labelEl = btn.querySelector(".sa-label");
     if (labelEl) labelEl.textContent = label;
     if (rec.id === COMPLETE_TURN_INDEX_REFRESH_ACTION_ID) {
-      sideActionsApplyMiniMapBranchStaleIndicator(btn);
+      const status = sideActionsCompleteTurnIndexStatus();
+      const selectedPathStatus = sideActionsSelectedPathPresentationStatus(status);
+      sideActionsApplyMiniMapBranchStaleIndicator(btn, status, selectedPathStatus);
+      sideActionsApplyMiniMapSelectedPathStatus(btn, selectedPathStatus);
     }
   }
 
@@ -1031,6 +1318,8 @@
       state.launcher.setAttribute("aria-pressed", next ? "true" : "false");
     }
     if (persist) writeOpen(next);
+    if (next) sideActionsBindPanelViewportListeners();
+    else sideActionsUnbindPanelViewportListeners();
     positionRoot();
     positionLauncher();
     return next;
@@ -1042,6 +1331,7 @@
     state.activeTab = next;
     if (persist) writeTab(next);
     renderActions();
+    if (state.open) sideActionsPositionPanelWithinViewport();
     return next;
   }
 
@@ -1181,6 +1471,11 @@
     }, { passive: true });
     W.addEventListener(
       COMPLETE_TURN_INDEX_STATE_EVENT,
+      sideActionsSyncCompleteTurnIndexRefreshAvailability,
+      { passive: true },
+    );
+    W.addEventListener(
+      CORE_TURN_UPDATED_EVENT,
       sideActionsSyncCompleteTurnIndexRefreshAvailability,
       { passive: true },
     );

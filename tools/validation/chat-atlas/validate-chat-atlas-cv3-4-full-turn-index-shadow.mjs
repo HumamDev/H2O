@@ -11,7 +11,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const ARCHIVE_PATH = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const archiveSource = fs.readFileSync(path.join(ROOT, ARCHIVE_PATH), 'utf8');
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
 const A545 = '54520999-dedf-4f01-8c60-ac8adcc2c066';
@@ -225,37 +238,69 @@ function instrumentCore() {
   const markerIndex = source.indexOf(marker);
   const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
+  // The Full Index subdomain moved to 0A3a and Ledger rows to 0A3b; H2O Core's
+  // export keeps only the generic turn seeding it still owns.
   const exportBlock = [
     '  globalThis.__TURN_INDEX_CORE__ = Object.freeze({',
-    '    chatAtlasFullIndexRoute,',
-    '    chatAtlasCompareFullConversationIndex,',
-    '    getConversationTurnIndexDiagnostics,',
-    '    chatAtlasTriggerFullConversationIndex,',
-    '    reset() {',
-    '      chatAtlasResetFullIndexRoute(chatAtlasFullIndexRoute(), false);',
-    '      turnState.turns = [];',
-    '      chatAtlasLedgerState.members = [];',
-    '    },',
+    '    reset() { turnState.turns = []; },',
     '    setCanonicalRows(rows) { turnState.turns = Array.isArray(rows) ? rows.slice() : []; },',
-    '    setLedgerRows(rows) {',
-    '      chatAtlasLedgerState.members = (Array.isArray(rows) ? rows : []).map((row, index) => ({',
-    '        turnNo: index + 1,',
-    '        logicalMemberKey: `fixture:${index + 1}`,',
-    '        noAnswer: row?.noAnswer === true,',
-    '        question: { qId: row?.qId || null, currentAliases: row?.qId ? [row.qId] : [] },',
-    '        answer: {',
-    '          currentAnswerIds: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],',
-    '          currentAliases: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],',
-    '        },',
-    '      }));',
-    '    },',
-    '    state: chatAtlasFullIndexState,',
     '  });',
     '  globalThis.__TURN_INDEX_CORE_BOOTSTRAP_SUPPRESSED__ = true;',
   ].join('\n');
   return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
+
+// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
+// Ledger rows are seeded inside the Ledger's own module now; H2O Core keeps
+// seeding only the generic turn rows it owns. Script isolation is preserved and
+// evaluating 0A3b is inert (no top-level observer or rAF).
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const BROKER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+  const close = '\n})();';
+  const at = src.lastIndexOf(close);
+  if (at < 0) throw new Error('chat-atlas-core-iife-close-missing');
+  // chatAtlasFullIndexRoute is the route-identity spine and stays in H2O Core;
+  // 0A3a reads it through the host, so it is not anchored here.
+  for (const n of ['chatAtlasCompareFullConversationIndex', 'chatAtlasTriggerFullConversationIndex', 'chatAtlasResetFullIndexRoute', 'getConversationTurnIndexDiagnostics']) {
+    if (src.split(`  function ${n}(`).length - 1 !== 1) throw new Error(`chat-atlas-core-anchor-invalid:${n}`);
+  }
+  return `${src.slice(0, at)}
+  globalThis.__TURN_INDEX_ATLAS__ = Object.freeze({
+    chatAtlasFullIndexRoute,
+    chatAtlasCompareFullConversationIndex,
+    getConversationTurnIndexDiagnostics,
+    chatAtlasTriggerFullConversationIndex,
+    resetFullIndex() { chatAtlasResetFullIndexRoute(chatAtlasFullIndexRoute(), false); },
+    state: chatAtlasFullIndexState,
+  });
+${close}\n`;
+})();
+const LEDGER_PROGRAM = (() => {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  return `${src.slice(0, closeIndex)}
+  globalThis.__TURN_INDEX_LEDGER__ = Object.freeze({
+    resetLedger() { chatAtlasLedgerState.members = []; },
+    setLedgerRows(rows) {
+      chatAtlasLedgerState.members = (Array.isArray(rows) ? rows : []).map((row, index) => ({
+        turnNo: index + 1,
+        logicalMemberKey: \`fixture:\${index + 1}\`,
+        noAnswer: row?.noAnswer === true,
+        question: { qId: row?.qId || null, currentAliases: row?.qId ? [row.qId] : [] },
+        answer: {
+          currentAnswerIds: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],
+          currentAliases: Array.isArray(row?.answerVariants) ? row.answerVariants.slice() : [],
+        },
+      }));
+    },
+  });
+${close}\n`;
+})();
 const coreProgram = instrumentCore();
 
 function instrumentCoreActivation() {
@@ -286,11 +331,13 @@ function instrumentCoreActivation() {
     throw new Error('core-activation-boundary-invalid');
   }
   const exportBlock = [
+    // Full Index state and diagnostics are owned by 0A3a now and are merged in
+    // from __TURN_INDEX_ATLAS__ at the call site; H2O Core exports what it owns.
     '  globalThis.__TURN_INDEX_ACTIVATION__ = Object.freeze({',
-    '    state: chatAtlasFullIndexState,',
-    '    diagnostics: getConversationTurnIndexDiagnostics,',
     '    canonicalCount: () => turnState.turns.length,',
-    '    ledgerCount: () => chatAtlasLedgerState.members.length,',
+    // Ledger members are read through the 0A3a broker now, exactly as the
+    // production H2O Core code reads them.
+    '    ledgerCount: () => chatAtlasCoreLedgerMembers().length,',
     '  });',
     '  globalThis.__TURN_INDEX_OBSERVER_SUPPRESSED__ = true;',
   ].join('\n');
@@ -430,9 +477,19 @@ function createCoreRuntime({ provider = null, miniMapRows = [] } = {}) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(coreProgram, context, { filename: CORE_PATH, timeout: 3_000 });
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 3_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 3_000 });
   equal(context.__TURN_INDEX_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core bootstrap is suppressed');
   if (provider) context.H2O.archiveBoot = { fetchConversationTurnIndex: provider };
-  const api = context.__TURN_INDEX_CORE__;
+  // Each owner seeds its own state; the fixture surface is unchanged.
+  const coreApi = context.__TURN_INDEX_CORE__;
+  const ledgerApi = context.__TURN_INDEX_LEDGER__;
+  const atlasApi = context.__TURN_INDEX_ATLAS__;
+  const api = Object.assign({}, coreApi, atlasApi, {
+    setLedgerRows: (rows) => ledgerApi.setLedgerRows(rows),
+    reset() { coreApi.reset(); atlasApi.resetFullIndex(); ledgerApi.resetLedger(); },
+    state: atlasApi.state,
+  });
   api.reset();
   return { context, api, counters, location };
 }
@@ -546,6 +603,10 @@ function createActivationRuntime(payload) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(coreActivationProgram, context, { filename: CORE_PATH, timeout: 3_000 });
+  // The activation runtime also needs the real Chat Atlas Core, which now owns
+  // the Full Index subdomain, and the Ledger it brokers.
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 3_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 3_000 });
   return { context, counters, listeners, networkCalls, dispatchEvent };
 }
 
@@ -2115,7 +2176,10 @@ await fixture('provider never returns its access token', () => {
 
 await fixture('real activation wiring registers provider and dedupes acquisition', async () => {
   const runtime = createActivationRuntime(fullFixture.payload);
-  const activation = runtime.context.__TURN_INDEX_ACTIVATION__;
+  const activation = Object.assign({}, runtime.context.__TURN_INDEX_ACTIVATION__, {
+    state: runtime.context.__TURN_INDEX_ATLAS__.state,
+    diagnostics: runtime.context.__TURN_INDEX_ATLAS__.getConversationTurnIndexDiagnostics,
+  });
   equal(runtime.context.__TURN_INDEX_OBSERVER_SUPPRESSED__, true);
   equal(runtime.context.__TURN_INDEX_REFRESH_SUPPRESSED__, true);
   equal(runtime.context.__TURN_INDEX_LEDGER_SUPPRESSED__, true);

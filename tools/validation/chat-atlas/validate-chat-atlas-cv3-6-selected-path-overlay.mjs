@@ -10,7 +10,12 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// Milestone 2B-2 moved the central Chat Atlas authority out of H2O Core into
+// 0A3a Chat Atlas Core. This validator asserts on that implementation, so the
+// H2O Core source it reads is the aggregate of the files the code now lives in.
+// No assertion changes; negative checks span both owners, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
+const coreSource = `${fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 const parentSource = execFileSync(
   'git',
   ['show', `5295e0a361fd7a8fb3b93fdd3541f6e91d7a06a7:${CORE_PATH}`],

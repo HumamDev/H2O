@@ -2168,6 +2168,51 @@
       "provides": [],
       "critical": false,
       "optionalDependsOn": []
+    },
+    "0C3a._Chat_Page_Structure_Engine_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0C1a._Pagination_Windowing_Engine_.js",
+        "0C1b._Pagination_Windowing_(Chat_Adapter)_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chat.page.structure"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0A3a._Chat_Atlas_Core_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js"
+      ],
+      "after": [
+        "0A2a._Observer_Hub_.js"
+      ],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chatatlas.core"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
+    },
+    "0A3b._Chat_Atlas_Ledger_.js": {
+      "phase": "document-idle",
+      "dependsOn": [
+        "0A1a._H2O_Core_.js",
+        "0A3a._Chat_Atlas_Core_.js"
+      ],
+      "after": [],
+      "group": "CORE_BASE",
+      "provides": [
+        "h2o.chatatlas.ledger"
+      ],
+      "critical": false,
+      "optionalDependsOn": []
     }
   }
 }

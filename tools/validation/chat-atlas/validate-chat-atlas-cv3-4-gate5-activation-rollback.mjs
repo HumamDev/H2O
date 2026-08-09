@@ -8,7 +8,20 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const corePath = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(root, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const PREF_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
 const CACHE_KEY = `h2o:prm:cgx:chat-atlas:complete-turn-index:v1:chat:${CHAT_ID}`;
@@ -266,18 +279,37 @@ function createRuntime({ preference, storage = createStorage(), cache = null, pr
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const setterAnchor = '  function setChatAtlasCanonicalSource(value) {\n';
   const publishAnchor = '  function chatAtlasPublishCompleteIndex(envelope, source) {\n';
-  let programSource = coreSource
-    .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`)
-    .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`);
-  const closeIndex = programSource.lastIndexOf('})();');
-  if (closeIndex < 0) throw new Error('core-iife-close-missing');
-  programSource = `${programSource.slice(0, closeIndex)}
+  // The canonical-return function moved to 0A3b while the authority generation it
+  // checks is still owned by 0A1a. Each half of the fixture hook is therefore
+  // spliced into the module that actually owns what it touches, and the three
+  // real programs run in order exactly as production loads them.
+  const spliceExport = (src, block) => {
+    const at = src.lastIndexOf('})();');
+    if (at < 0) throw new Error('iife-close-missing');
+    return `${src.slice(0, at)}${block}${src.slice(at)}`;
+  };
+  const coreOnly = spliceExport(
+    H2O_CORE_AGGREGATE_SOURCES[0] === undefined ? '' : fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[0]), 'utf8')
+      .replace(publishAnchor, `${publishAnchor}    globalThis.__GATE5_AUTHORITY_PUBLISH__();\n`),
+    `
+  globalThis.__GATE5_BUMP_GENERATION__ = () => { completeTurnIndexAuthorityState.generation += 1; };
+`,
+  );
+  const brokerOnly = fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[1]), 'utf8');
+  const ledgerOnly = spliceExport(
+    fs.readFileSync(path.join(root, H2O_CORE_AGGREGATE_SOURCES[2]), 'utf8')
+      .replace(setterAnchor, `${setterAnchor}    globalThis.__GATE5_SOURCE_SETTER__();\n`),
+    `
   globalThis.__GATE5_CANONICAL_RETURN__ = Object.freeze({
     apply: (members) => chatAtlasClearBranchSelectionStaleOnCanonicalReturn(members),
-    bumpGeneration: () => { completeTurnIndexAuthorityState.generation += 1; },
+    bumpGeneration: () => globalThis.__GATE5_BUMP_GENERATION__(),
   });
-${programSource.slice(closeIndex)}`;
+`,
+  );
+  const programSource = coreOnly;
   vm.runInContext(programSource, context, { filename: corePath, timeout: 8_000 });
+  vm.runInContext(brokerOnly, context, { filename: H2O_CORE_AGGREGATE_SOURCES[1], timeout: 8_000 });
+  vm.runInContext(ledgerOnly, context, { filename: H2O_CORE_AGGREGATE_SOURCES[2], timeout: 8_000 });
   const runtime = {
     context,
     api: context.H2O.turnRuntime,
@@ -630,7 +662,7 @@ await fixture('A: automatic reconciliation gate default is false with no persist
   equal([...runtime.storage.map.keys()].some((key) => /branch.*stale|stale.*branch/i.test(key)), false);
 });
 
-await fixture('B: projection enabled + gate false — capture binds but schedules zero reconciliation work', () => {
+await fixture('B: projection enabled + gate false — capture binds and schedules exactly one bounded user task', () => {
   const runtime = createRuntime({ preference: '1', cache: cacheEnvelope() });
   equal(runtime.status().enabled, true);
   equal(runtime.status().completeCount, 38);
@@ -653,9 +685,13 @@ await fixture('B: projection enabled + gate false — capture binds but schedule
   // chatAtlasNotifyCompleteIndexState publishes once through each established
   // transport (window CustomEvent + H2O replay event); no third notification.
   equal(runtime.counters.completeIndexStateEvents - eventsBefore, 2);
-  // Automatic reconciliation is deferred: no schedule, fetch, lease, mutation, timer.
+  // The user-driven click schedules exactly ONE bounded zero-delay reconcile
+  // task; nothing else happens until that task fires. The memory canary now
+  // gates only the automatic (generic-inspection) lane — a real native click
+  // is never deferred, because a deferred click left live branch switches
+  // with an intent nothing ever consumed (zero fetches, stale authority).
   const trace = TRACE(runtime);
-  equal(trace.includes('trusted-reconcile-deferred'), true);
+  equal(trace.includes('trusted-reconcile-deferred'), false);
   equal(trace.includes('trusted-native-branch-click'), false);
   equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
   equal(runtime.status().selectedPathConfirmationFetchCount, 0);
@@ -664,7 +700,7 @@ await fixture('B: projection enabled + gate false — capture binds but schedule
   equal(runtime.counters.networkReads - netBefore, 0);
   equal(runtime.storage.state.writes - writesBefore, 0);
   equal(runtime.counters.authorityPublications - publicationsBefore, 0);
-  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 0);
+  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 1);
   equal(runtime.status().refreshTimerPending, false);
   // The captured turn's canonical primary was NOT mutated by the click.
   equal(runtime.status().count, 38);
@@ -741,7 +777,9 @@ await fixture('B: exact native return to the canonical answer clears stale witho
   equal(runtime.counters.networkReads - networkBefore, 0);
   equal(runtime.storage.state.writes - storageBefore, 0);
   equal(runtime.counters.authorityPublications - publicationsBefore, 0);
-  equal(runtime.counters.timerSchedules - timersBefore, 0);
+  // Each of the two user clicks schedules its bounded zero-delay reconcile
+  // task (the second cancels the first); no other timer is created.
+  equal(runtime.counters.timerSchedules - timersBefore, 2);
   equal(runtime.counters.rafSchedules - rafBefore, 1);
   equal(runtime.status().selectedPathAcceptanceCount, 0);
   equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
@@ -852,7 +890,7 @@ await fixture('B: unchanged validated host refresh preserves branch-stale state 
   equal(providerCalls, 3);
 });
 
-await fixture('B: reconciled explicit refresh clears the captured stale revision only after validation', async () => {
+await fixture('B: reconciled prefix refresh remains contained until complete graph publication', async () => {
   const rows = buildRows(39);
   const reconciledRows = withPrimaryAId(rows, 'gate5-pref-q-17', 'gate5-pref-a-17-branch-2');
   let providerCalls = 0;
@@ -875,13 +913,17 @@ await fixture('B: reconciled explicit refresh clears the captured stale revision
   const result = await runtime.api.refreshCompleteTurnIndexProjection();
   equal(result.status, 'complete-refresh-validated');
   equal(runtime.counters.networkReads - readsBefore, 1);
-  equal(runtime.storage.state.writes - writesBefore, 1);
+  equal(runtime.storage.state.writes - writesBefore, 0);
+  // The harness counter instruments entry to the publication arbiter. The
+  // call occurs once, but the pending transaction rejects the prefix before
+  // canonical state or cache bytes are mutated.
   equal(runtime.counters.authorityPublications - publicationsBefore, 1);
-  equal(runtime.status().branchSelectionStale, false);
+  equal(runtime.status().branchSelectionStale, true);
   equal(runtime.status().branchSelectionStaleRevision, revision);
-  equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-17');
+  equal(runtime.status().branchTransactionStateCode, 'pending');
   equal(runtime.status().completeCount, 39);
-  equal(runtime.api.getTurnRecordByQId('gate5-pref-q-17')?.primaryAId, 'gate5-pref-a-17-branch-2');
+  equal(runtime.api.getTurnRecordByQId('gate5-pref-q-17')?.primaryAId, 'gate5-pref-a-17');
   equal(runtime.status().autoBranchReconciliationEnabled, false);
 });
 
@@ -974,7 +1016,7 @@ await fixture('B: click first observed during a clean in-flight refresh remains 
   equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-01');
 });
 
-await fixture('B: manual refresh waits for its own validation when an older request is active', async () => {
+await fixture('B: manual prefix refresh remains contained after an older request completes', async () => {
   const rows = buildRows();
   const reconciledRows = withPrimaryAId(rows, 'gate5-pref-q-01', 'gate5-pref-a-01-branch-2');
   const olderRequest = deferred();
@@ -1001,8 +1043,9 @@ await fixture('B: manual refresh waits for its own validation when an older requ
   await olderOperation;
   await manualOperation;
   equal(providerCalls, 3);
-  equal(runtime.status().branchSelectionStale, false);
-  equal(runtime.status().branchSelectionStaleQId, null);
+  equal(runtime.status().branchSelectionStale, true);
+  equal(runtime.status().branchSelectionStaleQId, 'gate5-pref-q-01');
+  equal(runtime.status().branchTransactionStateCode, 'pending');
   equal(runtime.status().refreshTimerPending, false);
 });
 
@@ -1131,12 +1174,14 @@ await fixture('E: TRUE -> disable -> re-enable never reactivates reconciliation 
   runtime.api.setCompleteTurnIndexProjectionPreference(true);
   equal(runtime.status().enabled, true);
   equal(runtime.status().autoBranchReconciliationEnabled, false);
-  // A native click now must not start reconciliation until explicitly re-enabled.
+  // The canary stays false after preference toggling; a native click is
+  // user-driven work and still schedules exactly its one bounded task — the
+  // canary governs only the automatic lane and is never silently reactivated.
   const zeroBefore = pendingZeroDelayTimerIds(runtime);
   equal(dispatchTrustedBranchClick(runtime, 'gate5-pref-q-01'), true);
   equal(runtime.status().selectedPathConfirmationScheduledCount, 0);
-  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 0);
-  ok(TRACE(runtime).includes('trusted-reconcile-deferred'));
+  equal(pendingZeroDelayTimerIds(runtime).length - zeroBefore.length, 1);
+  equal(TRACE(runtime).includes('trusted-reconcile-deferred'), false);
 });
 
 await fixture('E: TRUE -> clear -> re-enable never reactivates reconciliation (Correction 2)', () => {

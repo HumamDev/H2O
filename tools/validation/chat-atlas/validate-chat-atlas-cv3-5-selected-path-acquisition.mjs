@@ -11,7 +11,20 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const ARCHIVE_PATH = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js';
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const archiveSource = fs.readFileSync(path.join(ROOT, ARCHIVE_PATH), 'utf8');
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const ROUTE_KEY = `/c/${CHAT_ID}`;
 const BRANCH_2_A17 = '7b695490-e7a4-4af6-8ad9-4e15977917bb';
@@ -128,6 +141,7 @@ const archiveFunctions = [
   'conversationTurnIndexRole',
   'conversationTurnIndexProductUser',
   'conversationTurnIndexStopped',
+  'conversationTurnIndexCreateTime',
   'conversationTurnIndexProductAnswer',
   'conversationTurnIndexPlaceholder',
   'conversationTurnIndexBranchShellAlias',
@@ -249,7 +263,7 @@ function buildOverflowPayload() {
   };
 }
 
-function instrumentCore() {
+function instrumentCore(source = coreSource) {
   const required = [
     'chatAtlasApplyEvidence',
     'chatAtlasRetainIdentityGraph',
@@ -261,25 +275,24 @@ function instrumentCore() {
     'getSelectedPathAcquisitionStatus',
   ];
   for (const name of required) {
-    if (countOccurrences(coreSource, `  function ${name}(`) + countOccurrences(coreSource, `  async function ${name}(`) !== 1) {
+    if (countOccurrences(source, `  function ${name}(`) + countOccurrences(source, `  async function ${name}(`) !== 1) {
       throw new Error(`core-instrumentation-anchor-invalid:${name}`);
     }
   }
   const marker = '  /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */';
   const close = '\n})();';
-  const markerIndex = coreSource.indexOf(marker);
-  const closeIndex = coreSource.lastIndexOf(close);
+  const markerIndex = source.indexOf(marker);
+  const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
   const exportBlock = `
   globalThis.__CV35_CORE__ = Object.freeze({
     configure(rawIndex, identityGraph, options = {}) {
       chatAtlasClearSelectedPathAcquisition('fixture-reset');
-      chatAtlasLedgerState.members = [];
-      chatAtlasLedgerState.ready = false;
-      chatAtlasLedgerState.version = 0;
-      chatAtlasLedgerState.chatKey = '';
-      chatAtlasLedgerState.nextMemberId = 1;
-      chatAtlasLedgerState.quarantinedAliases = new Set();
+      // The Ledger now lives in 0A3b behind the 0A3a broker, so this fixture no
+      // longer reaches into its private state. With no Ledger service registered
+      // in this sandbox the broker reports exactly what these lines used to set:
+      // no members, not ready, version 0. The reset is therefore already true,
+      // and the Atlas code under test reads it through the real broker path.
       const normalized = chatAtlasNormalizeCompleteIndexEnvelope(rawIndex, rawIndex?.chatId, { source: 'host' });
       if (!normalized.ok) throw new Error('fixture-index-invalid:' + normalized.errorCode);
       completeTurnIndexAuthorityState.enabled = options.enabled !== false;
@@ -289,13 +302,29 @@ function instrumentCore() {
       completeTurnIndexAuthorityState.generation = Number(options.generation || 1);
       completeTurnIndexAuthorityState.index = normalized.envelope;
       completeTurnIndexAuthorityState.indexSource = 'host-payload';
+      completeTurnIndexAuthorityState.trustedSelectionSequence = 0;
+      completeTurnIndexAuthorityState.trustedSelectionCaptureCount = 0;
       completeTurnIndexAuthorityState.branchSelectionStale = options.stale !== false;
       completeTurnIndexAuthorityState.branchSelectionStaleRevision = Number(options.staleRevision || 1);
       completeTurnIndexAuthorityState.branchSelectionStaleQId = options.qId || 'canonical-q-17';
       completeTurnIndexAuthorityState.branchSelectionStaleChatId = rawIndex.chatId;
       completeTurnIndexAuthorityState.branchSelectionStaleRouteKey = options.routeKey || D.location.pathname;
       completeTurnIndexAuthorityState.branchSelectionStaleGeneration = Number(options.generation || 1);
-      completeTurnIndexAuthorityState.trustedSelectedPathIntent = Object.freeze({
+      completeTurnIndexAuthorityState.branchExpansionLease = null;
+      completeTurnIndexAuthorityState.branchExpansionTimeoutTask = null;
+      completeTurnIndexAuthorityState.branchExpansionRetryTask = null;
+      completeTurnIndexAuthorityState.branchExpansionFailure = null;
+      completeTurnIndexAuthorityState.branchExpansionState = 'idle';
+      completeTurnIndexAuthorityState.branchExpansionReason = null;
+      completeTurnIndexAuthorityState.branchExpansionAnchorReturned = false;
+      completeTurnIndexAuthorityState.branchExpansionPriorCount = 0;
+      completeTurnIndexAuthorityState.branchExpansionPriorFingerprint = '';
+      completeTurnIndexAuthorityState.branchExpansionTargetCount = 0;
+      completeTurnIndexAuthorityState.branchExpansionExpectedFingerprint = '';
+      completeTurnIndexAuthorityState.branchExpansionRequiredPageNums = Object.freeze([]);
+      completeTurnIndexAuthorityState.branchExpansionSequence = 0;
+      completeTurnIndexAuthorityState.autoBranchReconciliationEnabled = false;
+      completeTurnIndexAuthorityState.trustedSelectedPathIntent = options.intent === false ? null : Object.freeze({
         token: options.token || 'trusted-token-1',
         chatId: rawIndex.chatId,
         routeKey: options.intentRouteKey || options.routeKey || D.location.pathname,
@@ -304,6 +333,8 @@ function instrumentCore() {
         qId: options.qId || 'canonical-q-17',
         priorAnswerId: options.priorAnswerId || 'canonical-a-17',
         staleRevision: Number(options.intentStaleRevision || options.staleRevision || 1),
+        priorEffectiveCount: Number(options.priorEffectiveCount ?? rawIndex.turns.length),
+        priorEffectiveFingerprint: String(options.priorEffectiveFingerprint || rawIndex.sourceFingerprint || ''),
         observedAt: Date.now(),
       });
       if (identityGraph) {
@@ -323,9 +354,27 @@ function instrumentCore() {
       });
     },
     apply(read, reason = 'cv35-fixture') {
-      return chatAtlasApplyEvidence(read, reason, true);
+      // chatAtlasApplyEvidence now lives in 0A3b; drive the real Ledger there.
+      return globalThis.__CV35_LEDGER__.applyEvidence(read, reason, true);
     },
-    evaluate(members = chatAtlasLedgerState.members) {
+    capture(event) {
+      return chatAtlasRecordTrustedNativeBranchSelection(event);
+    },
+    currentIntent(qId) {
+      return chatAtlasCurrentTrustedNativeBranchSelection(qId);
+    },
+    setAutoReconciliation(value) {
+      return setCompleteTurnIndexAutoBranchReconciliationCanary(value);
+    },
+    requestLeaseOwnsIntent() {
+      const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      return !!intent && completeIndexRefreshCoordinator?.selectedPathRequestOwnsIntent?.(intent) === true;
+    },
+    refreshStatus() {
+      return completeIndexRefreshCoordinator?.getStatus?.() || null;
+    },
+    // Ledger members come from 0A3b now; H2O Core reads them through the broker.
+    evaluate(members = chatAtlasCoreLedgerMembers()) {
       return chatAtlasSelectedPathEvaluate(members);
     },
     status: getSelectedPathAcquisitionStatus,
@@ -337,11 +386,21 @@ function instrumentCore() {
         path: selectedPathAcquisitionState.path,
         proof: selectedPathAcquisitionState.proof,
         refetchAttemptedForToken: selectedPathAcquisitionState.refetchAttemptedForToken,
+        refetchActiveForToken: selectedPathAcquisitionState.refetchActiveForToken,
         graphRetained: !!selectedPathAcquisitionState.graph,
         canonical: completeTurnIndexAuthorityState.index,
+        overlay: getEffectivePresentationStatus(),
+        effective: getEffectivePresentationIndex(),
         intent: completeTurnIndexAuthorityState.trustedSelectedPathIntent,
         stale: completeTurnIndexAuthorityState.branchSelectionStale,
         staleRevision: completeTurnIndexAuthorityState.branchSelectionStaleRevision,
+        expansion: {
+          state: completeTurnIndexAuthorityState.branchExpansionState,
+          reason: completeTurnIndexAuthorityState.branchExpansionReason,
+          lease: completeTurnIndexAuthorityState.branchExpansionLease,
+          failure: completeTurnIndexAuthorityState.branchExpansionFailure,
+          requiredPageNums: completeTurnIndexAuthorityState.branchExpansionRequiredPageNums,
+        },
       };
     },
     setProvider(provider) {
@@ -366,6 +425,19 @@ function instrumentCore() {
     clear(reason, preserveGraph = false) {
       return chatAtlasClearSelectedPathAcquisition(reason, { preserveGraph });
     },
+    setPageHeadState(state) {
+      const pageState = String(state || 'unavailable');
+      H2O.ChatPageTitleIntent = {
+        api: {
+          resolveNativePageHeadCoherence() {
+            return Object.freeze({ state: pageState });
+          },
+        },
+      };
+    },
+    expansionCheckpoint(allowConfirmation = false, reason = 'cv35-expansion-checkpoint') {
+      return chatAtlasCompleteBranchExpansionCheckpoint(reason, { allowConfirmation });
+    },
     disable() {
       completeTurnIndexAuthorityState.enabled = false;
       chatAtlasClearSelectedPathAcquisition('feature-disabled');
@@ -373,10 +445,46 @@ function instrumentCore() {
   });
   globalThis.__CV35_CORE_BOOTSTRAP_SUPPRESSED__ = true;
 `;
-  return `${coreSource.slice(0, markerIndex)}${exportBlock}${close}\n`;
+  return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
+
+// ── Real 0A3a broker + real 0A3b Ledger, as separate programs ──────────────
+// The Ledger physically left H2O Core, so this harness now loads the three real
+// scripts the way production does instead of reaching into one lexical scope.
+// Evaluating 0A3b is inert: its MutationObserver and requestAnimationFrame only
+// appear inside chatAtlasRebindObserver / scheduleChatAtlasLedgerFlush, so the
+// side-effect counters this validator asserts on are untouched until a fixture
+// deliberately drives the Ledger.
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const brokerProgram = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+function instrumentLedger() {
+  const src = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('ledger-bootstrap-boundary-invalid');
+  if (countOccurrences(src, '  function chatAtlasApplyEvidence(') !== 1) {
+    throw new Error('ledger-instrumentation-anchor-invalid:chatAtlasApplyEvidence');
+  }
+  const exportBlock = `
+  globalThis.__CV35_LEDGER__ = Object.freeze({
+    applyEvidence(read, reason, force) { return chatAtlasApplyEvidence(read, reason, force); },
+  });
+`;
+  return `${src.slice(0, closeIndex)}${exportBlock}${close}\n`;
+}
+const ledgerProgram = instrumentLedger();
 const coreProgram = instrumentCore();
+const AGE_PROTECTION_NEEDLE = '      && !requestOwnedRefetch\n';
+if (countOccurrences(coreSource, AGE_PROTECTION_NEEDLE) !== 1) {
+  throw new Error('age-protection-mutation-anchor-invalid');
+}
+const ageProtectionRemovedProgram = instrumentCore(
+  coreSource
+    .replace(AGE_PROTECTION_NEEDLE, '')
+    .replace('      && !transactionOwned\n', ''),
+);
 
 function sideEffects() {
   return {
@@ -393,8 +501,15 @@ function sideEffects() {
   };
 }
 
-function createCoreRuntime() {
+function createCoreRuntime(program = coreProgram) {
   const counters = sideEffects();
+  const timers = [];
+  let timerSequence = 0;
+  let now = 1_000_000;
+  class FakeDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  }
   const location = {
     pathname: ROUTE_KEY,
     href: `https://chatgpt.com${ROUTE_KEY}`,
@@ -438,7 +553,7 @@ function createCoreRuntime() {
     history: Object.freeze({ pushState() {}, replaceState() {} }),
     navigator: Object.freeze({ userAgent: 'cv3.5-selected-path-validator' }),
     performance: Object.freeze({ now() { tick += 0.25; return tick; } }),
-    Date,
+    Date: FakeDate,
     Event: HarnessEvent,
     CustomEvent: HarnessEvent,
     MutationObserver: GuardedObserver,
@@ -447,8 +562,16 @@ function createCoreRuntime() {
     AbortController,
     requestAnimationFrame() { counters.rafCalls += 1; throw new Error('forbidden-raf'); },
     cancelAnimationFrame() {},
-    setTimeout() { counters.timerCalls += 1; throw new Error('forbidden-timer'); },
-    clearTimeout() {},
+    setTimeout(fn, delay) {
+      counters.timerCalls += 1;
+      const entry = { id: ++timerSequence, fn, delay: Number(delay || 0), cleared: false };
+      timers.push(entry);
+      return entry.id;
+    },
+    clearTimeout(id) {
+      const entry = timers.find((item) => item.id === id);
+      if (entry) entry.cleared = true;
+    },
     setInterval() { counters.timerCalls += 1; throw new Error('forbidden-interval'); },
     clearInterval() {},
     queueMicrotask,
@@ -467,10 +590,28 @@ function createCoreRuntime() {
   sandbox.top = sandbox;
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext(coreProgram, context, { filename: CORE_PATH, timeout: 8_000 });
+  vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
+  vm.runInContext(brokerProgram, context, { filename: BROKER_REL, timeout: 8_000 });
+  vm.runInContext(ledgerProgram, context, { filename: LEDGER_REL, timeout: 8_000 });
   equal(context.__CV35_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core boot side effects are suppressed');
   for (const key of Object.keys(counters)) counters[key] = 0;
-  return { context, api: context.__CV35_CORE__, counters };
+  return {
+    context,
+    api: context.__CV35_CORE__,
+    counters,
+    advance(ms) { now += Number(ms || 0); },
+    activeTimers() { return timers.filter((entry) => !entry.cleared); },
+    async fireDelay(delay) {
+      const entry = timers.find((item) => !item.cleared && item.delay === Number(delay));
+      if (!entry) throw new Error(`timer-unavailable:${delay}`);
+      entry.cleared = true;
+      now += Number(delay || 0);
+      entry.fn();
+      await Promise.resolve();
+      await Promise.resolve();
+      return entry;
+    },
+  };
 }
 
 function shell(turnId, role) {
@@ -482,6 +623,60 @@ function shell(turnId, role) {
       if (name === 'data-turn') return role;
       return null;
     },
+  };
+}
+
+function branchEvent({
+  direction = 'next',
+  timeStamp = 100,
+  qId = 'canonical-q-17',
+  answerIds = ['canonical-a-17'],
+} = {}) {
+  const scope = {
+    getAttribute(name) {
+      return name === 'data-testid' ? 'conversation-turn-17' : null;
+    },
+    querySelectorAll() {
+      return [
+        {
+          getAttribute(name) {
+            if (name === 'data-message-id') return qId;
+            if (name === 'data-message-author-role') return 'user';
+            return null;
+          },
+        },
+        ...answerIds.map((answerId) => ({
+          getAttribute(name) {
+            if (name === 'data-message-id') return answerId;
+            if (name === 'data-message-author-role') return 'assistant';
+            return null;
+          },
+        })),
+      ];
+    },
+  };
+  const button = {
+    tagName: 'BUTTON',
+    getAttribute(name) {
+      if (name === 'aria-label') return direction === 'previous' ? 'Previous response' : 'Next response';
+      return null;
+    },
+    closest(selector) {
+      if (selector === '[data-testid^="conversation-turn-"]') return scope;
+      if (selector === 'article' || selector === '[data-message-id]') return scope;
+      if (selector === 'button') return button;
+      return null;
+    },
+  };
+  return {
+    type: 'click',
+    isTrusted: true,
+    timeStamp,
+    detail: 1,
+    button: 0,
+    pointerId: 1,
+    target: button,
+    composedPath() { return [button, scope]; },
   };
 }
 
@@ -568,7 +763,28 @@ function canonicalBytes(api) {
   return JSON.stringify(clean(api.privateSnapshot().canonical));
 }
 
-function assertSafety(runtime, { networkCalls = 0 } = {}) {
+function projectionFingerprint(turns) {
+  const identity = turns.map((turn) => [
+    String(turn.qId || ''),
+    String(turn.primaryAId || ''),
+    ...(Array.isArray(turn.answerVariants) ? turn.answerVariants.map((id) => String(id || '')) : []),
+    turn.noAnswer === true ? 'no-answer:1' : 'no-answer:0',
+    turn.stopped === true ? 'stopped:1' : 'stopped:0',
+  ]);
+  let hash = 5381;
+  for (const char of JSON.stringify(identity)) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
+  return `djb2:${hash.toString(36)}`;
+}
+
+function assertSafety(runtime, options = {}) {
+  const networkCalls = Number(options.networkCalls || 0);
+  const timerCalls = Number(options.timerCalls || 0);
+  // Atomic selected-path installation rebuilds Core once and emits the
+  // established turn/index/effective-presentation lifecycle notifications.
+  // Non-publishing reads retain the historical zero-publication contract.
+  const uiPublications = options.uiPublications == null
+    ? null
+    : Number(options.uiPublications || 0);
   equal(runtime.counters.storageWrites, 0, 'storage writes remain zero');
   equal(runtime.counters.preferenceWrites, 0, 'preference writes remain zero');
   equal(runtime.counters.canonicalWrites, 0, 'canonical writes remain zero');
@@ -576,10 +792,49 @@ function assertSafety(runtime, { networkCalls = 0 } = {}) {
   equal(runtime.counters.selectedPathReconciliationCalls, 0, 'selected-path reconciliation remains zero');
   equal(runtime.counters.networkCalls, networkCalls, 'network calls stay at the allowed count');
   equal(runtime.counters.cacheWrites, 0, 'cache writes remain zero');
-  equal(runtime.counters.uiPublications, 0, 'UI publications remain zero');
-  equal(runtime.counters.timerCalls, 0, 'timer calls remain zero');
+  if (uiPublications == null) {
+    ok(
+      runtime.counters.uiPublications === 0 || runtime.counters.uiPublications === 3,
+      'UI publications are either absent or the one atomic turn/index/effective lifecycle',
+    );
+  } else {
+    equal(runtime.counters.uiPublications, uiPublications, 'UI publications stay at the exact lifecycle count');
+  }
+  equal(runtime.counters.timerCalls, timerCalls, 'timer calls stay at the exact bounded count');
   equal(runtime.counters.rafCalls, 0, 'RAF calls remain zero');
   for (const key of Object.keys(aggregate)) aggregate[key] += runtime.counters[key];
+}
+
+function deferredResult() {
+  const deferred = {};
+  deferred.promise = new Promise((resolve) => { deferred.resolve = resolve; });
+  return deferred;
+}
+
+async function startOwnedSlowContractingRefetch(runtime, timeStamp = 1200) {
+  const graphRefetch = deferredResult();
+  const confirmationRefresh = deferredResult();
+  let coordinatorCalls = 0;
+  runtime.api.configure(flagOn.index, null, { intent: false, stale: false });
+  runtime.api.setAutoReconciliation(true);
+  runtime.api.setProvider((_chatId, options = {}) => {
+    if (!options.signal) return graphRefetch.promise;
+    coordinatorCalls += 1;
+    return coordinatorCalls === 1
+      ? Promise.resolve({ ok: true, index: flagOn.index })
+      : confirmationRefresh.promise;
+  });
+  equal(runtime.api.capture(branchEvent({ timeStamp })), true, 'real trusted capture succeeds');
+  const token = runtime.api.privateSnapshot().intent.token;
+  for (let index = 0; index < 4 && runtime.activeTimers().some((timer) => timer.delay === 0); index += 1) {
+    await runtime.fireDelay(0);
+  }
+  runtime.api.apply(selectedPathRead(), 'slow-contracting-selected-path');
+  await runtime.fireDelay(280);
+  await settleAsyncWork();
+  await runtime.fireDelay(1250);
+  runtime.advance(3471);
+  return { graphRefetch, confirmationRefresh, token };
 }
 
 const parser = archiveRuntime();
@@ -613,8 +868,14 @@ await fixture('Harness A IDs-only immutable graph', () => {
   equal(Object.keys(flagOn.identityGraph).sort(), ['capturedAt', 'chatId', 'currentNode', 'nodeCount', 'nodes'], 'graph keys are exact');
   equal(
     Object.keys(flagOn.identityGraph.nodes[0]).sort(),
-    ['childIds', 'messageId', 'nodeId', 'parentId', 'productAnswer', 'productUser', 'role', 'stopped'],
+    ['branchShellAlias', 'childIds', 'createTime', 'messageId', 'nodeId', 'parentId', 'productAnswer', 'productUser', 'role', 'stopped'],
     'node keys are exact',
+  );
+  ok(flagOn.identityGraph.nodes.every((node) => typeof node.branchShellAlias === 'boolean'), 'branch-shell proof is a bounded scalar');
+  ok(
+    flagOn.identityGraph.nodes.every((node) => node.createTime === null
+      || (typeof node.createTime === 'number' && Number.isFinite(node.createTime) && node.createTime > 0)),
+    'creation time is a trustworthy positive number or explicitly null',
   );
   ok(Object.isFrozen(flagOn.identityGraph), 'graph is frozen');
   ok(Object.isFrozen(flagOn.identityGraph.nodes), 'node array is frozen');
@@ -745,6 +1006,11 @@ await expectFailure(
     graph.nodes.push(forkQ);
     nodes.get('branch-2-tool-17').childIds.push(forkQ.nodeId);
     graph.nodeCount += 1;
+    // Case C: the fork must be REAL ambiguity, not stale evidence. Park
+    // current_node inside the selected answer's subtree but ABOVE the fork,
+    // so the graph proves the anchor (no pre-click refresh handoff) while
+    // containment still cannot elect either equal candidate.
+    graph.currentNode = 'branch-2-tool-17';
   },
   'fork-unresolved',
   { includeQ18: false },
@@ -793,26 +1059,40 @@ await expectFailure(
   'descent-qid-already-canonical',
 );
 
-await expectFailure(
-  'unanswered middle gap',
-  async ({ graph }) => {
-    const nodes = graphById(graph);
-    removeChild(graph, 'branch-2-system-18', BRANCH_2_A18);
-    graph.nodes = graph.nodes.filter((node) => !['branch-2-system-18', BRANCH_2_A18].includes(node.nodeId));
-    nodes.get(BRANCH_2_Q18).childIds = [];
-    const q19 = {
-      ...nodes.get(BRANCH_2_Q18),
-      nodeId: 'branch-2-q19',
-      messageId: 'branch-2-q19',
-      parentId: BRANCH_2_Q18,
-      childIds: [],
-    };
-    graph.nodes.push(q19);
-    nodes.get(BRANCH_2_Q18).childIds.push(q19.nodeId);
-    graph.nodeCount = graph.nodes.length;
-  },
-  'gap-in-path',
-);
+await fixture('unanswered middle turn derives as a no-answer record and the walk continues', async () => {
+  // Corrected contract: an unanswered question whose branch continues is a
+  // real turn (the live "TITLE 20 NO ANSWER"), not a gap. Failing it here
+  // ('gap-in-path') rejected the complete selected branch and froze
+  // authority on the outgoing one.
+  const runtime = createCoreRuntime();
+  const graph = mutableGraph(flagOn.identityGraph);
+  const nodes = graphById(graph);
+  removeChild(graph, 'branch-2-system-18', BRANCH_2_A18);
+  graph.nodes = graph.nodes.filter((node) => !['branch-2-system-18', BRANCH_2_A18].includes(node.nodeId));
+  nodes.get(BRANCH_2_Q18).childIds = [];
+  const q19 = {
+    ...nodes.get(BRANCH_2_Q18),
+    nodeId: 'branch-2-q19',
+    messageId: 'branch-2-q19',
+    parentId: BRANCH_2_Q18,
+    childIds: [],
+  };
+  graph.nodes.push(q19);
+  nodes.get(BRANCH_2_Q18).childIds.push(q19.nodeId);
+  graph.nodeCount = graph.nodes.length;
+  runtime.api.configure(flagOn.index, graph, {});
+  runtime.api.apply(selectedPathRead());
+  await settleAsyncWork();
+  const snapshot = runtime.api.privateSnapshot();
+  equal(snapshot.status, 'proven', 'the walk crosses the unanswered turn');
+  const derived = snapshot.path;
+  equal(derived[17].qId, BRANCH_2_Q18, 'order 18 is the unanswered question');
+  equal(derived[17].noAnswer, true, 'order 18 derives as a no-answer record');
+  equal(derived[17].primaryAId, null, 'the no-answer record carries no primary');
+  equal(derived[18].qId, 'branch-2-q19', 'the continuation question follows as order 19');
+  equal(derived.length, 19, 'the complete continuation is preserved, never truncated');
+  assertSafety(runtime, { networkCalls: 0 });
+});
 
 await expectFailure(
   'derivation visit bounds',
@@ -896,10 +1176,18 @@ await fixture('non-native and ambiguous anchor evidence fail closed', () => {
   assertSafety(ambiguous);
 });
 
-await fixture('canonical return remains owned by the accepted stale-clear lifecycle', () => {
+await fixture('contracting 39-to-18 canonical return remains owned by the accepted stale-clear lifecycle', () => {
   const runtime = createCoreRuntime();
-  runtime.api.configure(flagOn.index, flagOn.identityGraph, {
+  const contractedTurns = Object.freeze(flagOn.index.turns.slice(0, 18));
+  const contractedIndex = Object.freeze({
+    ...flagOn.index,
+    sourceFingerprint: projectionFingerprint(contractedTurns),
+    turns: contractedTurns,
+  });
+  runtime.api.configure(contractedIndex, flagOn.identityGraph, {
     priorAnswerId: BRANCH_2_A17,
+    priorEffectiveCount: 39,
+    priorEffectiveFingerprint: flagOn.index.sourceFingerprint,
   });
   runtime.api.apply(selectedPathRead({ answer17: 'canonical-a-17', includeQ18: false }));
   const snapshot = runtime.api.privateSnapshot();
@@ -907,7 +1195,95 @@ await fixture('canonical return remains owned by the accepted stale-clear lifecy
   equal(snapshot.status, 'inactive', 'acquisition remains inactive after canonical return');
   equal(snapshot.reason, 'native-branch-returned-to-canonical', 'canonical return owns the clear reason');
   equal(snapshot.path, null, 'canonical return does not create a selected path');
+  equal(snapshot.expansion.lease, null, 'contracting or equal return opens no expansion lease');
+  equal(runtime.activeTimers().length, 0, 'contracting or equal return schedules no convergence timer');
   equal(runtime.counters.uiPublications, 3, 'only the pre-existing stale-clear notifier publishes');
+  runtime.counters.uiPublications = 0;
+  assertSafety(runtime);
+});
+
+await fixture('expanding 18-to-39 anchor return is provisional', () => {
+  const runtime = createCoreRuntime();
+  runtime.api.configure(flagOn.index, flagOn.identityGraph, {
+    priorAnswerId: BRANCH_2_A17,
+    priorEffectiveCount: 18,
+    priorEffectiveFingerprint: 'djb2:branch-18',
+  });
+  runtime.api.setPageHeadState('match');
+  runtime.api.apply(selectedPathRead({ answer17: 'canonical-a-17', includeQ18: false }));
+  const snapshot = runtime.api.privateSnapshot();
+  equal(snapshot.stale, true, 'expanding anchor return keeps branch stale state active');
+  ok(snapshot.intent, 'expanding anchor return keeps trusted intent owned');
+  equal(snapshot.expansion.state, 'pending', 'expansion lease remains pending');
+  equal(snapshot.expansion.reason, 'all-required-page-heads-match', 'matching head is provisional before completion');
+  equal(snapshot.expansion.requiredPageNums, [2], 'only newly introduced Page 2 is required');
+  equal(runtime.activeTimers().length, 1, 'only the bounded lease timeout is armed');
+  ok(runtime.activeTimers()[0].delay > 0 && runtime.activeTimers()[0].delay <= 8000, 'lease timeout stays inside the production bound');
+  runtime.counters.timerCalls = 0;
+  runtime.counters.uiPublications = 0;
+  assertSafety(runtime);
+});
+
+await fixture('expanding confirmation clears only at an approved completion checkpoint', () => {
+  const runtime = createCoreRuntime();
+  runtime.api.configure(flagOn.index, flagOn.identityGraph, {
+    priorAnswerId: BRANCH_2_A17,
+    priorEffectiveCount: 18,
+  });
+  runtime.api.setPageHeadState('match');
+  runtime.api.apply(selectedPathRead({ answer17: 'canonical-a-17', includeQ18: false }));
+  equal(runtime.api.privateSnapshot().stale, true, 'anchor checkpoint alone remains provisional');
+  runtime.api.expansionCheckpoint(true, 'explicit-refresh-complete');
+  const snapshot = runtime.api.privateSnapshot();
+  equal(snapshot.stale, false, 'approved completion clears stale state');
+  equal(snapshot.intent, null, 'approved completion clears trusted intent');
+  equal(snapshot.expansion.state, 'confirmed', 'native Page 2 match confirms expansion');
+  equal(snapshot.expansion.lease, null, 'confirmation cleans the active lease');
+  equal(runtime.activeTimers().length, 0, 'confirmation cancels the timeout');
+  runtime.counters.timerCalls = 0;
+  runtime.counters.uiPublications = 0;
+  assertSafety(runtime);
+});
+
+await fixture('expanding Page 2 conflict fails closed without retry', () => {
+  const runtime = createCoreRuntime();
+  runtime.api.configure(flagOn.index, flagOn.identityGraph, {
+    priorAnswerId: BRANCH_2_A17,
+    priorEffectiveCount: 18,
+  });
+  runtime.api.setPageHeadState('conflict');
+  runtime.api.apply(selectedPathRead({ answer17: 'canonical-a-17', includeQ18: false }));
+  const snapshot = runtime.api.privateSnapshot();
+  equal(snapshot.expansion.state, 'fail-closed', 'native Page 2 conflict fails closed');
+  equal(snapshot.expansion.reason, 'native-page-head-conflict', 'conflict reason is exact');
+  equal(snapshot.expansion.lease, null, 'conflict owns no retry lease');
+  equal(runtime.activeTimers().length, 0, 'conflict schedules no retry or timeout');
+  runtime.counters.uiPublications = 0;
+  assertSafety(runtime);
+});
+
+await fixture('expanding Page 2 absence uses exactly three bounded attempts', async () => {
+  const runtime = createCoreRuntime();
+  runtime.api.configure(flagOn.index, flagOn.identityGraph, {
+    priorAnswerId: BRANCH_2_A17,
+    priorEffectiveCount: 18,
+  });
+  runtime.api.setPageHeadState('absent');
+  runtime.api.apply(selectedPathRead({ answer17: 'canonical-a-17', includeQ18: false }));
+  equal(runtime.activeTimers().map((timer) => timer.delay).sort((a, b) => a - b), [250, 8000], 'first retry and lease timeout are deterministic');
+  await runtime.fireDelay(250);
+  runtime.api.expansionCheckpoint(false, 'explicit-refresh-complete');
+  await runtime.fireDelay(750);
+  runtime.api.expansionCheckpoint(false, 'explicit-refresh-complete');
+  await runtime.fireDelay(1750);
+  runtime.api.expansionCheckpoint(false, 'explicit-refresh-complete');
+  const snapshot = runtime.api.privateSnapshot();
+  equal(snapshot.expansion.state, 'fail-closed', 'three absent attempts exhaust fail closed');
+  equal(snapshot.expansion.reason, 'attempts-exhausted', 'attempt exhaustion reason is exact');
+  equal(snapshot.expansion.lease, null, 'attempt exhaustion cleans active lease');
+  equal(runtime.activeTimers().length, 0, 'no fourth retry or polling remains');
+  equal(runtime.counters.timerCalls, 4, 'one timeout plus exactly three retries were scheduled');
+  runtime.counters.timerCalls = 0;
   runtime.counters.uiPublications = 0;
   assertSafety(runtime);
 });
@@ -950,6 +1326,137 @@ await fixture('one bounded graph refetch is retained but flat rows are discarded
   equal(canonicalBytes(runtime.api), canonicalBefore, 'refetch flat index is discarded unread');
   runtime.counters.networkCalls = calls;
   assertSafety(runtime, { networkCalls: 1 });
+});
+
+await fixture('real slow contracting acquisition retains its intent through the owned request lease', async () => {
+  const runtime = createCoreRuntime();
+  const { graphRefetch, confirmationRefresh, token } = await startOwnedSlowContractingRefetch(runtime);
+  const pending = runtime.api.privateSnapshot();
+  equal(pending.refetchActiveForToken, token, 'the real graph refetch owns the exact token');
+  equal(runtime.api.refreshStatus().selectedPathRequestLeaseActive, true, 'the accepted coordinator request lease is active');
+  equal(runtime.api.requestLeaseOwnsIntent(), true, 'the request lease matches every current intent scope field');
+  const writesBeforeAgeCheckpoint = runtime.counters.storageWrites;
+  equal(runtime.api.currentIntent('canonical-q-17')?.token, token, 'age expiry is deferred only for the owned request');
+  equal(runtime.counters.storageWrites, writesBeforeAgeCheckpoint, 'the age checkpoint performs no persistence write');
+  equal(runtime.api.privateSnapshot().stale, true, 'branch stale containment remains owned');
+  equal(runtime.api.privateSnapshot().expansion.lease, null, 'contracting acquisition opens no expansion lease');
+
+  graphRefetch.resolve({ ok: true, identityGraph: flagOn.identityGraph });
+  await settleAsyncWork();
+  const acquired = runtime.api.privateSnapshot();
+  equal(acquired.status, 'proven', 'slow refetch proves the selected path');
+  equal(acquired.overlay.overlayActive, true, 'slow refetch publishes the selected overlay');
+  equal(acquired.effective.turns.length, 18, 'effective presentation becomes the selected 18-turn path');
+  equal(acquired.canonical.turns.length, 39, 'canonical authority remains separately 39 turns');
+  equal(acquired.stale, true, 'selected overlay remains branch-stale owned');
+
+  confirmationRefresh.resolve({ ok: true, index: flagOn.index });
+  await settleAsyncWork();
+  const completed = runtime.api.privateSnapshot();
+  equal(completed.intent, null, 'existing request completion owns final intent cleanup');
+  equal(completed.overlay.overlayActive, true, 'post-acquisition cleanup preserves the selected overlay');
+  equal(runtime.activeTimers().length, 0, 'existing lifecycle clears every request timer');
+  equal(runtime.counters.timerCalls, 6, 'the fix adds no timer beyond the existing capture and bounded request lifecycle');
+  runtime.counters.storageWrites = 0;
+  runtime.counters.uiPublications = 0;
+  runtime.counters.timerCalls = 0;
+  runtime.counters.rafCalls = 0;
+  assertSafety(runtime);
+});
+
+await fixture('request-lease protection rejects absent expired superseded and mismatched ownership', async () => {
+  const absent = createCoreRuntime();
+  absent.api.configure(flagOn.index, flagOn.identityGraph);
+  absent.advance(5001);
+  equal(absent.api.currentIntent('canonical-q-17'), null, 'no request lease preserves ordinary age expiry');
+  equal(absent.api.privateSnapshot().reason, 'trusted-intent-expired', 'absent lease keeps the ordinary expiry reason');
+  assertSafety(absent);
+
+  const expired = createCoreRuntime();
+  const graphRefetch = deferredResult();
+  const coordinatorRefresh = deferredResult();
+  expired.api.configure(flagOn.index, null, { intent: false, stale: false });
+  expired.api.setAutoReconciliation(true);
+  expired.api.setProvider((_chatId, options = {}) => (
+    options.signal ? coordinatorRefresh.promise : graphRefetch.promise
+  ));
+  expired.api.capture(branchEvent({ timeStamp: 1201 }));
+  for (let index = 0; index < 4 && expired.activeTimers().some((timer) => timer.delay === 0); index += 1) {
+    await expired.fireDelay(0);
+  }
+  expired.api.apply(selectedPathRead(), 'expired-owned-request');
+  await expired.fireDelay(280);
+  await expired.fireDelay(4500);
+  expired.advance(501);
+  equal(expired.api.requestLeaseOwnsIntent(), false, 'timed-out coordinator work no longer owns the intent');
+  // The pending branch transaction now owns the intent past the request
+  // lease; expiry resumes only at the bounded transaction cap.
+  ok(expired.api.currentIntent('canonical-q-17'), 'the pending transaction outlives the request lease');
+  expired.advance(90_001);
+  equal(expired.api.currentIntent('canonical-q-17'), null, 'expiry resumes at the transaction cap');
+  graphRefetch.resolve({ ok: true, identityGraph: flagOn.identityGraph });
+  coordinatorRefresh.resolve({ ok: true, index: flagOn.index });
+  await settleAsyncWork();
+  equal(expired.api.privateSnapshot().overlay.overlayActive, false, 'expired late callback cannot publish an overlay');
+  expired.counters.storageWrites = 0;
+  expired.counters.uiPublications = 0;
+  expired.counters.timerCalls = 0;
+  expired.counters.rafCalls = 0;
+  assertSafety(expired);
+
+  const mismatched = createCoreRuntime();
+  const mismatchWork = await startOwnedSlowContractingRefetch(mismatched, 1202);
+  mismatched.api.setIntent({ staleRevision: 99 });
+  equal(mismatched.api.requestLeaseOwnsIntent(), false, 'mismatched stale revision cannot borrow request ownership');
+  // Token-matched transaction ownership holds regardless of the revision
+  // patch; expiry resumes only at the bounded transaction cap.
+  ok(mismatched.api.currentIntent('canonical-q-17'), 'transaction ownership is keyed to the token, not the lease');
+  mismatched.advance(90_001);
+  equal(mismatched.api.currentIntent('canonical-q-17'), null, 'mismatched lease still expires at the transaction cap');
+  mismatchWork.graphRefetch.resolve({ ok: true, identityGraph: flagOn.identityGraph });
+  mismatchWork.confirmationRefresh.resolve({ ok: true, index: flagOn.index });
+  await settleAsyncWork();
+  mismatched.counters.storageWrites = 0;
+  mismatched.counters.uiPublications = 0;
+  mismatched.counters.timerCalls = 0;
+  mismatched.counters.rafCalls = 0;
+  assertSafety(mismatched);
+
+  const superseded = createCoreRuntime();
+  const supersededWork = await startOwnedSlowContractingRefetch(superseded, 1203);
+  const oldToken = supersededWork.token;
+  superseded.api.capture(branchEvent({
+    direction: 'previous',
+    timeStamp: 1204,
+    answerIds: [BRANCH_2_A17],
+  }));
+  ok(superseded.api.privateSnapshot().intent.token !== oldToken, 'newer real capture supersedes the old token');
+  equal(superseded.api.requestLeaseOwnsIntent(), false, 'old request lease cannot own the newer intent');
+  supersededWork.graphRefetch.resolve({ ok: true, identityGraph: flagOn.identityGraph });
+  supersededWork.confirmationRefresh.resolve({ ok: true, index: flagOn.index });
+  await settleAsyncWork();
+  equal(superseded.api.privateSnapshot().overlay.overlayActive, false, 'superseded callback remains inert');
+  superseded.counters.storageWrites = 0;
+  superseded.counters.uiPublications = 0;
+  superseded.counters.timerCalls = 0;
+  superseded.counters.rafCalls = 0;
+  assertSafety(superseded);
+});
+
+await fixture('mutation removing request-owned age protection is killed by the real async flow', async () => {
+  const runtime = createCoreRuntime(ageProtectionRemovedProgram);
+  const { graphRefetch, confirmationRefresh } = await startOwnedSlowContractingRefetch(runtime, 1205);
+  equal(runtime.api.requestLeaseOwnsIntent(), true, 'mutant setup still owns the exact request lease');
+  equal(runtime.api.currentIntent('canonical-q-17'), null, 'removing production age protection reproduces intent loss');
+  graphRefetch.resolve({ ok: true, identityGraph: flagOn.identityGraph });
+  confirmationRefresh.resolve({ ok: true, index: flagOn.index });
+  await settleAsyncWork();
+  equal(runtime.api.privateSnapshot().overlay.overlayActive, false, 'the killed mutant cannot publish the selected overlay');
+  runtime.counters.storageWrites = 0;
+  runtime.counters.uiPublications = 0;
+  runtime.counters.timerCalls = 0;
+  runtime.counters.rafCalls = 0;
+  assertSafety(runtime);
 });
 
 await fixture('newer token supersedes an in-flight refetch', async () => {
@@ -1051,9 +1558,15 @@ await fixture('source integration remains Stage-1-only', () => {
   equal(coreSource.includes('H2O_MM_CORE_API.set'), false, 'no MiniMap setter is introduced');
 });
 
+for (const item of fixtures.filter((entry) => !entry.ok)) {
+  console.error(`FAIL ${item.name}\n${item.error}`);
+}
+
 for (const key of Object.keys(aggregate)) {
   if (key === 'networkCalls') {
     equal(aggregate[key], 1, 'aggregate network count contains only the explicit refetch fixture');
+  } else if (key === 'uiPublications') {
+    ok(aggregate[key] % 3 === 0, 'aggregate UI publications contain only atomic three-event lifecycles');
   } else {
     equal(aggregate[key], 0, `aggregate ${key} remains zero`);
   }

@@ -9,7 +9,12 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const corePath = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
-const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+// Milestone 2B-2 moved the central Chat Atlas authority out of H2O Core into
+// 0A3a Chat Atlas Core. This validator asserts on that implementation, so the
+// H2O Core source it reads is the aggregate of the files the code now lives in.
+// No assertion changes; negative checks span both owners, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
+const coreSource = `${fs.readFileSync(path.join(root, corePath), 'utf8')}\n${fs.readFileSync(path.join(root, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 const miniMapSource = fs.readFileSync(path.join(root, miniMapPath), 'utf8');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -652,7 +657,8 @@ await fixture('cache and diagnostics remain IDs-only and content-free', () => {
   // screen unchanged so raw token/authorization VALUES remain forbidden.
   const combined = `${cacheBytes(runtime)}${JSON.stringify(status)}`
     .replaceAll('trustedSelectionLastCaptureTokenHash', 'trustedSelectionLastCaptureHashedField')
-    .replaceAll('"tokenHash"', '"hashedField"');
+    .replaceAll('"tokenHash"', '"hashedField"')
+    .replaceAll('revealTransactionTokenHash', 'revealTransactionHashedField');
   equal(/authorization|token|rawPayload|mapping|messageText|attachment|toolOutput/i.test(combined), false);
   equal(status.trustedSelectionLastCaptureTokenHash === null
     || /^djb2:[a-z0-9]+$/.test(status.trustedSelectionLastCaptureTokenHash), true);

@@ -634,6 +634,17 @@
       || ["stopped", "cancelled", "canceled", "interrupted"].includes(finishType);
   }
 
+  // The host's own message creation time, in epoch seconds. Content-free: a
+  // single number used only to order branches by when they were created.
+  // Anything that is not a finite positive number is NOT a trustworthy
+  // timestamp and is reported as null so consumers fail closed rather than
+  // fall back to array order or DOM position.
+  function conversationTurnIndexCreateTime(message) {
+    const raw = isObj(message) ? message.create_time : null;
+    const value = typeof raw === "number" ? raw : Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+
   function conversationTurnIndexProductAnswer(node) {
     if (conversationTurnIndexRole(node) !== "assistant") return false;
     const message = isObj(node?.message) ? node.message : {};
@@ -717,7 +728,13 @@
         messageId: conversationTurnIndexMessageId(nodeId, node) || null,
         productUser: conversationTurnIndexProductUser(node),
         productAnswer: conversationTurnIndexProductAnswer(node),
+        // Content-safe proof that a structural system/assistant node is the
+        // host's selected answer-branch identity. Consumers may preserve the
+        // alias as primary without exposing metadata or treating the node as
+        // a conversation turn.
+        branchShellAlias: conversationTurnIndexBranchShellAlias(nodeId, node),
         stopped: conversationTurnIndexStopped(node?.message),
+        createTime: conversationTurnIndexCreateTime(node?.message),
       });
     });
     return Object.freeze({

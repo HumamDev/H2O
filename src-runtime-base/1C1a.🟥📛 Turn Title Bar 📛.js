@@ -2044,10 +2044,44 @@ ${S_BAR}:active{
 
   /* ───────────────────────────── 🟨 TIME — SCHEDULING / REACTIVITY 📝🔓💥 ───────────────────────────── */
 
+  // The live owned answer bar for one message element, ignoring NO ANSWER
+  // shells. Probe only — never creates.
+  const DOM_liveAnswerTitleBar = (msgEl) => {
+    if (!msgEl?.querySelectorAll) return null;
+    try {
+      for (const bar of Array.from(msgEl.querySelectorAll(DOM_selScoped(UI_.BAR)))) {
+        if (!DOM_isNoAnswerTitleBar(bar)) return bar;
+      }
+    } catch {}
+    return null;
+  };
+
+  // Remount recovery. STATE_.seen records that title data was already produced
+  // for an id — not that the id still has a bar. The host can rebuild an
+  // assistant subtree without the H2O bar (a collapsed range recycled by the
+  // virtualizer, or ordinary scroll churn), and because processed ids were
+  // never re-queued that loss was permanent. Re-ensure the bar in place from
+  // the stored title; never regenerate title content.
+  const TIME_recoverRemountedTitleBar = (msgEl, id) => {
+    if (!msgEl || !id) return false;
+    // A stack-relocated bar is still the one bar for this answer: the page is
+    // collapsed and the native slot is legitimately empty. Ensure would reuse
+    // that row, so skip entirely rather than touch an active projection.
+    try { if (DOM_findStackedBarByAnswerId(id)) return false; } catch {}
+    if (DOM_liveAnswerTitleBar(msgEl)) return false;
+    const stored = STATE_.titles[id];
+    if (typeof stored === 'string' && UTIL_textTrim(stored)) DOM_setTitleOnAnswer(msgEl, stored);
+    else DOM_ensureTitleBar(msgEl);
+    return true;
+  };
+
   const TIME_queueProcessAnswer = (msgEl, attempt = 0) => {
     const id = DOM_getAnswerId(msgEl);
     if (!id) return;
-    if (STATE_.seen.has(id)) return;
+    if (STATE_.seen.has(id)) {
+      TIME_recoverRemountedTitleBar(msgEl, id);
+      return;
+    }
 
     const existing = STATE_.pendingTimers.get(id);
     if (existing) { try { clearTimeout(existing); } catch {} }
@@ -2645,6 +2679,20 @@ MOD_OBJ.api.public = Object.freeze({
   applySetting: API_AT_applySetting,
 });
 
+  // Global order for a question-only (NO ANSWER) turn. It has no assistant
+  // message, so the answer-id path cannot reach it: resolve through the same
+  // authoritative question owner every answered turn uses, so both kinds of
+  // row read one identity source.
+  const DOM_getNoAnswerBarTurnNumber = (bar) => {
+    const rt = W.H2O?.turnRuntime || null;
+    if (!bar || !rt) return 0;
+    try {
+      const host = bar.closest?.(SEL_.TURN) || null;
+      if (!host) return 0;
+      return DOM_getCanonicalQuestionOwnerNumber(DOM_getUserCandidates(host), rt);
+    } catch { return 0; }
+  };
+
   const DOM_refreshVisibleTurnNumbers = () => {
     let changed = 0;
     for (const msgEl of DOM_getAssistantMessages()) {
@@ -2658,6 +2706,20 @@ MOD_OBJ.api.public = Object.freeze({
       const after = String(bar.getAttribute?.('data-h2o-turn-num') || '');
       if (before !== after) changed += 1;
     }
+    // NO ANSWER rows in the live flow were previously stamped once, by
+    // whichever path built them, and never reconciled — so a number minted
+    // under one branch survived a branch switch (the live "TITLE 4" on a
+    // global order 19 turn). Title-stack rows are excluded: the Pages
+    // Controller owns those and rebuilds them from the same effective index.
+    try {
+      for (const bar of Array.from(D.querySelectorAll(`${SEL_.OWNED_BAR_ANY}[data-at-no-answer="1"]`))) {
+        if (bar.hasAttribute?.('data-h2o-in-title-stack')) continue;
+        const before = String(bar.getAttribute?.('data-h2o-turn-num') || '');
+        DOM_projectTurnNumber(bar, DOM_getNoAnswerBarTurnNumber(bar));
+        const after = String(bar.getAttribute?.('data-h2o-turn-num') || '');
+        if (before !== after) changed += 1;
+      }
+    } catch (e) { DIAG_err('refresh:noAnswerNumbers', e); }
     return changed;
   };
 

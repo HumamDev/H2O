@@ -9,7 +9,20 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const CHAT_B = '7928b333-12f4-8328-9e41-6a01def45128';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -109,6 +122,15 @@ function instrumentCore() {
   return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
+
+// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
+// The six Ledger-facing H2O.turnRuntime properties are contributed by 0A3a now,
+// so the runtime under test loads the three real scripts the way production
+// does. Evaluating 0A3b is inert (no top-level observer or rAF).
+const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
+const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const LEDGER_PROGRAM = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
 const coreProgram = instrumentCore();
 
 function createStorage(initial = new Map()) {
@@ -226,6 +248,8 @@ function createRuntime({ chatId = CHAT_ID, storage = createStorage(), provider =
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   vm.runInContext(coreProgram, context, { filename: CORE_PATH, timeout: 4_000 });
+  vm.runInContext(BROKER_PROGRAM, context, { filename: BROKER_REL, timeout: 4_000 });
+  vm.runInContext(LEDGER_PROGRAM, context, { filename: LEDGER_REL, timeout: 4_000 });
   equal(context.__CV34_AUTHORITY_BOOTSTRAP_SUPPRESSED__, true, 'Core observer/bootstrap is suppressed');
   if (provider) context.H2O.archiveBoot = { fetchConversationTurnIndex: provider };
   const runtime = { context, api: context.__CV34_COMPLETE_INDEX_AUTHORITY__, counters, storage, location };

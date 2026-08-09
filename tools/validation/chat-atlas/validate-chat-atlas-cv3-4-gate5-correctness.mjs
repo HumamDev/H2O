@@ -14,7 +14,20 @@ const archivePath = 'src-runtime-base/0D3a.⬛️🗄️ Transcript Archive Engi
 const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const baselineSha = 'be9fcf7369ef66c8db6d2e9acde6b9357fbd58a7';
 const feedbackBaselineSha = '87098eb7cc6ca4edb7eab8617ece92a11df42c53';
-const coreSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(root, rel), 'utf8'))
+  .join('\n');
 const paginationSource = fs.readFileSync(path.join(root, paginationPath), 'utf8');
 const archiveSource = fs.readFileSync(path.join(root, archivePath), 'utf8');
 const miniMapSource = fs.readFileSync(path.join(root, miniMapPath), 'utf8');
@@ -383,6 +396,15 @@ function createRefreshHarness({
         'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
       ];
       const COMPLETE_TURN_INDEX_REFRESH_LIMITS = { trustedSelectionWindowMs: 5000 };
+      const chatAtlasBranchTransactionCurrent = () => null;
+      const chatAtlasOpenBranchTransaction = () => null;
+      const chatAtlasCloseBranchTransaction = () => false;
+      const chatAtlasBranchTransactionTrace = () => {};
+      // This qualification harness intentionally carries no retained identity
+      // graph. Keep the production post-event seam fail-safe so Gate 5 can
+      // continue into its isolated coordinator assertions.
+      const chatAtlasTryPublishRetainedBranchTransaction = () => Object.freeze({ handled: false });
+
       ${causeDeclaration}
       const completeTurnIndexAuthorityState = {
         enabled: true,
@@ -3000,7 +3022,7 @@ await fixture('G5 combined live parity: single-child graph shape plus boundary-c
   equal(harness.timers.size, 0);
 });
 
-await fixture('SEP Path-2 gate false rejects changed selected-path work before acceptance', async () => {
+await fixture('SEP Path-2 with a live click intent accepts settlement evidence while the canary is false', async () => {
   // Drive the exact review-confirmed Path-2 bypass with a successful provider
   // result that would change the same-qId primary if the coordinator accepted it.
   const envelopeRuntime = createEnvelopeRuntime(coreSource);
@@ -3027,26 +3049,29 @@ await fixture('SEP Path-2 gate false rejects changed selected-path work before a
     answerIds: [LIVE_BRANCH_CURRENT_A, LIVE_BRANCH_PREVIOUS_A],
     structureKnown: true,
   }]);
+  // Corrected contract: while the user's click intent is alive, Path-2's
+  // native inspection at the captured anchor IS the branch-settlement
+  // evidence — it is trusted and accepted even with the automatic canary
+  // false. Rejecting it froze live branch switches on the outgoing authority
+  // (the 17/20 screenshot). Without a live intent the automatic lane is
+  // still rejected, which CV-3.8 pins separately.
   const evidenceEntries = harness.lifecycleTrace().filter((entry) => entry.event === 'selected-evidence-created');
   ok(evidenceEntries.length >= 1);
-  equal(evidenceEntries.every((entry) => entry.trusted === false), true);
-  equal(evidenceEntries.every((entry) => !entry.token), true);
-  equal(harness.diagnostics().selectedPathLastScheduleTrusted, false);
+  equal(evidenceEntries.every((entry) => entry.trusted === true), true);
+  equal(evidenceEntries.every((entry) => !!entry.tokenHash), true);
+  equal(harness.diagnostics().selectedPathLastScheduleTrusted, true);
   const status = harness.coordinator.getStatus();
-  equal(status.selectedPathAcceptanceCount, 0);
-  equal(status.selectedPathRejectedCount, 1);
-  equal(status.timerPending, false);
+  equal(status.selectedPathAcceptanceCount, 1);
+  equal(status.selectedPathRejectedCount, 0);
   equal(status.fetchCount, 0);
   equal(status.selectedPathConfirmationScheduledCount, 0);
   equal(status.selectedPathConfirmationLeaseActive, false);
-  equal(status.selectedPathRequestLeaseActive, false);
-  equal(status.trailingRequired, false);
+  equal(status.selectedPathRequestLeaseActive, true);
   equal(harness.lifecycleTrace().some((entry) => entry.event === 'trusted-native-branch-click'), false);
   equal(harness.providerQueue.length, 1);
   equal(harness.writes.length, 0);
   equal(harness.published.length, 0);
   equal(harness.currentIndex().turns.find((row) => row.qId === LIVE_BRANCH_Q)?.primaryAId, LIVE_BRANCH_CURRENT_A);
-  equal(harness.timers.size, 0);
 });
 
 await fixture('SEP selected-path debounce is revoked when qualification turns off', async () => {

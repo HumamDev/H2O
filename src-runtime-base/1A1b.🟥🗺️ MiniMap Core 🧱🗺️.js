@@ -79,6 +79,88 @@ function callChatPagesCtl(methodName, args, fallbackFn) {
     : false;
 }
 
+/* ── Chat Page Structure Engine seam (0C3a) ────────────────────────────────
+ * The chat page's structural implementation - logical page model, sections,
+ * structural rows, NO ANSWER bar creation, the page-start anchor, and Chat
+ * Page Divider DOM/placement/repair - now lives in
+ * src-runtime-base/0C3a Chat Page Structure Engine.
+ *
+ * The public MiniMap surfaces below are unchanged; these are thin forwards so
+ * existing consumers keep working without being rewritten. Resolution is per
+ * call and fails closed, exactly like the chatPagesCtl seam above, because
+ * 0C3a installs before MiniMap Core and the kernel bridge may not be up yet.
+ */
+function getChatPageStructureApi() {
+  try {
+    return TOPW.H2O_MM_SHARED?.get?.()?.api?.mm?.chatPageStructure
+      || TOPW.H2O_CHAT_PAGE_STRUCTURE_API
+      || null;
+  } catch {
+    return null;
+  }
+}
+
+function callChatPageStructure(methodName, args, fallbackFn) {
+  const api = getChatPageStructureApi();
+  const fn = api && typeof api[methodName] === 'function' ? api[methodName] : null;
+  if (fn) {
+    try {
+      return fn(...(Array.isArray(args) ? args : []));
+    } catch (err) {
+      try { console.warn('[MiniMap Core] chatPageStructure delegation failed:', methodName, err); } catch {}
+    }
+  }
+  return typeof fallbackFn === 'function' ? fallbackFn() : undefined;
+}
+
+function buildChatPageSections(...args) {
+  return callChatPageStructure('getSections', args, () => ({ sections: new Map(), allHosts: [] }));
+}
+
+function buildChatPageAnswerRows(...args) {
+  return callChatPageStructure('getRows', args, () => []);
+}
+
+function findChatPageRowByAnswerId(...args) {
+  return callChatPageStructure('findRowByAnswerId', args, () => null);
+}
+
+function renderChatPageDividers(...args) {
+  return callChatPageStructure('renderDividers', args, () => false);
+}
+
+function buildChatPageUnitModel(...args) {
+  return callChatPageStructure('buildPageUnitModel', args, () => null);
+}
+
+function reconcileChatPageUnits(...args) {
+  return callChatPageStructure('reconcilePageUnits', args, () => null);
+}
+
+function getChatPageDividerPageNum(...args) {
+  return callChatPageStructure('getDividerPageNum', args, () => 0);
+}
+
+function getPageStartTurnWrapper(...args) {
+  return callChatPageStructure('getPageStartTurnWrapper', args, () => null);
+}
+
+function ensureNoAnswerTitleBar(...args) {
+  return callChatPageStructure('ensureNoAnswerTitleBar', args, () => null);
+}
+
+function getNoAnswerTitleBarEl(...args) {
+  return callChatPageStructure('getNoAnswerTitleBarEl', args, () => null);
+}
+
+function isChatPageDividerHoverInfoBoxEnabled(...args) {
+  return callChatPageStructure('isChatPageDividerHoverInfoBoxEnabled', args, () => true);
+}
+
+function syncChatPageStatusCardSetting(...args) {
+  return callChatPageStructure('syncChatPageStatusCardSetting', args, () => undefined);
+}
+
 function AT_PUBLIC() {
   try {
     return TOPW.H2O?.AT?.tnswrttl?.api?.public || null;
@@ -228,7 +310,6 @@ function UM_PUBLIC() {
   const KEY_PAGE_LABEL_STYLE_SUFFIX = 'ui:page-label-style:v1';
   const KEY_PAGE_DIVIDERS_SUFFIX = 'ui:page-dividers:v1';
   const KEY_CHAT_PAGE_DIVIDERS_SUFFIX = 'ui:chat-pages:v1';
-  const KEY_CHUB_CHAT_MECHANISMS_V1 = 'h2o:prm:cgx:cntrlhb:state:chat-mechanisms:v1';
   const EV_CHAT_MECHANISMS_CHANGED = 'evt:h2o:chat-mechanisms:changed';
   const EV_PAGE_CHANGED = 'evt:h2o:pagination:pagechanged';
   const EV_MM_INDEX_HYDRATED = 'evt:h2o:minimap:index:hydrated';
@@ -244,12 +325,6 @@ function UM_PUBLIC() {
   const ATTR_PAGE_LABEL_STYLE = 'data-cgxui-page-label-style';
   const ATTR_PAGE_DIVIDERS = 'data-cgxui-page-dividers';
   const ATTR_CHAT_PAGE_DIVIDERS = 'data-cgxui-chat-pages';
-  const ATTR_CHAT_PAGE_DIVIDER = 'data-cgxui-chat-page-divider';
-  const ATTR_CHAT_PAGE_NUM = 'data-cgxui-chat-page-num';
-  const ATTR_CHAT_PAGE_COLLAPSED = 'data-cgxui-chat-page-collapsed';
-  const ATTR_CHAT_PAGE_HIDDEN = 'data-cgxui-chat-page-hidden';
-  const ATTR_CHAT_PAGE_TITLE_LIST = 'data-cgxui-chat-page-title-list';
-  const ATTR_CHAT_PAGE_TITLE_STATE = 'data-cgxui-chat-page-title-state';
   const ATTR_CHAT_PAGE_QUESTION_HIDDEN = 'data-cgxui-chat-page-question-hidden';
   const PAGE_LABEL_STYLE_DEFAULT = 'pill';
   const PAGE_LABEL_STYLE_PILL = 'pill';
@@ -980,9 +1055,116 @@ function UM_PUBLIC() {
     btn.dataset.surfaceRole = 'answer';
     btn.setAttribute('aria-label', `Go to answer ${idx || ''}`);
 
+    applyBranchBadgeAttrs(btn, String(meta?.questionId || turn?.questionId || '').trim(), answerId);
+
     const num = btn.querySelector('.cgxui-mm-num');
     if (num) num.textContent = String(idxNum || '');
     return btn;
+  }
+
+  // Branch position/total for one box on the effective path. Read from the
+  // Core's graph-derived badge map keyed by qId, never from mounted DOM order.
+  // Cached per projection fingerprint so a badge refresh never triggers work
+  // per DOM mutation.
+  let branchBadgeCache = { key: '', byQId: new Map() };
+
+  function getBranchBadgeMap() {
+    let key = '';
+    try {
+      const status = getCompleteIndexProjectionStatus();
+      if (status.enabled !== true) return null;
+      // Badges are computed from the EFFECTIVE path, so the cache is keyed by
+      // it. Canonical fingerprint/count alone cannot express a selected-branch
+      // change that leaves the canonical envelope untouched.
+      const effective = typeof getEffectivePathIdentity === 'function'
+        ? getEffectivePathIdentity()
+        : { effectivePathRevision: null, effectiveCount: 0, effectiveSource: 'canonical', overlayActive: false };
+      key = [
+        status.chatId || '',
+        status.routeGeneration || 0,
+        status.fingerprint || '',
+        status.count || 0,
+        effective.effectivePathRevision || '',
+        effective.effectiveCount || 0,
+        // effectiveSource is a distinct authority axis from overlayActive: the
+        // same overlay flag can be reached from different sources, and a source
+        // change alone must still invalidate the badge cache.
+        effective.effectiveSource || 'canonical',
+        effective.overlayActive ? 'overlay' : 'canonical',
+      ].join('|');
+    } catch { return null; }
+    if (key && branchBadgeCache.key === key) return branchBadgeCache.byQId;
+    const byQId = new Map();
+    try {
+      const rows = getTurnRuntimeApi()?.getChatAtlasBranchBadges?.() || [];
+      for (const row of rows) {
+        const qId = String(row?.qId || '').trim();
+        if (qId) byQId.set(qId, row);
+        // A box whose question identity cannot be resolved from its own row
+        // meta still owns its answer identity, so key the badge by both.
+        const aId = String(row?.primaryAId || '').trim();
+        if (aId && !byQId.has(aId)) byQId.set(aId, row);
+      }
+    } catch { return null; }
+    branchBadgeCache = { key, byQId };
+    return byQId;
+  }
+
+  function applyBranchBadgeAttrs(btn, questionId, answerId) {
+    if (!btn) return;
+    const map = getBranchBadgeMap();
+    const row = map
+      ? (
+        (questionId ? map.get(String(questionId).trim()) : null)
+        || (answerId ? map.get(String(answerId).trim()) : null)
+        || null
+      )
+      : null;
+    const qCount = Math.max(0, Number(row?.questionBranchCount || 0) || 0);
+    const qIndex = Math.max(0, Number(row?.questionBranchIndex || 0) || 0);
+    const aCount = Math.max(0, Number(row?.answerBranchCount || 0) || 0);
+    const aIndex = Math.max(0, Number(row?.answerBranchIndex || 0) || 0);
+    // A badge is shown only when that side genuinely has more than one
+    // variant, and only when the box still belongs to the same answer the
+    // badge was computed for.
+    const answerMatches = !row?.primaryAId || !answerId
+      || String(row.primaryAId) === String(answerId).trim();
+    const setOrClear = (name, value) => {
+      if (value) btn.setAttribute(name, String(value));
+      else btn.removeAttribute(name);
+    };
+    setOrClear('data-question-branch-index', qCount > 1 && qIndex > 0 ? qIndex : 0);
+    setOrClear('data-question-branch-count', qCount > 1 && qIndex > 0 ? qCount : 0);
+    setOrClear('data-answer-branch-index', answerMatches && aCount > 1 && aIndex > 0 ? aIndex : 0);
+    setOrClear('data-answer-branch-count', answerMatches && aCount > 1 && aIndex > 0 ? aCount : 0);
+    const parts = [];
+    if (qCount > 1 && qIndex > 0) parts.push(`Q ${qIndex}/${qCount}`);
+    if (answerMatches && aCount > 1 && aIndex > 0) parts.push(`A ${aIndex}/${aCount}`);
+    const label = parts.join(' · ');
+    setOrClear('data-branch-badge', label);
+    renderBranchBadgeEl(btn, label);
+  }
+
+  // The visible badge. It rides on the existing box - one box per effective
+  // turn, never an extra box for an alternative - and is removed the moment
+  // the turn stops branching so a stale badge cannot survive a switch.
+  function renderBranchBadgeEl(btn, label) {
+    let el = null;
+    try { el = btn.querySelector?.('.cgxui-mm-branch') || null; } catch {}
+    if (!label) {
+      if (el) { try { el.remove(); } catch {} }
+      return;
+    }
+    if (!el) {
+      try {
+        el = document.createElement('span');
+        el.className = 'cgxui-mm-branch';
+        el.setAttribute('aria-hidden', 'true');
+        btn.appendChild(el);
+      } catch { return; }
+    }
+    if (el.textContent !== label) el.textContent = label;
+    el.setAttribute('data-branch-parts', String(label.split(' · ').length));
   }
 
   function syncQuestionBtnMeta(qBtn, turn, band, qaMeta = null) {
@@ -6252,17 +6434,32 @@ function UM_PUBLIC() {
         overlayActive: false,
         count: 0,
         canonicalFingerprint: '',
+        effectiveFingerprint: '',
+        effectiveCount: 0,
         anchorQId: null,
         pathLength: 0,
+        generation: 0,
       });
     }
+    // The canonical fingerprint identifies the whole conversation graph and is
+    // unchanged by walking a different selected path through it. The effective
+    // fingerprint - the same one the Pages Controller reads as
+    // effectiveFingerprint - is what actually changes on a branch switch, so
+    // page-unit identity and coherence need it. Read through the existing
+    // INDEX verb: no third fingerprint model is introduced.
+    let index = null;
+    try { index = callEffectiveTurnRuntime('INDEX'); } catch { index = null; }
+    const effectiveTurns = Array.isArray(index?.turns) ? index.turns : [];
     return Object.freeze({
       source: String(status.source || 'canonical'),
       overlayActive: status.overlayActive === true,
       count: Math.max(0, Number(status.count || 0) || 0),
       canonicalFingerprint: String(status.canonicalFingerprint || ''),
+      effectiveFingerprint: String(index?.sourceFingerprint || ''),
+      effectiveCount: effectiveTurns.length,
       anchorQId: String(status.anchorQId || '') || null,
       pathLength: Math.max(0, Number(status.pathLength || 0) || 0),
+      generation: Math.max(0, Number(status.generation || 0) || 0),
     });
   }
 
@@ -6271,6 +6468,35 @@ function UM_PUBLIC() {
     return status.overlayActive === true
       && status.source === 'selected-path-overlay'
       && status.count > 0;
+  }
+
+  // The pinned projection status cannot carry effective-path identity, so the
+  // dedicated accessor supplies it. Absent (older Core) => canonical fallback,
+  // which reproduces the historical behaviour exactly.
+  function getEffectivePathIdentity() {
+    try {
+      const v = getTurnRuntimeApi()?.getChatAtlasEffectivePathIdentity?.();
+      if (v && typeof v === 'object') {
+        return {
+          available: true,
+          effectiveCount: Math.max(0, Number(v.effectiveCount || 0) || 0),
+          effectiveFingerprint: String(v.effectiveFingerprint || '') || null,
+          effectivePathIdentity: String(v.effectivePathIdentity || '') || null,
+          effectivePathRevision: String(v.effectivePathRevision || '') || null,
+          effectiveSource: String(v.effectiveSource || 'canonical'),
+          overlayActive: v.overlayActive === true,
+        };
+      }
+    } catch {}
+    return {
+      available: false,
+      effectiveCount: 0,
+      effectiveFingerprint: null,
+      effectivePathIdentity: null,
+      effectivePathRevision: null,
+      effectiveSource: 'canonical',
+      overlayActive: false,
+    };
   }
 
   function getCompleteIndexProjectionStatus() {
@@ -6292,6 +6518,36 @@ function UM_PUBLIC() {
           fingerprint: String(status.fingerprint || '') || null,
           completenessProof: String(status.completenessProof || '') || null,
           routeGeneration: Math.max(0, Number(status.routeGeneration || 0) || 0),
+          // Branch-transition fields. These were previously dropped here, so
+          // page-unit reconciliation could not tell that a trusted branch
+          // switch had begun. trustedSelectionIntentActive and
+          // branchSelectionStale are both set synchronously by the Core's
+          // trusted native branch capture - before ChatGPT replaces the
+          // mounted branch content - and clear only when the new presentation
+          // is rebuilt or the selection is abandoned. The three lease flags
+          // arrive later (coordinator acceptance, confirmation scheduling) and
+          // are carried through unchanged for continuity with 1C1b.
+          trustedSelectionIntentActive: status.trustedSelectionIntentActive === true,
+          branchTransactionPending: status.branchTransactionPending === true,
+          branchSelectionStale: status.branchSelectionStale === true,
+          branchExpansionPending: status.branchExpansionPending === true,
+          branchExpansionFailClosed: status.branchExpansionFailClosed === true,
+          branchExpansionState: String(status.branchExpansionState || 'idle'),
+          branchExpansionReason: String(status.branchExpansionReason || '') || null,
+          branchExpansionPriorCount: Math.max(0, Number(status.branchExpansionPriorCount || 0) || 0),
+          branchExpansionTargetCount: Math.max(0, Number(status.branchExpansionTargetCount || 0) || 0),
+          branchExpansionExpectedFingerprint:
+            String(status.branchExpansionExpectedFingerprint || '') || null,
+          branchExpansionRequiredPageNums: Object.freeze(
+            (Array.isArray(status.branchExpansionRequiredPageNums)
+              ? status.branchExpansionRequiredPageNums
+              : [])
+              .map((pageNum) => Math.max(0, Number(pageNum || 0) || 0))
+              .filter((pageNum, index, values) => pageNum > 1 && values.indexOf(pageNum) === index),
+          ),
+          selectedPathConfirmationPending: status.selectedPathConfirmationPending === true,
+          selectedPathConfirmationLeaseActive: status.selectedPathConfirmationLeaseActive === true,
+          selectedPathRequestLeaseActive: status.selectedPathRequestLeaseActive === true,
         };
       }
     } catch {}
@@ -6299,6 +6555,7 @@ function UM_PUBLIC() {
       enabled: false,
       authoritative: false,
       status: 'disabled',
+      branchTransactionPending: false,
       diagnosticStatus: null,
       chatId: null,
       count: 0,
@@ -6309,6 +6566,19 @@ function UM_PUBLIC() {
       fingerprint: null,
       completenessProof: null,
       routeGeneration: 0,
+      trustedSelectionIntentActive: false,
+      branchSelectionStale: false,
+      branchExpansionPending: false,
+      branchExpansionFailClosed: false,
+      branchExpansionState: 'idle',
+      branchExpansionReason: null,
+      branchExpansionPriorCount: 0,
+      branchExpansionTargetCount: 0,
+      branchExpansionExpectedFingerprint: null,
+      branchExpansionRequiredPageNums: Object.freeze([]),
+      selectedPathConfirmationPending: false,
+      selectedPathConfirmationLeaseActive: false,
+      selectedPathRequestLeaseActive: false,
     };
   }
 
@@ -8356,53 +8626,14 @@ function UM_PUBLIC() {
     return true;
   }
 
-  // Chat page divider: automatic structural divider inside the live chat surface.
-  function getChatPageTurnHost(turn = null) {
-    const turnId = String(turn?.turnId || '').trim();
-    const answerId = String(turn?.answerId || '').trim();
-    let answerEl = turn?.el || turn?.primaryAEl || turn?.answerEl || null;
-    if (!(answerEl?.isConnected)) {
-      const attached = turnId ? (S.answerByTurnId.get(turnId) || null) : null;
-      if (attached?.isConnected) answerEl = attached;
-    }
-    if (!(answerEl?.isConnected) && answerId) {
-      answerEl = resolveAnswerEl(answerId) || null;
-    }
-    if (!(answerEl?.isConnected) && turnId) {
-      const resolvedTurn = findTurnByAnyId(turnId) || null;
-      const resolvedAnswerId = String(resolvedTurn?.answerId || '').trim();
-      if (resolvedAnswerId) answerEl = resolveAnswerEl(resolvedAnswerId) || null;
-    }
-    if (!answerEl?.isConnected) {
-      // ChatGPT virtualizes message content out of far-away sections, but the
-      // turn <section> itself stays in the document with a stable
-      // data-turn-id. Anchor on the section so page membership and dividers
-      // keep working for turns whose content is not currently hydrated.
-      const sectionId = String(answerId || turnId.replace(/^turn:a:/, '') || '').trim();
-      if (sectionId) {
-        try {
-          const esc = (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(sectionId) : sectionId.replace(/"/g, '\\"');
-          const section = document.querySelector(`[data-testid^="conversation-turn-"][data-turn-id="${esc}"], [data-testid="conversation-turn"][data-turn-id="${esc}"]`);
-          if (section?.isConnected) return section;
-        } catch {}
-      }
-      return null;
-    }
-    if (turn && !turn.el) turn.el = answerEl;
-    if (turnId) S.answerByTurnId.set(turnId, answerEl);
-    return answerEl.closest('[data-testid="conversation-turn"], [data-testid^="conversation-turn"]') || answerEl;
-  }
 
 
   const ANSWER_TITLE_SEL = '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]';
-  const ANSWER_TITLE_LABEL_SEL = '[data-cgxui="atns-answer-title-label"][data-cgxui-owner="atns"]';
-  const ANSWER_TITLE_TEXT_SEL = '[data-cgxui="atns-answer-title-text"][data-cgxui-owner="atns"]';
   const ANSWER_TITLE_BADGE_SEL = '[data-cgxui="atns-answer-title-badge"][data-cgxui-owner="atns"]';
   const ANSWER_TITLE_ICON_SEL = '[data-cgxui="atns-answer-title-icon"][data-cgxui-owner="atns"]';
   const ANSWER_TITLE_COLLAPSED_ATTR = 'data-at-collapsed';
   const ANSWER_TITLE_NO_ANSWER_ATTR = 'data-at-no-answer';
   const ATTR_CHAT_PAGE_TITLE_ITEM = 'data-cgxui-chat-page-title-item';
-  const ATTR_CHAT_PAGE_NO_ANSWER = 'data-cgxui-chat-page-no-answer';
   const ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
   const EV_ANSWER_COLLAPSE = 'evt:h2o:answer:collapse';
 
@@ -8412,213 +8643,18 @@ function UM_PUBLIC() {
 
   // localStorage key for persisting which pages are in title-list mode (per chat)
   const KEY_TITLE_LIST_PAGES = 'h2o:prm:cgx:mnmp:state:titlelist:pages:v1';
-  const CHAT_PAGE_STATUS_CARD_ID = 'cgxui-chat-page-status-card';
-  const ATTR_CHAT_PAGE_STATUS_BOUND = 'data-cgxui-chat-page-status-bound';
 
-  function isChatPageDividerHoverInfoBoxEnabled() {
-    const cfg = storageGetJSON(KEY_CHUB_CHAT_MECHANISMS_V1, null);
-    const raw = String(cfg?.chatPageDividerHoverInfoBox || 'on').trim().toLowerCase();
-    return raw !== 'off';
-  }
 
-  function getChatPageDividerDotEl(divider = null) {
-    if (!divider?.querySelector) return null;
-    return divider.querySelector('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
-  }
 
-  function getChatPageDividerTextEl(divider = null) {
-    if (!divider?.querySelector) return null;
-    return divider.querySelector('.cgxui-chat-page-divider-text, .cgxui-pgnw-page-divider-text');
-  }
 
-  function ensureChatPageDividerMarkup(divider = null, pageNum = 1) {
-    if (!divider?.querySelector) return divider;
-    const label = getChatPageDividerLabelEl(divider);
-    if (!label) return divider;
-    let dot = getChatPageDividerDotEl(divider);
-    let textEl = getChatPageDividerTextEl(divider);
-    if (!dot) {
-      dot = document.createElement('span');
-      dot.className = divider.classList?.contains('cgxui-pgnw-page-divider')
-        ? 'cgxui-pgnw-page-divider-dot'
-        : 'cgxui-chat-page-divider-dot';
-      dot.setAttribute('aria-hidden', 'true');
-      label.insertBefore(dot, label.firstChild || null);
-    }
-    if (!textEl) {
-      textEl = document.createElement('span');
-      textEl.className = divider.classList?.contains('cgxui-pgnw-page-divider')
-        ? 'cgxui-pgnw-page-divider-text'
-        : 'cgxui-chat-page-divider-text';
-      textEl.textContent = `Page ${String(pageNum || 1)}`;
-      label.appendChild(textEl);
-    } else {
-      textEl.textContent = `Page ${String(pageNum || 1)}`;
-    }
-    return divider;
-  }
 
-  function ensureChatPageStatusCard() {
-    if (!isChatPageDividerHoverInfoBoxEnabled()) return null;
-    let card = S.chatPageStatusCardEl;
-    if (card?.isConnected) return card;
-    try { card = document.getElementById(CHAT_PAGE_STATUS_CARD_ID); } catch {}
-    if (!(card instanceof HTMLElement)) {
-      try {
-        card = document.createElement('div');
-        card.id = CHAT_PAGE_STATUS_CARD_ID;
-        card.setAttribute('role', 'tooltip');
-        card.setAttribute('aria-hidden', 'true');
-        card.setAttribute('data-cgxui-owner', UI_TOK.OWNER);
-        card.style.position = 'fixed';
-        card.style.left = '-9999px';
-        card.style.top = '-9999px';
-        card.style.zIndex = '2147483646';
-        card.style.pointerEvents = 'none';
-        card.style.maxWidth = '320px';
-        card.style.padding = '10px 12px';
-        card.style.borderRadius = '10px';
-        card.style.border = '1px solid rgba(148, 163, 184, 0.32)';
-        card.style.background = 'rgba(15, 23, 42, 0.96)';
-        card.style.color = '#e5eefc';
-        card.style.boxShadow = '0 12px 32px rgba(0, 0, 0, 0.34)';
-        card.style.font = '12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-        card.style.whiteSpace = 'pre';
-        card.style.opacity = '0';
-        card.style.visibility = 'hidden';
-        card.style.transform = 'translateY(4px)';
-        card.style.transition = 'opacity 120ms ease, transform 120ms ease';
-        document.body.appendChild(card);
-      } catch {
-        card = null;
-      }
-    }
-    S.chatPageStatusCardEl = card instanceof HTMLElement ? card : null;
-    return S.chatPageStatusCardEl;
-  }
 
-  function formatChatPageStatusCardText(state = null) {
-    const pageNum = Math.max(1, Number(state?.pageNum || 0) || 1);
-    const titleBarRoute = String(state?.titleBarRoute || 'unknown').trim() || 'unknown';
-    const dividerDotRoute = String(state?.dividerDotRoute || 'unknown').trim() || 'unknown';
-    const dividerDblClickRoute = String(state?.dividerDblClickRoute || 'unknown').trim() || 'unknown';
-    const mode = String(state?.mode || 'normal').trim() || 'normal';
-    const pageCollapsed = !!state?.pageCollapsed ? 'on' : 'off';
-    const pageCollapseDriverRaw = String(state?.pageCollapseDriver || 'legacy').trim() || 'legacy';
-    const pageCollapseMode = String(state?.pageCollapseMode || '').trim() || 'off';
-    const titleList = !!state?.titleListActive ? 'on' : 'off';
-    const titleState = String(state?.titleState || 'expanded').trim() || 'expanded';
-    const collapsedRows = Math.max(0, Number(state?.collapsedRows || 0) || 0);
-    const totalRows = Math.max(0, Number(state?.totalRows || 0) || 0);
-    const detachedHosts = Math.max(0, Number(state?.detachedHosts || 0) || 0);
-    const hiddenQuestionHosts = Math.max(0, Number(state?.hiddenQuestionHosts || 0) || 0);
-    const pageCollapseDriver = !state?.pageCollapsed && pageCollapseDriverRaw === 'legacy'
-      ? 'none (legacy fallback)'
-      : pageCollapseDriverRaw;
-    return [
-      `Page ${pageNum}`,
-      ``,
-      `Configured routes:`,
-      `- title-bar: ${titleBarRoute}`,
-      `- divider-dot: ${dividerDotRoute}`,
-      `- divider-dblclick: ${dividerDblClickRoute}`,
-      ``,
-      `Current page state:`,
-      `- mode: ${mode}`,
-      `- page-collapse: ${pageCollapsed}`,
-      `- page-collapse-driver: ${pageCollapseDriver}`,
-      `- page-collapse-mode: ${pageCollapseMode}`,
-      `- title-list: ${titleList}`,
-      `- title-state: ${titleState}`,
-      `- rows: ${collapsedRows}/${totalRows} collapsed`,
-      `- detached-hosts: ${detachedHosts}`,
-      `- hidden-question-hosts: ${hiddenQuestionHosts}`,
-    ].join('\n');
-  }
 
-  function hideChatPageStatusCard(anchor = null) {
-    const card = S.chatPageStatusCardEl;
-    if (!(card instanceof HTMLElement)) return false;
-    if (anchor && S.chatPageStatusCardAnchor && anchor !== S.chatPageStatusCardAnchor) return false;
-    S.chatPageStatusCardAnchor = null;
-    try { card.setAttribute('aria-hidden', 'true'); } catch {}
-    try { card.style.opacity = '0'; } catch {}
-    try { card.style.visibility = 'hidden'; } catch {}
-    try { card.style.transform = 'translateY(4px)'; } catch {}
-    return true;
-  }
 
-  function syncChatPageStatusCardSetting() {
-    if (isChatPageDividerHoverInfoBoxEnabled()) return true;
-    try { hideChatPageStatusCard(); } catch {}
-    const card = S.chatPageStatusCardEl;
-    if (card instanceof HTMLElement) {
-      try { card.remove(); } catch {}
-    }
-    S.chatPageStatusCardEl = null;
-    S.chatPageStatusCardAnchor = null;
-    return false;
-  }
 
-  function showChatPageStatusCard(divider = null) {
-    if (!(divider instanceof HTMLElement)) return false;
-    if (!isChatPageDividerHoverInfoBoxEnabled()) {
-      hideChatPageStatusCard(divider);
-      return false;
-    }
-    const card = ensureChatPageStatusCard();
-    if (!(card instanceof HTMLElement)) return false;
-    const pageNum = getChatPageDividerPageNum(divider);
-    const chatId = String(resolveChatId() || '').trim();
-    const state = getChatPageDividerDebugState(pageNum, chatId) || passiveGetChatPageDividerDebugState(pageNum, chatId);
-    card.textContent = formatChatPageStatusCardText(state);
 
-    try { card.style.left = '-9999px'; } catch {}
-    try { card.style.top = '-9999px'; } catch {}
-    try { card.style.visibility = 'hidden'; } catch {}
-    try { card.style.opacity = '0'; } catch {}
-    try { card.style.transform = 'translateY(4px)'; } catch {}
 
-    const rect = divider.getBoundingClientRect();
-    const viewportW = Math.max(0, Number(window.innerWidth || document.documentElement?.clientWidth || 0) || 0);
-    const viewportH = Math.max(0, Number(window.innerHeight || document.documentElement?.clientHeight || 0) || 0);
-    const margin = 10;
-    const width = Math.max(0, Number(card.offsetWidth || 0) || 0);
-    const height = Math.max(0, Number(card.offsetHeight || 0) || 0);
-    let left = rect.left + (rect.width / 2) - (width / 2);
-    let top = rect.top - height - margin;
-    if (top < margin) top = rect.bottom + margin;
-    left = Math.max(margin, Math.min(left, Math.max(margin, viewportW - width - margin)));
-    top = Math.max(margin, Math.min(top, Math.max(margin, viewportH - height - margin)));
 
-    try { card.style.left = `${Math.round(left)}px`; } catch {}
-    try { card.style.top = `${Math.round(top)}px`; } catch {}
-    try { card.style.visibility = 'visible'; } catch {}
-    try { card.style.opacity = '1'; } catch {}
-    try { card.style.transform = 'translateY(0)'; } catch {}
-    try { card.setAttribute('aria-hidden', 'false'); } catch {}
-    S.chatPageStatusCardAnchor = divider;
-    return true;
-  }
-
-  function bindChatPageDividerStatusCard(divider = null) {
-    if (!(divider instanceof HTMLElement)) return divider;
-    if (divider.getAttribute?.(ATTR_CHAT_PAGE_STATUS_BOUND) === '1') return divider;
-    try { divider.setAttribute(ATTR_CHAT_PAGE_STATUS_BOUND, '1'); } catch {}
-
-    const open = () => { try { showChatPageStatusCard(divider); } catch {} };
-    const close = (ev) => {
-      const next = ev?.relatedTarget;
-      if (next instanceof Node && divider.contains?.(next)) return;
-      try { hideChatPageStatusCard(divider); } catch {}
-    };
-
-    divider.addEventListener('pointerenter', open);
-    divider.addEventListener('pointerleave', close);
-    divider.addEventListener('focusin', open);
-    divider.addEventListener('focusout', close);
-    return divider;
-  }
 
   function bindChatPageMechanismsSettingsListener() {
     if (S.chatPageMechanismsListener) return true;
@@ -8758,327 +8794,25 @@ function UM_PUBLIC() {
     return answerMsgEl.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || answerMsgEl.parentElement || null;
   }
 
-  // ── Canonical Q+A pair contract (creator side) ─────────────────────────────
-  // • The Q+A pair (user prompt section + following assistant answer section)
-  //   is the atomic row/page unit.
-  // • The assistant answer owns the pair's single visible title bar.
-  // • NO ANSWER shells are only for true orphan user turns (no following
-  //   assistant answer).
-  // • Page dividers anchor before the pair start (question wrapper), never
-  //   between a question and its answer.
-  // • These helpers read chat DOM only — they must not create MiniMap → Chat
-  //   state coupling.
-  // ChatGPT wraps each turn <section data-testid="conversation-turn-N"
-  // data-turn="user|assistant"> in its own only-child wrapper DIV, so sibling
-  // walks between turn sections dead-end. Pair by document-order adjacency
-  // over the live turn-section list, guarded to the same conversation flow
-  // (main). A short cache keeps mass operations cheap.
-  const LIVE_CHAT_TURN_SECTION_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
-  let liveChatTurnSectionCache = { at: 0, list: [] };
 
-  function listLiveChatTurnSections() {
-    const now = Date.now();
-    if (now - liveChatTurnSectionCache.at <= 300 && liveChatTurnSectionCache.list.length) {
-      return liveChatTurnSectionCache.list;
-    }
-    let list = [];
-    try { list = qq(LIVE_CHAT_TURN_SECTION_SEL); } catch {}
-    liveChatTurnSectionCache = { at: now, list };
-    return list;
-  }
 
-  function getLiveChatTurnSectionForNode(node = null) {
-    const el = (node && node.nodeType === 1) ? node : null;
-    if (!el) return null;
-    const direct = el.closest?.(LIVE_CHAT_TURN_SECTION_SEL) || null;
-    if (direct) return direct;
-    // Wrapper div that owns a single turn section (2026 ChatGPT DOM shape).
-    try {
-      const inner = el.querySelectorAll?.(LIVE_CHAT_TURN_SECTION_SEL) || [];
-      if (inner.length === 1) return inner[0];
-    } catch {}
-    return null;
-  }
 
-  function getAdjacentLiveChatTurnHost(host = null, dir = 1) {
-    const section = getLiveChatTurnSectionForNode(host);
-    if (!section) return null;
-    const list = listLiveChatTurnSections();
-    const idx = list.indexOf(section);
-    if (idx < 0) return null;
-    const next = list[idx + (dir < 0 ? -1 : 1)] || null;
-    if (!next) return null;
-    const flowOf = (el) => el.closest?.('main') || el.ownerDocument?.body || null;
-    const flow = flowOf(section);
-    return flow && flow === flowOf(next) ? next : null;
-  }
 
-  function liveChatTurnHostHasRole(host = null, role = '') {
-    if (!host) return false;
-    const section = getLiveChatTurnSectionForNode(host) || host;
-    const turnAttr = String(section.getAttribute?.('data-turn') || '').trim().toLowerCase();
-    if (turnAttr) return turnAttr === role;
-    try { return !!section.querySelector?.(`[data-message-author-role="${role}"]`); } catch { return false; }
-  }
 
-  function getPairedAssistantHostForQuestionHost(questionHost = null) {
-    const section = getLiveChatTurnSectionForNode(questionHost);
-    if (!section) return null;
-    if (pickAssistantMessageEl(section)) return section;
-    const next = getAdjacentLiveChatTurnHost(section, 1);
-    return next && liveChatTurnHostHasRole(next, 'assistant') ? next : null;
-  }
 
-  function getPairedQuestionHostForAssistantHost(assistantHost = null) {
-    const section = getLiveChatTurnSectionForNode(assistantHost);
-    if (!section) return null;
-    const prev = getAdjacentLiveChatTurnHost(section, -1);
-    if (!prev) return null;
-    return liveChatTurnHostHasRole(prev, 'user') && !liveChatTurnHostHasRole(prev, 'assistant') ? prev : null;
-  }
 
-  // The divider must sit between Q+A pairs, not inside a turn's only-child
-  // wrapper chain. Climb from the pair-start section through wrappers whose
-  // sole element child is the turn, and return the outermost such wrapper.
-  function getChatPagePairAnchorNode(host = null) {
-    const section = getLiveChatTurnSectionForNode(host) || ((host && host.nodeType === 1) ? host : null);
-    if (!section) return null;
-    let cur = section;
-    while (cur.parentElement && cur.parentElement !== document.body) {
-      const parent = cur.parentElement;
-      // Ignore previously misplaced dividers when deciding whether this is a
-      // dedicated only-child turn wrapper, so stale dividers self-heal out.
-      let nonDividerChildren = 0;
-      for (const child of parent.children) {
-        if (isChatPageDividerEl(child)) continue;
-        nonDividerChildren += 1;
-      }
-      if (nonDividerChildren !== 1) break;
-      if (parent.matches?.('main')) break;
-      cur = parent;
-    }
-    return cur;
-  }
 
 
   function isTitleBarCollapsed(bar = null) {
     return String(bar?.getAttribute?.('data-cgxui-state') || '').split(/\s+/).includes('collapsed');
   }
 
-  function getQuestionMessageEl(host = null) {
-    if (!host || host.nodeType !== 1) return null;
-    const selfRole = String(host.getAttribute?.('data-message-author-role') || '').trim().toLowerCase();
-    if (selfRole === 'user') return host;
-    try { return host.querySelector?.('[data-message-author-role="user"]') || null; } catch {}
-    return null;
-  }
 
-  function getNoAnswerTitleBarEl(host = null) {
-    if (!host?.querySelector) return null;
-    try { return host.querySelector(`:scope > ${ANSWER_TITLE_SEL}[${ANSWER_TITLE_NO_ANSWER_ATTR}="1"]`) || host.querySelector(`${ANSWER_TITLE_SEL}[${ANSWER_TITLE_NO_ANSWER_ATTR}="1"]`); } catch {}
-    return host.querySelector(`${ANSWER_TITLE_SEL}[${ANSWER_TITLE_NO_ANSWER_ATTR}="1"]`);
-  }
 
-  function getStackedNoAnswerTitleBarEl(host = null) {
-    const syntheticId = String(getNoAnswerTitleId(host) || '').trim();
-    const turnNo = getChatPageTurnDisplayNumber(host);
-    try {
-      if (syntheticId) {
-        const esc = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(syntheticId) : syntheticId.replace(/"/g, '\\"');
-        const exact = document.querySelector(
-          `${ANSWER_TITLE_SEL}[${ANSWER_TITLE_NO_ANSWER_ATTR}="1"][data-answer-id="${esc}"][data-h2o-in-title-stack]`
-        ) || null;
-        if (exact) return exact;
-      }
-      if (turnNo > 0) {
-        for (const bar of document.querySelectorAll(`${ANSWER_TITLE_SEL}[${ANSWER_TITLE_NO_ANSWER_ATTR}="1"][data-h2o-in-title-stack]`)) {
-          const barTurnNo = Math.max(0, Number(bar.getAttribute('data-h2o-stack-turn-no') || bar.getAttribute('data-h2o-turn-num') || 0) || 0);
-          if (barTurnNo === turnNo) return bar;
-        }
-      }
-      return null;
-    } catch { return null; }
-  }
 
-  function getNoAnswerTitleId(host = null) {
-    const qEl = getQuestionMessageEl(host);
-    const qId = String(
-      qEl?.getAttribute?.('data-message-id')
-      || qEl?.dataset?.messageId
-      || host?.getAttribute?.('data-turn-id')
-      || host?.dataset?.turnId
-      || ''
-    ).trim();
-    if (qId) return `no-answer:${qId}`;
-    const chatId = String(resolveChatId?.() || '').trim().replace(/^c\//i, '');
-    const turnNo = getChatPageTurnDisplayNumber(host);
-    return `no-answer:${chatId || 'chat'}:turn:${Math.max(1, turnNo || 1)}`;
-  }
 
-  function getChatPageTurnDisplayNumber(host = null) {
-    const qEl = getQuestionMessageEl(host);
-    const candidates = [
-      qEl?.getAttribute?.('data-message-id'),
-      qEl?.dataset?.messageId,
-      host?.getAttribute?.('data-turn-id'),
-      host?.dataset?.turnId,
-    ].map((v) => String(v || '').trim()).filter(Boolean);
-    for (const id of candidates) {
-      const rec = getSharedTurnRecordByAnyId(id);
-      const turnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || rec?.index || 0) || 0);
-      if (turnNo > 0) return turnNo;
-    }
-    // A conversation-turn section is a MESSAGE shell, not a Q+A index. Using
-    // all shells made every assistant before an orphan shift its fallback
-    // number/page and let a delayed NO ANSWER sweep miss the active stack.
-    const questions = listLiveChatTurnSections().filter((turn) => getChatPageTurnRole(turn) === 'user');
-    const section = getLiveChatTurnSectionForNode(host) || host;
-    const idx = questions.indexOf(section);
-    return idx >= 0 ? (idx + 1) : 0;
-  }
 
-  function removeNoAnswerTitleBar(host = null) {
-    const bar = getNoAnswerTitleBarEl(host);
-    if (bar) {
-      try { bar.remove(); } catch {}
-    }
-    if (host) {
-      host.removeAttribute?.(ATTR_CHAT_PAGE_NO_ANSWER);
-      host.removeAttribute?.(ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN);
-    }
-    return true;
-  }
 
-  function ensureNoAnswerTitleBar(host = null) {
-    if (!host || host.nodeType !== 1) return null;
-    if (pickAssistantMessageEl(host)) {
-      removeNoAnswerTitleBar(host);
-      return null;
-    }
-    // Creator-level guard: a user turn with a paired following assistant
-    // answer is part of a complete Q+A pair — the assistant owns the pair's
-    // title bar, so never create a NO ANSWER shell here.
-    if (getPairedAssistantHostForQuestionHost(host)) {
-      removeNoAnswerTitleBar(host);
-      return null;
-    }
-    const qEl = getQuestionMessageEl(host);
-    if (!qEl) return null;
-
-    const flowBar = getNoAnswerTitleBarEl(host);
-    const stackedBar = getStackedNoAnswerTitleBarEl(host);
-    if (stackedBar && flowBar && flowBar !== stackedBar) {
-      try { flowBar.remove(); } catch {}
-    }
-    let bar = stackedBar || flowBar;
-    const stackOwned = !!stackedBar;
-    const turnNo = getChatPageTurnDisplayNumber(host);
-    const pageNum = turnNo > 0 ? Math.ceil(turnNo / 25) : 0;
-    const titleListActive = pageNum > 0 && isChatPageTitleListActive(pageNum, resolveChatId());
-    // While title-list mode is active, 1C1b is the sole row/flow owner. A
-    // delayed divider/NO ANSWER sweep must not manufacture a new flow title
-    // bar or rewrite the already-stacked row just because the canonical
-    // question id changed during hydration.
-    if (titleListActive) {
-      if (stackedBar) return stackedBar;
-      // A pre-stack flow shell belongs to the superseded compact-list owner.
-      // Remove it rather than letting the delayed MiniMap sweep expose it;
-      // 1C1b will adopt/build the one canonical stacked row on its repair.
-      if (flowBar) { try { flowBar.remove(); } catch {} }
-      return null;
-    }
-    const isNew = !bar;   // track whether we just created the bar
-    if (isNew) {
-      bar = document.createElement('div');
-      bar.setAttribute('data-cgxui-owner', 'atns');
-      bar.setAttribute('data-cgxui', 'atns-answer-title');
-      bar.setAttribute(ANSWER_TITLE_NO_ANSWER_ATTR, '1');
-      bar.setAttribute('data-cgxui-state', 'editable');
-
-      const badge = document.createElement('span');
-      badge.setAttribute('data-cgxui-owner', 'atns');
-      badge.setAttribute('data-cgxui', 'atns-answer-title-badge');
-      badge.setAttribute('data-cgxui-part', 'badge');
-
-      const label = document.createElement('span');
-      label.setAttribute('data-cgxui-owner', 'atns');
-      label.setAttribute('data-cgxui', 'atns-answer-title-label');
-      label.setAttribute('data-cgxui-part', 'label');
-
-      const text = document.createElement('span');
-      text.setAttribute('data-cgxui-owner', 'atns');
-      text.setAttribute('data-cgxui', 'atns-answer-title-text');
-      text.setAttribute('data-cgxui-part', 'text');
-
-      const icon = document.createElement('span');
-      icon.setAttribute('data-cgxui-owner', 'atns');
-      icon.setAttribute('data-cgxui', 'atns-answer-title-icon');
-      icon.setAttribute('data-cgxui-part', 'icon');
-      icon.setAttribute('aria-hidden', 'true');
-
-      bar.appendChild(badge);
-      bar.appendChild(label);
-      bar.appendChild(text);
-      bar.appendChild(icon);
-    }
-
-    const answerId = getNoAnswerTitleId(host);
-    if (turnNo > 0) {
-      try { bar.setAttribute('data-h2o-turn-num', String(turnNo)); } catch {}
-    }
-    const labelEl = bar.querySelector?.(ANSWER_TITLE_LABEL_SEL) || null;
-    const textEl  = bar.querySelector?.(ANSWER_TITLE_TEXT_SEL)  || null;
-    const iconEl  = bar.querySelector?.(ANSWER_TITLE_ICON_SEL)  || null;
-    // Always update label text (turn number can change after re-index)
-    if (labelEl) labelEl.textContent = turnNo > 0 ? `TITLE ${turnNo}` : 'TITLE';
-    if (textEl)  textEl.textContent  = 'NO ANSWER';
-    // ONLY initialise icon and state on a freshly created bar.
-    // If the bar already exists, it may be in collapsed state — do NOT reset it.
-    if (isNew) {
-      if (iconEl)  iconEl.textContent  = '⌄';
-      try { bar.setAttribute('data-cgxui-state', 'editable'); } catch {}
-    }
-    try { bar.setAttribute('data-answer-id', answerId); } catch {}
-    try { bar.setAttribute(ANSWER_TITLE_NO_ANSWER_ATTR, '1'); } catch {}
-    try { host.setAttribute(ATTR_CHAT_PAGE_NO_ANSWER, '1'); } catch {}
-
-    // Stamp data-message-id with the synthetic answerId so resolveAnswerEl()
-    // finds this bar when the MiniMap btn for this no-answer turn is clicked.
-    // Without this the flash fell back to the raw turn host, creating a weird strip.
-    if (answerId) {
-      try { bar.setAttribute('data-message-id', answerId); } catch {}
-    }
-
-    // Wire dblclick directly on the bar — same pattern Answer Title uses for regular bars.
-    // Use bar.closest() at click time (not the closure `host`) so the reference is always live.
-    if (!bar._noAnswerDblClickWired) {
-      bar._noAnswerDblClickWired = true;
-      bar.addEventListener('dblclick', (e) => {
-        try { e.stopPropagation(); e.preventDefault(); } catch {}
-        const liveHost = bar.closest('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
-        if (!liveHost) return;
-        const nextCollapsed = !isTitleBarCollapsed(bar);
-        applyNoAnswerTitleCollapsedDom(liveHost, nextCollapsed, { animate: true });
-        try { renderChatPageDividers(resolveChatId()); } catch {}
-      });
-    }
-
-    // Insert the bar INSIDE qEl's immediate parent (the content wrapper / innerWrapper).
-    // This gives the bar the same horizontal padding and positioning as the user message,
-    // so it aligns correctly with the other title bars in the chat.
-    // getNoAnswerManagedEls is aware of this and returns bar's SIBLINGS within that same
-    // parent (not host.children), so the bar is correctly excluded from collapsing.
-    if (!stackOwned) {
-      const insertParent = (qEl.parentElement && qEl.parentElement !== host)
-        ? qEl.parentElement
-        : host;
-      // Place bar immediately after qEl inside insertParent.
-      if (bar.parentElement !== insertParent || bar.previousElementSibling !== qEl) {
-        try { insertParent.insertBefore(bar, qEl.nextElementSibling || null); } catch {}
-      }
-    }
-    return bar;
-  }
 
   function getNoAnswerManagedEls(host = null, bar = null) {
     if (!host?.children) return [];
@@ -9463,123 +9197,8 @@ function UM_PUBLIC() {
     return host;
   }
 
-  function buildChatPageAnswerRows(pageNum = 0) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (!num) return [];
-    const payload = buildChatPageSections();
-    const section = payload?.sections?.get?.(num) || null;
-    const hosts = Array.isArray(section?.hosts) ? section.hosts : [];
-    const rows = [];
-    let pendingQuestionHost = null;
-    for (let i = 0; i < hosts.length; i += 1) {
-      const host = hosts[i];
-      const role = getChatPageTurnRole(host);
-      if (role === 'user') {
-        // Wrapper-aware pairing: section-hosts order is no longer trusted to
-        // put the paired answer at hosts[i + 1]; ask the live DOM instead.
-        if (getPairedAssistantHostForQuestionHost(host)) {
-          removeNoAnswerTitleBar(host);
-          pendingQuestionHost = host;
-        } else {
-          const bar = ensureNoAnswerTitleBar(host);
-          const answerId = String(bar?.getAttribute?.('data-answer-id') || getNoAnswerTitleId(host)).trim();
-          if (bar && answerId) {
-            rows.push({
-              pageNum: num,
-              questionHost: host,
-              answerHost: host,
-              answerMsgEl: null,
-              answerId,
-              titleBar: bar,
-              collapsed: isTitleBarCollapsed(bar),
-              noAnswer: true,
-            });
-          }
-          pendingQuestionHost = null;
-        }
-        continue;
-      }
-      if (role !== 'assistant') continue;
-      const pairedQuestionHost = pendingQuestionHost || getPairedQuestionHostForAssistantHost(host) || null;
-      if (pairedQuestionHost) removeNoAnswerTitleBar(pairedQuestionHost);
-      const answerMsgEl = pickAssistantMessageEl(host) || host.querySelector?.('[data-message-author-role="assistant"]') || null;
-      const answerId = getAnswerTitleAnswerId(answerMsgEl);
-      const bar = getAnswerTitleBarEl(answerMsgEl);
-      if (!answerMsgEl || !answerId || !bar) {
-        pendingQuestionHost = null;
-        continue;
-      }
-      rows.push({
-        pageNum: num,
-        questionHost: pairedQuestionHost,
-        answerHost: host,
-        answerMsgEl,
-        answerId,
-        titleBar: bar,
-        collapsed: isAnswerTitleCollapsed(answerMsgEl, bar),
-        noAnswer: false,
-      });
-      pendingQuestionHost = null;
-    }
-    return rows;
-  }
 
-  function syncNoAnswerTitleBars(chatId = '') {
-    const id = String(chatId || resolveChatId()).trim();
-    void id;
 
-    // Pass 1: section-based sweep (handles paginated chats)
-    const payload = buildChatPageSections();
-    const sections = payload?.sections;
-    let ensured = 0;
-    if (sections instanceof Map && sections.size) {
-      for (const [pageNum] of sections) {
-        const rows = buildChatPageAnswerRows(pageNum);
-        for (const row of rows) {
-          if (row?.noAnswer) ensured += 1;
-        }
-      }
-    }
-
-    // Pass 2: direct DOM sweep — catches orphaned user turns that the section
-    // builder missed (e.g. a trailing question with no answer yet, or a chat
-    // where S.turnList hasn't been populated yet).
-    try {
-      const allTurnEls = listLiveChatTurnSections();
-      for (let i = 0; i < allTurnEls.length; i += 1) {
-        const host = allTurnEls[i];
-        const role = getChatPageTurnRole(host);
-        if (role !== 'user') continue;
-        if (pickAssistantMessageEl(host)) continue; // has assistant reply inside → skip
-        // Canonical pairing: a user turn with a paired following assistant is
-        // part of a normal Q+A pair — never a NO ANSWER shell. Remove any
-        // stale shell left behind by earlier passes.
-        if (getPairedAssistantHostForQuestionHost(host)) {
-          removeNoAnswerTitleBar(host);
-          continue;
-        }
-        // Ensure the NO ANSWER bar is present in this orphaned turn
-        const bar = ensureNoAnswerTitleBar(host);
-        if (bar) ensured += 1;
-      }
-    } catch (_e) {}
-
-    return ensured;
-  }
-
-  function findChatPageRowByAnswerId(answerId = '') {
-    const target = String(answerId || '').trim();
-    if (!target) return null;
-    const payload = buildChatPageSections();
-    const sections = payload?.sections;
-    if (!(sections instanceof Map)) return null;
-    for (const [pageNum] of sections) {
-      const rows = buildChatPageAnswerRows(pageNum);
-      const hit = rows.find((row) => String(row?.answerId || '').trim() === target) || null;
-      if (hit) return hit;
-    }
-    return null;
-  }
 
   function coreFallback_getChatPageTitleState(pageNum = 0, chatId = '') {
     const rows = buildChatPageAnswerRows(pageNum);
@@ -9873,921 +9492,69 @@ function ensureChatPageDividerBridge(force = false) {
 function unbindChatPageDividerBridge() {
   return callChatPagesCtl('unbind', [], passiveUnbindChatPageDividerBridge);
 }
-  function getChatPageDividerPageNum(divider = null) {
-    return Math.max(1, Number(
-      divider?.getAttribute?.('data-page-num')
-      || divider?.getAttribute?.(ATTR_CHAT_PAGE_NUM)
-      || 0
-    ) || 0);
-  }
-
-  function getChatPageDividerLabelEl(divider = null) {
-    if (!divider?.querySelector) return null;
-    return divider.querySelector('.cgxui-chat-page-divider-label, .cgxui-pgnw-page-divider-pill');
-  }
-
-  function createChatPageDivider(pageNum = 1, band = 'normal') {
-    const div = document.createElement('div');
-    div.className = 'cgxui-chat-page-divider';
-    div.setAttribute('data-cgxui-owner', UI_TOK.OWNER);
-    div.setAttribute(ATTR_CHAT_PAGE_DIVIDER, '1');
-    div.setAttribute('data-page-num', String(pageNum || 1));
-    div.setAttribute('data-page-band', String(band || 'normal'));
-    div.innerHTML = `<span class="cgxui-chat-page-divider-line"></span><span class="cgxui-chat-page-divider-label"><span class="cgxui-chat-page-divider-dot" aria-hidden="true"></span><span class="cgxui-chat-page-divider-text">Page ${String(pageNum || 1)}</span></span><span class="cgxui-chat-page-divider-line"></span>`;
-    return div;
-  }
-
-  function getChatPageAnchorBoxEl(host = null) {
-    if (!host || host.nodeType !== 1) return null;
-    const assistantHost = pickAssistantMessageEl(host) || host.querySelector?.('[data-message-author-role="assistant"]') || host;
-    if (!assistantHost) return null;
-    const toolbar = assistantHost.querySelector?.('[aria-label="Response actions"]');
-    if (toolbar instanceof Element && toolbar.isConnected) return toolbar;
-    try {
-      const content = assistantHost.querySelector?.('.markdown, .prose, [class*="prose"], .whitespace-pre-wrap, [data-message-content], [class*="message"]');
-      if (content instanceof Element && content.isConnected) return content;
-    } catch {}
-    return assistantHost;
-  }
-
-  function getChatPageAnchorCenterX(host = null) {
-    const box = getChatPageAnchorBoxEl(host) || host || null;
-    if (!box) return NaN;
-    try {
-      const rect = box.getBoundingClientRect();
-      const w = Number(rect?.width || 0) || 0;
-      if (!w) return NaN;
-      return Number(rect.left || 0) + (w / 2);
-    } catch {
-      return NaN;
-    }
-  }
-
-  function getPreviousChatPageAnchorHost(host = null) {
-    // Wrapper-aware: the previous turn is the document-order previous turn
-    // section, not a DOM sibling of this host.
-    const prev = getAdjacentLiveChatTurnHost(host, -1);
-    return prev && getChatPageTurnRole(prev) ? prev : null;
-  }
-
-  function applyChatPageDividerGeometry(divider = null, prevHost = null, nextHost = null) {
-    if (!divider || !divider.isConnected) return false;
-    const label = divider.querySelector?.('.cgxui-chat-page-divider-label') || null;
-    const leftLine = divider.querySelector?.('.cgxui-chat-page-divider-line:first-child') || divider.children?.[0] || null;
-    const rightLine = divider.querySelector?.('.cgxui-chat-page-divider-line:last-child') || divider.children?.[2] || null;
-    if (!label || !leftLine || !rightLine) return false;
-
-    const dividerRect = divider.getBoundingClientRect();
-    const rowWidth = Number(dividerRect?.width || 0) || 0;
-    if (!rowWidth) return false;
-
-    const anchorHost = prevHost || getPreviousChatPageAnchorHost(divider) || nextHost || null;
-    let anchorCenter = getChatPageAnchorCenterX(anchorHost);
-    if (!Number.isFinite(anchorCenter)) anchorCenter = Number(dividerRect.left || 0) + (rowWidth / 2);
-
-    const centerLocal = anchorCenter - Number(dividerRect.left || 0);
-    const labelRect = label.getBoundingClientRect();
-    const labelWidth = Math.max(108, Number(labelRect?.width || 0) || 0);
-    const minLine = 24;
-    const gap = 12;
-    const clampedCenter = Math.max((labelWidth / 2) + minLine + gap, Math.min(rowWidth - ((labelWidth / 2) + minLine + gap), centerLocal));
-    const leftWidth = Math.max(minLine, clampedCenter - (labelWidth / 2) - gap);
-    const rightWidth = Math.max(minLine, rowWidth - clampedCenter - (labelWidth / 2) - gap);
-    const labelLeft = Math.max(leftWidth + gap, Math.min(rowWidth - rightWidth - gap - labelWidth, clampedCenter - (labelWidth / 2)));
-
-    try {
-      divider.style.setProperty('--cgxui-chat-page-label-left', `${labelLeft}px`);
-      divider.style.setProperty('--cgxui-chat-page-label-width', `${labelWidth}px`);
-      divider.style.setProperty('--cgxui-chat-page-left-line-w', `${leftWidth}px`);
-      divider.style.setProperty('--cgxui-chat-page-right-line-w', `${rightWidth}px`);
-      divider.style.setProperty('--cgxui-chat-page-center-x', `${clampedCenter}px`);
-      divider.setAttribute('data-cgxui-chat-geometry', '1');
-    } catch {}
-    return true;
-  }
-
-  function isChatPageDividerEl(el, pageNum = 0) {
-    if (!el?.classList) return false;
-    const isKnownDivider =
-      el.getAttribute?.(ATTR_CHAT_PAGE_DIVIDER) === '1'
-      || el.classList.contains('cgxui-chat-page-divider')
-      // Pagination may own the functional surface, but it still participates in the shared chat page divider UI layer.
-      || el.classList.contains('cgxui-pgnw-page-divider');
-    if (!isKnownDivider) return false;
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (!num) return true;
-    return getChatPageDividerPageNum(el) === num;
-  }
-
-  function resolveChatPageDividerEl(target = null) {
-    const el = (target instanceof Element)
-      ? target
-      : ((target?.parentElement instanceof Element)
-        ? target.parentElement
-        : ((target?.parentNode instanceof Element) ? target.parentNode : null));
-    if (!el?.closest) return null;
-    return el.closest('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
-  }
-
-  function getChatPageTurnRole(host = null) {
-    if (!host || host.nodeType !== 1) return '';
-    // ChatGPT stamps data-turn="user|assistant" on the turn section itself.
-    const section = getLiveChatTurnSectionForNode(host) || host;
-    const turnAttr = String(section.getAttribute?.('data-turn') || '').trim().toLowerCase();
-    if (turnAttr === 'user' || turnAttr === 'assistant') return turnAttr;
-    const selfRole = String(host.getAttribute?.('data-message-author-role') || '').trim().toLowerCase();
-    if (selfRole === 'user' || selfRole === 'assistant') return selfRole;
-    if (pickAssistantMessageEl(host)) return 'assistant';
-    try {
-      const userEl = host.querySelector?.('[data-message-author-role="user"]');
-      if (userEl) return 'user';
-    } catch {}
-    return '';
-  }
-
-  function addChatPageSectionHost(section, host) {
-    if (!section || !host || host.nodeType !== 1) return false;
-    if (!(section.hostSet instanceof Set)) section.hostSet = new Set();
-    if (section.hostSet.has(host)) return false;
-    section.hostSet.add(host);
-    section.hosts.push(host);
-    return true;
-  }
-
-  function buildChatPageSectionsFromPaginationState() {
-    const ps = getPaginationState();
-    const masterTurns = Array.isArray(ps?.masterTurns) ? ps.masterTurns : [];
-    if (!masterTurns.length) return null;
-
-    // Page boundaries must use Core turnNo (true pair number), not answerIndex.
-    // answerIndex skips unanswered turns (e.g. answerIndex 26 = pair 27 when
-    // pair 19 is unanswered), causing the section boundary to land one pair late.
-    const pageSize = Math.max(1, Number(ps?.pageSize || 0) || 25);
-    const rt = getTurnRuntimeApi();
-
-    const sections = new Map();
-    const allHosts = [];
-    const allHostSet = new Set();
-
-    // Track the last resolved pageNum so unanswered-question turns inherit
-    // the page of the surrounding answered turns.
-    let lastPageNum = 1;
-
-    for (let i = 0; i < masterTurns.length; i += 1) {
-      const row = masterTurns[i] || null;
-      const host = row?.node || null;
-      if (!host || host.nodeType !== 1) continue;
-
-      const answerIndex = Math.max(0, Number(row?.answerIndex || 0) || 0);
-      let pageNum;
-      if (answerIndex > 0) {
-        // Resolve true pair number via Core turnRuntime.
-        let pairNo = 0;
-        const aId = String(row?.answerId || '').trim();
-        if (rt && aId) {
-          try {
-            const rec = rt.getTurnRecordByAId?.(aId) || null;
-            pairNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
-          } catch {}
-        }
-        if (!pairNo) pairNo = answerIndex; // fallback when Core not yet reconciled
-        pageNum = Math.max(1, Math.ceil(pairNo / pageSize));
-        lastPageNum = pageNum;
-      } else {
-        // Unanswered question: inherit page from surrounding answered turns.
-        // Look ahead for the next answered turn's pairNo.
-        let found = false;
-        for (let j = i + 1; j < masterTurns.length; j += 1) {
-          const nextRow = masterTurns[j] || null;
-          const nextAIdx = Math.max(0, Number(nextRow?.answerIndex || 0) || 0);
-          if (nextAIdx > 0) {
-            let nextPairNo = 0;
-            const nextAId = String(nextRow?.answerId || '').trim();
-            if (rt && nextAId) {
-              try {
-                const rec = rt.getTurnRecordByAId?.(nextAId) || null;
-                nextPairNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
-              } catch {}
-            }
-            if (!nextPairNo) nextPairNo = nextAIdx;
-            pageNum = Math.max(1, Math.ceil(nextPairNo / pageSize));
-            found = true;
-            break;
-          }
-        }
-        if (!found) pageNum = lastPageNum;
-      }
-
-      let section = sections.get(pageNum);
-      if (!section) {
-        section = {
-          pageNum,
-          band: String(getTurnPageBand(pageNum * pageSize) || 'normal'),
-          hosts: [],
-          hostSet: new Set(),
-        };
-        sections.set(pageNum, section);
-      }
-      addChatPageSectionHost(section, host);
-      if (!allHostSet.has(host)) {
-        allHostSet.add(host);
-        allHosts.push(host);
-      }
-    }
-
-    return sections.size ? { sections, allHosts } : null;
-  }
-
-  function buildChatPageSectionsFromTurnList() {
-    const turns = Array.isArray(S.turnList) ? S.turnList : [];
-    if (!turns.length) return null;
-
-    const sections = new Map();
-    const allHosts = [];
-    const allHostSet = new Set();
-
-    for (const turn of turns) {
-      const idx = Math.max(1, Number(turn?.index || 0) || 0);
-      if (!idx) continue;
-
-      const host = getChatPageTurnHost(turn);
-      if (!host) continue;
-
-      const pageNum = Math.max(1, Math.ceil(idx / 25));
-      let section = sections.get(pageNum);
-      if (!section) {
-        section = {
-          pageNum,
-          band: String(getTurnPageBand(idx) || 'normal'),
-          hosts: [],
-          hostSet: new Set(),
-        };
-        sections.set(pageNum, section);
-      }
-
-      // Wrapper-aware pairing: the paired question is the document-order
-      // previous turn section, not a DOM sibling of the answer section.
-      const pairedQuestion = getPairedQuestionHostForAssistantHost(host);
-      if (pairedQuestion) addChatPageSectionHost(section, pairedQuestion);
-      addChatPageSectionHost(section, host);
-    }
-
-    // ── Orphaned user-turn sweep ──────────────────────────────────────────────
-    // getChatPageTurnHost() returns null for turns with no assistant element,
-    // so any user-only turn (question without an answer) is skipped by the loop
-    // above.  We scan the live DOM here and add those turns so that
-    // buildChatPageAnswerRows can later call ensureNoAnswerTitleBar on them.
-    try {
-      const allTurnEls = listLiveChatTurnSections();
-      for (const domHost of allTurnEls) {
-        if (allHostSet.has(domHost)) continue;
-        const role = getChatPageTurnRole(domHost);
-        if (role !== 'user') continue;
-        if (pickAssistantMessageEl(domHost)) continue; // has assistant → not orphaned
-        // A user turn with a paired following assistant answer is not an
-        // orphan; the paired branch above owns its placement.
-        if (getPairedAssistantHostForQuestionHost(domHost)) continue;
-
-        // Determine page from the nearest already-placed preceding turn
-        // section (wrapper-aware document-order walk, not DOM siblings).
-        let pageNum = 1;
-        let prevTurn = getAdjacentLiveChatTurnHost(domHost, -1);
-        outer: while (prevTurn) {
-          for (const [pn, sec] of sections) {
-            if (sec.hostSet instanceof Set && sec.hostSet.has(prevTurn)) { pageNum = pn; break outer; }
-          }
-          prevTurn = getAdjacentLiveChatTurnHost(prevTurn, -1);
-        }
-
-        let section = sections.get(pageNum);
-        if (!section) {
-          section = { pageNum, band: String(getTurnPageBand((pageNum - 1) * 25 + 1) || 'normal'), hosts: [], hostSet: new Set() };
-          sections.set(pageNum, section);
-        }
-        addChatPageSectionHost(section, domHost);
-      }
-    } catch (_e) {}
-    // ─────────────────────────────────────────────────────────────────────────
-
-    for (const section of sections.values()) {
-      for (const host of section.hosts) {
-        if (allHostSet.has(host)) continue;
-        allHostSet.add(host);
-        allHosts.push(host);
-      }
-    }
-
-    return { sections, allHosts };
-  }
-
-  // Direct DOM scan — no dependency on Pagination or S.turnList.
-  // Finds all live conversation-turn containers and assigns them to pages
-  // purely from their DOM position order. This is the independent fallback
-  // that makes collapse work regardless of whether Pagination is loaded.
-  function buildChatPageSectionsFromDom() {
-    const turnEls = qq('[data-testid="conversation-turn"]');
-    if (!turnEls.length) return null;
-
-    const sections = new Map();
-    const allHosts = [];
-    const allHostSet = new Set();
-    let answerIdx = 0;
-
-    for (const host of turnEls) {
-      // Count only assistant turns for page numbering (mirrors how Core indexes turns)
-      const isAssistant = !!host.querySelector('[data-message-author-role="assistant"]');
-      if (isAssistant) answerIdx += 1;
-
-      const pageNum = Math.max(1, Math.ceil(Math.max(1, answerIdx) / 25));
-
-      if (!allHostSet.has(host)) {
-        allHostSet.add(host);
-        allHosts.push(host);
-      }
-
-      let section = sections.get(pageNum);
-      if (!section) {
-        section = {
-          pageNum,
-          band: String(getTurnPageBand(Math.max(1, answerIdx)) || 'normal'),
-          hosts: [],
-          hostSet: new Set(),
-        };
-        sections.set(pageNum, section);
-      }
-      addChatPageSectionHost(section, host);
-    }
-
-    return { sections, allHosts };
-  }
-
-  function buildChatPageSections() {
-    return buildChatPageSectionsFromPaginationState()
-      || buildChatPageSectionsFromTurnList()
-      || buildChatPageSectionsFromDom()
-      || { sections: new Map(), allHosts: [] };
-  }
-
-  function setChatPageTurnHostDomState(host, pageNum = 0, collapsed = false) {
-    if (!host) return null;
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (num) host.setAttribute(ATTR_CHAT_PAGE_NUM, String(num));
-    else host.removeAttribute(ATTR_CHAT_PAGE_NUM);
-    if (collapsed) {
-      host.setAttribute(ATTR_CHAT_PAGE_HIDDEN, '1');
-      // Also set inline display:none so the node is hidden regardless of
-      // whether the Skin CSS is loaded — this is the only reliable way to
-      // hide unanswered-question turn nodes (e.g. Q19 with no answer) which
-      // have no assistant element and may not be caught by CSS attribute rules.
-      try { host.style.setProperty('display', 'none', 'important'); } catch {}
-    } else {
-      host.removeAttribute(ATTR_CHAT_PAGE_HIDDEN);
-      try { host.style.removeProperty('display'); } catch {}
-    }
-    // ChatGPT sizes every turn through an only-child wrapper div
-    // (height: var(--last-known-height, 50vh)); the section itself measures
-    // 0px when its content is virtualized, so hiding only the section leaves
-    // the page's full reserved space in layout. Hide/restore the wrapper
-    // (layout node) together with the host.
-    const layoutNode = getChatPagePairAnchorNode(host);
-    if (layoutNode && layoutNode !== host) {
-      if (collapsed) {
-        layoutNode.setAttribute('data-cgxui-chat-page-wrapper-hidden', '1');
-        try { layoutNode.style.setProperty('display', 'none', 'important'); } catch {}
-      } else {
-        layoutNode.removeAttribute('data-cgxui-chat-page-wrapper-hidden');
-        try { layoutNode.style.removeProperty('display'); } catch {}
-      }
-    }
-    return host;
-  }
-
-  function setChatPageDividerDomState(divider, collapsed = false, pageNum = 0, band = 'normal', chatId = '') {
-    if (!divider) return null;
-    const num = Math.max(1, Number(pageNum || getChatPageDividerPageNum(divider) || 0) || 1);
-    const id = String(chatId || resolveChatId() || '').trim();
-    const uiMode = getChatPageDividerUiMode(num, id, { pageCollapsed: !!collapsed });
-    const effectiveCollapsed = uiMode === 'page_collapsed';
-    const effectiveTitleListActive = uiMode === 'title_list';
-    const effectiveTitleState = effectiveTitleListActive ? 'collapsed' : 'expanded';
-    divider.setAttribute(ATTR_CHAT_PAGE_DIVIDER, '1');
-    divider.setAttribute(ATTR_CHAT_PAGE_NUM, String(num));
-    if (divider.classList?.contains('cgxui-chat-page-divider')) {
-      divider.setAttribute('data-page-num', String(num));
-      divider.setAttribute('data-page-band', String(band || 'normal'));
-    }
-    ensureChatPageDividerMarkup(divider, num);
-    bindChatPageDividerStatusCard(divider);
-    if (effectiveCollapsed) divider.setAttribute(ATTR_CHAT_PAGE_COLLAPSED, '1');
-    else divider.removeAttribute(ATTR_CHAT_PAGE_COLLAPSED);
-
-    if (effectiveTitleListActive) divider.setAttribute(ATTR_CHAT_PAGE_TITLE_LIST, '1');
-    else divider.removeAttribute(ATTR_CHAT_PAGE_TITLE_LIST);
-
-    divider.setAttribute(ATTR_CHAT_PAGE_TITLE_STATE, effectiveTitleState);
-    const dot = getChatPageDividerDotEl(divider);
-    if (dot) {
-      try { dot.setAttribute('data-page-title-state', effectiveTitleState); } catch {}
-      try { dot.removeAttribute('title'); } catch {}
-    }
-
-    const title = `Page ${num}`;
-    const label = getChatPageDividerLabelEl(divider);
-    if (label) {
-      try { label.setAttribute('aria-expanded', effectiveCollapsed ? 'false' : 'true'); } catch {}
-      try { label.title = title; } catch {}
-    }
-    try { divider.title = title; } catch {}
-    return divider;
-  }
-
-  function isChatPageHostHidden(host = null) {
-    if (!host) return false;
-    if (String(host.getAttribute?.(ATTR_CHAT_PAGE_HIDDEN) || '').trim() === '1') return true;
-    try {
-      return String(host.style?.getPropertyValue?.('display') || '').trim().toLowerCase() === 'none';
-    } catch {
-      return false;
-    }
-  }
-
-  function getChatPageSectionCollapsedState(pageNum = 0, chatId = '', hosts = []) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const id = String(chatId || resolveChatId() || '').trim();
-    const sectionHosts = Array.isArray(hosts) ? hosts : [];
-    for (const host of sectionHosts) {
-      if (isChatPageHostHidden(host)) return true;
-    }
-    if (num) {
-      try {
-        if (document.querySelector?.(`[${ATTR_CHAT_PAGE_NUM}="${String(num)}"][${ATTR_CHAT_PAGE_HIDDEN}="1"]`)) return true;
-      } catch {}
-    }
-    return !!(num && readCollapsedChatPages(id)?.has?.(num));
-  }
-
-  // First pair of Page N in the authoritative canonical map → its live turn
-  // section (persists in the DOM even unhydrated) → the pair's question host.
-  // Resolution is IDENTITY-based: the section is looked up by its stable
-  // data-turn-id, never through cached element references — ChatGPT's
-  // virtualized rendering can recycle hydrated content nodes, so an element
-  // ref may silently belong to a different turn and would anchor the divider
-  // after the wrong pair.
-  function sectionByStableId(anyId) {
-    const raw = String(anyId || '').replace(/^turn:[aq]:/, '').trim();
-    if (!raw) return null;
-    try {
-      const esc = (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(raw) : raw.replace(/"/g, '\\"');
-      return document.querySelector(
-        `[data-testid^="conversation-turn-"][data-turn-id="${esc}"], [data-testid="conversation-turn"][data-turn-id="${esc}"]`
-      ) || null;
-    } catch { return null; }
-  }
-
-  // Deterministic page-start QUESTION section, independent of turn records,
-  // cached element refs, or hosts[0]. ChatGPT keeps every turn in the DOM as
-  // section[data-testid="conversation-turn-N"], N being the 1-based turn
-  // position (odd = user question, even = assistant answer). The first pair of
-  // Page P is pair ((P-1)*25 + 1); its question is turn (((pair-1)*2)+1):
-  //   Page 1 → conversation-turn-1, Page 2 → conversation-turn-51.
-  // Returns { host, mode } so the divider can record how it was anchored.
-  function getPageStartQuestionSection(pageNum = 0) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const pairStartIdx0 = (num - 1) * 25;          // 0-based page-start pair
-    const turnNumber = (pairStartIdx0 * 2) + 1;    // 1-based turn testid number
-
-    // Primary: exact testid.
-    try {
-      const bySel = document.querySelector(`section[data-testid="conversation-turn-${turnNumber}"]`);
-      if (bySel && getChatPageTurnRole(bySel) === 'user') {
-        return { host: bySel, mode: 'testid' };
-      }
-    } catch {}
-
-    // Fallback: nth user section in DOM order (handles a non-contiguous or
-    // renamed testid scheme). Index = (P-1)*25 among user turns.
-    try {
-      const userSections = Array.from(
-        document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]')
-      ).sort((a, b) => {
-        const na = Number(String(a.getAttribute('data-testid') || '').replace('conversation-turn-', '')) || 0;
-        const nb = Number(String(b.getAttribute('data-testid') || '').replace('conversation-turn-', '')) || 0;
-        return na - nb;
-      });
-      const pick = userSections[pairStartIdx0] || null;
-      if (pick) return { host: pick, mode: 'user-nth' };
-    } catch {}
-
-    return null;
-  }
-
-  function getAuthoritativePageAnchorHost(pageNum = 0) {
-    // Deterministic resolver first — always succeeds when the page-start
-    // section is in the DOM (ChatGPT keeps all sections), so the divider can
-    // always be repaired rather than left stuck at a prior drifted position.
-    const direct = getPageStartQuestionSection(pageNum);
-    if (direct?.host) {
-      getAuthoritativePageAnchorHost._lastMode = direct.mode;
-      return direct.host;
-    }
-
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const turn = Array.isArray(S.turnList) ? (S.turnList[(num - 1) * 25] || null) : null;
-    if (!turn) return null;
-    try {
-      const questionId = String(turn.questionId || turn.qId || '').trim();
-      const qHost = questionId ? sectionByStableId(questionId) : null;
-      if (qHost) { getAuthoritativePageAnchorHost._lastMode = 'question-id'; return qHost; }
-
-      const answerId = String(turn.answerId || '').trim()
-        || String(turn.turnId || '').replace(/^turn:a:/, '').trim();
-      let host = answerId ? sectionByStableId(answerId) : null;
-      if (!host) {
-        const resolved = getChatPageTurnHost(turn);
-        const resolvedId = String(resolved?.getAttribute?.('data-turn-id') || '').trim();
-        if (resolved && (!answerId || !resolvedId || resolvedId === answerId)) host = resolved;
-      }
-      if (!host) return null;
-      const paired = getPairedQuestionHostForAssistantHost(host);
-      getAuthoritativePageAnchorHost._lastMode = 'answer-paired';
-      return paired || host;
-    } catch {
-      return null;
-    }
-  }
-
-  // ChatGPT recycles/reparents turn sections on scroll, which can strand a
-  // page divider below its page-start pair. renderChatPageDividers re-anchors
-  // from authoritative identity, but it does not otherwise run on scroll — so
-  // bind a throttled scroll trigger once (capture phase catches the inner
-  // conversation scroller, not just window).
-  let dividerScrollRepairBound = false;
-  let dividerScrollRepairAt = 0;
-  let dividerScrollTrailTimer = 0;
-  let dividerScrollContainerBound = null;
-  function runDividerRepair() {
-    try { renderChatPageDividers(resolveChatId()); } catch {}
-  }
-  function onDividerRepairScroll() {
-    const now = Date.now();
-    // Leading (throttled) repair for live feedback.
-    if (now - dividerScrollRepairAt >= 300) {
-      dividerScrollRepairAt = now;
-      runDividerRepair();
-    }
-    // Trailing repair — ChatGPT can rehydrate/reparent AFTER scroll settles,
-    // so re-anchor once things stop moving.
-    try { W.clearTimeout(dividerScrollTrailTimer); } catch {}
-    dividerScrollTrailTimer = W.setTimeout(runDividerRepair, 500);
-  }
-  function bindDividerScrollRepairOnce() {
-    // Bind window (capture catches inner scrollers) once.
-    if (!dividerScrollRepairBound) {
-      dividerScrollRepairBound = true;
-      try { W.addEventListener('scroll', onDividerRepairScroll, { passive: true, capture: true }); } catch {}
-    }
-    // Also bind the active ChatGPT scroll container directly, in case it
-    // stops events from reaching the window in some layouts.
-    try {
-      let cur = document.querySelector('[data-testid^="conversation-turn-"]');
-      let scroller = null;
-      while (cur && cur !== document.body) {
-        const cs = getComputedStyle(cur);
-        const oy = String(cs?.overflowY || '');
-        if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && cur.scrollHeight > cur.clientHeight + 4) { scroller = cur; break; }
-        cur = cur.parentElement;
-      }
-      if (scroller && scroller !== dividerScrollContainerBound) {
-        dividerScrollContainerBound = scroller;
-        scroller.addEventListener('scroll', onDividerRepairScroll, { passive: true });
-      }
-    } catch {}
-  }
-
-  // ── Verified divider placement (operator-exact wrapper) ────────────────────
-  // The divider must sit before the SAME node the runtime smoke checks:
-  // `section.parentElement`. getChatPagePairAnchorNode can climb only-child
-  // wrappers to a different node (pair 1's branch/"(2/2)" structure), which is
-  // why Phase 1Q stamped conversation-turn-1 while the divider stayed before
-  // conversation-turn-3. Placement here uses section.parentElement directly and
-  // stamps success only after verifying the final DOM.
-  // H2O helper nodes that legitimately sit between a page divider and its
-  // page-start wrapper (currently: the synthetic page title-list container).
-  // Order verification and placement must look THROUGH them, not at them —
-  // otherwise the divider repair and the list anchor leapfrog each other and
-  // the divider ends up below the list.
-  function isDividerPassThroughEl(el) {
-    return String(el?.getAttribute?.('data-cgxui') || '') === 'chat-page-title-list-synth';
-  }
-
-  function getNextTurnTestIdAfterDivider(divider) {
-    let nx = divider?.nextElementSibling || null;
-    while (nx && isDividerPassThroughEl(nx)) nx = nx.nextElementSibling;
-    if (!nx) return null;
-    try {
-      const inner = nx.querySelector?.('section[data-testid^="conversation-turn"]');
-      if (inner) return inner.getAttribute('data-testid');
-      if (nx.matches?.('section[data-testid^="conversation-turn"]')) return nx.getAttribute('data-testid');
-    } catch {}
-    return null;
-  }
-
-  function getPageStartTurnWrapper(pageNum) {
-    const pairStartIdx0 = (Number(pageNum) - 1) * 25;
-    const turnNumber = pairStartIdx0 * 2 + 1;
-    const testid = `conversation-turn-${turnNumber}`;
-    let section = null;
-    try { section = document.querySelector(`section[data-testid="${testid}"]`); } catch {}
-    // A page-start turn that is inline-opened INSIDE the page's title-bar
-    // stack is not a divider anchor: the divider's correct position is above
-    // the stack container itself (already maintained by the unit rule).
-    // Anchoring on it would drag the divider into the stack.
-    if (section?.closest?.('[data-cgxui="chat-page-title-list-synth"]')) return null;
-    if (section) return { wrapper: section.parentElement || section, section, testid, mode: 'testid-wrapper' };
-
-    let users = [];
-    try {
-      users = Array.from(document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]'))
-        .sort((a, b) => {
-          const an = Number(String(a.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-          const bn = Number(String(b.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-          return an - bn;
-        });
-    } catch {}
-    const fallback = users[pairStartIdx0] || null;
-    if (fallback) {
-      // Partial-DOM guard: with numeric testids the primary selector would
-      // have matched if the true page-start section were present, so a
-      // different number here means the flow holds only a subset (e.g.
-      // pagination windowing detached earlier turns). Indexing the nth user
-      // section of a subset would anchor the divider at the wrong pair —
-      // refuse instead of guessing; placement retries when the full flow is
-      // back. The nth pick stays valid only for a renamed (non-numeric)
-      // testid scheme.
-      const fbNum = Number(String(fallback.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-      if (fbNum && fbNum !== turnNumber) return null;
-      return {
-        wrapper: fallback.parentElement || fallback,
-        section: fallback,
-        testid: fallback.getAttribute('data-testid'),
-        mode: 'user-nth-wrapper',
-      };
-    }
-    return null;
-  }
-
-  function forcePlaceDividerBeforeTurnWrapper(divider, pageNum) {
-    const resolved = getPageStartTurnWrapper(pageNum);
-    if (!divider || !resolved?.wrapper?.parentNode) return false;
-    const wrapper = resolved.wrapper;
-
-    // Effective adjacency looks through H2O pass-through helpers (the page's
-    // synthetic title-list sits between divider and wrapper by design).
-    let effectiveNext = divider.nextElementSibling;
-    while (effectiveNext && isDividerPassThroughEl(effectiveNext)) effectiveNext = effectiveNext.nextElementSibling;
-
-    // Move only if not already (effectively) the previous sibling of the
-    // wrapper. When moving, land ABOVE any pass-through run so the divider
-    // stays the page header with its helper content below it.
-    if (divider.parentNode !== wrapper.parentNode || effectiveNext !== wrapper) {
-      try {
-        let insertRef = wrapper;
-        while (insertRef.previousElementSibling && isDividerPassThroughEl(insertRef.previousElementSibling)) {
-          insertRef = insertRef.previousElementSibling;
-        }
-        wrapper.parentNode.insertBefore(divider, insertRef);
-      } catch {}
-    }
-
-    // Divider/Stack Unit Rule (MECHANISMS_RULES.md §4): the divider repair
-    // owns the [divider][stack] order. The stack sync runs on title events
-    // only, so without this re-anchor any divider move (scroll/hydration
-    // re-parenting) strands the page's stack ABOVE its divider until the
-    // next title event — the exact divider-under-list failure.
-    try {
-      const stack = document.querySelector(`[data-cgxui="chat-page-title-list-synth"][data-page-num="${String(pageNum)}"]`);
-      if (stack && divider.parentNode && divider.nextElementSibling !== stack) {
-        divider.parentNode.insertBefore(stack, divider.nextSibling);
-      }
-    } catch {}
-
-    const okOrder = !!(divider.compareDocumentPosition(wrapper) & Node.DOCUMENT_POSITION_FOLLOWING);
-    let immediateNext = divider.nextElementSibling;
-    while (immediateNext && isDividerPassThroughEl(immediateNext)) immediateNext = immediateNext.nextElementSibling;
-    const immediate = immediateNext === wrapper;
-    const nextTestId = getNextTurnTestIdAfterDivider(divider);
-    const ok = okOrder && nextTestId === resolved.testid;
-
-    try {
-      divider.setAttribute('data-h2o-divider-anchor-testid', resolved.testid || '');
-      divider.setAttribute('data-h2o-divider-anchor-mode', resolved.mode || '');
-      divider.setAttribute('data-h2o-divider-next-testid', nextTestId || '');
-      divider.setAttribute('data-h2o-divider-order-ok', ok ? '1' : '0');
-      divider.setAttribute('data-h2o-divider-immediate', immediate ? '1' : '0');
-      if (ok) divider.setAttribute('data-h2o-divider-order-repaired', '1');
-      else divider.removeAttribute('data-h2o-divider-order-repaired');
-    } catch {}
-    return ok;
-  }
-
-  // ChatGPT reparents turn wrappers after scroll/hydration, which can strand a
-  // divider. Observe the flow container's childList (not subtree) and re-run
-  // the verified placement, debounced. Guarded by dividerRenderInFlight so our
-  // own insertions never retrigger the observer (no loop).
-  let dividerRenderInFlight = false;
-  let dividerOrderObserver = null;
-  let dividerOrderObserverParent = null;
-  let dividerOrderRepairTimer = 0;
-  function scheduleDividerOrderRepair() {
-    if (dividerRenderInFlight) return;
-    try { W.clearTimeout(dividerOrderRepairTimer); } catch {}
-    dividerOrderRepairTimer = W.setTimeout(() => {
-      try { renderChatPageDividers(resolveChatId()); } catch {}
-    }, 250);
-  }
-  function bindDividerOrderObserverOnce() {
-    if (typeof MutationObserver !== 'function') return;
-    let parent = null;
-    try {
-      const sec1 = document.querySelector('section[data-testid="conversation-turn-1"]');
-      parent = sec1?.parentElement?.parentElement || sec1?.parentElement || null;
-    } catch {}
-    if (!parent || parent === dividerOrderObserverParent) return;
-    if (dividerOrderObserver) { try { dividerOrderObserver.disconnect(); } catch {} }
-    dividerOrderObserverParent = parent;
-    try {
-      dividerOrderObserver = new MutationObserver(() => scheduleDividerOrderRepair());
-      dividerOrderObserver.observe(parent, { childList: true });
-    } catch {}
-  }
-
-  function renderChatPageDividers(chatId = '') {
-    bindDividerScrollRepairOnce();
-    bindDividerOrderObserverOnce();
-    dividerRenderInFlight = true;
-    const perfOwned = enterPerfOwner('divider');
-    const perfT0 = perfNow();
-    try {
-      const id = String(chatId || resolveChatId() || '').trim();
-      // While pagination windowing owns the flow it renders its own inline
-      // dividers and detaches off-window turns; teardown resets both flags, so
-      // this is the reliable "leave pgnw dividers alone" signal.
-      const paginationLiveState = getPaginationState();
-      const paginationOwnsFlow = !!(paginationLiveState && paginationLiveState.booted && paginationLiveState.renderedOnce);
-      const existingCoreDividers = qq(`.cgxui-chat-page-divider[data-cgxui-owner="${escAttr(UI_TOK.OWNER)}"]`);
-      const keepCoreDividers = new Set();
-      const { sections } = buildChatPageSections();
-      if (!sections.size && !(Array.isArray(S.turnList) && S.turnList.length)) {
-        for (const divider of existingCoreDividers) {
-          try { divider.remove(); } catch {}
-        }
-        return false;
-      }
-      try { syncNoAnswerTitleBars(id); } catch {}
-      let createdCount = 0;
-      let reusedCount = 0;
-
-      // Divider placement is anchored from the authoritative pair map, not
-      // from whatever subset the section builder resolved this tick: the
-      // first pair of Page N is canonical turn (N-1)*25, and its section
-      // persists in the DOM even when content is unhydrated or the page is
-      // collapsed. Sections remain the fallback and supply band/host state.
-      const authPairCount = Array.isArray(S.turnList) ? S.turnList.length : 0;
-      const authPageCount = authPairCount > 0 ? Math.ceil(authPairCount / 25) : 0;
-      const renderPageNums = new Set();
-      for (const section of sections.values()) {
-        const n = Math.max(0, Number(section?.pageNum || 0) || 0);
-        if (n > 0) renderPageNums.add(n);
-      }
-      for (let n = 1; n <= authPageCount; n += 1) renderPageNums.add(n);
-
-      for (const pageNum of Array.from(renderPageNums).sort((a, b) => a - b)) {
-        const section = sections.get(pageNum) || null;
-
-        const hosts = Array.isArray(section?.hosts) ? section.hosts : [];
-        const pageCollapsed = getChatPageSectionCollapsedState(pageNum, id, hosts);
-        const band = String(section?.band || getTurnPageBand(((pageNum - 1) * 25) + 1) || 'normal');
-
-        // Operator-exact page-start wrapper (section.parentElement). If the
-        // page-start section is not in the DOM, skip creating a divider at a
-        // guessed spot; an existing divider is left untouched (kept below).
-        const startWrap = getPageStartTurnWrapper(pageNum);
-        const geomHost = startWrap?.section || hosts[0] || null;
-
-        // Reuse an existing divider for this page from anywhere in the DOM
-        // (dedup: extras get removed below). Create only when a valid
-        // page-start wrapper exists to place it against.
-        let divider = qq(`.cgxui-chat-page-divider[data-cgxui-owner="${escAttr(UI_TOK.OWNER)}"][data-page-num="${String(pageNum)}"]`)[0]
-          || qq(`.cgxui-pgnw-page-divider[data-page-num="${String(pageNum)}"]`)[0]
-          || null;
-        if (!divider) {
-          if (!startWrap?.wrapper?.parentNode) continue;
-          divider = createChatPageDivider(pageNum, band);
-          createdCount += 1;
-          noteNodeLifecycle('created', 'chatPageDividers');
-        } else {
-          reusedCount += 1;
-          noteNodeLifecycle('reused', 'chatPageDividers');
-        }
-        // Dedup: exactly one core divider per page. The keep-by-page-count
-        // rule below would otherwise preserve a stale duplicate.
-        try {
-          for (const d of qq(`.cgxui-chat-page-divider[data-cgxui-owner="${escAttr(UI_TOK.OWNER)}"][data-page-num="${String(pageNum)}"]`)) {
-            if (d !== divider) { try { d.remove(); } catch {} }
-          }
-        } catch {}
-        setChatPageDividerDomState(divider, pageCollapsed, pageNum, band, id);
-
-        const coreOwnedDivider = !!divider.classList?.contains('cgxui-chat-page-divider');
-        // Pagination-owned (pgnw) dividers are inline-managed by the windowing
-        // render while windowing owns the flow; once windowing is torn down an
-        // adopted pgnw divider is a stale leftover and must obey the same
-        // verified anchor invariant as core dividers.
-        if (coreOwnedDivider || !paginationOwnsFlow) {
-          // Move + verify against the exact operator wrapper; stamps proof
-          // attrs from the FINAL DOM (never from intent).
-          if (startWrap?.wrapper?.parentNode) {
-            forcePlaceDividerBeforeTurnWrapper(divider, pageNum);
-          }
-          // Cross-family dedup: exactly one divider per page once windowing no
-          // longer owns the flow (a stale pgnw twin would duplicate the label).
-          if (!paginationOwnsFlow) {
-            try {
-              for (const d of qq(`.cgxui-pgnw-page-divider[data-page-num="${String(pageNum)}"]`)) {
-                if (d !== divider) { try { d.remove(); } catch {} }
-              }
-            } catch {}
-          }
-          // Geometry is visual only (line spacing) — never moves the divider.
-          if (geomHost) {
-            try {
-              const prevHost = getPreviousChatPageAnchorHost(geomHost);
-              applyChatPageDividerGeometry(divider, prevHost, geomHost);
-              applyChatPageDividerVisuals(divider, pageNum, id);
-              requestAnimationFrame(() => {
-                try {
-                  // Re-assert the verified anchor BEFORE recomputing geometry:
-                  // the visuals delegation must never decide final placement.
-                  if (startWrap?.wrapper?.parentNode) {
-                    forcePlaceDividerBeforeTurnWrapper(divider, pageNum);
-                  }
-                  const livePrevHost = getPreviousChatPageAnchorHost(geomHost);
-                  applyChatPageDividerGeometry(divider, livePrevHost, geomHost);
-                  applyChatPageDividerVisuals(divider, pageNum, id);
-                } catch {}
-              });
-            } catch {}
-          }
-          if (coreOwnedDivider) keepCoreDividers.add(divider);
-        }
-      }
-
-      let removedCount = 0;
-      for (const divider of existingCoreDividers) {
-        if (keepCoreDividers.has(divider)) continue;
-        // Never remove a divider whose page exists in the authoritative page
-        // map just because its anchor could not be resolved this tick
-        // (hydration churn, collapsed content). It keeps its current position
-        // and gets re-anchored on a later render.
-        const keepPageNum = Math.max(0, Number(divider?.getAttribute?.('data-page-num') || 0) || 0);
-        if (keepPageNum && authPageCount > 0 && keepPageNum <= authPageCount) {
-          keepCoreDividers.add(divider);
-          continue;
-        }
-        // A collapsed page may have its content detached from the DOM, so its
-        // hosts resolve to no usable anchor above — but the divider is the
-        // page's only visible restore handle and must never be removed while
-        // the page is collapsed.
-        const dividerPageNum = keepPageNum;
-        if (dividerPageNum && getChatPageSectionCollapsedState(dividerPageNum, id, [])) {
-          keepCoreDividers.add(divider);
-          continue;
-        }
-        removedCount += 1;
-        try { divider.remove(); } catch {}
-      }
-      if (createdCount > 0) noteRenderUnit('chatPageDividers', createdCount);
-      if (reusedCount > 0) noteRenderUnit('chatPageDividers', reusedCount);
-      if (removedCount > 0) noteNodeLifecycle('removed', 'chatPageDividers', removedCount);
-      PERF.dividerUi.createdCount = Number(PERF.dividerUi.createdCount || 0) + createdCount;
-      PERF.dividerUi.reusedCount = Number(PERF.dividerUi.reusedCount || 0) + reusedCount;
-      PERF.dividerUi.removedCount = Number(PERF.dividerUi.removedCount || 0) + removedCount;
-      try { document.documentElement.setAttribute(ATTR_CHAT_PAGE_DIVIDERS, getChatPageDividersEnabled() ? '1' : '0'); } catch {}
-      return true;
-    } finally {
-      // Clear on the next macrotask so the MutationObserver microtask that
-      // fires from OUR own insertions this render still sees the flag set and
-      // skips scheduling a redundant repair (prevents a render→observe loop).
-      try { W.setTimeout(() => { dividerRenderInFlight = false; }, 0); } catch { dividerRenderInFlight = false; }
-      const ms = perfNow() - perfT0;
-      recordDuration(PERF.paths.renderChatPageDividers, ms);
-      if (perfOwned) {
-        recordDuration(PERF.dividerUi, ms);
-        noteSummaryBucket(PERF.dividerUi, 'renderChatPageDividers');
-      }
-      exitPerfOwner('divider');
-    }
-  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // ── Stage 2C-2f: branch-transition withdrawal ──────────────────────────
+  // A trusted native branch selection replaces the mounted conversation while
+  // this module's turn list, and therefore its page model, still describes the
+  // old branch. Placing units in that window moved the old Page 2 divider onto
+  // a stale sentinel and showed PAGE 2 above an unrelated turn. The Core
+  // already publishes the transition synchronously at trusted capture; page
+  // units simply have to stop touching the DOM until authority agrees again.
+
+
+
+
+
+
+
 
   function centerOnPageDivider(pageNum, { smooth = true } = {}) {
     const label = getMiniMapPageDividerLabel(pageNum);
@@ -10908,14 +9675,45 @@ function unbindChatPageDividerBridge() {
     return String(first?.turnId || first?.answerId || '').trim();
   }
 
+  function clearMissingRebuildActiveIdentity(anyId = '') {
+    const key = String(anyId || '').trim();
+    if (!key) return false;
+    const turn = findTurnByAnyId(key);
+    const targetTurnId = String(turn?.turnId || key).trim();
+    if (!targetTurnId || getBtnById(targetTurnId)) return false;
+    let cleared = false;
+    const matchesMissingTarget = (value) => {
+      const current = String(value || '').trim();
+      return current === key || current === targetTurnId;
+    };
+    if (matchesMissingTarget(S.lastActiveTurnIdFast)) {
+      S.lastActiveTurnIdFast = '';
+      cleared = true;
+    }
+    if (matchesMissingTarget(S.lastActiveBtnId)) {
+      S.lastActiveBtnId = '';
+      cleared = true;
+    }
+    return cleared;
+  }
+
+  function applyRebuildActiveId(anyId = '', reason = 'core:rebuild') {
+    const activeId = String(anyId || '').trim();
+    let activated = false;
+    if (activeId) {
+      try {
+        activated = setActive(activeId, `rebuild:${String(reason || 'core:rebuild')}`) === true;
+      } catch {}
+      if (activated) return true;
+      clearMissingRebuildActiveIdentity(activeId);
+    }
+    try { updateCounter(''); } catch {}
+    return false;
+  }
+
   function finalizeRebuildUi(reason = 'core:rebuild') {
     const activeId = resolveRebuildActiveId();
-    if (activeId) {
-      setActive(activeId, `rebuild:${String(reason || 'core:rebuild')}`);
-      return true;
-    }
-    updateCounter('');
-    return false;
+    return applyRebuildActiveId(activeId, reason);
   }
 
   function syncActiveFromViewport(opts = {}) {
@@ -11265,9 +10063,24 @@ function unbindChatPageDividerBridge() {
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
       let retainedListForPersistence = list;
+      // A trusted branch transition in flight means pending drafts describe a
+      // path the effective authority has not accepted; counting them renders a
+      // hybrid the effective index never published (the 19-effective /
+      // 20-MiniMap split). During a transition the MiniMap tracks the effective
+      // count exactly and otherwise fails closed. Outside a transition the
+      // historical projected boundary stands, so ordinary live append is
+      // unchanged.
+      const effectiveIdentity = typeof getEffectivePathIdentity === 'function'
+        ? getEffectivePathIdentity()
+        : { available: false, effectiveCount: 0 };
+      const branchTransitionInFlight = completeIndex.branchSelectionStale === true
+        || completeIndex.trustedSelectionIntentActive === true
+        || completeIndex.branchTransactionPending === true;
       const expectedPresentationCount = overlayActive
         ? effectivePresentation.count
-        : completeIndex.projectedCount;
+        : ((branchTransitionInFlight && effectiveIdentity.available)
+          ? effectiveIdentity.effectiveCount
+          : completeIndex.projectedCount);
       // Canonical-only regression contract: when no overlay is active this is
       // exactly the historical `list.length !== completeIndex.projectedCount`
       // boundary; the effective count is consulted only for proven overlays.
@@ -11386,12 +10199,7 @@ function unbindChatPageDividerBridge() {
         try { repaintAllMiniBtns(); } catch {}
       }
       const activeId = String(S.lastActiveTurnIdFast || S.lastActiveBtnId || '').trim();
-      if (activeId) {
-        try { setActive(activeId, `rebuild:${why}`); } catch {}
-      } else {
-        try { updateCounter(''); } catch {}
-      }
-      try { finalizeRebuildUi(why); } catch {}
+      try { applyRebuildActiveId(activeId, why); } catch {}
       try {
         const chatId = resolveChatId();
         if (chatId && !overlayActive) {
@@ -11554,12 +10362,50 @@ function unbindChatPageDividerBridge() {
     return true;
   }
 
+  // ── Host surface consumed by 0C3a Chat Page Structure Engine ──────────────
+  // Milestone 1 keeps behaviour identical, so the extracted structural code
+  // still reads exactly what it read before: MiniMap's cached turn index, its
+  // Chat Atlas read-side projection, its divider-enabled preference, the
+  // NO ANSWER / answer-title collapse DOM appliers that belong to the title
+  // lifecycle, and MiniMap Core UI's perf buckets. Every field below stays
+  // owned and written here; 0C3a only calls in.
+  const CHAT_PAGE_STRUCTURE_HOST = {
+    ver: CORE_VER,
+    getTurnList: () => S.turnList,
+    getAnswerByTurnId: () => S.answerByTurnId,
+    findTurnByAnyId,
+    resolveAnswerEl,
+    getSharedTurnRecordByAnyId,
+    getCompleteIndexProjectionStatus,
+    getEffectivePresentationRuntimeStatus,
+    getChatPageDividersEnabled,
+    applyNoAnswerTitleCollapsedDom,
+    isAnswerTitleCollapsed,
+    isTitleBarCollapsed,
+    getAnswerTitleBarEl,
+    getAnswerTitleAnswerId,
+    UM_PUBLIC,
+    perf: {
+      state: () => PERF,
+      perfNow,
+      recordDuration,
+      noteSummaryBucket,
+      noteRenderUnit,
+      noteNodeLifecycle,
+      enterPerfOwner,
+      exitPerfOwner,
+    },
+  };
+
   const CORE_PAGES_API = {
     getChatId: resolveChatId,
     getSections: buildChatPageSections,
     getRows: buildChatPageAnswerRows,
     findRowByAnswerId: findChatPageRowByAnswerId,
     renderDividers: renderChatPageDividers,
+    buildPageUnitModel: buildChatPageUnitModel,
+    reconcilePageUnits: reconcileChatPageUnits,
+    getPageUnitDiagnostics: () => callChatPageStructure('getPageUnitDiagnostics', [], () => null),
     scheduleRebuild,
     setMiniMapPageCollapsed,
     toggleMiniMapPageCollapsed,
@@ -11621,6 +10467,9 @@ function unbindChatPageDividerBridge() {
     getChatPageDividersEnabled,
     setChatPageDividersEnabled,
     renderChatPageDividers,
+    buildChatPageUnitModel,
+    reconcileChatPageUnits,
+    getChatPageUnitDiagnostics: () => callChatPageStructure('getPageUnitDiagnostics', [], () => null),
     ensureChatPageDividerBridge,
     isChatPageCollapsed,
     setChatPageCollapsed,
@@ -11727,6 +10576,7 @@ function unbindChatPageDividerBridge() {
     // Expose CORE_API directly so Engine's multi-fallback resolver can always
     // reach it even when the shared kernel bridge is temporarily unavailable.
     try { TOPW.H2O_MM_CORE_API = CORE_API; } catch {}
+    try { TOPW.H2O_MM_CHAT_PAGE_STRUCTURE_HOST = CHAT_PAGE_STRUCTURE_HOST; } catch {}
     if (W !== TOPW) { try { W.H2O_MM_CORE_API = CORE_API; } catch {} }
   }
 
@@ -11736,6 +10586,8 @@ function unbindChatPageDividerBridge() {
       if (!root || typeof root !== 'object') return false;
       root.api = (root.api && typeof root.api === 'object') ? root.api : {};
       root.api.core = CORE_API;
+      root.api.mm = (root.api.mm && typeof root.api.mm === 'object') ? root.api.mm : {};
+      root.api.mm.chatPageStructureHost = CHAT_PAGE_STRUCTURE_HOST;
       root.api.rt = root.api.rt || null;
       root.api.ui = root.api.ui || null;
       const vaultApi = TOPW?.H2O?.MM?.mnmp?.api;

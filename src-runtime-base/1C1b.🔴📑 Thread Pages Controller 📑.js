@@ -26,6 +26,7 @@
   const EV_ANSWER_COLLAPSE = 'evt:h2o:answer:collapse';
   const EV_TITLE_SET = 'evt:h2o:title:set';
   const EV_CORE_INDEX_UPDATED = 'evt:h2o:core:index:updated';
+  const EV_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
   const EV_MM_TOGGLE_PAGE_COLLAPSED = 'evt:h2o:minimap:toggle-page-collapsed';
   const EV_ROUTE_CHANGED = 'evt:h2o:route:changed';
   const EV_VISIT_STATE_MODE_CHANGED = 'evt:h2o:chat-pages:visit-state-mode-changed';
@@ -35,6 +36,17 @@
   const ATTR_CHAT_PAGE_QUESTION_HIDDEN = 'data-cgxui-chat-page-question-hidden';
   const ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
   const ATTR_CHAT_PAGE_WRAPPER_HIDDEN = 'data-cgxui-chat-page-wrapper-hidden';
+  const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
+  const ATTR_COLLAPSE_READINESS = 'data-h2o-collapse-readiness';
+  const ATTR_COLLAPSE_REASON = 'data-h2o-collapse-reason';
+  const ATTR_COLLAPSE_CONTROL_STATE = 'data-h2o-collapse-control-state';
+  const ATTR_COLLAPSE_FEEDBACK = 'data-h2o-collapse-feedback';
+  const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
+  const COLLAPSE_UNAVAILABLE_MESSAGE = 'Collapse unavailable until the next page boundary is loaded.';
+  const COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE = 'Collapse temporarily unavailable because the conversation layout is incomplete.';
+  // Shown when the capability was ready but the transaction itself could not
+  // commit. Naming a boundary or a layout problem there would be inaccurate.
+  const COLLAPSE_TRANSIENT_FAILURE_MESSAGE = 'Collapse is temporarily unavailable. Please try again.';
   const ANSWER_TITLE_COLLAPSED_ATTR = 'data-at-collapsed';
   const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
   const USER_MSG_SEL = '[data-message-author-role="user"]';
@@ -43,14 +55,20 @@
   const ANSWER_TITLE_ICON_SEL = '[data-cgxui="atns-answer-title-icon"][data-cgxui-owner="atns"]';
   const TITLE_LIST_ROW_GAP_PX = 4;
   const DIVIDER_STYLE_ID = 'cgxui-chat-pages-divider-style';
+  const TITLE_LIST_PAGE_SIZE = 25;
+  const TITLE_LIST_PAGE_HYDRATION_OWNER = 'chat-pages:title-list';
 
   /* Divider visual keys — tune these safely */
   const DIVIDER_VISUAL_KEYS = Object.freeze({
     lineLeftScale: 1.30,
     lineRightScale: 1.30,
 
-    dotSizeExpandedPx: 12,
-    dotSizeCollapsedPx: 12,
+    // Authoritative live circle size: these tokens become inline !important
+    // width/height/min-width/min-height on the dot, so they - not the authored
+    // base CSS - decide what the user actually sees. The transparent hit child
+    // stays 28x28 and centred around this circle.
+    dotSizeExpandedPx: 14,                                      // 👈 ↑ = bigger circle; ↓ = smaller circle
+    dotSizeCollapsedPx: 14,                                     // 👈 keep equal to the expanded size
 
     expandedDotColor: '#facc15',
     expandedDotGlowColor: 'rgba(250, 204, 21, 0.48)',
@@ -89,14 +107,17 @@
     onDividerDblClick: null,
     onDividerClick: null,
     onDividerDotClick: null,
+    onDividerDotKeyDown: null,
     onAnswerCollapse: null,
     onTitleSet: null,
     onCoreIndexUpdated: null,
+    onCoreTurnUpdated: null,
     onPaginationPageChanged: null,
     onPaginationConfigChanged: null,
     onMiniMapTogglePageCollapsed: null,
     onRouteChanged: null,
     onVisitStateModeChanged: null,
+    titleListObserverHubOff: null,
     dividerVisualTimer: null,
     dividerVisualRefreshToken: 0,
     dividerClickTimer: null,
@@ -107,10 +128,29 @@
     titleListRepairTimer: 0,
     titleListRepairPages: new Set(),
     titleListRepairAllPages: false,
+    titleListHydrationRecoveryIdentity: '',
+    titleListHydrationRecoveryIds: new Set(),
+    nativeRangeActivePages: new Set(),
+    collapsedBoundaryDiagnostics: new Map(),
+    renderedPageBoundaryLeases: new Map(),
+    pageCollapseRangeContinuity: new Map(),
+    atomicPageCollapseTransactions: new Map(),
+    atomicPageCollapseGuards: new Set(),
+    atomicPageCollapseAttemptSeq: 0,
+    atomicPageCollapseLastAttempt: null,
     dotExpandCampaignSeq: 0,
     dotExpandCampaigns: new Map(),
     titleListBatchDepth: 0,
     titleListBatchDirty: false,
+    titleListPageHydration: {
+      active: false,
+      source: '',
+      count: 0,
+      pageCount: 0,
+      normalPages: [],
+      guardedIds: 0,
+      paginationHeld: false,
+    },
     titleIntentReplayInFlight: false,
     titleIntentTrailingTimer: null,
     titleIntentLastAppliedByAnswer: new Map(),
@@ -195,6 +235,13 @@
 
   function UM_PUBLIC() {
     try { return TOPW.H2O?.UM?.nmntmssgs?.api || null; } catch { return null; }
+  }
+
+  function UM_ADAPTER() {
+    try {
+      return TOPW.H2O?.UM?.nmntmssgs?.engine?.getChatAdapter?.()
+        || UM_PUBLIC();
+    } catch { return UM_PUBLIC(); }
   }
 
   function PG_ADAPTER() {
@@ -633,7 +680,17 @@
     const wrapped = isPageWrappedByPagination(num, chatId);
     const roots = getDividerRoots(num);
     for (const divider of roots) applyDividerVisualsToRoot(divider, state, { wrapped });
-    return { ok: true, status: 'ok', pageNum: num, mode, state, wrapped, count: roots.length };
+    const collapseControl = syncCollapsedBoundaryControlForPage(num, chatId);
+    return {
+      ok: true,
+      status: 'ok',
+      pageNum: num,
+      mode,
+      state,
+      wrapped,
+      count: roots.length,
+      collapseControl,
+    };
   }
 
   function collectKnownPageNums(chatId = '') {
@@ -832,8 +889,8 @@
     if (!id) return new Set();
     const cached = S.collapsedPagesByChat.get(id);
     if (cached instanceof Set) return new Set(cached);
-    const pages = normalizePageNums(storageGetJSON(keyCollapsedPages(id), []));
-    const set = new Set(pages);
+    // Stage 2C-2 does not restore legacy collapsed state after reload.
+    const set = new Set();
     S.collapsedPagesByChat.set(id, set);
     return new Set(set);
   }
@@ -852,8 +909,9 @@
     if (!id) return new Set();
     const cached = S.titleListPagesByChat.get(id);
     if (cached instanceof Set) return new Set(cached);
-    const pages = normalizePageNums(storageGetJSON(keyTitleListPages(id), []));
-    const set = new Set(pages);
+    // Stage 2C-2 is explicit-session-only. Legacy persisted values remain
+    // physically untouched but have zero activation authority after reload.
+    const set = new Set();
     S.titleListPagesByChat.set(id, set);
     return new Set(set);
   }
@@ -865,6 +923,16 @@
     S.titleListPagesByChat.set(id, next);
     storageSetJSON(keyTitleListPages(id), Array.from(next));
     return new Set(next);
+  }
+
+  function localForgetTitleListPage(chatId = '', pageNum = 0) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    if (!id || !num) return false;
+    const next = localReadTitleListPagesSet(id);
+    const changed = next.delete(num);
+    S.titleListPagesByChat.set(id, next);
+    return changed;
   }
 
   function getDividerPageNum(divider = null) {
@@ -1130,19 +1198,12 @@
   // onTitleSet re-apply path.
   function getAuthoritativePageAnswerIds(pageNum = 0, chatId = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
-    const ids = new Set(getPageAnswerIds(num, chatId));
-    try {
-      const list = MM_CORE_API()?.getTurnList?.() || [];
-      if (Array.isArray(list) && list.length) {
-        const start = (num - 1) * 25;
-        const end = Math.min(list.length, start + 25);
-        for (let i = start; i < end; i += 1) {
-          const aId = String(list[i]?.answerId || '').trim();
-          if (aId) ids.add(aId);
-        }
-      }
-    } catch {}
-    return Array.from(ids);
+    return Array.from(new Set(
+      purePresentationPageMemberDetails(num)
+        .filter((member) => member?.type === 'answer')
+        .map((member) => String(member?.answerId || '').trim())
+        .filter(Boolean)
+    ));
   }
 
   function createEmptyTitleIntentLedger() {
@@ -1844,7 +1905,8 @@
 
   function isTitleListActive(pageNum = 0, chatId = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
-    return !!num && localReadTitleListPagesSet(chatId).has(num);
+    const id = String(chatId || resolveChatId()).trim();
+    return !!num && S.atomicPageCollapseTransactions.has(collapsedNativeRangeKey(id, num));
   }
 
   function _clearRestoreProps(el) {
@@ -2301,11 +2363,19 @@
   // never clobber our restore (and vice versa). No ChatGPT-owned node is
   // mutated beyond the same display-hide technique page collapse already uses.
   const ATTR_TITLE_LIST_FLOW_HIDDEN = 'data-cgxui-chat-page-title-list-hidden';
+  const ATTR_TITLE_LIST_ORPHAN_TIMESTAMP_HIDDEN = 'data-cgxui-chat-page-title-list-orphan-timestamp-hidden';
+  const ATTR_TITLE_ONLY_ACTIVE_PAGES = 'data-cgxui-chat-title-only-pages';
   const ATTR_TITLE_LIST_NUM = 'data-h2o-title-list-num';
   const TITLE_LIST_SYNTH_SEL = '[data-cgxui="chat-page-title-list-synth"]';
   const ATTR_TITLE_STACK_INLINE = 'data-h2o-title-stack-inline';
   const ATTR_TITLE_INLINE_SLOT = 'data-h2o-title-inline-slot';
   const ATTR_TITLE_INLINE_FOR = 'data-h2o-title-inline-for';
+  const TITLE_LIST_EFFECTIVE_METHOD = Object.freeze({
+    STATUS: ['get', 'Effective', 'PresentationStatus'].join(''),
+    INDEX: ['get', 'Effective', 'PresentationIndex'].join(''),
+    BY_QID: ['get', 'Effective', 'TurnRecordByQId'].join(''),
+    BY_AID: ['get', 'Effective', 'TurnRecordByAId'].join(''),
+  });
 
   function TURN_RUNTIME() {
     try { return TOPW.H2O?.turnRuntime || W.H2O?.turnRuntime || null; } catch { return null; }
@@ -2316,7 +2386,9 @@
     const rt = TURN_RUNTIME();
     try {
       return (raw && (
-        rt?.getTurnRecordByAId?.(raw)
+        rt?.[TITLE_LIST_EFFECTIVE_METHOD.BY_AID]?.(raw)
+        || rt?.[TITLE_LIST_EFFECTIVE_METHOD.BY_QID]?.(raw)
+        || rt?.getTurnRecordByAId?.(raw)
         || rt?.getTurnRecordByQId?.(raw)
         || rt?.getTurnRecordByTurnId?.(raw)
       )) || (turnNo ? rt?.getTurnRecordByTurnNo?.(turnNo) : null) || null;
@@ -2365,18 +2437,10 @@
       ? sectionByAnswerIdForTitleList(member.answerId, 'assistant', record)
       : null;
     let questionSection = sectionByAnswerIdForTitleList(member.questionId || record?.qId || identity, 'user', record);
-    // Persistent USER shells survive hydration and retain canonical prompt
-    // order. Use that order only to locate the already-canonical turn record;
-    // never infer page membership or an assistant shell from raw testid math,
-    // which shifts after a genuine NO ANSWER turn.
-    const turnNo = Math.max(0, Number(member.turnNo || record?.turnNo || 0) || 0);
-    if (!questionSection && turnNo > 0) {
-      try {
-        const questionSections = Array.from(document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]'))
-          .sort((a, b) => turnNumberOfSection(a) - turnNumberOfSection(b));
-        questionSection = questionSections[turnNo - 1] || null;
-      } catch {}
-    }
+    // Never recover a missing exact qId by indexing the currently mounted
+    // USER subset. With Page 1 title-listed, the first mounted USER can be
+    // canonical order 26; treating it as order 1 leaks Page 1 ownership onto
+    // Page 2. Hydration must restore the exact identity instead.
     // Adjacency is a placement fallback only. Canonical membership and the
     // page/turn number still come from turnRuntime; visible order never
     // decides which page owns the pair.
@@ -2456,6 +2520,4381 @@
     return out;
   }
 
+  function titleListEffectiveStatusIdentity(status = null) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.anchorQId || ''),
+      Math.max(0, Number(status?.pathLength || 0) || 0),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function titleListMemberFromPresentationRecord(record = null, expectedOrder = 0) {
+    const order = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+    if (!record || !order || order !== expectedOrder) return null;
+    const questionId = String(record?.qId || record?.questionId || '').trim();
+    const answerId = String(record?.primaryAId || record?.answerId || record?.aId || '').trim();
+    const turnId = String(record?.turnId || record?.id || '').trim();
+    const noAnswer = record?.noAnswer === true;
+    if (!questionId || (noAnswer ? !!answerId : !answerId)) return null;
+    const aliasIds = Array.from(new Set([
+      answerId,
+      ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
+      ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ...(Array.isArray(record?._aliasIds) ? record._aliasIds : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean)));
+    const id = answerId || questionId || `turn-${order}`;
+    return {
+      id,
+      answerId,
+      questionId,
+      turnId,
+      aliasIds,
+      turnNo: order,
+      type: answerId ? 'answer' : 'no-answer',
+    };
+  }
+
+  // Read status + index + status as one effective authority snapshot. Any
+  // transition, incomplete proof, identity ambiguity, or getter disagreement
+  // falls back wholesale to the canonical list; effective count and canonical
+  // rows are never mixed.
+  function readEffectiveTitleListAuthority() {
+    const rt = TURN_RUNTIME();
+    if (!rt) return null;
+    let before = null;
+    let after = null;
+    let index = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      index = rt[TITLE_LIST_EFFECTIVE_METHOD.INDEX]?.() || null;
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return null;
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    if (
+      before?.overlayActive !== true
+      || before?.source !== 'selected-path-overlay'
+      || count < 1
+      || titleListEffectiveStatusIdentity(before) !== titleListEffectiveStatusIdentity(after)
+      || index?.complete !== true
+      || index?.proof !== 'selected-path-overlay'
+      || !Array.isArray(index?.turns)
+      || index.turns.length !== count
+    ) return null;
+
+    const members = [];
+    const qIds = new Set();
+    const aIds = new Set();
+    for (let offset = 0; offset < index.turns.length; offset += 1) {
+      const member = titleListMemberFromPresentationRecord(index.turns[offset], offset + 1);
+      if (!member || qIds.has(member.questionId)) return null;
+      qIds.add(member.questionId);
+      let exactQ = null;
+      try { exactQ = rt[TITLE_LIST_EFFECTIVE_METHOD.BY_QID]?.(member.questionId) || null; } catch {}
+      if (
+        Number(exactQ?.order || exactQ?.turnNo || exactQ?.idx || 0) !== member.turnNo
+        || String(exactQ?.qId || exactQ?.questionId || '') !== member.questionId
+      ) return null;
+      if (member.answerId) {
+        if (aIds.has(member.answerId)) return null;
+        aIds.add(member.answerId);
+        let exactA = null;
+        try { exactA = rt[TITLE_LIST_EFFECTIVE_METHOD.BY_AID]?.(member.answerId) || null; } catch {}
+        if (
+          Number(exactA?.order || exactA?.turnNo || exactA?.idx || 0) !== member.turnNo
+          || String(exactA?.primaryAId || exactA?.answerId || exactA?.aId || '') !== member.answerId
+        ) return null;
+      }
+      members.push(member);
+    }
+    return {
+      source: 'selected-path-overlay',
+      count,
+      pageCount: Math.ceil(count / 25),
+      members,
+      status: before,
+    };
+  }
+
+  function readTitleListPresentationAuthority() {
+    const effective = readEffectiveTitleListAuthority();
+    if (effective) return effective;
+    const members = [];
+    for (let pageNum = 1; pageNum <= 512; pageNum += 1) {
+      const page = pureCanonicalPageMemberDetails(pageNum);
+      if (!page.length) break;
+      members.push(...page);
+      if (page.length < 25) break;
+    }
+    const count = members.length
+      ? Math.max(...members.map((member) => Number(member?.turnNo || 0)))
+      : 0;
+    return {
+      source: 'canonical',
+      count,
+      pageCount: count ? Math.ceil(count / 25) : 0,
+      members,
+      status: null,
+    };
+  }
+
+  // Page existence is presentation-authority data, not mounted-DOM data.
+  // This model is rebuilt in memory from one coherent effective-or-canonical
+  // snapshot and is never written to cache, aliases, storage, or turn records.
+  function buildTitleListPresentationPageModel() {
+    const authority = readTitleListPresentationAuthority();
+    const count = Math.max(0, Number(authority?.count || 0) || 0);
+    const pageCount = count ? Math.ceil(count / TITLE_LIST_PAGE_SIZE) : 0;
+    const pages = [];
+    for (let pageNo = 1; pageNo <= pageCount; pageNo += 1) {
+      const startOrder = ((pageNo - 1) * TITLE_LIST_PAGE_SIZE) + 1;
+      const endOrder = Math.min(count, pageNo * TITLE_LIST_PAGE_SIZE);
+      const turnRecords = (Array.isArray(authority?.members) ? authority.members : [])
+        .filter((member) => {
+          const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+          return order >= startOrder && order <= endOrder;
+        })
+        .sort((a, b) => Number(a?.turnNo || 0) - Number(b?.turnNo || 0));
+      if (turnRecords.length !== (endOrder - startOrder + 1)) {
+        return {
+          source: 'canonical',
+          count: 0,
+          pageSize: TITLE_LIST_PAGE_SIZE,
+          pageCount: 0,
+          pages: [],
+          coherent: false,
+          reason: 'page-membership-incomplete',
+        };
+      }
+      pages.push({ pageNo, startOrder, endOrder, turnRecords });
+    }
+    return {
+      source: String(authority?.source || 'canonical'),
+      count,
+      pageSize: TITLE_LIST_PAGE_SIZE,
+      pageCount,
+      pages,
+      coherent: count > 0 && pages.length === pageCount,
+      reason: count > 0 ? 'complete' : 'authority-empty',
+    };
+  }
+
+  const RENDERED_BOUNDARY_SENTINEL_ATTR = 'data-h2o-chat-page-boundary';
+  const RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR = 'data-h2o-chat-page-boundary-page';
+  const RENDERED_BOUNDARY_SENTINEL_KIND_ATTR = 'data-h2o-chat-page-boundary-kind';
+
+  function renderedBoundaryStatusIdentity(status = null) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.anchorQId || ''),
+      Math.max(0, Number(status?.pathLength || 0) || 0),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function frozenRenderedPageBoundaryCapability(raw = {}) {
+    return Object.freeze({
+      version: 2,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      isThreadStart: raw.isThreadStart === true,
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      qId: String(raw.qId || '') || null,
+      primaryAId: String(raw.primaryAId || '') || null,
+      source: raw.source == null ? null : String(raw.source || ''),
+      flowRootConnected: raw.flowRootConnected === true,
+      boundarySectionMounted: raw.boundarySectionMounted === true,
+      boundaryWrapperConnected: raw.boundaryWrapperConnected === true,
+      boundaryDomRole: String(raw.boundaryDomRole || '') || null,
+      boundaryTestId: String(raw.boundaryTestId || '') || null,
+      boundaryDirectFlowIndex: Number.isInteger(raw.boundaryDirectFlowIndex)
+        ? raw.boundaryDirectFlowIndex
+        : -1,
+      primaryAnswerMounted: raw.primaryAnswerMounted === true,
+      primaryAnswerDomRole: String(raw.primaryAnswerDomRole || '') || null,
+      primaryAnswerTestId: String(raw.primaryAnswerTestId || '') || null,
+      primaryAnswerDirectFlowIndex: Number.isInteger(raw.primaryAnswerDirectFlowIndex)
+        ? raw.primaryAnswerDirectFlowIndex
+        : -1,
+      dividerConnected: raw.dividerConnected === true,
+      dividerBeforeBoundary: raw.dividerBeforeBoundary === true,
+      startSentinelConnected: raw.startSentinelConnected === true,
+      startSentinelBeforeBoundary: raw.startSentinelBeforeBoundary === true,
+      interveningNonH2ONodeCount: Math.max(
+        0,
+        Number(raw.interveningNonH2ONodeCount || 0) || 0,
+      ),
+      boundaryIdentityCurrent: raw.boundaryIdentityCurrent === true,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      pageUnitOrderReason: raw.pageUnitOrderReason == null
+        ? null
+        : String(raw.pageUnitOrderReason || ''),
+      placementRepairRequired: raw.placementRepairRequired === true,
+      leaseCurrent: raw.leaseCurrent === true,
+    });
+  }
+
+  function renderedBoundaryDirectChildUnder(root = null, node = null) {
+    if (!root || !node || root === node) return null;
+    let current = node;
+    while (current?.parentElement && current.parentElement !== root) {
+      current = current.parentElement;
+    }
+    return current?.parentElement === root ? current : null;
+  }
+
+  function renderedBoundaryRoleFromCarrier(identityCarrier = null, nativeTestHost = null) {
+    if (!identityCarrier || !nativeTestHost || !nativeTestHost.contains?.(identityCarrier)) {
+      return { renderedRoleCarrier: null, renderedRole: '' };
+    }
+    let candidate = identityCarrier;
+    while (candidate) {
+      const turnRole = String(candidate.getAttribute?.('data-turn') || '').trim().toLowerCase();
+      const authorRole = String(
+        candidate.getAttribute?.('data-message-author-role') || ''
+      ).trim().toLowerCase();
+      const renderedRole = ['user', 'assistant'].includes(turnRole)
+        ? turnRole
+        : (['user', 'assistant'].includes(authorRole) ? authorRole : '');
+      if (renderedRole) {
+        return { renderedRoleCarrier: candidate, renderedRole };
+      }
+      if (candidate === nativeTestHost) break;
+      candidate = candidate.parentElement;
+    }
+    return { renderedRoleCarrier: null, renderedRole: '' };
+  }
+
+  function resolveRenderedTurnSurfaceByIdentity(identity = '', flowRoot = null) {
+    const id = String(identity || '').trim();
+    if (!id) return { ok: false, reason: 'identity-unmounted' };
+    let identityCarriers = [];
+    try {
+      identityCarriers = Array.from(document.querySelectorAll('section[data-turn-id]')).filter(
+        (carrier) => (
+          carrier?.isConnected === true
+          && String(carrier.getAttribute?.('data-turn-id') || '').trim() === id
+        )
+      );
+    } catch {}
+    if (!identityCarriers.length) return { ok: false, reason: 'identity-unmounted' };
+    if (identityCarriers.length !== 1) return { ok: false, reason: 'identity-ambiguous' };
+    const identityCarrier = identityCarriers[0];
+    let nativeTestHostCount = 0;
+    let ancestor = identityCarrier;
+    while (ancestor) {
+      if (ancestor.matches?.(TURN_HOST_SEL)) nativeTestHostCount += 1;
+      ancestor = ancestor.parentElement;
+    }
+    const nativeTestHost = identityCarrier.matches?.(TURN_HOST_SEL)
+      ? identityCarrier
+      : identityCarrier.closest?.(TURN_HOST_SEL) || null;
+    if (
+      nativeTestHostCount !== 1
+      || !nativeTestHost
+      || nativeTestHost?.isConnected !== true
+      || !nativeTestHost.contains?.(identityCarrier)
+    ) return { ok: false, reason: 'native-test-host-unavailable' };
+    const identityWrapper = renderedBoundaryDirectChildUnder(flowRoot, identityCarrier);
+    const nativeHostWrapper = renderedBoundaryDirectChildUnder(flowRoot, nativeTestHost);
+    if (!identityWrapper || !nativeHostWrapper) {
+      return { ok: false, reason: 'flow-wrapper-unavailable' };
+    }
+    if (identityWrapper !== nativeHostWrapper) {
+      return { ok: false, reason: 'surface-wrapper-mismatch' };
+    }
+    const role = renderedBoundaryRoleFromCarrier(identityCarrier, nativeTestHost);
+    return {
+      ok: true,
+      reason: null,
+      identityCarrier,
+      renderedRoleCarrier: role.renderedRoleCarrier,
+      nativeTestHost,
+      directFlowWrapper: identityWrapper,
+      renderedRole: role.renderedRole,
+      testId: String(nativeTestHost.getAttribute?.('data-testid') || '') || null,
+    };
+  }
+
+  function renderedBoundaryThreadDivider(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let dividers = [];
+    try {
+      dividers = Array.from(document.querySelectorAll(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"],`
+        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      )).filter((divider) => (
+        divider?.isConnected === true
+        && !divider.closest?.('#cgx-mm-root, .cgxui-mm-page-divider')
+      ));
+    } catch {}
+    return dividers.length === 1 ? dividers[0] : null;
+  }
+
+  function renderedBoundaryStartSentinel(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let sentinels = [];
+    try {
+      sentinels = Array.from(document.querySelectorAll(
+        `[${RENDERED_BOUNDARY_SENTINEL_ATTR}="page-${String(num)}-start"]`
+      )).filter((sentinel) => (
+        sentinel?.isConnected === true
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR) || '') === String(num)
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || '') === 'start'
+      ));
+    } catch {}
+    return sentinels.length === 1 ? sentinels[0] : null;
+  }
+
+  function renderedBoundaryOrderingNodeAllowed(node = null, divider = null) {
+    if (!node || node.nodeType !== 1) return false;
+    if (node === divider) return true;
+    // Every H2O-owned page unit legitimately sits between the page start
+    // sentinel and the boundary wrapper — divider, boundary sentinels and the
+    // collapse title-list projection. The counter this feeds is
+    // interveningNonH2ONodeCount, so an H2O node must never increment it.
+    // Omitting the title list made the atomic transaction invalidate its own
+    // committed output: inserting the projection flipped pageUnitOrderCurrent
+    // to false, and the post-commit revalidation then rolled the whole
+    // collapse back while the capability still reported activationReady.
+    if (typeof pageCollapseRangeH2OOwned === 'function' && pageCollapseRangeH2OOwned(node)) return true;
+    try {
+      return !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_ATTR)
+        && !!node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR)
+        && ['start', 'end'].includes(String(
+          node.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || ''
+        ));
+    } catch {
+      return false;
+    }
+  }
+
+  function renderedBoundaryLayoutProof(flowRoot = null, wrapper = null, divider = null, sentinel = null) {
+    const children = Array.from(flowRoot?.children || []);
+    const boundaryIndex = children.indexOf(wrapper);
+    const dividerIndex = children.indexOf(divider);
+    const sentinelIndex = children.indexOf(sentinel);
+    const dividerBeforeBoundary = dividerIndex >= 0
+      && boundaryIndex >= 0
+      && dividerIndex < boundaryIndex;
+    const startSentinelBeforeBoundary = sentinelIndex >= 0
+      && boundaryIndex >= 0
+      && sentinelIndex < boundaryIndex;
+    const intervening = startSentinelBeforeBoundary
+      ? children.slice(sentinelIndex + 1, boundaryIndex)
+      : [];
+    const interveningNonH2ONodeCount = intervening.filter(
+      (node) => !renderedBoundaryOrderingNodeAllowed(node, divider)
+    ).length;
+    return {
+      boundaryIndex,
+      dividerBeforeBoundary,
+      startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount,
+    };
+  }
+
+  function renderedBoundaryWrapperCarriesIdentity(wrapper = null, identity = '') {
+    const id = String(identity || '').trim();
+    return !!wrapper
+      && !!id
+      && String(wrapper.getAttribute?.('data-turn-id-container') || '').trim() === id;
+  }
+
+  function renderedBoundaryColdWrapperH2OOwned(node = null) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      return node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      ) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function resolveColdRenderedBoundaryWrapper(flowRoot = null, identity = '') {
+    const id = String(identity || '').trim();
+    if (!flowRoot || flowRoot?.isConnected !== true || !id) {
+      return { ok: false, reason: 'identity-unmounted', wrapper: null };
+    }
+    const exactMatches = Array.from(flowRoot.children || []).filter((child) => (
+      child?.nodeType === 1
+      && child?.isConnected === true
+      && child?.parentElement === flowRoot
+      && String(child.getAttribute?.('data-turn-id-container') || '').trim() === id
+    ));
+    if (!exactMatches.length) {
+      return { ok: false, reason: 'identity-unmounted', wrapper: null };
+    }
+    if (exactMatches.length !== 1) {
+      return { ok: false, reason: 'identity-ambiguous', wrapper: null };
+    }
+    const wrapper = exactMatches[0];
+    if (renderedBoundaryColdWrapperH2OOwned(wrapper)) {
+      return { ok: false, reason: 'identity-unproven', wrapper: null };
+    }
+    return { ok: true, reason: null, wrapper };
+  }
+
+  function renderedBoundaryPageUnitPlacement(flowRoot = null, wrapper = null, pageNum = 0) {
+    const divider = renderedBoundaryThreadDivider(pageNum);
+    const startSentinel = renderedBoundaryStartSentinel(pageNum);
+    const dividerConnected = divider?.isConnected === true;
+    const startSentinelConnected = startSentinel?.isConnected === true;
+    const dividerInFlow = dividerConnected && divider?.parentElement === flowRoot;
+    const sentinelInFlow = startSentinelConnected && startSentinel?.parentElement === flowRoot;
+    const layout = renderedBoundaryLayoutProof(
+      flowRoot,
+      wrapper,
+      dividerInFlow ? divider : null,
+      sentinelInFlow ? startSentinel : null,
+    );
+    let pageUnitOrderReason = null;
+    if (!dividerConnected) pageUnitOrderReason = 'divider-unavailable';
+    else if (!startSentinelConnected) pageUnitOrderReason = 'sentinel-unavailable';
+    else if (!dividerInFlow || !sentinelInFlow) pageUnitOrderReason = 'page-unit-order-incomplete';
+    else if (!layout.startSentinelBeforeBoundary) {
+      pageUnitOrderReason = 'sentinel-after-boundary';
+    } else if (!layout.dividerBeforeBoundary) {
+      pageUnitOrderReason = 'divider-after-boundary';
+    } else if (layout.interveningNonH2ONodeCount) {
+      pageUnitOrderReason = 'intervening-host-node';
+    }
+    const pageUnitOrderCurrent = pageUnitOrderReason == null;
+    return {
+      divider,
+      startSentinel,
+      dividerConnected,
+      dividerBeforeBoundary: layout.dividerBeforeBoundary,
+      startSentinelConnected,
+      startSentinelBeforeBoundary: layout.startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount: layout.interveningNonH2ONodeCount,
+      boundaryIndex: layout.boundaryIndex,
+      pageUnitOrderCurrent,
+      pageUnitOrderReason,
+    };
+  }
+
+  function renderedBoundaryTransitionActive(projection = null) {
+    return projection?.selectedPathConfirmationPending === true
+      || projection?.selectedPathConfirmationLeaseActive === true
+      || projection?.selectedPathRequestLeaseActive === true;
+  }
+
+  function renderedBoundaryRecordStreaming(record = null) {
+    return record?.completeIndexPending === true
+      || record?.livePendingStreaming === true;
+  }
+
+  function readRenderedBoundaryAuthority(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const rt = TURN_RUNTIME();
+    if (
+      !rt
+      || typeof rt.getEffectivePresentationStatus !== 'function'
+      || typeof rt.getEffectivePresentationIndex !== 'function'
+    ) return { ok: false, reason: 'authority-unavailable', pageNum: num };
+    let before = null;
+    let after = null;
+    let index = null;
+    let projection = null;
+    try {
+      before = rt.getEffectivePresentationStatus() || null;
+      index = rt.getEffectivePresentationIndex() || null;
+      projection = rt.getCompleteTurnIndexProjectionStatus?.() || null;
+      after = rt.getEffectivePresentationStatus() || null;
+    } catch {
+      return { ok: false, reason: 'authority-unavailable', pageNum: num };
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    const generation = Math.max(0, Number(before?.generation || 0) || 0);
+    const effectiveFingerprint = String(index?.sourceFingerprint || '');
+    const canonicalFingerprint = String(before?.canonicalFingerprint || '');
+    const chatId = String(before?.chatId || '');
+    const routeKey = String(before?.routeKey || '');
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    const coherent = (
+      count > 0
+      && generation > 0
+      && !!effectiveFingerprint
+      && !!chatId
+      && !!routeKey
+      && index?.complete === true
+      && turns.length === count
+      && renderedBoundaryStatusIdentity(before) === renderedBoundaryStatusIdentity(after)
+      && turns.every((record, offset) => (
+        Math.max(0, Number(record?.order || record?.turnNo || 0) || 0) === offset + 1
+        && !!String(record?.qId || '').trim()
+      ))
+      && projection?.authoritative === true
+      && String(projection?.chatId || '') === chatId
+      && Math.max(0, Number(projection?.routeGeneration || 0) || 0) === generation
+      && String(projection?.fingerprint || '') === canonicalFingerprint
+    );
+    if (!coherent) {
+      return {
+        ok: false,
+        reason: 'authority-incoherent',
+        pageNum: num,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    const pageStartOrder = ((num - 1) * TITLE_LIST_PAGE_SIZE) + 1;
+    if (pageStartOrder > count) {
+      return {
+        ok: false,
+        reason: 'page-not-present',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    const record = turns[pageStartOrder - 1] || null;
+    const qId = String(record?.qId || '').trim();
+    if (!qId) {
+      return {
+        ok: false,
+        reason: 'boundary-qid-unavailable',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    let exact = null;
+    try { exact = rt.getEffectiveTurnRecordByQId?.(qId) || null; } catch {}
+    if (
+      !exact
+      || Math.max(0, Number(exact?.order || exact?.turnNo || 0) || 0) !== pageStartOrder
+      || String(exact?.qId || '') !== qId
+    ) {
+      return {
+        ok: false,
+        reason: 'authority-incoherent',
+        pageNum: num,
+        pageStartOrder,
+        count,
+        generation,
+        effectiveFingerprint,
+        chatId,
+        routeKey,
+      };
+    }
+    return {
+      ok: true,
+      pageNum: num,
+      pageStartOrder,
+      count,
+      generation,
+      effectiveFingerprint,
+      chatId,
+      routeKey,
+      projection,
+      statusIdentity: renderedBoundaryStatusIdentity(before),
+      record: exact,
+      qId,
+      primaryAId: String(exact?.primaryAId || '').trim(),
+    };
+  }
+
+  function renderedBoundaryLeaseScopeCurrent(lease = null, authority = null, graphFingerprint = '') {
+    return !!lease
+      && lease.pageNum === authority?.pageNum
+      && lease.pageStartOrder === authority?.pageStartOrder
+      && lease.chatId === authority?.chatId
+      && lease.routeKey === authority?.routeKey
+      && lease.generation === authority?.generation
+      && lease.effectiveFingerprint === authority?.effectiveFingerprint
+      && lease.graphFingerprint === graphFingerprint
+      && lease.qId === authority?.qId
+      && lease.primaryAId === authority?.primaryAId;
+  }
+
+  function getRenderedPageBoundaryCapability(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const authority = readRenderedBoundaryAuthority(num);
+    const base = {
+      pageNum: num,
+      pageStartOrder: authority?.pageStartOrder || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1),
+      isThreadStart: num === 1,
+      chatId: authority?.chatId || '',
+      routeKey: authority?.routeKey || '',
+      generation: authority?.generation || 0,
+      effectiveFingerprint: authority?.effectiveFingerprint || '',
+      qId: authority?.qId || '',
+      primaryAId: authority?.primaryAId || '',
+    };
+    const fail = (reason, extra = {}) => frozenRenderedPageBoundaryCapability({
+      ...base,
+      supported: false,
+      reason,
+      boundaryIdentityCurrent: false,
+      leaseCurrent: false,
+      ...extra,
+    });
+    if (!authority?.ok) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(authority?.reason || 'authority-unavailable');
+    }
+    const rt = TURN_RUNTIME();
+    let graph = null;
+    try {
+      graph = rt?.getGraphIdentityDiagnostics?.([
+        authority.qId,
+        authority.primaryAId,
+      ].filter(Boolean)) || null;
+    } catch {}
+    if (!graph?.available) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(
+        graph?.reason === 'graph-stale'
+          ? 'graph-stale'
+          : (graph?.reason === 'authority-unavailable'
+            ? 'authority-unavailable'
+            : 'graph-unavailable'),
+        { graphFingerprint: graph?.scope?.fingerprint || '' },
+      );
+    }
+    const graphFingerprint = String(graph?.scope?.fingerprint || '');
+    base.graphFingerprint = graphFingerprint;
+    if (
+      String(graph?.scope?.chatId || '') !== authority.chatId
+      || String(graph?.scope?.routeKey || '') !== authority.routeKey
+      || Math.max(0, Number(graph?.scope?.generation || 0) || 0) !== authority.generation
+      || !graphFingerprint
+    ) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('graph-stale');
+    }
+    const graphQ = graph.records?.find((record) => (
+      record?.requestedId === authority.qId
+    )) || null;
+    if (graphQ?.found !== true || graphQ?.productUser !== true) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('rendered-boundary-head-unproven');
+    }
+    if (renderedBoundaryTransitionActive(authority.projection)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    if (renderedBoundaryRecordStreaming(authority.record)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('streaming-active');
+    }
+
+    const lease = S.renderedPageBoundaryLeases.get(num) || null;
+    if (lease && !renderedBoundaryLeaseScopeCurrent(lease, authority, graphFingerprint)) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    const currentDivider = renderedBoundaryThreadDivider(num);
+    const currentStartSentinel = renderedBoundaryStartSentinel(num);
+    if (!lease && !currentDivider) return fail('divider-unavailable');
+    if (!lease && !currentStartSentinel) {
+      return fail('sentinel-unavailable', {
+        dividerConnected: currentDivider?.isConnected === true,
+      });
+    }
+    const flowRoot = lease?.flowRoot || currentDivider?.parentElement || null;
+    let activeThread = null;
+    try { activeThread = document.querySelector?.('#thread') || null; } catch {}
+    if (
+      !flowRoot
+      || flowRoot?.isConnected !== true
+      || activeThread?.isConnected !== true
+      || !activeThread.contains?.(flowRoot)
+      || (!lease && (
+        flowRoot !== currentStartSentinel?.parentElement
+        || currentDivider?.parentElement !== flowRoot
+      ))
+    ) {
+      if (lease) S.renderedPageBoundaryLeases.delete(num);
+      return fail(lease ? 'captured-wrapper-replaced' : 'flow-root-unavailable', {
+        flowRootConnected: flowRoot?.isConnected === true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
+      });
+    }
+
+    const boundarySurface = resolveRenderedTurnSurfaceByIdentity(authority.qId, flowRoot);
+    if (boundarySurface.reason === 'identity-ambiguous') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-section-ambiguous', {
+        flowRootConnected: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
+      });
+    }
+    if (boundarySurface.reason === 'identity-unmounted') {
+      if (!lease) {
+        const coldBoundary = resolveColdRenderedBoundaryWrapper(flowRoot, authority.qId);
+        if (coldBoundary.reason === 'identity-ambiguous') {
+          return fail('boundary-section-ambiguous', {
+            flowRootConnected: true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        if (!coldBoundary.ok) {
+          return fail('rendered-boundary-head-unproven', {
+            flowRootConnected: true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        const coldWrapper = coldBoundary.wrapper;
+        let currentAuthority = null;
+        let currentGraph = null;
+        try {
+          currentAuthority = readRenderedBoundaryAuthority(num);
+          currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+        } catch {}
+        const currentGraphFingerprint = String(currentGraph?.scope?.fingerprint || '');
+        const currentGraphQ = currentGraph?.records?.find((record) => (
+          record?.requestedId === authority.qId
+        )) || null;
+        if (
+          !currentAuthority?.ok
+          || currentAuthority.statusIdentity !== authority.statusIdentity
+          || currentAuthority.qId !== authority.qId
+          || currentAuthority.primaryAId !== authority.primaryAId
+          || renderedBoundaryTransitionActive(currentAuthority.projection)
+        ) return fail('boundary-scope-changed');
+        if (renderedBoundaryRecordStreaming(currentAuthority.record)) {
+          return fail('streaming-active');
+        }
+        if (
+          currentGraph?.available !== true
+          || String(currentGraph?.scope?.chatId || '') !== authority.chatId
+          || String(currentGraph?.scope?.routeKey || '') !== authority.routeKey
+          || Math.max(0, Number(currentGraph?.scope?.generation || 0) || 0) !== authority.generation
+          || currentGraphFingerprint !== graphFingerprint
+        ) return fail('graph-stale');
+        if (currentGraphQ?.found !== true || currentGraphQ?.productUser !== true) {
+          return fail('rendered-boundary-head-unproven');
+        }
+        if (
+          coldWrapper?.isConnected !== true
+          || coldWrapper?.parentElement !== flowRoot
+          || !renderedBoundaryWrapperCarriesIdentity(coldWrapper, authority.qId)
+          || renderedBoundaryColdWrapperH2OOwned(coldWrapper)
+        ) {
+          return fail('rendered-boundary-head-unproven', {
+            flowRootConnected: true,
+            boundaryWrapperConnected: coldWrapper?.isConnected === true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        const coldLease = Object.freeze({
+          pageNum: num,
+          pageStartOrder: authority.pageStartOrder,
+          chatId: authority.chatId,
+          routeKey: authority.routeKey,
+          generation: authority.generation,
+          effectiveFingerprint: authority.effectiveFingerprint,
+          graphFingerprint,
+          qId: authority.qId,
+          primaryAId: authority.primaryAId,
+          flowRoot,
+          boundaryWrapper: coldWrapper,
+        });
+        S.renderedPageBoundaryLeases.set(num, coldLease);
+        const placement = renderedBoundaryPageUnitPlacement(flowRoot, coldWrapper, num);
+        return frozenRenderedPageBoundaryCapability({
+          ...base,
+          supported: true,
+          reason: null,
+          source: 'exact-graph-backed-product-qid-wrapper',
+          boundaryIdentityCurrent: true,
+          flowRootConnected: true,
+          boundarySectionMounted: false,
+          boundaryWrapperConnected: true,
+          boundaryDirectFlowIndex: placement.boundaryIndex,
+          dividerConnected: placement.dividerConnected,
+          dividerBeforeBoundary: placement.dividerBeforeBoundary,
+          startSentinelConnected: placement.startSentinelConnected,
+          startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+          interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+          pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+          pageUnitOrderReason: placement.pageUnitOrderReason,
+          placementRepairRequired: !placement.pageUnitOrderCurrent,
+          leaseCurrent: true,
+        });
+      }
+      if (
+        lease.flowRoot !== flowRoot
+        || lease.boundaryWrapper?.isConnected !== true
+        || lease.boundaryWrapper?.parentElement !== flowRoot
+        || !renderedBoundaryWrapperCarriesIdentity(lease.boundaryWrapper, authority.qId)
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('captured-wrapper-replaced', {
+          flowRootConnected: true,
+          boundaryWrapperConnected: lease.boundaryWrapper?.isConnected === true,
+          dividerConnected: currentDivider?.isConnected === true,
+          startSentinelConnected: currentStartSentinel?.isConnected === true,
+        });
+      }
+      const placement = renderedBoundaryPageUnitPlacement(
+        flowRoot,
+        lease.boundaryWrapper,
+        num,
+      );
+      let currentStatus = null;
+      let currentGraph = null;
+      try {
+        currentStatus = rt.getEffectivePresentationStatus?.() || null;
+        currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+      } catch {}
+      if (
+        renderedBoundaryStatusIdentity(currentStatus) !== authority.statusIdentity
+        || String(currentGraph?.scope?.fingerprint || '') !== graphFingerprint
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-scope-changed');
+      }
+      return frozenRenderedPageBoundaryCapability({
+        ...base,
+        supported: true,
+        reason: null,
+        source: 'same-generation-captured-wrapper',
+        boundaryIdentityCurrent: true,
+        flowRootConnected: true,
+        boundarySectionMounted: false,
+        boundaryWrapperConnected: true,
+        boundaryDirectFlowIndex: placement.boundaryIndex,
+        dividerConnected: placement.dividerConnected,
+        dividerBeforeBoundary: placement.dividerBeforeBoundary,
+        startSentinelConnected: placement.startSentinelConnected,
+        startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+        interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+        pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+        pageUnitOrderReason: placement.pageUnitOrderReason,
+        placementRepairRequired: !placement.pageUnitOrderCurrent,
+        leaseCurrent: true,
+      });
+    }
+
+    if (!boundarySurface.ok) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail(lease ? 'captured-wrapper-replaced' : 'boundary-wrapper-unavailable', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
+      });
+    }
+    const boundaryDomRole = boundarySurface.renderedRole;
+    if (boundaryDomRole !== 'user') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('rendered-boundary-head-unproven', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryDomRole,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
+      });
+    }
+    const boundaryWrapper = boundarySurface.directFlowWrapper;
+    if (lease && (
+      lease.flowRoot !== flowRoot
+      || lease.boundaryWrapper !== boundaryWrapper
+    )) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('captured-wrapper-replaced', {
+        flowRootConnected: true,
+        boundarySectionMounted: true,
+        boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
+        boundaryDomRole,
+        dividerConnected: currentDivider?.isConnected === true,
+        startSentinelConnected: currentStartSentinel?.isConnected === true,
+      });
+    }
+    const placement = renderedBoundaryPageUnitPlacement(flowRoot, boundaryWrapper, num);
+
+    let primaryAnswerSurface = null;
+    let primaryAnswerDomRole = '';
+    let primaryAnswerWrapper = null;
+    const answerSurface = resolveRenderedTurnSurfaceByIdentity(authority.primaryAId, flowRoot);
+    if (answerSurface.reason === 'identity-ambiguous') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-section-ambiguous');
+    }
+    if (answerSurface.ok) {
+      primaryAnswerSurface = answerSurface;
+      primaryAnswerDomRole = answerSurface.renderedRole;
+      primaryAnswerWrapper = answerSurface.directFlowWrapper;
+      const answerIndex = Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper);
+      if (
+        primaryAnswerDomRole !== 'assistant'
+        || !primaryAnswerWrapper
+        || answerIndex <= placement.boundaryIndex
+      ) {
+        S.renderedPageBoundaryLeases.delete(num);
+        return fail('boundary-order-invalid');
+      }
+    } else if (answerSurface.reason !== 'identity-unmounted') {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-order-invalid');
+    }
+
+    let finalStatus = null;
+    let finalGraph = null;
+    try {
+      finalStatus = rt.getEffectivePresentationStatus?.() || null;
+      finalGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+    } catch {}
+    if (
+      renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
+      || String(finalGraph?.scope?.fingerprint || '') !== graphFingerprint
+    ) {
+      S.renderedPageBoundaryLeases.delete(num);
+      return fail('boundary-scope-changed');
+    }
+    if (!lease) {
+      S.renderedPageBoundaryLeases.set(num, Object.freeze({
+        pageNum: num,
+        pageStartOrder: authority.pageStartOrder,
+        chatId: authority.chatId,
+        routeKey: authority.routeKey,
+        generation: authority.generation,
+        effectiveFingerprint: authority.effectiveFingerprint,
+        graphFingerprint,
+        qId: authority.qId,
+        primaryAId: authority.primaryAId,
+        flowRoot,
+        boundaryWrapper,
+      }));
+    }
+    return frozenRenderedPageBoundaryCapability({
+      ...base,
+      supported: true,
+      reason: null,
+      source: 'exact-mounted-product-qid',
+      boundaryIdentityCurrent: true,
+      flowRootConnected: true,
+      boundarySectionMounted: true,
+      boundaryWrapperConnected: true,
+      boundaryDomRole,
+      boundaryTestId: boundarySurface.testId,
+      boundaryDirectFlowIndex: placement.boundaryIndex,
+      primaryAnswerMounted: !!primaryAnswerSurface,
+      primaryAnswerDomRole,
+      primaryAnswerTestId: primaryAnswerSurface?.testId || '',
+      primaryAnswerDirectFlowIndex: primaryAnswerWrapper
+        ? Array.from(flowRoot.children || []).indexOf(primaryAnswerWrapper)
+        : -1,
+      dividerConnected: placement.dividerConnected,
+      dividerBeforeBoundary: placement.dividerBeforeBoundary,
+      startSentinelConnected: placement.startSentinelConnected,
+      startSentinelBeforeBoundary: placement.startSentinelBeforeBoundary,
+      interveningNonH2ONodeCount: placement.interveningNonH2ONodeCount,
+      pageUnitOrderCurrent: placement.pageUnitOrderCurrent,
+      pageUnitOrderReason: placement.pageUnitOrderReason,
+      placementRepairRequired: !placement.pageUnitOrderCurrent,
+      leaseCurrent: true,
+    });
+  }
+
+  function frozenPageCollapseRangeDiagnostics(raw = {}) {
+    const firstAmbiguous = raw.firstAmbiguous && typeof raw.firstAmbiguous === 'object'
+      ? Object.freeze({
+        index: Number.isInteger(raw.firstAmbiguous.index) ? raw.firstAmbiguous.index : -1,
+        tag: String(raw.firstAmbiguous.tag || ''),
+        hasTurnIdContainer: raw.firstAmbiguous.hasTurnIdContainer === true,
+        containsMountedIdentity: raw.firstAmbiguous.containsMountedIdentity === true,
+        containsNativeTestHost: raw.firstAmbiguous.containsNativeTestHost === true,
+        hasRetainedHeightStyle: raw.firstAmbiguous.hasRetainedHeightStyle === true,
+        graphIdentityFound: raw.firstAmbiguous.graphIdentityFound === true,
+      })
+      : null;
+    const signals = Object.freeze({
+      graphIdentity: Math.max(0, Number(raw.classifierSignals?.graphIdentity || 0) || 0),
+      mountedIdentity: Math.max(0, Number(raw.classifierSignals?.mountedIdentity || 0) || 0),
+      nativeTestHost: Math.max(0, Number(raw.classifierSignals?.nativeTestHost || 0) || 0),
+      retainedHeightContinuity: Math.max(
+        0,
+        Number(raw.classifierSignals?.retainedHeightContinuity || 0) || 0,
+      ),
+    });
+    return Object.freeze({
+      version: 1,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      pageEndOrder: Math.max(1, Number(raw.pageEndOrder || 0) || 0),
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      startBoundarySupported: raw.startBoundarySupported === true,
+      nextBoundarySupported: raw.nextBoundarySupported === true,
+      startQId: String(raw.startQId || '') || null,
+      nextBoundaryQId: String(raw.nextBoundaryQId || '') || null,
+      startWrapperCurrent: raw.startWrapperCurrent === true,
+      endWrapperCurrent: raw.endWrapperCurrent === true,
+      finalTailSupported: raw.finalTailSupported === true,
+      terminalIdentityCurrent: raw.terminalIdentityCurrent === true,
+      terminalWrapperCurrent: raw.terminalWrapperCurrent === true,
+      pageEndSentinelCurrent: raw.pageEndSentinelCurrent === true,
+      rangeStartIndex: Number.isInteger(raw.rangeStartIndex) ? raw.rangeStartIndex : -1,
+      rangeEndIndex: Number.isInteger(raw.rangeEndIndex) ? raw.rangeEndIndex : -1,
+      hostWrapperCount: Math.max(0, Number(raw.hostWrapperCount || 0) || 0),
+      h2oNodeCount: Math.max(0, Number(raw.h2oNodeCount || 0) || 0),
+      ambiguousWrapperCount: Math.max(0, Number(raw.ambiguousWrapperCount || 0) || 0),
+      firstAmbiguousIndex: Number.isInteger(raw.firstAmbiguousIndex)
+        ? raw.firstAmbiguousIndex
+        : -1,
+      firstAmbiguous,
+      classifierSignals: signals,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      streaming: raw.streaming === true,
+      branchTransition: raw.branchTransition === true,
+      rangeProven: raw.rangeProven === true,
+      isFinalPage: raw.isFinalPage === true,
+    });
+  }
+
+  function pageCollapseRangeH2OOwned(node = null) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      return node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      ) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function pageCollapseRangeIdentityCarriers(node = null) {
+    const carriers = [];
+    if (!node || node.nodeType !== 1) return carriers;
+    try {
+      if (node.matches?.('section[data-turn-id]')) carriers.push(node);
+      for (const carrier of Array.from(node.querySelectorAll?.('section[data-turn-id]') || [])) {
+        if (!carriers.includes(carrier)) carriers.push(carrier);
+      }
+    } catch {}
+    return carriers.filter((carrier) => carrier?.isConnected === true);
+  }
+
+  function pageCollapseRangeIdentityOfCarrier(carrier = null) {
+    return String(carrier?.getAttribute?.('data-turn-id') || '').trim();
+  }
+
+  function pageCollapseRangeContainerIdentity(node = null) {
+    return String(node?.getAttribute?.('data-turn-id-container') || '').trim();
+  }
+
+  function pageCollapseRangeNodeCarriesIdentity(node = null, identity = '') {
+    const id = String(identity || '').trim();
+    if (!node || !id) return false;
+    if (pageCollapseRangeContainerIdentity(node) === id) return true;
+    return pageCollapseRangeIdentityCarriers(node).some(
+      (carrier) => pageCollapseRangeIdentityOfCarrier(carrier) === id
+    );
+  }
+
+  function pageCollapseRangeHasRetainedHeight(node = null) {
+    if (!node) return false;
+    let value = '';
+    try { value = String(node.style?.getPropertyValue?.('--last-known-height') || '').trim(); } catch {}
+    if (value) return true;
+    try {
+      const computed = typeof W.getComputedStyle === 'function'
+        ? W.getComputedStyle(node)
+        : null;
+      value = String(computed?.getPropertyValue?.('--last-known-height') || '').trim();
+    } catch {}
+    return !!value;
+  }
+
+  function pageCollapseRangeScopeCurrent(entry = null, authority = null, graphFingerprint = '', flowRoot = null) {
+    return !!entry
+      && entry.chatId === authority?.chatId
+      && entry.routeKey === authority?.routeKey
+      && entry.generation === authority?.generation
+      && entry.effectiveFingerprint === authority?.effectiveFingerprint
+      && entry.graphFingerprint === graphFingerprint
+      && entry.pageNum === authority?.pageNum
+      && entry.flowRoot === flowRoot;
+  }
+
+  function clearStalePageCollapseRangeContinuity(
+    authority = null,
+    graphFingerprint = '',
+    flowRoot = null,
+  ) {
+    for (const [pageNum, entry] of Array.from(S.pageCollapseRangeContinuity.entries())) {
+      if (!pageCollapseRangeScopeCurrent(entry, authority, graphFingerprint, flowRoot)) {
+        S.pageCollapseRangeContinuity.delete(pageNum);
+      }
+    }
+  }
+
+  function readPageCollapseRangeGraphRecords(rt = null, identities = [], authority = null) {
+    const ids = [];
+    const seen = new Set();
+    for (const raw of Array.isArray(identities) ? identities : []) {
+      const id = String(raw || '').trim();
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    const records = new Map();
+    let fingerprint = '';
+    if (!ids.length) return { ok: true, reason: null, fingerprint, records };
+    for (let offset = 0; offset < ids.length; offset += 32) {
+      const batch = ids.slice(offset, offset + 32);
+      let graph = null;
+      try { graph = rt?.getGraphIdentityDiagnostics?.(batch) || null; } catch {}
+      if (!graph?.available) {
+        return {
+          ok: false,
+          reason: graph?.reason === 'graph-stale' ? 'graph-stale' : 'graph-unavailable',
+          fingerprint: String(graph?.scope?.fingerprint || ''),
+          records,
+        };
+      }
+      const batchFingerprint = String(graph?.scope?.fingerprint || '');
+      if (
+        String(graph?.scope?.chatId || '') !== authority?.chatId
+        || String(graph?.scope?.routeKey || '') !== authority?.routeKey
+        || Math.max(0, Number(graph?.scope?.generation || 0) || 0) !== authority?.generation
+        || !batchFingerprint
+        || (fingerprint && batchFingerprint !== fingerprint)
+      ) {
+        return { ok: false, reason: 'graph-stale', fingerprint: batchFingerprint, records };
+      }
+      fingerprint = batchFingerprint;
+      for (const record of Array.isArray(graph.records) ? graph.records : []) {
+        const requestedId = String(record?.requestedId || '').trim();
+        if (requestedId && batch.includes(requestedId)) records.set(requestedId, record);
+      }
+    }
+    return { ok: true, reason: null, fingerprint, records };
+  }
+
+  // ── Final-page tail authority ─────────────────────────────────────────────
+  // A final page has no next-page start boundary, so its exclusive end is the
+  // H2O page-end sentinel. The sentinel is never trusted on its own: it is a
+  // structural delimiter accepted only after it has been cross-proven against
+  // the exact terminal canonical identity of the page's last authoritative row.
+  function renderedBoundaryPageEndSentinel(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let sentinels = [];
+    try {
+      sentinels = Array.from(document.querySelectorAll(
+        `[${RENDERED_BOUNDARY_SENTINEL_ATTR}="page-${String(num)}-end"]`
+      )).filter((sentinel) => (
+        sentinel?.isConnected === true
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_PAGE_ATTR) || '') === String(num)
+        && String(sentinel.getAttribute?.(RENDERED_BOUNDARY_SENTINEL_KIND_ATTR) || '') === 'end'
+      ));
+    } catch {}
+    return sentinels.length === 1 ? sentinels[0] : null;
+  }
+
+  // The terminal row is the authoritative row at pageEndOrder — never the last
+  // mounted row, the highest test id, or the last flow child. Its terminal
+  // identity is the accepted primary answer when the row has one, and the
+  // question identity for NO ANSWER / stopped-without-answer rows.
+  function readFinalPageTerminalRecord(pageEndOrder = 0, authority = null) {
+    const order = Math.max(1, Number(pageEndOrder || 0) || 0);
+    const rt = TURN_RUNTIME();
+    if (!rt || typeof rt.getEffectivePresentationIndex !== 'function') {
+      return { ok: false, reason: 'authority-unavailable' };
+    }
+    let index = null;
+    try { index = rt.getEffectivePresentationIndex() || null; } catch {}
+    const turns = Array.isArray(index?.turns) ? index.turns : [];
+    if (
+      index?.complete !== true
+      || String(index?.sourceFingerprint || '') !== String(authority?.effectiveFingerprint || '')
+      || turns.length !== Math.max(0, Number(authority?.count || 0) || 0)
+      || order > turns.length
+    ) return { ok: false, reason: 'authority-unavailable' };
+    const record = turns[order - 1] || null;
+    if (
+      !record
+      || Math.max(0, Number(record.order || record.turnNo || 0) || 0) !== order
+    ) return { ok: false, reason: 'authority-unavailable' };
+    const primaryAId = String(record.primaryAId || '').trim();
+    const qId = String(record.qId || '').trim();
+    const terminalId = primaryAId || qId;
+    if (!terminalId) return { ok: false, reason: 'final-page-tail-unproven' };
+    return {
+      ok: true,
+      reason: null,
+      terminalOrder: order,
+      terminalId,
+      terminalKind: primaryAId ? 'answer' : 'question',
+    };
+  }
+
+  // Resolve the one direct-flow wrapper carrying the exact terminal identity,
+  // through the same accepted sources as the start boundary: an exact mounted
+  // identity surface, or an exact graph-backed direct-flow identity wrapper.
+  function resolveFinalPageTerminalWrapper(flowRoot = null, terminalId = '') {
+    const id = String(terminalId || '').trim();
+    if (!flowRoot || flowRoot?.isConnected !== true || !id) {
+      return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+    }
+    const surface = resolveRenderedTurnSurfaceByIdentity(id, flowRoot);
+    if (surface.reason === 'identity-ambiguous') {
+      return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+    }
+    if (surface.ok) {
+      return { ok: true, reason: null, wrapper: surface.directFlowWrapper, source: 'exact-mounted-identity' };
+    }
+    const cold = resolveColdRenderedBoundaryWrapper(flowRoot, id);
+    if (cold.ok) {
+      return { ok: true, reason: null, wrapper: cold.wrapper, source: 'exact-graph-backed-wrapper' };
+    }
+    return { ok: false, reason: 'final-page-tail-unproven', wrapper: null };
+  }
+
+  // Full tail proof. Yields the exclusive end delimiter (the sentinel) only when
+  // the terminal wrapper is current, the sentinel is H2O-owned and positioned
+  // after it, and every direct sibling strictly between them is H2O-owned.
+  function resolveFinalPageTailAuthority(pageNum = 0, pageEndOrder = 0, authority = null, flowRoot = null) {
+    const terminal = readFinalPageTerminalRecord(pageEndOrder, authority);
+    if (!terminal.ok) {
+      return { ok: false, reason: terminal.reason, terminalIdentityCurrent: false };
+    }
+    const resolved = resolveFinalPageTerminalWrapper(flowRoot, terminal.terminalId);
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        reason: resolved.reason,
+        terminalIdentityCurrent: true,
+        terminalWrapperCurrent: false,
+      };
+    }
+    const terminalWrapper = resolved.wrapper;
+    const endSentinel = renderedBoundaryPageEndSentinel(pageNum);
+    const base = {
+      terminalIdentityCurrent: true,
+      terminalWrapperCurrent: true,
+      terminalKind: terminal.terminalKind,
+    };
+    if (
+      !endSentinel
+      || endSentinel.isConnected !== true
+      || endSentinel.parentElement !== flowRoot
+      || !pageCollapseRangeH2OOwned(endSentinel)
+    ) {
+      return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: false };
+    }
+    if (
+      terminalWrapper?.isConnected !== true
+      || terminalWrapper?.parentElement !== flowRoot
+    ) {
+      return {
+        ok: false,
+        reason: 'final-page-tail-unproven',
+        ...base,
+        terminalWrapperCurrent: false,
+        pageEndSentinelCurrent: true,
+      };
+    }
+    const children = Array.from(flowRoot.children || []);
+    const terminalIndex = children.indexOf(terminalWrapper);
+    const sentinelIndex = children.indexOf(endSentinel);
+    if (terminalIndex < 0 || sentinelIndex < 0 || sentinelIndex <= terminalIndex) {
+      return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: true };
+    }
+    // Everything strictly between the terminal wrapper and the sentinel must be
+    // H2O-owned. A host-rendered or unclassifiable node there means the tail is
+    // not proven: fail closed rather than extend the range or move the sentinel.
+    for (let index = terminalIndex + 1; index < sentinelIndex; index += 1) {
+      if (!pageCollapseRangeH2OOwned(children[index])) {
+        return { ok: false, reason: 'final-page-tail-unproven', ...base, pageEndSentinelCurrent: true };
+      }
+    }
+    return {
+      ok: true,
+      reason: null,
+      ...base,
+      pageEndSentinelCurrent: true,
+      endExclusive: endSentinel,
+    };
+  }
+
+  function buildPageCollapseRangePlan(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const includeDom = options?.includeDom === true;
+    const finish = (diagnostic, privatePlan = null) => (
+      includeDom
+        ? {
+          ok: diagnostic?.supported === true,
+          diagnostic,
+          ...(privatePlan || {}),
+        }
+        : diagnostic
+    );
+    const authority = readRenderedBoundaryAuthority(num);
+    const pageStartOrder = authority?.pageStartOrder
+      || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1);
+    const count = Math.max(0, Number(authority?.count || 0) || 0);
+    const pageEndOrder = Math.min(count || pageStartOrder, num * TITLE_LIST_PAGE_SIZE);
+    const base = {
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: authority?.chatId || '',
+      routeKey: authority?.routeKey || '',
+      generation: authority?.generation || 0,
+      effectiveFingerprint: authority?.effectiveFingerprint || '',
+      startQId: authority?.qId || '',
+      isFinalPage: count > 0 && pageEndOrder >= count,
+    };
+    const fail = (reason, extra = {}) => finish(
+      frozenPageCollapseRangeDiagnostics({
+        ...base,
+        supported: false,
+        reason,
+        rangeProven: false,
+        ...extra,
+      })
+    );
+    if (!authority?.ok) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(authority?.reason || 'authority-unavailable');
+    }
+    const branchTransition = renderedBoundaryTransitionActive(authority.projection);
+    const streaming = renderedBoundaryRecordStreaming(authority.record);
+    if (branchTransition || streaming) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(branchTransition ? 'boundary-scope-changed' : 'streaming-active', {
+        branchTransition,
+        streaming,
+      });
+    }
+
+    const startCapability = getRenderedPageBoundaryCapability(num);
+    base.graphFingerprint = startCapability.graphFingerprint || '';
+    base.startBoundarySupported = startCapability.supported === true;
+    base.pageUnitOrderCurrent = startCapability.pageUnitOrderCurrent === true;
+    // A final page has no next-page start boundary. Its exclusive end comes
+    // from the proven page-end sentinel instead, and the shared direct-flow
+    // classifier below then runs over the identical kind of interval.
+    if (base.isFinalPage) {
+      if (
+        startCapability.supported !== true
+        || startCapability.boundaryIdentityCurrent !== true
+        || startCapability.leaseCurrent !== true
+      ) {
+        S.pageCollapseRangeContinuity.delete(num);
+        const startReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+          .includes(String(startCapability.reason || ''))
+          ? startCapability.reason
+          : 'start-boundary-unavailable';
+        return fail(startReason, {
+          startBoundarySupported: false,
+          graphFingerprint: base.graphFingerprint,
+          pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+        });
+      }
+      if (!base.pageUnitOrderCurrent) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('page-unit-order-invalid', {
+          startBoundarySupported: true,
+          graphFingerprint: base.graphFingerprint,
+          pageUnitOrderCurrent: false,
+        });
+      }
+      const finalGraphFingerprint = String(startCapability.graphFingerprint || '');
+      base.graphFingerprint = finalGraphFingerprint;
+      const finalStartLease = S.renderedPageBoundaryLeases.get(num) || null;
+      if (!renderedBoundaryLeaseScopeCurrent(finalStartLease, authority, finalGraphFingerprint)) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('start-boundary-unavailable', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          pageUnitOrderCurrent: true,
+        });
+      }
+      const finalFlowRoot = finalStartLease.flowRoot;
+      const finalStartWrapper = finalStartLease.boundaryWrapper;
+      if (!(
+        finalFlowRoot?.isConnected === true
+        && finalStartWrapper?.isConnected === true
+        && finalStartWrapper?.parentElement === finalFlowRoot
+        && renderedBoundaryWrapperCarriesIdentity(finalStartWrapper, authority.qId)
+      )) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail('range-flow-root-incoherent', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          startWrapperCurrent: false,
+          pageUnitOrderCurrent: true,
+        });
+      }
+      const tail = resolveFinalPageTailAuthority(num, base.pageEndOrder, authority, finalFlowRoot);
+      if (!tail.ok) {
+        S.pageCollapseRangeContinuity.delete(num);
+        return fail(tail.reason || 'final-page-tail-unproven', {
+          startBoundarySupported: true,
+          graphFingerprint: finalGraphFingerprint,
+          startWrapperCurrent: true,
+          endWrapperCurrent: false,
+          pageUnitOrderCurrent: true,
+          finalTailSupported: false,
+          terminalIdentityCurrent: tail.terminalIdentityCurrent === true,
+          terminalWrapperCurrent: tail.terminalWrapperCurrent === true,
+          pageEndSentinelCurrent: tail.pageEndSentinelCurrent === true,
+        });
+      }
+      return classifyPageCollapseRange({
+        num,
+        base,
+        finish,
+        fail,
+        authority,
+        nextAuthority: null,
+        startCapability,
+        nextCapability: null,
+        graphFingerprint: finalGraphFingerprint,
+        flowRoot: finalFlowRoot,
+        startWrapper: finalStartWrapper,
+        endExclusive: tail.endExclusive,
+        startWrapperCurrent: true,
+        endWrapperCurrent: true,
+        finalTail: tail,
+      });
+    }
+
+    const nextAuthority = readRenderedBoundaryAuthority(num + 1);
+    if (!nextAuthority?.ok) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('next-boundary-unavailable', {
+        startBoundarySupported: base.startBoundarySupported,
+        graphFingerprint: base.graphFingerprint,
+      });
+    }
+    const nextStreaming = renderedBoundaryRecordStreaming(nextAuthority.record);
+    const nextTransition = renderedBoundaryTransitionActive(nextAuthority.projection);
+    if (nextStreaming || nextTransition) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail(nextTransition ? 'boundary-scope-changed' : 'streaming-active', {
+        startBoundarySupported: base.startBoundarySupported,
+        graphFingerprint: base.graphFingerprint,
+        nextBoundaryQId: nextAuthority.qId,
+        branchTransition: nextTransition,
+        streaming: nextStreaming,
+      });
+    }
+    const nextCapability = getRenderedPageBoundaryCapability(num + 1);
+    base.nextBoundaryQId = nextAuthority.qId;
+    base.nextBoundarySupported = nextCapability.supported === true;
+    base.pageUnitOrderCurrent = (
+      startCapability.pageUnitOrderCurrent === true
+      && nextCapability.pageUnitOrderCurrent === true
+    );
+    if (
+      startCapability.supported !== true
+      || startCapability.boundaryIdentityCurrent !== true
+      || startCapability.leaseCurrent !== true
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      const startReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+        .includes(String(startCapability.reason || ''))
+        ? startCapability.reason
+        : 'start-boundary-unavailable';
+      return fail(startReason, {
+        startBoundarySupported: false,
+        nextBoundarySupported: base.nextBoundarySupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      });
+    }
+    if (
+      nextCapability.supported !== true
+      || nextCapability.boundaryIdentityCurrent !== true
+      || nextCapability.leaseCurrent !== true
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      const nextReason = ['graph-unavailable', 'graph-stale', 'authority-unavailable']
+        .includes(String(nextCapability.reason || ''))
+        ? nextCapability.reason
+        : 'next-boundary-unavailable';
+      return fail(nextReason, {
+        startBoundarySupported: true,
+        nextBoundarySupported: false,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: base.pageUnitOrderCurrent,
+      });
+    }
+    if (!base.pageUnitOrderCurrent) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('page-unit-order-invalid', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: false,
+      });
+    }
+    if (
+      authority.chatId !== nextAuthority.chatId
+      || authority.routeKey !== nextAuthority.routeKey
+      || authority.generation !== nextAuthority.generation
+      || authority.effectiveFingerprint !== nextAuthority.effectiveFingerprint
+      || startCapability.graphFingerprint !== nextCapability.graphFingerprint
+    ) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('range-scope-changed', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: base.graphFingerprint,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    const startLease = S.renderedPageBoundaryLeases.get(num) || null;
+    const endLease = S.renderedPageBoundaryLeases.get(num + 1) || null;
+    const graphFingerprint = String(startCapability.graphFingerprint || '');
+    base.graphFingerprint = graphFingerprint;
+    if (
+      !renderedBoundaryLeaseScopeCurrent(startLease, authority, graphFingerprint)
+      || !renderedBoundaryLeaseScopeCurrent(endLease, nextAuthority, graphFingerprint)
+    ) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail(!startLease ? 'start-boundary-unavailable' : 'next-boundary-unavailable', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    const flowRoot = startLease.flowRoot;
+    const startWrapper = startLease.boundaryWrapper;
+    const endWrapper = endLease.boundaryWrapper;
+    const startWrapperCurrent = (
+      flowRoot?.isConnected === true
+      && startWrapper?.isConnected === true
+      && startWrapper?.parentElement === flowRoot
+      && renderedBoundaryWrapperCarriesIdentity(startWrapper, authority.qId)
+    );
+    const endWrapperCurrent = (
+      endLease.flowRoot === flowRoot
+      && endWrapper?.isConnected === true
+      && endWrapper?.parentElement === flowRoot
+      && renderedBoundaryWrapperCarriesIdentity(endWrapper, nextAuthority.qId)
+    );
+    if (!startWrapperCurrent || !endWrapperCurrent) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-flow-root-incoherent', {
+        startBoundarySupported: true,
+        nextBoundarySupported: true,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    return classifyPageCollapseRange({
+      num,
+      base,
+      finish,
+      fail,
+      authority,
+      nextAuthority,
+      startCapability,
+      nextCapability,
+      graphFingerprint,
+      flowRoot,
+      startWrapper,
+      endExclusive: endWrapper,
+      startWrapperCurrent,
+      endWrapperCurrent,
+      finalTail: null,
+    });
+  }
+
+  // One classifier for both range kinds. Non-final pages end at the next
+  // page start wrapper, final pages end at their proven page-end sentinel;
+  // the exclusive delimiter is never itself part of the hide set.
+  function classifyPageCollapseRange(ctx = {}) {
+    const {
+      num, base, finish, fail, authority, nextAuthority = null,
+      startCapability = null, nextCapability = null, graphFingerprint,
+      flowRoot, startWrapper, endExclusive,
+      startWrapperCurrent, endWrapperCurrent, finalTail = null,
+    } = ctx;
+    const nextSupported = base.isFinalPage !== true;
+    const children = Array.from(flowRoot.children || []);
+    const rangeStartIndex = children.indexOf(startWrapper);
+    const rangeEndIndex = children.indexOf(endExclusive);
+    if (rangeStartIndex < 0 || rangeEndIndex <= rangeStartIndex) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-order-invalid', {
+        startBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    const interval = children.slice(rangeStartIndex, rangeEndIndex);
+    const identities = [];
+    for (const node of interval) {
+      const containerId = pageCollapseRangeContainerIdentity(node);
+      if (containerId) identities.push(containerId);
+      for (const carrier of pageCollapseRangeIdentityCarriers(node)) {
+        const id = pageCollapseRangeIdentityOfCarrier(carrier);
+        if (id) identities.push(id);
+      }
+    }
+    const rt = TURN_RUNTIME();
+    const graphRead = readPageCollapseRangeGraphRecords(rt, identities, authority);
+    if (!graphRead.ok) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail(graphRead.reason, {
+        startBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: graphRead.fingerprint || graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    if (graphRead.fingerprint && graphRead.fingerprint !== graphFingerprint) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('graph-stale', {
+        startBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint: graphRead.fingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        pageUnitOrderCurrent: true,
+      });
+    }
+
+    clearStalePageCollapseRangeContinuity(authority, graphFingerprint, flowRoot);
+    const prior = S.pageCollapseRangeContinuity.get(num) || null;
+    const priorWrappers = pageCollapseRangeScopeCurrent(
+      prior,
+      authority,
+      graphFingerprint,
+      flowRoot,
+    ) ? prior.wrappers : new Map();
+    let hostWrapperCount = 0;
+    let h2oNodeCount = 0;
+    let ambiguousWrapperCount = 0;
+    let firstAmbiguous = null;
+    const classifierSignals = {
+      graphIdentity: 0,
+      mountedIdentity: 0,
+      nativeTestHost: 0,
+      retainedHeightContinuity: 0,
+    };
+    const provenWrappers = new Map();
+    for (let offset = 0; offset < interval.length; offset += 1) {
+      const node = interval[offset];
+      const index = rangeStartIndex + offset;
+      if (pageCollapseRangeH2OOwned(node)) {
+        h2oNodeCount += 1;
+        continue;
+      }
+      const containerId = pageCollapseRangeContainerIdentity(node);
+      const containerRecord = containerId ? graphRead.records.get(containerId) : null;
+      const carriers = pageCollapseRangeIdentityCarriers(node);
+      let provenIdentity = '';
+      let proofSource = '';
+      if (containerId && containerRecord?.found === true) {
+        provenIdentity = containerId;
+        proofSource = 'graph-identity';
+        classifierSignals.graphIdentity += 1;
+      }
+      if (!provenIdentity) {
+        for (const carrier of carriers) {
+          const id = pageCollapseRangeIdentityOfCarrier(carrier);
+          const graphRecord = id ? graphRead.records.get(id) : null;
+          if (graphRecord?.found !== true) continue;
+          const surface = resolveRenderedTurnSurfaceByIdentity(id, flowRoot);
+          if (
+            surface?.ok === true
+            && surface.directFlowWrapper === node
+            && renderedBoundaryDirectChildUnder(flowRoot, surface.nativeTestHost) === node
+          ) {
+            provenIdentity = id;
+            proofSource = 'mounted-identity';
+            classifierSignals.mountedIdentity += 1;
+            classifierSignals.nativeTestHost += 1;
+            break;
+          }
+        }
+      }
+      if (!provenIdentity) {
+        const continuity = priorWrappers?.get?.(node) || null;
+        if (
+          continuity
+          && node?.isConnected === true
+          && node?.parentElement === flowRoot
+          && pageCollapseRangeNodeCarriesIdentity(node, continuity.identity)
+        ) {
+          provenIdentity = continuity.identity;
+          proofSource = 'same-generation-continuity';
+          classifierSignals.retainedHeightContinuity += 1;
+        }
+      }
+      if (provenIdentity) {
+        hostWrapperCount += 1;
+        provenWrappers.set(node, Object.freeze({
+          identity: provenIdentity,
+          proofSource,
+        }));
+        continue;
+      }
+      ambiguousWrapperCount += 1;
+      if (!firstAmbiguous) {
+        const mountedIds = carriers
+          .map(pageCollapseRangeIdentityOfCarrier)
+          .filter(Boolean);
+        firstAmbiguous = {
+          index,
+          tag: String(node?.tagName || '').toUpperCase(),
+          hasTurnIdContainer: !!containerId,
+          containsMountedIdentity: mountedIds.length > 0,
+          containsNativeTestHost: !!node?.matches?.(TURN_HOST_SEL)
+            || !!node?.querySelector?.(TURN_HOST_SEL),
+          hasRetainedHeightStyle: pageCollapseRangeHasRetainedHeight(node),
+          graphIdentityFound: !!containerRecord?.found
+            || mountedIds.some((id) => graphRead.records.get(id)?.found === true),
+        };
+      }
+    }
+
+    let finalStatus = null;
+    let finalGraph = null;
+    try {
+      finalStatus = rt?.getEffectivePresentationStatus?.() || null;
+      finalGraph = rt?.getGraphIdentityDiagnostics?.([
+        authority.qId,
+        ...(nextAuthority ? [nextAuthority.qId] : []),
+      ]) || null;
+    } catch {}
+    if (
+      renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
+      || finalGraph?.available !== true
+      || String(finalGraph?.scope?.fingerprint || '') !== graphFingerprint
+      || String(finalGraph?.scope?.chatId || '') !== authority.chatId
+      || String(finalGraph?.scope?.routeKey || '') !== authority.routeKey
+      || Math.max(0, Number(finalGraph?.scope?.generation || 0) || 0) !== authority.generation
+    ) {
+      S.pageCollapseRangeContinuity.clear();
+      return fail('range-scope-changed', {
+        startBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        hostWrapperCount,
+        h2oNodeCount,
+        ambiguousWrapperCount,
+        firstAmbiguousIndex: firstAmbiguous?.index ?? -1,
+        firstAmbiguous,
+        classifierSignals,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    if (ambiguousWrapperCount) {
+      S.pageCollapseRangeContinuity.delete(num);
+      return fail('range-wrapper-ambiguous', {
+        startBoundarySupported: true,
+        nextBoundarySupported: nextSupported,
+        nextBoundaryQId: base.nextBoundaryQId,
+        graphFingerprint,
+        startWrapperCurrent,
+        endWrapperCurrent,
+        rangeStartIndex,
+        rangeEndIndex,
+        hostWrapperCount,
+        h2oNodeCount,
+        ambiguousWrapperCount,
+        firstAmbiguousIndex: firstAmbiguous?.index ?? -1,
+        firstAmbiguous,
+        classifierSignals,
+        pageUnitOrderCurrent: true,
+      });
+    }
+    S.pageCollapseRangeContinuity.set(num, {
+      pageNum: num,
+      chatId: authority.chatId,
+      routeKey: authority.routeKey,
+      generation: authority.generation,
+      effectiveFingerprint: authority.effectiveFingerprint,
+      graphFingerprint,
+      flowRoot,
+      wrappers: provenWrappers,
+    });
+    const diagnostic = frozenPageCollapseRangeDiagnostics({
+      ...base,
+      supported: true,
+      reason: null,
+      graphFingerprint,
+      startBoundarySupported: true,
+      nextBoundarySupported: nextSupported,
+      nextBoundaryQId: base.nextBoundaryQId,
+      startWrapperCurrent,
+      endWrapperCurrent,
+      rangeStartIndex,
+      rangeEndIndex,
+      hostWrapperCount,
+      h2oNodeCount,
+      ambiguousWrapperCount: 0,
+      firstAmbiguousIndex: -1,
+      firstAmbiguous: null,
+      classifierSignals,
+      pageUnitOrderCurrent: true,
+      streaming: false,
+      branchTransition: false,
+      rangeProven: true,
+      isFinalPage: base.isFinalPage === true,
+      finalTailSupported: !!finalTail,
+      terminalIdentityCurrent: finalTail ? finalTail.terminalIdentityCurrent === true : false,
+      terminalWrapperCurrent: finalTail ? finalTail.terminalWrapperCurrent === true : false,
+      pageEndSentinelCurrent: finalTail ? finalTail.pageEndSentinelCurrent === true : false,
+    });
+    return finish(diagnostic, {
+      authority,
+      nextAuthority,
+      startCapability,
+      nextCapability,
+      flowRoot,
+      startWrapper,
+      endWrapper: endExclusive,
+      hostWrappers: Array.from(provenWrappers.keys()),
+      h2oNodes: interval.filter((node) => pageCollapseRangeH2OOwned(node)),
+      wrapperProofs: provenWrappers,
+    });
+  }
+
+
+  function getPageCollapseRangeDiagnostics(pageNum = 0) {
+    return buildPageCollapseRangePlan(pageNum, { includeDom: false });
+  }
+
+  function frozenPageCollapseCapability(raw = {}) {
+    return Object.freeze({
+      version: 1,
+      supported: raw.supported === true,
+      reason: raw.reason == null ? null : String(raw.reason || ''),
+      productReason: String(raw.productReason || 'layout-incomplete'),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      pageStartOrder: Math.max(1, Number(raw.pageStartOrder || 0) || 0),
+      pageEndOrder: Math.max(1, Number(raw.pageEndOrder || 0) || 0),
+      chatId: String(raw.chatId || '') || null,
+      routeKey: String(raw.routeKey || ''),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || '') || null,
+      graphFingerprint: String(raw.graphFingerprint || '') || null,
+      startBoundarySupported: raw.startBoundarySupported === true,
+      nextBoundarySupported: raw.nextBoundarySupported === true,
+      rangeProven: raw.rangeProven === true,
+      startWrapperCurrent: raw.startWrapperCurrent === true,
+      endWrapperCurrent: raw.endWrapperCurrent === true,
+      rangeStartIndex: Number.isInteger(raw.rangeStartIndex) ? raw.rangeStartIndex : -1,
+      rangeEndIndex: Number.isInteger(raw.rangeEndIndex) ? raw.rangeEndIndex : -1,
+      hostWrapperCount: Math.max(0, Number(raw.hostWrapperCount || 0) || 0),
+      h2oNodeCount: Math.max(0, Number(raw.h2oNodeCount || 0) || 0),
+      ambiguousWrapperCount: Math.max(0, Number(raw.ambiguousWrapperCount || 0) || 0),
+      firstAmbiguousIndex: Number.isInteger(raw.firstAmbiguousIndex)
+        ? raw.firstAmbiguousIndex
+        : -1,
+      pageUnitOrderCurrent: raw.pageUnitOrderCurrent === true,
+      isFinalPage: raw.isFinalPage === true,
+      finalTailSupported: raw.finalTailSupported === true,
+      streaming: raw.streaming === true,
+      branchTransition: raw.branchTransition === true,
+      titleRowsCurrent: raw.titleRowsCurrent === true,
+      titleRowCount: Math.max(0, Number(raw.titleRowCount || 0) || 0),
+      expectedTitleRowCount: Math.max(0, Number(raw.expectedTitleRowCount || 0) || 0),
+      prerequisitesReady: raw.prerequisitesReady === true,
+      atomicTransactionImplemented: true,
+      activationReady: raw.activationReady === true,
+      activationBlockReason: raw.activationReady === true
+        ? null
+        : String(raw.activationBlockReason || raw.reason || 'layout-incomplete'),
+      legacyNativeSlotConsulted: false,
+    });
+  }
+
+  function pageCollapseCapabilityProductReason({
+    prerequisitesReady = false,
+    authorityCurrent = false,
+    titleRowsCurrent = false,
+    streaming = false,
+    branchTransition = false,
+    reason = '',
+    ambiguousWrapperCount = 0,
+  } = {}) {
+    if (prerequisitesReady) return 'ready';
+    if (streaming || branchTransition) return 'page-updating';
+    if (
+      ambiguousWrapperCount > 0
+      || /ambiguous|unsupported-host|unsupported-layout/.test(String(reason || ''))
+    ) return 'unsupported-layout';
+    // A final page whose tail is not yet proven is still settling: report it as
+    // loading rather than as a layout the reader is told is incomplete.
+    if (/final-page-tail-unproven/.test(String(reason || ''))) return 'page-loading';
+    if (
+      /boundary|page-unit|range-scope|final-page|layout-incomplete/.test(String(reason || ''))
+    ) return 'layout-incomplete';
+    if (!authorityCurrent || !titleRowsCurrent) return 'page-loading';
+    return 'layout-incomplete';
+  }
+
+  function evaluatePageCollapseCapability(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const model = buildTitleListPresentationPageModel();
+    const page = model?.pages?.find?.((entry) => entry.pageNo === num) || null;
+    const nextPage = model?.pages?.find?.((entry) => entry.pageNo === num + 1) || null;
+    const pageStartOrder = Math.max(
+      1,
+      Number(page?.startOrder || (((num - 1) * TITLE_LIST_PAGE_SIZE) + 1)) || 1,
+    );
+    const pageEndOrder = Math.max(
+      pageStartOrder,
+      Number(page?.endOrder || pageStartOrder) || pageStartOrder,
+    );
+    const expectedTitleRowCount = page
+      ? Math.max(0, pageEndOrder - pageStartOrder + 1)
+      : 0;
+    const titleRowCount = Array.isArray(page?.turnRecords) ? page.turnRecords.length : 0;
+    const titleRowsCurrent = (
+      model?.coherent === true
+      && !!page
+      && expectedTitleRowCount > 0
+      && titleRowCount === expectedTitleRowCount
+      && page.turnRecords.every(
+        (member, offset) => Number(member?.turnNo || 0) === pageStartOrder + offset,
+      )
+    );
+    const rangePlan = buildPageCollapseRangePlan(num, { includeDom: true });
+    const range = rangePlan?.diagnostic || frozenPageCollapseRangeDiagnostics({
+      pageNum: num,
+      reason: 'range-unavailable',
+    });
+    const startCapability = rangePlan?.startCapability
+      || getRenderedPageBoundaryCapability(num);
+    const nextCapability = rangePlan?.nextCapability
+      || getRenderedPageBoundaryCapability(num + 1);
+    const finalPage = range.isFinalPage === true;
+    const authorityCurrent = (
+      model?.coherent === true
+      && !!page
+      && (finalPage || !!nextPage)
+      && startCapability.pageStartOrder === pageStartOrder
+      && (finalPage || nextCapability.pageStartOrder === nextPage.startOrder)
+      && range.pageStartOrder === pageStartOrder
+      && range.pageEndOrder === pageEndOrder
+      && !!range.chatId
+      && !!range.generation
+      && !!range.effectiveFingerprint
+      && !!range.graphFingerprint
+    );
+    const scopesCurrent = (
+      authorityCurrent
+      && startCapability.chatId === range.chatId
+      && startCapability.routeKey === range.routeKey
+      && startCapability.generation === range.generation
+      && startCapability.effectiveFingerprint === range.effectiveFingerprint
+      && startCapability.graphFingerprint === range.graphFingerprint
+      && (finalPage || (
+        nextCapability.chatId === range.chatId
+        && nextCapability.routeKey === range.routeKey
+        && nextCapability.generation === range.generation
+        && nextCapability.effectiveFingerprint === range.effectiveFingerprint
+        && nextCapability.graphFingerprint === range.graphFingerprint
+      ))
+    );
+    const streaming = range.streaming === true;
+    const branchTransition = range.branchTransition === true;
+    const prerequisitesReady = (
+      scopesCurrent
+      && startCapability.supported === true
+      && startCapability.boundaryIdentityCurrent === true
+      && startCapability.leaseCurrent === true
+      && (finalPage || (
+        nextCapability.supported === true
+        && nextCapability.boundaryIdentityCurrent === true
+        && nextCapability.leaseCurrent === true
+      ))
+      && range.supported === true
+      && range.startBoundarySupported === true
+      && (finalPage || range.nextBoundarySupported === true)
+      && (!finalPage || range.finalTailSupported === true)
+      && range.startWrapperCurrent === true
+      && range.endWrapperCurrent === true
+      && range.rangeProven === true
+      && range.rangeStartIndex >= 0
+      && range.rangeEndIndex > range.rangeStartIndex
+      && range.hostWrapperCount > 0
+      && range.ambiguousWrapperCount === 0
+      && range.pageUnitOrderCurrent === true
+      && !streaming
+      && !branchTransition
+      && titleRowsCurrent
+    );
+    let reason = null;
+    if (!prerequisitesReady) {
+      if (!model?.coherent || !page) reason = model?.reason || 'authority-unavailable';
+      else if (range.isFinalPage) reason = range.reason || 'final-page-tail-unproven';
+      else if (!nextPage) reason = 'next-boundary-unavailable';
+      else if (!startCapability.supported) reason = startCapability.reason || 'start-boundary-unavailable';
+      else if (!nextCapability.supported) reason = nextCapability.reason || 'next-boundary-unavailable';
+      else if (!scopesCurrent) reason = 'range-scope-changed';
+      else if (!range.supported || !range.rangeProven) reason = range.reason || 'range-unavailable';
+      else if (!titleRowsCurrent) reason = 'title-rows-incomplete';
+      else reason = 'layout-incomplete';
+    }
+    const productReason = pageCollapseCapabilityProductReason({
+      prerequisitesReady,
+      authorityCurrent,
+      titleRowsCurrent,
+      streaming,
+      branchTransition,
+      reason,
+      ambiguousWrapperCount: range.ambiguousWrapperCount,
+    });
+    const capability = frozenPageCollapseCapability({
+      supported: prerequisitesReady,
+      reason,
+      productReason,
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: range.chatId || startCapability.chatId,
+      routeKey: range.routeKey || startCapability.routeKey,
+      generation: range.generation || startCapability.generation,
+      effectiveFingerprint: range.effectiveFingerprint || startCapability.effectiveFingerprint,
+      graphFingerprint: range.graphFingerprint || startCapability.graphFingerprint,
+      startBoundarySupported: startCapability.supported === true,
+      nextBoundarySupported: nextCapability.supported === true,
+      rangeProven: range.rangeProven === true,
+      startWrapperCurrent: range.startWrapperCurrent === true,
+      endWrapperCurrent: range.endWrapperCurrent === true,
+      rangeStartIndex: range.rangeStartIndex,
+      rangeEndIndex: range.rangeEndIndex,
+      hostWrapperCount: range.hostWrapperCount,
+      h2oNodeCount: range.h2oNodeCount,
+      ambiguousWrapperCount: range.ambiguousWrapperCount,
+      firstAmbiguousIndex: range.firstAmbiguousIndex,
+      pageUnitOrderCurrent: range.pageUnitOrderCurrent === true,
+      isFinalPage: range.isFinalPage === true,
+      finalTailSupported: range.finalTailSupported === true,
+      streaming,
+      branchTransition,
+      titleRowsCurrent,
+      titleRowCount,
+      expectedTitleRowCount,
+      prerequisitesReady,
+      activationReady: prerequisitesReady,
+      activationBlockReason: prerequisitesReady ? null : (reason || 'layout-incomplete'),
+    });
+    const privatePlan = (
+      options?.includePlan === true
+      && capability.activationReady === true
+      && rangePlan?.ok === true
+    ) ? {
+      ...rangePlan,
+      version: 1,
+      pageNum: num,
+      pageStartOrder,
+      pageEndOrder,
+      chatId: capability.chatId,
+      routeKey: capability.routeKey,
+      generation: capability.generation,
+      effectiveFingerprint: capability.effectiveFingerprint,
+      graphFingerprint: capability.graphFingerprint,
+      startBoundaryQId: range.startQId,
+      nextBoundaryQId: range.nextBoundaryQId,
+      isFinalPage: range.isFinalPage === true,
+      titleRows: Array.isArray(page?.turnRecords) ? page.turnRecords.slice() : [],
+      expectedTitleRowCount,
+      pageDivider: renderedBoundaryThreadDivider(num),
+      pageStartSentinel: renderedBoundaryStartSentinel(num),
+      nextPageDivider: renderedBoundaryThreadDivider(num + 1),
+      nextPageStartSentinel: renderedBoundaryStartSentinel(num + 1),
+      capabilityIdentity: JSON.stringify([
+        capability.chatId,
+        capability.routeKey,
+        capability.generation,
+        capability.effectiveFingerprint,
+        capability.graphFingerprint,
+        num,
+        pageStartOrder,
+        pageEndOrder,
+        range.startQId,
+        range.nextBoundaryQId,
+      ]),
+    } : null;
+    return { capability, plan: privatePlan };
+  }
+
+  function getPageCollapseCapability(pageNum = 0) {
+    return evaluatePageCollapseCapability(pageNum, { includePlan: false }).capability;
+  }
+
+  function collapsedNativeRangeKey(chatId = '', pageNum = 0) {
+    return `${String(chatId || resolveChatId()).trim()}|${String(Math.max(1, Number(pageNum || 0) || 0))}`;
+  }
+
+  function collapsedBoundaryStatusIdentity(status = null) {
+    return JSON.stringify([
+      String(status?.source || ''),
+      status?.overlayActive === true,
+      Math.max(0, Number(status?.count || 0) || 0),
+      String(status?.canonicalFingerprint || ''),
+      String(status?.chatId || ''),
+      String(status?.routeKey || ''),
+      Math.max(0, Number(status?.generation || 0) || 0),
+    ]);
+  }
+
+  function exactNativeStartSection(member = null) {
+    const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+    const qId = String(member?.questionId || '').trim();
+    if (!order || !qId) return null;
+    const testId = `conversation-turn-${String(((order - 1) * 2) + 1)}`;
+    let sections = [];
+    try {
+      const escId = (typeof CSS !== 'undefined' && CSS?.escape)
+        ? CSS.escape(qId)
+        : qId;
+      sections = Array.from(document.querySelectorAll(
+        `section[data-testid="${testId}"][data-turn="user"][data-turn-id="${escId}"]`
+      ));
+    } catch {}
+    return sections.length === 1 ? sections[0] : null;
+  }
+
+  function frozenCollapsedBoundaryResult(raw = {}) {
+    const value = {
+      ready: raw.ready === true,
+      reason: raw.ready === true && raw.reason == null
+        ? null
+        : String(raw.reason || 'collapsed-exact-boundary-unavailable'),
+      structuralReason: raw.ready === true && raw.structuralReason == null
+        ? null
+        : String(raw.structuralReason || ''),
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      flowRoot: raw.flowRoot || null,
+      nativeStart: raw.nativeStart || null,
+      nextPageNativeStart: raw.nextPageNativeStart || null,
+      nativeSlotSequence: raw.nativeSlotSequence || null,
+      nativeStartOrdinal: Math.max(0, Number(raw.nativeStartOrdinal || 0) || 0),
+      nativeEndOrdinal: Math.max(0, Number(raw.nativeEndOrdinal || 0) || 0),
+      startIdentity: raw.startIdentity ? Object.freeze({ ...raw.startIdentity }) : null,
+      nextStartIdentity: raw.nextStartIdentity ? Object.freeze({ ...raw.nextStartIdentity }) : null,
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      fingerprint: String(raw.fingerprint || ''),
+      source: String(raw.source || ''),
+      count: Math.max(0, Number(raw.count || 0) || 0),
+      productReason: String(raw.productReason || ''),
+      prerequisitesReady: raw.prerequisitesReady === true,
+      activationReady: raw.activationReady === true,
+      capabilityVersion: Math.max(0, Number(raw.capabilityVersion || 0) || 0),
+      legacyNativeSlotConsulted: raw.legacyNativeSlotConsulted === true,
+    };
+    return Object.freeze(value);
+  }
+
+  function nativeTurnSlotClassSignature(node = null) {
+    if (!node || node.nodeType !== 1) return '';
+    const classes = String(node.className || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .sort();
+    return `${String(node.tagName || '').toUpperCase()}|${classes.join('.')}`;
+  }
+
+  function nativeTurnSlotLastKnownHeight(node = null) {
+    if (!node?.style) return '';
+    let value = '';
+    try {
+      const computed = typeof W.getComputedStyle === 'function'
+        ? W.getComputedStyle(node)
+        : (typeof getComputedStyle === 'function' ? getComputedStyle(node) : null);
+      value = String(computed?.getPropertyValue?.('--last-known-height') || '').trim();
+    } catch {}
+    if (value) return value;
+    try { return String(node.style.getPropertyValue?.('--last-known-height') || '').trim(); } catch {}
+    return '';
+  }
+
+  function isNativeTurnSlotExcluded(node = null) {
+    if (!node || node.nodeType !== 1) return true;
+    try {
+      if (node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' form, [contenteditable="true"],'
+        + ' [data-cgxui-owner="mnmp"], [data-h2o-title-inline-slot="1"]'
+      )) return true;
+      if (node.hasAttribute?.('data-cgxui-owner')) return true;
+      if (node.closest?.('#cgx-mm-root')) return true;
+    } catch {}
+    return false;
+  }
+
+  function nativeTurnSlotMountedIdentity(section = null, membersByOrder = new Map(), expectedSlotCount = 0) {
+    const nativeOrdinal = turnNumberOfSection(section);
+    if (
+      !nativeOrdinal
+      || nativeOrdinal > expectedSlotCount
+      || nativeOrdinal < 1
+    ) return null;
+    const order = Math.ceil(nativeOrdinal / 2);
+    const member = membersByOrder.get(order) || null;
+    if (!member) return null;
+    const role = nativeOrdinal % 2 ? 'user' : 'assistant';
+    const expectedId = role === 'user'
+      ? String(member.questionId || '').trim()
+      : String(member.answerId || '').trim();
+    if (!expectedId) return null;
+    const actualId = String(section.getAttribute?.('data-turn-id') || '').trim();
+    const match = getTurnHostRole(section) === role && actualId === expectedId;
+    return Object.freeze({
+      state: match ? 'match' : 'conflict',
+      match,
+      ordinal: nativeOrdinal,
+      order,
+      role,
+      expectedId,
+      actualId,
+      id: actualId,
+      testId: `conversation-turn-${String(nativeOrdinal)}`,
+    });
+  }
+
+  function frozenNativePageHeadCoherence(raw = {}) {
+    const allowedStates = new Set(['match', 'absent', 'conflict', 'unavailable']);
+    const state = allowedStates.has(raw.state) ? raw.state : 'unavailable';
+    const freezeRole = (value = {}, ordinal = 0) => Object.freeze({
+      state: allowedStates.has(value?.state) ? value.state : 'unavailable',
+      expectedId: String(value?.expectedId || '') || null,
+      actualId: String(value?.actualId || '') || null,
+      ordinal: Math.max(0, Number(value?.ordinal || ordinal || 0) || 0),
+    });
+    const userOrdinal = Math.max(0, Number(raw.userOrdinal || 0) || 0);
+    const assistantOrdinal = Math.max(0, Number(raw.assistantOrdinal || 0) || 0);
+    return Object.freeze({
+      state,
+      coherent: state === 'match',
+      convergenceEligible: state === 'absent',
+      pageNum: Math.max(1, Number(raw.pageNum || 0) || 0),
+      startOrder: Math.max(1, Number(raw.startOrder || 0) || 0),
+      userOrdinal,
+      assistantOrdinal,
+      user: freezeRole(raw.user, userOrdinal),
+      assistant: freezeRole(raw.assistant, assistantOrdinal),
+    });
+  }
+
+  // Inert native page-head diagnostic. It reads only the exact USER/ASSISTANT
+  // pair for the requested canonical page and never schedules convergence.
+  function resolveNativePageHeadCoherence(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const startOrder = ((num - 1) * TITLE_LIST_PAGE_SIZE) + 1;
+    const userOrdinal = ((startOrder - 1) * 2) + 1;
+    const assistantOrdinal = userOrdinal + 1;
+    const unavailable = (extra = {}) => frozenNativePageHeadCoherence({
+      state: 'unavailable',
+      pageNum: num,
+      startOrder,
+      userOrdinal,
+      assistantOrdinal,
+      user: { state: 'unavailable', ordinal: userOrdinal },
+      assistant: { state: 'unavailable', ordinal: assistantOrdinal },
+      ...extra,
+    });
+    const rt = TURN_RUNTIME();
+    if (!rt) return unavailable();
+    let before = null;
+    let after = null;
+    let model = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      model = buildTitleListPresentationPageModel();
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return unavailable();
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    if (
+      !model?.coherent
+      || count < startOrder
+      || model.count !== count
+      || model.source !== String(before?.source || '')
+      || !Math.max(0, Number(before?.generation || 0) || 0)
+      || !String(before?.canonicalFingerprint || '')
+      || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+    ) return unavailable();
+    const page = model.pages.find((entry) => Number(entry?.pageNo || 0) === num) || null;
+    const member = page?.turnRecords?.find(
+      (entry) => Number(entry?.turnNo || 0) === startOrder
+    ) || null;
+    const expectedUserId = String(member?.questionId || '').trim();
+    const expectedAssistantId = String(member?.answerId || '').trim();
+    if (!member || !expectedUserId || !expectedAssistantId) {
+      return unavailable({
+        user: { state: 'unavailable', expectedId: expectedUserId, ordinal: userOrdinal },
+        assistant: {
+          state: 'unavailable',
+          expectedId: expectedAssistantId,
+          ordinal: assistantOrdinal,
+        },
+      });
+    }
+    const membersByOrder = new Map([[startOrder, member]]);
+    const expectedSlotCount = count * 2;
+    let sections = null;
+    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
+    if (!sections) return unavailable();
+    const classify = (ordinal, expectedId) => {
+      const exactSections = sections.filter((section) => {
+        try {
+          return turnNumberOfSection(section) === ordinal
+            && !section.closest?.(`${TITLE_LIST_SYNTH_SEL}, [data-h2o-title-inline-slot="1"]`);
+        } catch { return false; }
+      });
+      if (!exactSections.length) {
+        return { state: 'absent', expectedId, actualId: '', ordinal };
+      }
+      if (exactSections.length !== 1) {
+        return { state: 'unavailable', expectedId, actualId: '', ordinal };
+      }
+      const identity = nativeTurnSlotMountedIdentity(
+        exactSections[0],
+        membersByOrder,
+        expectedSlotCount,
+      );
+      if (!identity) return { state: 'unavailable', expectedId, actualId: '', ordinal };
+      return {
+        state: identity.match === true ? 'match' : 'conflict',
+        expectedId: identity.expectedId,
+        actualId: identity.actualId,
+        ordinal,
+      };
+    };
+    const user = classify(userOrdinal, expectedUserId);
+    const assistant = classify(assistantOrdinal, expectedAssistantId);
+    let current = null;
+    try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+    if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+      return unavailable({
+        user: { state: 'unavailable', expectedId: expectedUserId, ordinal: userOrdinal },
+        assistant: {
+          state: 'unavailable',
+          expectedId: expectedAssistantId,
+          ordinal: assistantOrdinal,
+        },
+      });
+    }
+    const state = (user.state === 'conflict' || assistant.state === 'conflict')
+      ? 'conflict'
+      : ((user.state === 'absent' || assistant.state === 'absent')
+        ? 'absent'
+        : ((user.state === 'match' && assistant.state === 'match') ? 'match' : 'unavailable'));
+    return frozenNativePageHeadCoherence({
+      state,
+      pageNum: num,
+      startOrder,
+      userOrdinal,
+      assistantOrdinal,
+      user,
+      assistant,
+    });
+  }
+
+  function frozenNativeTurnSlotSequence(raw = {}) {
+    const slots = Array.isArray(raw.slots)
+      ? raw.slots.map((slot) => Object.freeze({ ...slot }))
+      : [];
+    const calibrationIdentities = Array.isArray(raw.calibrationIdentities)
+      ? raw.calibrationIdentities.map((identity) => Object.freeze({ ...identity }))
+      : [];
+    return Object.freeze({
+      ready: raw.ready === true,
+      reason: String(raw.reason || (raw.ready ? 'ready' : 'native-turn-slot-sequence-unavailable')),
+      flowRoot: raw.flowRoot || null,
+      expectedSlotCount: Math.max(0, Number(raw.expectedSlotCount || 0) || 0),
+      actualSlotCount: Math.max(0, Number(raw.actualSlotCount || 0) || 0),
+      calibrated: raw.calibrated === true,
+      slots: Object.freeze(slots),
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      fingerprint: String(raw.fingerprint || ''),
+      source: String(raw.source || ''),
+      count: Math.max(0, Number(raw.count || 0) || 0),
+      calibrationIdentities: Object.freeze(calibrationIdentities),
+    });
+  }
+
+  // Read-only native-slot resolver. ChatGPT retains one direct-flow layout
+  // slot per native USER/ASSISTANT turn even while the section is virtualized;
+  // section-less slots keep the same host class signature and
+  // --last-known-height. Exact count plus every mounted test-id calibration
+  // is the authority—never nearest neighbours, mounted-array ordinals, or a
+  // late Page 2 artifact.
+  function resolveNativeTurnSlotSequence() {
+    const rt = TURN_RUNTIME();
+    if (!rt) return frozenNativeTurnSlotSequence({ reason: 'native-slot-runtime-unavailable' });
+    let before = null;
+    let after = null;
+    let model = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      model = buildTitleListPresentationPageModel();
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return frozenNativeTurnSlotSequence({ reason: 'native-slot-authority-read-failed' });
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    const expectedSlotCount = count * 2;
+    const generation = Math.max(0, Number(before?.generation || 0) || 0);
+    const fingerprint = String(before?.canonicalFingerprint || '');
+    const source = String(before?.source || '');
+    const fail = (reason, extra = {}) => frozenNativeTurnSlotSequence({
+      reason,
+      expectedSlotCount,
+      generation,
+      fingerprint,
+      source,
+      count,
+      ...extra,
+    });
+    if (
+      !model?.coherent
+      || count < 1
+      || expectedSlotCount < 2
+      || model.count !== count
+      || model.source !== source
+      || !generation
+      || !fingerprint
+      || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+    ) return fail('native-slot-authority-not-coherent');
+    const members = model.pages
+      .flatMap((page) => Array.isArray(page?.turnRecords) ? page.turnRecords : [])
+      .sort((a, b) => Number(a?.turnNo || 0) - Number(b?.turnNo || 0));
+    if (members.length !== count) return fail('native-slot-membership-incomplete');
+    const membersByOrder = new Map(
+      members.map((member) => [Math.max(0, Number(member?.turnNo || 0) || 0), member])
+    );
+    if (membersByOrder.size !== count || membersByOrder.has(0)) {
+      return fail('native-slot-membership-ambiguous');
+    }
+    const exactMounted = [];
+    const seenNativeOrdinals = new Set();
+    let sections = [];
+    try { sections = Array.from(document.querySelectorAll(TURN_HOST_SEL)); } catch {}
+    for (const section of sections) {
+      try {
+        if (section.closest?.(`${TITLE_LIST_SYNTH_SEL}, [data-h2o-title-inline-slot="1"]`)) continue;
+      } catch {}
+      const mountedIdentity = nativeTurnSlotMountedIdentity(section, membersByOrder, expectedSlotCount);
+      if (mountedIdentity?.match !== true) continue;
+      const identity = Object.freeze({
+        ordinal: mountedIdentity.ordinal,
+        order: mountedIdentity.order,
+        role: mountedIdentity.role,
+        id: mountedIdentity.id,
+        testId: mountedIdentity.testId,
+      });
+      if (seenNativeOrdinals.has(identity.ordinal)) {
+        return fail('native-slot-mounted-identity-ambiguous');
+      }
+      seenNativeOrdinals.add(identity.ordinal);
+      exactMounted.push({ section, identity });
+    }
+    if (!exactMounted.length) return fail('native-slot-calibration-unavailable');
+    let activeThread = null;
+    try { activeThread = document.querySelector?.('#thread') || null; } catch {}
+    if (!activeThread?.isConnected) return fail('native-slot-active-thread-unavailable');
+
+    // A section's local only-child anchor may stop at different host wrapper
+    // depths. Project every exact section to a direct child of each common
+    // ancestor candidate instead of requiring those local anchor parents to
+    // match. Candidates are visited from deepest to shallowest.
+    const directChildUnder = (candidateRoot, section) => {
+      if (!candidateRoot || !section || candidateRoot === section) return null;
+      let node = section;
+      while (node?.parentElement && node.parentElement !== candidateRoot) {
+        node = node.parentElement;
+      }
+      return node?.parentElement === candidateRoot ? node : null;
+    };
+    const commonRoots = [];
+    let ancestor = exactMounted[0].section?.parentElement || null;
+    while (ancestor) {
+      let insideActiveThread = false;
+      try {
+        insideActiveThread = ancestor === activeThread || activeThread.contains?.(ancestor);
+      } catch {}
+      if (
+        insideActiveThread
+        && exactMounted.every((entry) => ancestor.contains?.(entry.section))
+      ) commonRoots.push(ancestor);
+      if (ancestor === activeThread) break;
+      ancestor = ancestor.parentElement;
+    }
+    if (!commonRoots.length) return fail('native-slot-flow-root-unavailable');
+
+    const exactBySection = new Map(exactMounted.map((entry) => [entry.section, entry]));
+    let selected = null;
+    let deepestFailure = null;
+    for (const candidateRoot of commonRoots) {
+      const directSlots = new Map();
+      let collision = false;
+      for (const entry of exactMounted) {
+        const directSlot = directChildUnder(candidateRoot, entry.section);
+        if (!directSlot || isNativeTurnSlotExcluded(directSlot) || directSlots.has(directSlot)) {
+          collision = true;
+          break;
+        }
+        directSlots.set(directSlot, entry);
+      }
+      if (collision) {
+        deepestFailure ||= {
+          reason: 'native-slot-mounted-slot-collision',
+          flowRoot: candidateRoot,
+          actualSlotCount: 0,
+        };
+        continue;
+      }
+      const structuralSignatures = new Set(
+        Array.from(directSlots.keys())
+          .map((node) => nativeTurnSlotClassSignature(node))
+          .filter(Boolean)
+      );
+      if (!structuralSignatures.size) {
+        deepestFailure ||= {
+          reason: 'native-slot-structural-signature-unavailable',
+          flowRoot: candidateRoot,
+          actualSlotCount: 0,
+        };
+        continue;
+      }
+      const candidateSlots = [];
+      let mountedStructureInvalid = false;
+      for (const node of Array.from(candidateRoot.children || [])) {
+        if (isNativeTurnSlotExcluded(node) || String(node.tagName || '').toUpperCase() !== 'DIV') continue;
+        let nodeSections = [];
+        try {
+          nodeSections = Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || []);
+          if (node.matches?.(TURN_HOST_SEL)) nodeSections.unshift(node);
+        } catch {}
+        if (nodeSections.length) {
+          const exactEntries = nodeSections
+            .map((section) => exactBySection.get(section) || null)
+            .filter(Boolean);
+          if (
+            nodeSections.length !== 1
+            || exactEntries.length !== 1
+            || directSlots.get(node) !== exactEntries[0]
+          ) {
+            mountedStructureInvalid = true;
+            break;
+          }
+          candidateSlots.push(node);
+          continue;
+        }
+        if (
+          nativeTurnSlotLastKnownHeight(node)
+          && structuralSignatures.has(nativeTurnSlotClassSignature(node))
+        ) candidateSlots.push(node);
+      }
+      if (mountedStructureInvalid) {
+        deepestFailure ||= {
+          reason: 'native-slot-mounted-structure-invalid',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      if (candidateSlots.length !== expectedSlotCount) {
+        deepestFailure ||= {
+          reason: 'native-slot-count-mismatch',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      const calibrationIdentities = [];
+      let calibrationMismatch = false;
+      for (let index = 0; index < candidateSlots.length; index += 1) {
+        const exact = directSlots.get(candidateSlots[index]) || null;
+        if (!exact) continue;
+        if (exact.identity.ordinal !== index + 1) {
+          calibrationMismatch = true;
+          break;
+        }
+        calibrationIdentities.push(exact.identity);
+      }
+      if (calibrationMismatch) {
+        deepestFailure ||= {
+          reason: 'native-slot-calibration-mismatch',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      if (calibrationIdentities.length < 3) {
+        deepestFailure ||= {
+          reason: 'native-slot-calibration-insufficient',
+          flowRoot: candidateRoot,
+          actualSlotCount: candidateSlots.length,
+        };
+        continue;
+      }
+      selected = {
+        flowRoot: candidateRoot,
+        candidates: candidateSlots,
+        exactSlots: directSlots,
+        calibrationIdentities,
+      };
+      break;
+    }
+    if (!selected) return fail(
+      deepestFailure?.reason || 'native-slot-flow-root-unavailable',
+      {
+        flowRoot: deepestFailure?.flowRoot || null,
+        actualSlotCount: deepestFailure?.actualSlotCount || 0,
+      }
+    );
+    const {
+      flowRoot,
+      candidates,
+      exactSlots,
+      calibrationIdentities,
+    } = selected;
+    let current = null;
+    try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+    if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+      return fail('native-slot-authority-changed', {
+        flowRoot,
+        actualSlotCount: candidates.length,
+      });
+    }
+    const slots = candidates.map((element, index) => {
+      const exact = exactSlots.get(element) || null;
+      return {
+        ordinal: index + 1,
+        element,
+        mountedTestId: exact?.identity?.testId || '',
+        mountedQId: exact?.identity?.role === 'user' ? exact.identity.id : '',
+        mountedAId: exact?.identity?.role === 'assistant' ? exact.identity.id : '',
+        structuralClassification: exact ? 'mounted-exact' : 'sectionless-last-known-height',
+        generation,
+        fingerprint,
+      };
+    });
+    return frozenNativeTurnSlotSequence({
+      ready: true,
+      reason: 'ready',
+      flowRoot,
+      expectedSlotCount,
+      actualSlotCount: slots.length,
+      calibrated: true,
+      slots,
+      generation,
+      fingerprint,
+      source,
+      count,
+      calibrationIdentities,
+    });
+  }
+
+  // Legacy exact-mounted boundary gate remains only as a conservative
+  // structural fallback for hosts that do not expose the proven persistent
+  // native-slot sequence.
+  function getCollapsedExactBoundaryReadiness(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const rt = TURN_RUNTIME();
+    if (!rt || !num) {
+      return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'readiness-api-unavailable' });
+    }
+    let before = null;
+    let after = null;
+    let model = null;
+    try {
+      before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+      model = buildTitleListPresentationPageModel();
+      after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+    } catch {
+      return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'authority-read-failed' });
+    }
+    const count = Math.max(0, Number(before?.count || 0) || 0);
+    const fingerprint = String(before?.canonicalFingerprint || '');
+    const generation = Math.max(0, Number(before?.generation || 0) || 0);
+    const source = String(before?.source || '');
+    const fail = (reason, extra = {}) => frozenCollapsedBoundaryResult({
+      pageNum: num,
+      reason,
+      generation,
+      fingerprint,
+      source,
+      count,
+      ...extra,
+    });
+    if (
+      !model?.coherent
+      || count < 1
+      || model.count !== count
+      || model.source !== source
+      || !generation
+      || !fingerprint
+      || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+    ) return fail('authority-not-coherent');
+    const page = model.pages.find((entry) => entry.pageNo === num) || null;
+    const nextPage = model.pages.find((entry) => entry.pageNo === num + 1) || null;
+    if (!page) return fail('page-outside-presentation');
+    if (!nextPage) return fail('next-page-native-start-unavailable');
+    const startMember = page.turnRecords[0] || null;
+    const nextStartMember = nextPage.turnRecords[0] || null;
+    const startSection = exactNativeStartSection(startMember);
+    const nextStartSection = exactNativeStartSection(nextStartMember);
+    const startIdentity = {
+      order: Number(startMember?.turnNo || 0),
+      qId: String(startMember?.questionId || ''),
+      testId: `conversation-turn-${String((((Number(startMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+    };
+    const nextStartIdentity = {
+      order: Number(nextStartMember?.turnNo || 0),
+      qId: String(nextStartMember?.questionId || ''),
+      testId: `conversation-turn-${String((((Number(nextStartMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+    };
+    if (!startSection) return fail('native-start-not-mounted', { startIdentity, nextStartIdentity });
+    if (!nextStartSection) return fail('next-page-native-start-not-mounted', { startIdentity, nextStartIdentity });
+    const nativeStart = getTurnAnchorNode(startSection);
+    const nextPageNativeStart = getTurnAnchorNode(nextStartSection);
+    const flowRoot = nativeStart?.parentElement || null;
+    if (
+      !nativeStart
+      || !nextPageNativeStart
+      || !flowRoot
+      || nextPageNativeStart.parentElement !== flowRoot
+    ) return fail('native-layout-boundary-unresolved', { startIdentity, nextStartIdentity });
+    let ordered = false;
+    try {
+      ordered = !!(nativeStart.compareDocumentPosition(nextPageNativeStart) & Node.DOCUMENT_POSITION_FOLLOWING);
+    } catch {}
+    if (!ordered) {
+      return fail('native-layout-boundary-order-invalid', {
+        flowRoot,
+        nativeStart,
+        nextPageNativeStart,
+        startIdentity,
+        nextStartIdentity,
+      });
+    }
+    let current = null;
+    try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+    if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+      return fail('authority-changed-during-readiness', { startIdentity, nextStartIdentity });
+    }
+    return frozenCollapsedBoundaryResult({
+      ready: true,
+      reason: 'ready',
+      pageNum: num,
+      flowRoot,
+      nativeStart,
+      nextPageNativeStart,
+      startIdentity,
+      nextStartIdentity,
+      generation,
+      fingerprint,
+      source,
+      count,
+    });
+  }
+
+  // Retained diagnostic compatibility for the native-slot retirement stage.
+  // Production collapse readiness no longer calls this legacy resolver path.
+  function getLegacyCollapsedNativeBoundaryReadinessDiagnostic(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const sequence = typeof resolveNativeTurnSlotSequence === 'function'
+      ? resolveNativeTurnSlotSequence()
+      : Object.freeze({ ready: false, reason: 'native-slot-resolver-unavailable' });
+    if (sequence.ready) {
+      const pageSizeNative = TITLE_LIST_PAGE_SIZE * 2;
+      const startOrdinal = ((num - 1) * pageSizeNative) + 1;
+      const endOrdinal = Math.min(num * pageSizeNative, sequence.expectedSlotCount);
+      if (
+        startOrdinal > sequence.expectedSlotCount
+        || endOrdinal < startOrdinal
+      ) {
+        return frozenCollapsedBoundaryResult({
+          pageNum: num,
+          reason: 'page-outside-presentation',
+          structuralReason: 'native-slot-page-outside-presentation',
+          generation: sequence.generation,
+          fingerprint: sequence.fingerprint,
+          source: sequence.source,
+          count: sequence.count,
+        });
+      }
+      const nativeStart = sequence.slots[startOrdinal - 1]?.element || null;
+      const nextPageNativeStart = sequence.slots[endOrdinal]?.element || null;
+      if (
+        !nativeStart
+        || nativeStart.parentElement !== sequence.flowRoot
+        || (nextPageNativeStart && nextPageNativeStart.parentElement !== sequence.flowRoot)
+      ) {
+        return frozenCollapsedBoundaryResult({
+          pageNum: num,
+          reason: 'collapsed-exact-boundary-unavailable',
+          structuralReason: 'native-slot-range-incoherent',
+          generation: sequence.generation,
+          fingerprint: sequence.fingerprint,
+          source: sequence.source,
+          count: sequence.count,
+        });
+      }
+      return frozenCollapsedBoundaryResult({
+        ready: true,
+        reason: 'ready-native-turn-slots',
+        pageNum: num,
+        flowRoot: sequence.flowRoot,
+        nativeStart,
+        nextPageNativeStart,
+        nativeSlotSequence: sequence,
+        nativeStartOrdinal: startOrdinal,
+        nativeEndOrdinal: endOrdinal,
+        startIdentity: {
+          order: Math.ceil(startOrdinal / 2),
+          testId: `conversation-turn-${String(startOrdinal)}`,
+        },
+        nextStartIdentity: nextPageNativeStart ? {
+          order: Math.ceil((endOrdinal + 1) / 2),
+          testId: `conversation-turn-${String(endOrdinal + 1)}`,
+        } : null,
+        generation: sequence.generation,
+        fingerprint: sequence.fingerprint,
+        source: sequence.source,
+        count: sequence.count,
+      });
+    }
+    const exact = typeof getCollapsedExactBoundaryReadiness === 'function'
+      ? getCollapsedExactBoundaryReadiness(num)
+      : (() => {
+          // Extraction-compatible legacy fallback for older real-source
+          // validators. Production always owns getCollapsedExactBoundaryReadiness.
+          const rt = TURN_RUNTIME();
+          if (!rt || !num) {
+            return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'readiness-api-unavailable' });
+          }
+          let before = null;
+          let after = null;
+          let model = null;
+          try {
+            before = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+            model = buildTitleListPresentationPageModel();
+            after = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null;
+          } catch {
+            return frozenCollapsedBoundaryResult({ pageNum: num, reason: 'authority-read-failed' });
+          }
+          const count = Math.max(0, Number(before?.count || 0) || 0);
+          const fingerprint = String(before?.canonicalFingerprint || '');
+          const generation = Math.max(0, Number(before?.generation || 0) || 0);
+          const source = String(before?.source || '');
+          const fail = (reason, extra = {}) => frozenCollapsedBoundaryResult({
+            pageNum: num,
+            reason,
+            generation,
+            fingerprint,
+            source,
+            count,
+            ...extra,
+          });
+          if (
+            !model?.coherent
+            || count < 1
+            || model.count !== count
+            || model.source !== source
+            || !generation
+            || !fingerprint
+            || collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(after)
+          ) return fail('authority-not-coherent');
+          const page = model.pages.find((entry) => entry.pageNo === num) || null;
+          const nextPage = model.pages.find((entry) => entry.pageNo === num + 1) || null;
+          if (!page) return fail('page-outside-presentation');
+          if (!nextPage) return fail('next-page-native-start-unavailable');
+          const startMember = page.turnRecords[0] || null;
+          const nextStartMember = nextPage.turnRecords[0] || null;
+          const startSection = exactNativeStartSection(startMember);
+          const nextStartSection = exactNativeStartSection(nextStartMember);
+          const startIdentity = {
+            order: Number(startMember?.turnNo || 0),
+            qId: String(startMember?.questionId || ''),
+            testId: `conversation-turn-${String((((Number(startMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+          };
+          const nextStartIdentity = {
+            order: Number(nextStartMember?.turnNo || 0),
+            qId: String(nextStartMember?.questionId || ''),
+            testId: `conversation-turn-${String((((Number(nextStartMember?.turnNo || 0) || 1) - 1) * 2) + 1)}`,
+          };
+          if (!startSection) return fail('native-start-not-mounted', { startIdentity, nextStartIdentity });
+          if (!nextStartSection) return fail('next-page-native-start-not-mounted', { startIdentity, nextStartIdentity });
+          const nativeStart = getTurnAnchorNode(startSection);
+          const nextPageNativeStart = getTurnAnchorNode(nextStartSection);
+          const flowRoot = nativeStart?.parentElement || null;
+          if (
+            !nativeStart
+            || !nextPageNativeStart
+            || !flowRoot
+            || nextPageNativeStart.parentElement !== flowRoot
+          ) return fail('native-layout-boundary-unresolved', { startIdentity, nextStartIdentity });
+          let ordered = false;
+          try {
+            ordered = !!(nativeStart.compareDocumentPosition(nextPageNativeStart) & Node.DOCUMENT_POSITION_FOLLOWING);
+          } catch {}
+          if (!ordered) {
+            return fail('native-layout-boundary-order-invalid', {
+              flowRoot,
+              nativeStart,
+              nextPageNativeStart,
+              startIdentity,
+              nextStartIdentity,
+            });
+          }
+          let current = null;
+          try { current = rt[TITLE_LIST_EFFECTIVE_METHOD.STATUS]?.() || null; } catch {}
+          if (collapsedBoundaryStatusIdentity(before) !== collapsedBoundaryStatusIdentity(current)) {
+            return fail('authority-changed-during-readiness', { startIdentity, nextStartIdentity });
+          }
+          return frozenCollapsedBoundaryResult({
+            ready: true,
+            reason: 'ready',
+            pageNum: num,
+            flowRoot,
+            nativeStart,
+            nextPageNativeStart,
+            startIdentity,
+            nextStartIdentity,
+            generation,
+            fingerprint,
+            source,
+            count,
+          });
+        })();
+    if (exact.ready) return exact;
+    return frozenCollapsedBoundaryResult({
+      ...exact,
+      structuralReason: sequence.reason,
+    });
+  }
+
+  function getCollapsedNativeBoundaryReadiness(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const capability = typeof getPageCollapseCapability === 'function'
+      ? getPageCollapseCapability(num)
+      : Object.freeze({
+        version: 1,
+        reason: 'readiness-api-unavailable',
+        productReason: 'page-loading',
+        prerequisitesReady: false,
+        activationBlockReason: 'readiness-api-unavailable',
+        generation: 0,
+        effectiveFingerprint: '',
+      });
+    const prerequisitesReady = capability.prerequisitesReady === true;
+    const activationReady = capability.activationReady === true;
+    return frozenCollapsedBoundaryResult({
+      ready: activationReady,
+      reason: activationReady
+        ? null
+        : String(capability.activationBlockReason || capability.reason || 'collapsed-exact-boundary-unavailable'),
+      structuralReason: activationReady
+        ? null
+        : String(capability.reason || 'layout-incomplete'),
+      pageNum: num,
+      generation: capability.generation,
+      fingerprint: capability.effectiveFingerprint,
+      source: 'rendered-boundary-collapse-capability',
+      productReason: capability.productReason,
+      prerequisitesReady,
+      activationReady,
+      capabilityVersion: capability.version,
+      legacyNativeSlotConsulted: false,
+    });
+  }
+
+  function isCollapsedNativeRangeExcluded(node = null) {
+    if (!node || node.nodeType !== 1) return true;
+    try {
+      if (node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ' [data-cgxui="chat-page-title-list-synth"],'
+        + ' [data-h2o-chat-page-boundary], #cgx-mm-root,'
+        + ' form, [contenteditable="true"], [data-cgxui-owner="mnmp"]'
+      )) return true;
+      if (node.closest?.('#cgx-mm-root')) return true;
+    } catch {}
+    return false;
+  }
+
+  function directNodePresentationPages(node = null) {
+    const pages = new Set();
+    let sections = [];
+    try { sections = Array.from(node?.querySelectorAll?.(TURN_HOST_SEL) || []); } catch {}
+    if (node?.matches?.(TURN_HOST_SEL)) sections.unshift(node);
+    for (const section of sections) {
+      const testNo = turnNumberOfSection(section);
+      if (!testNo) continue;
+      const order = Math.ceil(testNo / 2);
+      if (order) pages.add(Math.ceil(order / TITLE_LIST_PAGE_SIZE));
+    }
+    return pages;
+  }
+
+  function releaseCollapsedNativeRange(pageNum = 0, flowRoot = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let nodes = [];
+    try {
+      const root = flowRoot?.querySelectorAll ? flowRoot : document;
+      nodes = Array.from(root.querySelectorAll(`[${ATTR_CHAT_PAGE_NATIVE_HIDDEN}="${String(num)}"]`));
+      if (root?.matches?.(`[${ATTR_CHAT_PAGE_NATIVE_HIDDEN}="${String(num)}"]`)) nodes.unshift(root);
+    } catch {}
+    let released = 0;
+    for (const node of new Set(nodes)) {
+      try {
+        node.removeAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN);
+        released += 1;
+      } catch {}
+    }
+    return released;
+  }
+
+  function applyCollapsedNativeRange(plan = null) {
+    const num = Math.max(1, Number(plan?.pageNum || 0) || 0);
+    const root = plan?.flowRoot || null;
+    const candidates = Array.isArray(plan?.hostWrappers) ? plan.hostWrappers : [];
+    if (
+      plan?.atomicRenderedBoundaryPlan !== true
+      || !root
+      || root?.isConnected !== true
+      || !candidates.length
+      || plan?.endWrapper?.parentElement !== root
+      || candidates.includes(plan.endWrapper)
+    ) {
+      return {
+        ok: false,
+        status: 'rendered-collapse-plan-invalid',
+        hidden: 0,
+        mutations: 0,
+        stamped: [],
+      };
+    }
+    for (const node of candidates) {
+      if (
+        !node
+        || node?.isConnected !== true
+        || node?.parentElement !== root
+        || pageCollapseRangeH2OOwned(node)
+      ) {
+        return {
+          ok: false,
+          status: 'rendered-collapse-plan-stale',
+          hidden: 0,
+          mutations: 0,
+          stamped: [],
+        };
+      }
+      const existing = String(node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) || '');
+      if (existing) {
+        return {
+          ok: false,
+          status: 'rendered-collapse-stamp-conflict',
+          hidden: 0,
+          mutations: 0,
+          stamped: [],
+        };
+      }
+    }
+    const stamped = [];
+    try {
+      for (const node of candidates) {
+        if (node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)) continue;
+        node.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(num));
+        stamped.push(node);
+      }
+    } catch {
+      return {
+        ok: false,
+        status: 'rendered-collapse-stamp-failed',
+        hidden: stamped.length,
+        mutations: stamped.length,
+        stamped,
+      };
+    }
+    return {
+      ok: true,
+      status: 'collapsed',
+      hidden: candidates.length,
+      mutations: stamped.length,
+      stamped,
+    };
+  }
+
+  function collapsedBoundaryDividers(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    try {
+      return Array.from(document.querySelectorAll(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      ));
+    } catch {
+      return [];
+    }
+  }
+
+  function setCollapseFeedbackAttribute(node = null, name = '', value = null) {
+    if (!node || !name) return 0;
+    const next = value == null ? null : String(value);
+    let current = null;
+    try { current = node.getAttribute(name); } catch {}
+    if (current === next) return 0;
+    try {
+      if (next == null) node.removeAttribute(name);
+      else node.setAttribute(name, next);
+      return 1;
+    } catch {
+      return 0;
+    }
+  }
+
+  function collapseUnavailableStatusNode(divider = null, pageNum = 0, create = false) {
+    if (!divider?.querySelector) return null;
+    let node = null;
+    try { node = divider.querySelector(`[${ATTR_COLLAPSE_FEEDBACK}]`); } catch {}
+    if (node || !create) return node;
+    try {
+      node = document.createElement('div');
+      node.className = 'cgxui-chat-page-collapse-feedback';
+      node.setAttribute(ATTR_COLLAPSE_FEEDBACK, String(Math.max(1, Number(pageNum || 0) || 1)));
+      node.setAttribute('data-cgxui-owner', 'chtpgs');
+      node.setAttribute('role', 'status');
+      node.setAttribute('aria-live', 'polite');
+      node.setAttribute('aria-atomic', 'true');
+      node.setAttribute('aria-hidden', 'true');
+      node.hidden = true;
+      divider.appendChild(node);
+    } catch {
+      node = null;
+    }
+    return node;
+  }
+
+  function clearCollapseUnavailableFeedback(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let mutations = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      const node = collapseUnavailableStatusNode(divider, num, false);
+      if (!node) continue;
+      if (node.hidden !== true) {
+        try { node.hidden = true; mutations += 1; } catch {}
+      }
+      mutations += setCollapseFeedbackAttribute(node, 'aria-hidden', 'true');
+      mutations += setCollapseFeedbackAttribute(node, ATTR_COLLAPSE_REASON, null);
+      try {
+        if (node.textContent !== '') {
+          node.textContent = '';
+          mutations += 1;
+        }
+      } catch {}
+      try { node.removeAttribute('title'); } catch {}
+    }
+    return mutations;
+  }
+
+  function applyCollapsedBoundaryControlState(pageNum = 0, chatId = '', readiness = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const titleListActive = isTitleListActive(num, id);
+    const blocked = !titleListActive && readiness?.ready !== true;
+    const diagnosticReason = blocked
+      ? String(readiness?.structuralReason || readiness?.reason || 'readiness-api-unavailable')
+      : '';
+    const structuralFailure = blocked && !!String(readiness?.structuralReason || '').trim();
+    const actionTitle = titleListActive
+      ? `Expand Page ${num}`
+      : blocked
+        ? 'Collapse currently unavailable'
+        : `Collapse Page ${num}`;
+    const ariaLabel = titleListActive
+      ? `Page ${num}. Expand page titles.`
+      : blocked
+        ? structuralFailure
+          ? `Page ${num}. Collapse temporarily unavailable because the conversation layout is incomplete.`
+          : `Page ${num}. Collapse currently unavailable.`
+        : `Page ${num}. Collapse page titles.`;
+    let mutations = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      mutations += setCollapseFeedbackAttribute(
+        divider,
+        ATTR_COLLAPSE_READINESS,
+        blocked ? COLLAPSE_UNAVAILABLE_STATUS : null
+      );
+      mutations += setCollapseFeedbackAttribute(
+        divider,
+        ATTR_COLLAPSE_REASON,
+        blocked ? diagnosticReason : null
+      );
+      const dot = divider.querySelector?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot') || null;
+      if (!dot) continue;
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-hidden', null);
+      mutations += setCollapseFeedbackAttribute(dot, 'role', 'button');
+      mutations += setCollapseFeedbackAttribute(dot, 'tabindex', '0');
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-disabled', null);
+      mutations += setCollapseFeedbackAttribute(dot, ATTR_COLLAPSE_CONTROL_STATE, blocked ? 'blocked' : 'ready');
+      mutations += setCollapseFeedbackAttribute(dot, 'title', actionTitle);
+      mutations += setCollapseFeedbackAttribute(dot, 'aria-label', ariaLabel);
+    }
+    if (!blocked) clearCollapseUnavailableFeedback(num);
+    return {
+      ok: true,
+      blocked,
+      reason: diagnosticReason,
+      productReason: String(readiness?.productReason || ''),
+      pageNum: num,
+      mutations,
+    };
+  }
+
+  function showCollapseUnavailableFeedback(pageNum = 0, chatId = '', readiness = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const structuralReason = String(readiness?.structuralReason || '').trim();
+    const reason = structuralReason || String(readiness?.reason || 'readiness-api-unavailable');
+    // A ready capability whose transaction failed is neither a missing next
+    // boundary nor an incomplete layout — say only that it can be retried.
+    const message = String(readiness?.productReason || '') === 'transient-failure'
+      ? COLLAPSE_TRANSIENT_FAILURE_MESSAGE
+      : structuralReason
+        ? COLLAPSE_LAYOUT_INCOMPLETE_MESSAGE
+        : COLLAPSE_UNAVAILABLE_MESSAGE;
+    applyCollapsedBoundaryControlState(num, id, readiness);
+    let visible = 0;
+    for (const divider of collapsedBoundaryDividers(num)) {
+      const node = collapseUnavailableStatusNode(divider, num, true);
+      if (!node) continue;
+      try { node.textContent = message; } catch {}
+      try { node.hidden = false; } catch {}
+      setCollapseFeedbackAttribute(node, 'aria-hidden', 'false');
+      setCollapseFeedbackAttribute(node, ATTR_COLLAPSE_REASON, reason);
+      setCollapseFeedbackAttribute(node, 'title', reason);
+      visible += 1;
+    }
+    return { ok: visible > 0, status: visible ? 'visible' : 'divider-unavailable', visible, reason };
+  }
+
+  function explicitCollapseFeedbackSource(source = '') {
+    return /^chat-page-divider:(circle|keyboard-enter|keyboard-space)$/.test(String(source || '').trim());
+  }
+
+  function handleCollapseUnavailableActivation(pageNum = 0, chatId = '', readiness = null, source = '') {
+    return failClosedCollapsedTitleList(pageNum, chatId, readiness, source);
+  }
+
+  function forwardCollapseControlKeyboardActivation(ev = null) {
+    const key = String(ev?.key || '');
+    if (key !== 'Enter' && key !== ' ' && key !== 'Spacebar') {
+      return { ok: false, status: 'not-collapse-key' };
+    }
+    if (ev?.repeat === true) return { ok: false, status: 'repeat-ignored' };
+    const dot = ev?.target?.closest?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot');
+    if (!dot) return { ok: false, status: 'control-missing' };
+    const divider = dot.closest?.('.cgxui-chat-page-divider, .cgxui-pgnw-page-divider');
+    const pageNum = getDividerPageNum(divider);
+    if (!pageNum) return { ok: false, status: 'page-missing' };
+    try { ev.preventDefault(); ev.stopPropagation(); } catch {}
+    const source = key === 'Enter'
+      ? 'chat-page-divider:keyboard-enter'
+      : 'chat-page-divider:keyboard-space';
+    // Keyboard converges on the same owner as pointer activation rather than
+    // synthesising a click, so both paths share one reentrancy guard, one
+    // capability evaluation and one attempt diagnostic.
+    const result = executeAtomicPageCollapseTransaction(pageNum, source, {
+      chatId: resolveChatId(),
+    });
+    return { ok: result?.ok === true, status: result?.ok === true ? 'forwarded' : String(result?.status || 'collapse-transaction-failed'), source };
+  }
+
+  function syncCollapsedBoundaryControlForPage(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    if (isTitleListActive(num, id)) {
+      return applyCollapsedBoundaryControlState(num, id, { ready: true, reason: 'title-list-active' });
+    }
+    const readiness = getCollapsedNativeBoundaryReadiness(num);
+    if (readiness.ready) {
+      S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
+    }
+    return applyCollapsedBoundaryControlState(num, id, readiness);
+  }
+
+  function recordCollapsedBoundaryDiagnostic(pageNum = 0, readiness = null, source = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const chatId = resolveChatId();
+    const detail = Object.freeze({
+      status: 'collapsed-exact-boundary-unavailable',
+      reason: String(
+        readiness?.structuralReason
+        || readiness?.reason
+        || 'collapsed-exact-boundary-unavailable'
+      ),
+      pageNum: num,
+      chatId,
+      generation: Math.max(0, Number(readiness?.generation || 0) || 0),
+      fingerprint: String(readiness?.fingerprint || ''),
+      source: String(source || ''),
+    });
+    S.collapsedBoundaryDiagnostics.set(collapsedNativeRangeKey(chatId, num), detail);
+    applyCollapsedBoundaryControlState(num, chatId, readiness);
+    try {
+      W.dispatchEvent(new CustomEvent('h2o:turn:updated', {
+        detail: { reason: detail.status, pageNum: num },
+      }));
+    } catch {}
+    return detail;
+  }
+
+  function clearCollapsedBoundaryDiagnostic(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
+    const readiness = isTitleListActive(num, id)
+      ? { ready: true, reason: 'title-list-active' }
+      : getCollapsedNativeBoundaryReadiness(num);
+    applyCollapsedBoundaryControlState(num, id, readiness);
+  }
+
+  function getCollapsedBoundaryDiagnostic(pageNum = 0, chatId = '') {
+    return S.collapsedBoundaryDiagnostics.get(collapsedNativeRangeKey(chatId, pageNum)) || null;
+  }
+
+  function captureCollapsedPageViewportAnchor(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    let anchor = null;
+    try {
+      anchor = document.querySelector(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      );
+    } catch {}
+    if (!anchor?.isConnected) return null;
+    let top = NaN;
+    try { top = Number(anchor.getBoundingClientRect?.().top); } catch {}
+    let scrollRoot = null;
+    let current = anchor.parentElement;
+    while (current && current !== document.body) {
+      try {
+        const style = getComputedStyle(current);
+        if (
+          /auto|scroll/.test(String(style?.overflowY || ''))
+          && Number(current.scrollHeight || 0) > Number(current.clientHeight || 0)
+        ) {
+          scrollRoot = current;
+          break;
+        }
+      } catch {}
+      current = current.parentElement;
+    }
+    if (!scrollRoot) scrollRoot = document.scrollingElement || W;
+    return Number.isFinite(top) ? { anchor, top, scrollRoot } : null;
+  }
+
+  function restoreCollapsedPageViewportAnchor(snapshot = null, tolerancePx = 12) {
+    if (!snapshot?.anchor?.isConnected || !Number.isFinite(snapshot.top)) return false;
+    let current = NaN;
+    try { current = Number(snapshot.anchor.getBoundingClientRect?.().top); } catch {}
+    if (!Number.isFinite(current)) return false;
+    const delta = current - snapshot.top;
+    if (Math.abs(delta) > 0.5) {
+      try {
+        if (snapshot.scrollRoot && snapshot.scrollRoot !== W && 'scrollTop' in snapshot.scrollRoot) {
+          snapshot.scrollRoot.scrollTop += delta;
+        } else {
+          W.scrollBy?.(0, delta);
+        }
+      } catch { return false; }
+    }
+    try { current = Number(snapshot.anchor.getBoundingClientRect?.().top); } catch { return false; }
+    return Number.isFinite(current)
+      && Math.abs(current - snapshot.top) <= Math.max(0, Number(tolerancePx || 0) || 0);
+  }
+
+  // ── Chat Page Divider -> MiniMap, one way only ───────────────────────────
+  // The Chat Page Divider is the origin for cross-surface page state: a Chat
+  // collapse or expansion mirrors onto the same MiniMap page. The MiniMap
+  // owner writes only MiniMap state, so there is no path back into the Chat
+  // page and no recursion. Direct MiniMap actions never reach this function.
+  function propagateChatPageCollapseToMiniMap(pageNum = 0, chatId = '', collapsed = false) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    if (!num || !id) return { ok: false, status: 'page-missing' };
+    try {
+      MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, !!collapsed, id, {
+        source: 'chat-page-divider:atomic-transaction',
+        propagate: true,
+      });
+      return { ok: true, status: 'propagated', pageNum: num, collapsed: !!collapsed };
+    } catch {
+      return { ok: false, status: 'minimap-unavailable', pageNum: num };
+    }
+  }
+
+  function setAtomicTitleListMemory(chatId = '', pageNum = 0, active = false) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const pages = S.titleListPagesByChat.get(id) instanceof Set
+      ? new Set(S.titleListPagesByChat.get(id))
+      : new Set();
+    if (active) pages.add(num);
+    else pages.delete(num);
+    S.titleListPagesByChat.set(id, pages);
+    return pages;
+  }
+
+  function setAtomicCollapsedPageMemory(chatId = '', pageNum = 0, active = false) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const pages = S.collapsedPagesByChat.get(id) instanceof Set
+      ? new Set(S.collapsedPagesByChat.get(id))
+      : new Set();
+    if (active) pages.add(num);
+    else pages.delete(num);
+    S.collapsedPagesByChat.set(id, pages);
+    return pages;
+  }
+
+  function prepareDetachedPageTitleList(plan = null) {
+    const members = Array.isArray(plan?.titleRows) ? plan.titleRows : [];
+    if (
+      !plan
+      || !members.length
+      || members.length !== plan.expectedTitleRowCount
+      || getSyntheticTitleListContainers(plan.pageNum).length
+    ) return { ok: false, status: 'detached-title-list-preconditions-failed' };
+    const at = AT_PUBLIC();
+    if (typeof at?.buildDetachedBar !== 'function') {
+      return { ok: false, status: 'detached-title-list-factory-unavailable' };
+    }
+    let container = null;
+    try {
+      container = document.createElement('div');
+      container.className = 'cgxui-chat-page-title-list-synth';
+      container.setAttribute('data-cgxui', 'chat-page-title-list-synth');
+      container.setAttribute('data-cgxui-owner', 'chtpgs');
+      container.setAttribute('data-page-num', String(plan.pageNum));
+      container.setAttribute('data-h2o-title-stack-owner', '1C1b:atomic-rendered-collapse');
+      container.setAttribute('data-h2o-title-stack-id', titleListStackDomId(plan.pageNum));
+      container.id = titleListStackDomId(plan.pageNum);
+      container.addEventListener('dblclick', onSyntheticTitleRowDblClick, true);
+      container._h2oTitleListDblClickHandler = onSyntheticTitleRowDblClick;
+    } catch {
+      return { ok: false, status: 'detached-title-list-container-failed' };
+    }
+    const rows = [];
+    try {
+      for (const member of members) {
+        const resolved = member.type === 'answer'
+          ? resolveSyntheticRowTitle(member)
+          : { text: '', source: 'no-answer', rank: 3 };
+        const bar = at.buildDetachedBar({
+          answerId: member.type === 'answer'
+            ? member.answerId
+            : `no-answer:${member.questionId}`,
+          turnNo: member.turnNo,
+          title: resolved.source === 'fallback' ? '' : resolved.text,
+          noAnswer: member.type !== 'answer',
+        });
+        if (!bar || bar?.isConnected === true) {
+          return { ok: false, status: 'detached-title-list-row-failed', container };
+        }
+        bar.setAttribute('data-h2o-detached-title-bar', '1');
+        bar.setAttribute('data-h2o-in-title-stack', String(plan.pageNum));
+        bar.setAttribute('data-h2o-stack-key', member.id);
+        bar.setAttribute('data-h2o-stack-type', member.type);
+        bar.setAttribute('data-h2o-stack-turn-no', String(member.turnNo));
+        bar.setAttribute(ATTR_TITLE_LIST_NUM, '1');
+        bar.setAttribute('data-h2o-turn-num', String(member.turnNo));
+        bar.setAttribute('data-h2o-title-row-hydrated', '0');
+        bar.setAttribute('data-h2o-title-row-source', resolved.source);
+        bar.setAttribute('data-h2o-title-row-source-rank', String(resolved.rank));
+        if (resolved.answerId) {
+          bar.setAttribute('data-h2o-title-row-source-id', String(resolved.answerId));
+        }
+        projectSyntheticRowTitle(member, bar);
+        applyStackedTitleBarWash(member, bar);
+        container.appendChild(bar);
+        rows.push(bar);
+      }
+    } catch {
+      return { ok: false, status: 'detached-title-list-build-failed', container };
+    }
+    if (
+      rows.length !== plan.expectedTitleRowCount
+      || Array.from(container.children || []).length !== rows.length
+    ) {
+      return { ok: false, status: 'detached-title-list-incomplete', container };
+    }
+    return { ok: true, status: 'prepared', container, rows };
+  }
+
+  function revalidateAtomicPageCollapsePlan(plan = null) {
+    if (
+      !plan
+      || plan.atomicRenderedBoundaryPlan !== true
+      || !plan.capabilityIdentity
+      || plan.flowRoot?.isConnected !== true
+      || plan.startWrapper?.isConnected !== true
+      || plan.endWrapper?.isConnected !== true
+      || plan.startWrapper?.parentElement !== plan.flowRoot
+      || plan.endWrapper?.parentElement !== plan.flowRoot
+      || !renderedBoundaryWrapperCarriesIdentity(plan.startWrapper, plan.startBoundaryQId)
+      || (plan.isFinalPage === true
+        ? !pageCollapseRangeH2OOwned(plan.endWrapper)
+        : !renderedBoundaryWrapperCarriesIdentity(plan.endWrapper, plan.nextBoundaryQId))
+      || plan.pageDivider?.isConnected !== true
+      || plan.pageDivider?.parentElement !== plan.flowRoot
+      || !Array.isArray(plan.hostWrappers)
+      || !plan.hostWrappers.length
+      || plan.hostWrappers.includes(plan.endWrapper)
+    ) return { ok: false, reason: 'atomic-plan-wrapper-stale' };
+    for (const node of plan.hostWrappers) {
+      const proof = plan.wrapperProofs?.get?.(node) || null;
+      if (
+        node?.isConnected !== true
+        || node?.parentElement !== plan.flowRoot
+        || pageCollapseRangeH2OOwned(node)
+        || !proof?.identity
+        || !pageCollapseRangeNodeCarriesIdentity(node, proof.identity)
+      ) return { ok: false, reason: 'atomic-plan-member-stale' };
+    }
+    const authority = readRenderedBoundaryAuthority(plan.pageNum);
+    const finalPlan = plan.isFinalPage === true;
+    const nextAuthority = finalPlan ? null : readRenderedBoundaryAuthority(plan.pageNum + 1);
+    const startCapability = getRenderedPageBoundaryCapability(plan.pageNum);
+    const nextCapability = finalPlan ? null : getRenderedPageBoundaryCapability(plan.pageNum + 1);
+    if (finalPlan) {
+      const tail = resolveFinalPageTailAuthority(
+        plan.pageNum,
+        plan.pageEndOrder,
+        authority,
+        plan.flowRoot,
+      );
+      if (!tail.ok || tail.endExclusive !== plan.endWrapper) {
+        return { ok: false, reason: 'atomic-plan-scope-stale' };
+      }
+    }
+    if (
+      !authority?.ok
+      || (!finalPlan && !nextAuthority?.ok)
+      || authority.chatId !== plan.chatId
+      || authority.routeKey !== plan.routeKey
+      || authority.generation !== plan.generation
+      || authority.effectiveFingerprint !== plan.effectiveFingerprint
+      || authority.qId !== plan.startBoundaryQId
+      || renderedBoundaryTransitionActive(authority.projection)
+      || renderedBoundaryRecordStreaming(authority.record)
+      || startCapability.supported !== true
+      || startCapability.leaseCurrent !== true
+      || startCapability.graphFingerprint !== plan.graphFingerprint
+      || startCapability.pageUnitOrderCurrent !== true
+      || (!finalPlan && (
+        nextAuthority.chatId !== plan.chatId
+        || nextAuthority.routeKey !== plan.routeKey
+        || nextAuthority.generation !== plan.generation
+        || nextAuthority.effectiveFingerprint !== plan.effectiveFingerprint
+        || nextAuthority.qId !== plan.nextBoundaryQId
+        || renderedBoundaryTransitionActive(nextAuthority.projection)
+        || renderedBoundaryRecordStreaming(nextAuthority.record)
+        || nextCapability.supported !== true
+        || nextCapability.leaseCurrent !== true
+        || nextCapability.graphFingerprint !== plan.graphFingerprint
+        || nextCapability.pageUnitOrderCurrent !== true
+      ))
+    ) return { ok: false, reason: 'atomic-plan-scope-stale' };
+    const model = buildTitleListPresentationPageModel();
+    const page = model?.pages?.find?.((entry) => entry.pageNo === plan.pageNum) || null;
+    const currentRows = Array.isArray(page?.turnRecords) ? page.turnRecords : [];
+    if (
+      model?.coherent !== true
+      || currentRows.length !== plan.expectedTitleRowCount
+      || currentRows.length !== plan.titleRows.length
+      || currentRows.some((member, index) => (
+        member?.id !== plan.titleRows[index]?.id
+        || Number(member?.turnNo || 0) !== Number(plan.titleRows[index]?.turnNo || 0)
+      ))
+    ) return { ok: false, reason: 'atomic-plan-title-rows-stale' };
+    return { ok: true, reason: null };
+  }
+
+  function releaseAtomicPageCollapseState(transaction = null, options = {}) {
+    if (!transaction) return { ok: true, status: 'inactive', mutations: 0 };
+    const num = transaction.pageNum;
+    const id = transaction.chatId;
+    let mutations = 0;
+    for (const node of transaction.stampedWrappers || []) {
+      if (node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) !== String(num)) continue;
+      try { node.removeAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN); mutations += 1; } catch {}
+    }
+    const container = transaction.titleListContainer || null;
+    if (container) {
+      try { restoreAllInlineTurns(container); } catch {}
+      try { releaseTitleStackBars(container); } catch {}
+      if (container?.isConnected || container?.parentElement) {
+        try { container.remove(); mutations += 1; } catch {}
+      }
+    }
+    const key = collapsedNativeRangeKey(id, num);
+    S.atomicPageCollapseTransactions.delete(key);
+    S.nativeRangeActivePages.delete(key);
+    S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+    setAtomicTitleListMemory(id, num, false);
+    setAtomicCollapsedPageMemory(id, num, false);
+    propagateChatPageCollapseToMiniMap(num, id, false);
+    getTitleListStackStats(num, id).activeStackId = '';
+    syncTitleOnlyModeRootAttribute(id);
+    if (options?.clearDiagnostic !== false) {
+      S.collapsedBoundaryDiagnostics.delete(collapsedNativeRangeKey(id, num));
+      clearCollapseUnavailableFeedback(num);
+      if (options?.controlReadiness) {
+        applyCollapsedBoundaryControlState(num, id, options.controlReadiness);
+      }
+    }
+    return { ok: true, status: 'expanded', mutations };
+  }
+
+  function rollbackAtomicPageCollapse(transaction = null, viewportAnchor = null, reason = '') {
+    const released = releaseAtomicPageCollapseState(transaction, { clearDiagnostic: false });
+    if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
+    return {
+      ok: false,
+      status: 'atomic-collapse-rolled-back',
+      reason: String(reason || 'atomic-collapse-failed'),
+      mutations: released.mutations,
+    };
+  }
+
+  function validateCommittedAtomicPageCollapse(transaction = null) {
+    if (!transaction) return { ok: false, reason: 'transaction-missing' };
+    const planCheck = revalidateAtomicPageCollapsePlan(transaction);
+    if (!planCheck.ok) return planCheck;
+    if (
+      transaction.hostWrappers.some((node) => (
+        node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) !== String(transaction.pageNum)
+      ))
+      || transaction.endWrapper?.hasAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN)
+      || transaction.titleListContainer?.isConnected !== true
+      || transaction.titleListContainer?.parentElement !== transaction.flowRoot
+      || getSyntheticTitleListContainers(transaction.pageNum).filter(
+        (node) => node === transaction.titleListContainer
+      ).length !== 1
+    ) return { ok: false, reason: 'transaction-commit-incomplete' };
+    return { ok: true, reason: null };
+  }
+
+  function collapsePageWithRenderedBoundaries(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const key = collapsedNativeRangeKey(id, num);
+    if (S.atomicPageCollapseTransactions.has(key)) {
+      return { ok: true, status: 'already-collapsed', pageNum: num, chatId: id };
+    }
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return { ok: false, status: 'transaction-busy', pageNum: num, chatId: id };
+    }
+    S.atomicPageCollapseGuards.add(key);
+    const metrics = options?.metrics || null;
+    let viewportAnchor = null;
+    let transaction = null;
+    try {
+      const evaluation = evaluatePageCollapseCapability(num, { includePlan: true });
+      if (metrics) metrics.capabilityEvaluations += 1;
+      const capability = evaluation.capability;
+      const plan = evaluation.plan;
+      if (!capability?.activationReady || !plan) {
+        return {
+          ok: false,
+          status: 'collapsed-exact-boundary-unavailable',
+          reason: capability?.reason || 'layout-incomplete',
+          capability,
+        };
+      }
+      if (metrics) {
+        metrics.rangePlansBuilt += 1;
+        metrics.wrappersPlanned = plan.hostWrappers.length;
+      }
+      plan.atomicRenderedBoundaryPlan = true;
+      const prepared = prepareDetachedPageTitleList(plan);
+      if (!prepared.ok) {
+        return { ok: false, status: prepared.status, capability };
+      }
+      if (metrics) {
+        metrics.detachedListsPrepared += 1;
+        metrics.titleRowsPrepared = prepared.rows.length;
+      }
+      viewportAnchor = captureCollapsedPageViewportAnchor(num);
+      if (!viewportAnchor) {
+        return { ok: false, status: 'viewport-anchor-unavailable', capability };
+      }
+      const finalCheck = revalidateAtomicPageCollapsePlan(plan);
+      if (!finalCheck.ok) {
+        return { ok: false, status: finalCheck.reason, capability };
+      }
+      transaction = {
+        atomicRenderedBoundaryPlan: true,
+        version: 1,
+        pageNum: plan.pageNum,
+        pageStartOrder: plan.pageStartOrder,
+        pageEndOrder: plan.pageEndOrder,
+        chatId: plan.chatId,
+        routeKey: plan.routeKey,
+        generation: plan.generation,
+        effectiveFingerprint: plan.effectiveFingerprint,
+        graphFingerprint: plan.graphFingerprint,
+        flowRoot: plan.flowRoot,
+        startBoundaryQId: plan.startBoundaryQId,
+        nextBoundaryQId: plan.nextBoundaryQId,
+        isFinalPage: plan.isFinalPage === true,
+        pageEndOrder: plan.pageEndOrder,
+        startWrapper: plan.startWrapper,
+        endWrapper: plan.endWrapper,
+        hostWrappers: plan.hostWrappers.slice(),
+        wrapperProofs: new Map(plan.wrapperProofs),
+        pageDivider: plan.pageDivider,
+        titleRows: plan.titleRows.slice(),
+        expectedTitleRowCount: plan.expectedTitleRowCount,
+        capabilityIdentity: plan.capabilityIdentity,
+        titleListContainer: prepared.container,
+        titleRowsPrepared: prepared.rows,
+        stampedWrappers: [],
+        source: String(options?.source || 'explicit-collapse'),
+      };
+      try {
+        plan.flowRoot.insertBefore(prepared.container, plan.pageDivider.nextSibling);
+        if (metrics) {
+          metrics.firstWriteReached = true;
+          metrics.syntheticListsInserted += 1;
+        }
+        const stamped = applyCollapsedNativeRange(plan);
+        transaction.stampedWrappers = stamped.stamped || [];
+        if (metrics) metrics.wrappersStamped = transaction.stampedWrappers.length;
+        if (!stamped.ok || stamped.hidden !== plan.hostWrappers.length) {
+          return rollbackAtomicPageCollapse(transaction, viewportAnchor, stamped.status);
+        }
+        S.atomicPageCollapseTransactions.set(key, transaction);
+        S.nativeRangeActivePages.add(key);
+        S.titleListStacksByKey.set(titleListStackRegistryKey(num, id), prepared.container);
+        setAtomicTitleListMemory(id, num, true);
+        setAtomicCollapsedPageMemory(id, num, true);
+        getTitleListStackStats(num, id).activeStackId = prepared.container.id;
+        syncTitleOnlyModeRootAttribute(id);
+        clearCollapsedBoundaryDiagnostic(num, id);
+        clearCollapseUnavailableFeedback(num);
+        propagateChatPageCollapseToMiniMap(num, id, true);
+      } catch {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, 'atomic-collapse-write-failed');
+      }
+      if (!restoreCollapsedPageViewportAnchor(viewportAnchor, 4)) {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, 'viewport-restore-failed');
+      }
+      const committed = validateCommittedAtomicPageCollapse(transaction);
+      if (!committed.ok) {
+        return rollbackAtomicPageCollapse(transaction, viewportAnchor, committed.reason);
+      }
+      return {
+        ok: true,
+        status: 'collapsed',
+        pageNum: num,
+        chatId: id,
+        hidden: transaction.hostWrappers.length,
+        rows: transaction.titleRowsPrepared.length,
+        generation: transaction.generation,
+        effectiveFingerprint: transaction.effectiveFingerprint,
+        graphFingerprint: transaction.graphFingerprint,
+      };
+    } finally {
+      S.atomicPageCollapseGuards.delete(key);
+    }
+  }
+
+  // Expanded-control readiness comes from the rendered-boundary capability, not
+  // from whatever triggered the expansion. The capability is a pure read, so
+  // this cannot re-enter the transaction owner or start a reconcile loop.
+  function applyExpandedCollapseControlState(pageNum = 0, chatId = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    let capability = null;
+    try { capability = getPageCollapseCapability(num); } catch { capability = null; }
+    const ready = capability?.activationReady === true;
+    return applyCollapsedBoundaryControlState(num, id, {
+      ready,
+      reason: ready
+        ? null
+        : String(
+          capability?.activationBlockReason
+          || capability?.reason
+          || COLLAPSE_UNAVAILABLE_STATUS
+        ),
+      productReason: ready ? 'ready' : String(capability?.productReason || 'page-loading'),
+    });
+  }
+
+  function expandPageWithRenderedBoundaries(pageNum = 0, options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const key = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+    if (!transaction) return { ok: true, status: 'inactive', pageNum: num, mutations: 0 };
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return { ok: false, status: 'transaction-busy', pageNum: num, chatId: id };
+    }
+    S.atomicPageCollapseGuards.add(key);
+    try {
+      const viewportAnchor = captureCollapsedPageViewportAnchor(num);
+      const explicitExpansion = /^chat-page-divider:/.test(String(options?.source || ''));
+      const released = releaseAtomicPageCollapseState(transaction, {
+        controlReadiness: explicitExpansion
+          ? { ready: true, reason: null, productReason: 'ready' }
+          : null,
+      });
+      if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
+      // A lifecycle expansion is not itself evidence that the exact boundaries
+      // are gone. Derive the expanded control state from the authoritative
+      // capability once the release has settled: a page that is still provable
+      // renders ready, and a page whose authority genuinely failed keeps its
+      // own reason instead of a blanket boundary-unavailable claim.
+      if (!explicitExpansion) {
+        applyExpandedCollapseControlState(num, id);
+      }
+      const residualStamps = transaction.hostWrappers.filter((node) => (
+        node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(num)
+      )).length;
+      const residualLists = getSyntheticTitleListContainers(num).filter((node) => node?.isConnected).length;
+      return {
+        ok: residualStamps === 0 && residualLists === 0,
+        status: residualStamps || residualLists ? 'expansion-incomplete' : 'expanded',
+        pageNum: num,
+        chatId: id,
+        mutations: released.mutations,
+        residualStamps,
+        residualLists,
+      };
+    } finally {
+      S.atomicPageCollapseGuards.delete(key);
+    }
+  }
+
+  function reconcileAtomicPageCollapseTransactions(reason = 'presentation-updated') {
+    const results = [];
+    for (const transaction of Array.from(S.atomicPageCollapseTransactions.values())) {
+      const current = validateCommittedAtomicPageCollapse(transaction);
+      if (current.ok) {
+        results.push({ ok: true, status: 'current', pageNum: transaction.pageNum });
+        continue;
+      }
+      results.push(expandPageWithRenderedBoundaries(transaction.pageNum, {
+        chatId: transaction.chatId,
+        source: `${reason}:${current.reason}`,
+      }));
+    }
+    return results;
+  }
+
+  function expandAllAtomicPageCollapses(reason = 'scope-change') {
+    const results = [];
+    for (const transaction of Array.from(S.atomicPageCollapseTransactions.values())) {
+      results.push(expandPageWithRenderedBoundaries(transaction.pageNum, {
+        chatId: transaction.chatId,
+        source: reason,
+      }));
+    }
+    return results;
+  }
+
+  // ── Last-attempt transaction diagnostic ───────────────────────────────────
+  // Memory-only, most-recent attempt only, scalars only. It exists so a live
+  // failure names the exact stage it stopped at without another broad DOM
+  // probe. No DOM references, no identities, no titles, no stack traces.
+  function frozenAtomicPageCollapseDiagnostic(raw = {}) {
+    return Object.freeze({
+      version: 1,
+      available: true,
+      attemptId: Math.max(0, Number(raw.attemptId || 0) || 0),
+      pageNum: Math.max(0, Number(raw.pageNum || 0) || 0),
+      activationSource: String(raw.activationSource || ''),
+      startedAt: Math.max(0, Number(raw.startedAt || 0) || 0),
+      finishedAt: Math.max(0, Number(raw.finishedAt || 0) || 0),
+      result: String(raw.result || ''),
+      internalReason: raw.internalReason == null ? null : String(raw.internalReason),
+      productReason: raw.productReason == null ? null : String(raw.productReason),
+      capabilityEvaluations: Math.max(0, Number(raw.capabilityEvaluations || 0) || 0),
+      rangePlansBuilt: Math.max(0, Number(raw.rangePlansBuilt || 0) || 0),
+      detachedListsPrepared: Math.max(0, Number(raw.detachedListsPrepared || 0) || 0),
+      firstWriteReached: raw.firstWriteReached === true,
+      wrappersPlanned: Math.max(0, Number(raw.wrappersPlanned || 0) || 0),
+      wrappersStamped: Math.max(0, Number(raw.wrappersStamped || 0) || 0),
+      titleRowsPrepared: Math.max(0, Number(raw.titleRowsPrepared || 0) || 0),
+      syntheticListsInserted: Math.max(0, Number(raw.syntheticListsInserted || 0) || 0),
+      rollbackPerformed: raw.rollbackPerformed === true,
+      generation: Math.max(0, Number(raw.generation || 0) || 0),
+      effectiveFingerprint: String(raw.effectiveFingerprint || ''),
+      graphFingerprint: String(raw.graphFingerprint || ''),
+    });
+  }
+
+  function recordAtomicPageCollapseAttempt(input = {}) {
+    S.atomicPageCollapseAttemptSeq = Math.max(0, Number(S.atomicPageCollapseAttemptSeq || 0) || 0) + 1;
+    const metrics = input.metrics || {};
+    const diagnostic = frozenAtomicPageCollapseDiagnostic({
+      ...metrics,
+      attemptId: S.atomicPageCollapseAttemptSeq,
+      pageNum: input.pageNum,
+      activationSource: input.activationSource,
+      startedAt: input.startedAt,
+      finishedAt: Date.now(),
+      result: input.result,
+      internalReason: input.internalReason,
+      productReason: input.productReason,
+      generation: input.generation,
+      effectiveFingerprint: input.effectiveFingerprint,
+      graphFingerprint: input.graphFingerprint,
+    });
+    S.atomicPageCollapseLastAttempt = diagnostic;
+    return diagnostic;
+  }
+
+  function getAtomicPageCollapseTransactionDiagnostic() {
+    const last = S.atomicPageCollapseLastAttempt;
+    return last || Object.freeze({ version: 1, available: false });
+  }
+
+  // Map a transaction status to the stage it stopped at. The stage — not a
+  // stale legacy readiness reason — is what drives the product message.
+  function atomicPageCollapseFailureStage(status = '') {
+    const value = String(status || '');
+    if (value === 'transaction-busy') return 'reentrant-blocked';
+    if (value === 'collapsed-exact-boundary-unavailable') return 'blocked-before-plan';
+    if (value === 'atomic-collapse-rolled-back') return 'rolled-back';
+    if (value === 'viewport-anchor-unavailable') return 'preparation-failed';
+    if (value.startsWith('detached-title-list-')) return 'preparation-failed';
+    if (value.startsWith('atomic-plan-')) return 'revalidation-failed';
+    if (value === 'transaction-commit-incomplete') return 'commit-failed';
+    return 'commit-failed';
+  }
+
+  // ── Single collapse-activation owner ──────────────────────────────────────
+  // Pointer and keyboard activation converge here, and nowhere else. The
+  // legacy title-list mode is never the user activation owner: it may only
+  // maintain an already-committed projection. No legacy compatibility field
+  // (flowRoot, nativeStart, nextPageNativeStart, nativeSlotSequence, ordinals,
+  // identities) is read on this path — those remain null placeholders.
+  function executeAtomicPageCollapseTransaction(pageNum = 0, activationSource = '', options = {}) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(options?.chatId || resolveChatId()).trim();
+    const source = String(activationSource || '').trim() || 'chat-page-divider:circle';
+    const key = collapsedNativeRangeKey(id, num);
+    const startedAt = Date.now();
+    const metrics = {
+      capabilityEvaluations: 0,
+      rangePlansBuilt: 0,
+      detachedListsPrepared: 0,
+      firstWriteReached: false,
+      wrappersPlanned: 0,
+      wrappersStamped: 0,
+      titleRowsPrepared: 0,
+      syntheticListsInserted: 0,
+      rollbackPerformed: false,
+    };
+    const record = (result, extra = {}) => recordAtomicPageCollapseAttempt({
+      pageNum: num,
+      activationSource: source,
+      startedAt,
+      metrics,
+      result,
+      ...extra,
+    });
+
+    // 1) One reentrancy-guard check.
+    if (S.atomicPageCollapseGuards.has(key)) {
+      return {
+        ok: false,
+        status: 'transaction-busy',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('reentrant-blocked', {
+          internalReason: 'transaction-busy',
+          productReason: 'page-updating',
+        }),
+      };
+    }
+
+    // An explicit desired state lets the legacy entry points route through
+    // this owner without inverting an already-correct state; the divider
+    // controls pass no desired state and toggle against the atomic registry.
+    const desired = String(options?.desired || '').trim();
+    const alreadyCollapsed = S.atomicPageCollapseTransactions.has(key);
+    if (desired === 'collapsed' && alreadyCollapsed) {
+      return {
+        ok: true,
+        status: 'already-collapsed',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('committed', { internalReason: null, productReason: null }),
+      };
+    }
+    if (desired === 'expanded' && !alreadyCollapsed) {
+      return {
+        ok: true,
+        status: 'already-expanded',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('expanded', { internalReason: null, productReason: null }),
+      };
+    }
+
+    // Already collapsed → atomic expansion through the same owner.
+    if (alreadyCollapsed) {
+      const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+      const expanded = expandPageWithRenderedBoundaries(num, { chatId: id, source });
+      if (expanded?.ok === true) clearCollapseUnavailableFeedback(num);
+      return {
+        ok: expanded?.ok === true,
+        status: expanded?.status || 'expanded',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record(expanded?.ok === true ? 'expanded' : 'commit-failed', {
+          internalReason: expanded?.ok === true ? null : String(expanded?.status || 'expansion-incomplete'),
+          productReason: expanded?.ok === true ? null : 'transient-failure',
+          generation: transaction?.generation,
+          effectiveFingerprint: transaction?.effectiveFingerprint,
+          graphFingerprint: transaction?.graphFingerprint,
+        }),
+      };
+    }
+
+    // 2-7) capability → plan → detached preparation → viewport anchor →
+    // final revalidation → atomic commit, all owned by the transaction.
+    const collapsed = collapsePageWithRenderedBoundaries(num, { chatId: id, source, metrics });
+    const capability = collapsed?.capability || null;
+    if (collapsed?.ok === true) {
+      clearCollapseUnavailableFeedback(num);
+      return {
+        ok: true,
+        status: 'collapsed',
+        pageNum: num,
+        chatId: id,
+        diagnostic: record('committed', {
+          internalReason: null,
+          productReason: null,
+          generation: collapsed?.generation,
+          effectiveFingerprint: collapsed?.effectiveFingerprint,
+          graphFingerprint: collapsed?.graphFingerprint,
+        }),
+      };
+    }
+
+    const status = String(collapsed?.status || 'collapse-transaction-failed');
+    const stage = atomicPageCollapseFailureStage(status);
+    if (stage === 'rolled-back') metrics.rollbackPerformed = true;
+    const internalReason = String(collapsed?.reason || status);
+    // A capability that was ready must never be reported as a boundary or
+    // layout problem: the transaction, not the layout, is what failed.
+    const capabilityWasReady = capability?.activationReady === true;
+    const productReason = (capabilityWasReady || stage !== 'blocked-before-plan')
+      ? 'transient-failure'
+      : String(capability?.productReason || 'layout-incomplete');
+    const diagnostic = record(stage, {
+      internalReason,
+      productReason,
+      generation: capability?.generation,
+      effectiveFingerprint: capability?.effectiveFingerprint,
+      graphFingerprint: capability?.graphFingerprint,
+    });
+    const readiness = frozenCollapsedBoundaryResult({
+      pageNum: num,
+      ready: false,
+      reason: internalReason,
+      productReason,
+      structuralReason: productReason === 'layout-incomplete' ? internalReason : '',
+      generation: capability?.generation,
+      fingerprint: capability?.effectiveFingerprint,
+      prerequisitesReady: capability?.prerequisitesReady === true,
+      activationReady: capabilityWasReady,
+    });
+    if (explicitCollapseFeedbackSource(source)) {
+      showCollapseUnavailableFeedback(num, id, readiness);
+    }
+    recordCollapsedBoundaryDiagnostic(num, readiness, source);
+    return {
+      ok: false,
+      status,
+      reason: internalReason,
+      pageNum: num,
+      chatId: id,
+      diagnostic,
+    };
+  }
+
+  function failClosedCollapsedTitleList(pageNum = 0, chatId = '', readiness = null, source = '') {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const key = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(key) || null;
+    if (transaction) {
+      expandPageWithRenderedBoundaries(num, {
+        chatId: id,
+        source: `fail-closed:${String(source || '')}`,
+      });
+    } else {
+      releaseCollapsedNativeRange(num);
+      S.nativeRangeActivePages.delete(key);
+      localForgetTitleListPage(id, num);
+      try { syncSyntheticTitleList(num, id, false, { reason: 'collapsed-exact-boundary-unavailable' }); } catch {}
+    }
+    const diagnostic = recordCollapsedBoundaryDiagnostic(num, readiness, source);
+    if (explicitCollapseFeedbackSource(source)) {
+      showCollapseUnavailableFeedback(num, id, readiness);
+    }
+    return {
+      ok: false,
+      status: 'collapsed-exact-boundary-unavailable',
+      reason: String(readiness?.reason || diagnostic.reason),
+      pageNum: num,
+      chatId: id,
+      enabled: false,
+      diagnostic,
+    };
+  }
+
+  function purePresentationPageMemberDetails(pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const authority = readTitleListPresentationAuthority();
+    return authority.members.filter((member) => Math.ceil(Number(member?.turnNo || 0) / 25) === num);
+  }
+
+  function titleListPageHydrationIds(pages = []) {
+    return Array.from(new Set((Array.isArray(pages) ? pages : []).flatMap((page) => (
+      (Array.isArray(page?.turnRecords) ? page.turnRecords : []).flatMap((member) => [
+        member?.questionId,
+        member?.answerId,
+        member?.turnId,
+        ...(Array.isArray(member?.aliasIds) ? member.aliasIds : []),
+      ])
+    )).map((value) => String(value || '').trim()).filter(Boolean)));
+  }
+
+  function recoverMissingTitleListPageMembers(normalPages = [], model = null, mountGuard = null) {
+    const pageModel = model?.pages ? model : buildTitleListPresentationPageModel();
+    const identity = JSON.stringify([
+      String(pageModel?.source || ''),
+      Math.max(0, Number(pageModel?.count || 0) || 0),
+      Math.max(0, Number(pageModel?.pageCount || 0) || 0),
+      (Array.isArray(normalPages) ? normalPages : []).map((page) => Number(page?.pageNo || 0)),
+      (Array.isArray(normalPages) ? normalPages : []).flatMap((page) => (
+        (Array.isArray(page?.turnRecords) ? page.turnRecords : []).map((member) => (
+          String(member?.questionId || member?.answerId || member?.turnId || '').trim()
+        ))
+      )),
+    ]);
+    if (S.titleListHydrationRecoveryIdentity !== identity) {
+      S.titleListHydrationRecoveryIdentity = identity;
+      S.titleListHydrationRecoveryIds.clear();
+    }
+    const um = UM_ADAPTER();
+    const canRecover = String(mountGuard?.status || '') === 'guarded-unchanged';
+    let represented = 0;
+    let missing = 0;
+    let requested = 0;
+    const missingOrders = [];
+    for (const page of Array.isArray(normalPages) ? normalPages : []) {
+      for (const member of Array.isArray(page?.turnRecords) ? page.turnRecords : []) {
+        const key = String(member?.questionId || member?.answerId || member?.turnId || '').trim();
+        if (titleListMemberMateriallyPresent(member)) {
+          represented += 1;
+          if (key) S.titleListHydrationRecoveryIds.delete(key);
+          continue;
+        }
+        missing += 1;
+        missingOrders.push(Math.max(0, Number(member?.turnNo || 0) || 0));
+        if (!canRecover || !key || S.titleListHydrationRecoveryIds.has(key)) continue;
+        let accepted = false;
+        try { accepted = um?.requestMountPairByUid?.(key, 'title-list-adjacent-page-recovery') === true; } catch {}
+        if (!accepted) {
+          try { accepted = um?.requestMountByUid?.(key, 'title-list-adjacent-page-recovery') === true; } catch {}
+        }
+        if (accepted) {
+          S.titleListHydrationRecoveryIds.add(key);
+          requested += 1;
+        }
+      }
+    }
+    return {
+      represented,
+      missing,
+      missingOrders,
+      requested,
+      pending: S.titleListHydrationRecoveryIds.size,
+    };
+  }
+
+  // Keep only the immediately adjacent, uncollapsed page(s) materialized.
+  // Pagination temporarily restores its already-captured full flow; Unmount
+  // then guards just those adjacent page identities. Farther pages remain
+  // eligible for the existing optimizer, so title-list mode never becomes a
+  // second virtualization system or an indefinite full-chat mount request.
+  function reconcileTitleListPageHydration(chatId = '', opts = {}) {
+    const id = String(chatId || resolveChatId()).trim();
+    const model = buildTitleListPresentationPageModel();
+    const activePages = Array.from(readTitleListPages(id))
+      .map((value) => Math.max(1, Number(value || 0) || 0))
+      .filter((pageNo) => pageNo <= model.pageCount)
+      .sort((a, b) => a - b);
+    const stampCleanup = typeof reconcileTitleListFlowHiddenArtifacts === 'function'
+      ? reconcileTitleListFlowHiddenArtifacts(model, new Set(activePages))
+      : { scanned: 0, kept: 0, released: 0 };
+    const pg = PG_ADAPTER();
+    const um = UM_ADAPTER();
+    if (!activePages.length || !model.coherent) {
+      let pagination = null;
+      let mountGuard = null;
+      try { mountGuard = um?.setPresentationMountGuard?.(TITLE_LIST_PAGE_HYDRATION_OWNER, []); } catch {}
+      try { pagination = pg?.setPresentationFullFlowHold?.(TITLE_LIST_PAGE_HYDRATION_OWNER, false); } catch {}
+      const timestamps = syncTitleListNativeTimestampVisibility(model, new Set());
+      S.titleListPageHydration = {
+        active: false,
+        source: model.source,
+        count: model.count,
+        pageCount: model.pageCount,
+        normalPages: [],
+        guardedIds: 0,
+        paginationHeld: false,
+      };
+      return {
+        ok: model.coherent || model.count === 0,
+        status: activePages.length ? 'authority-incomplete' : 'inactive',
+        model,
+        activePages,
+        normalPages: [],
+        pagination,
+        mountGuard,
+        stampCleanup,
+        timestamps,
+      };
+    }
+
+    // The adjacent normal page is part of the same visible title-list
+    // presentation. It cannot remain in Pagination's detached window or
+    // Unmount's background fragment cache while its divider says it is open.
+    let pagination = null;
+    try { pagination = pg?.setPresentationFullFlowHold?.(TITLE_LIST_PAGE_HYDRATION_OWNER, true); } catch {}
+    const activeSet = new Set(activePages);
+    const normalPages = model.pages.filter((page) => (
+      !activeSet.has(page.pageNo)
+      && activePages.some((activePage) => Math.abs(page.pageNo - activePage) === 1)
+    ));
+    const guardIds = titleListPageHydrationIds(normalPages);
+    let mountGuard = null;
+    try { mountGuard = um?.setPresentationMountGuard?.(TITLE_LIST_PAGE_HYDRATION_OWNER, guardIds); } catch {}
+    const materialization = typeof recoverMissingTitleListPageMembers === 'function'
+      ? recoverMissingTitleListPageMembers(normalPages, model, mountGuard)
+      : { represented: 0, missing: 0, missingOrders: [], requested: 0, pending: 0 };
+
+    // The pagination hold restores master turn wrappers synchronously and the
+    // mount guard restores any H2O-soft-unmounted bodies synchronously. Divider
+    // rendering can therefore use exact page-start identity in this same
+    // stable reconstruction pass.
+    try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
+    const timestamps = syncTitleListNativeTimestampVisibility(model, activeSet);
+    S.titleListPageHydration = {
+      active: true,
+      source: model.source,
+      count: model.count,
+      pageCount: model.pageCount,
+      normalPages: normalPages.map((page) => page.pageNo),
+      guardedIds: guardIds.length,
+      paginationHeld: pagination?.active === true,
+    };
+    return {
+      ok: pagination?.ok !== false && mountGuard?.ok !== false,
+      status: 'materialized',
+      reason: String(opts?.reason || 'title-list'),
+      model,
+      activePages,
+      normalPages: normalPages.map((page) => page.pageNo),
+      guardedIds: guardIds.length,
+      pagination,
+      mountGuard,
+      materialization,
+      stampCleanup,
+      timestamps,
+    };
+  }
+
   function isSyntheticTitlePlaceholder(value = '') {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return true;
@@ -2470,9 +6909,7 @@
       member.id,
       ...(Array.isArray(member.aliasIds) ? member.aliasIds : []),
     ].map((value) => String(value || '').trim()).filter(Boolean));
-    let rec = null;
-    try { rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo) || null; } catch {}
-    if (!rec) rec = turnRecordForTitleListIdentity(member.answerId || member.id, 0);
+    let rec = turnRecordForTitleListIdentity(member.answerId || member.questionId || member.id, member.turnNo);
     const recTurnNo = Math.max(0, Number(rec?.turnNo || rec?.idx || 0) || 0);
     if (recTurnNo && member.turnNo && recTurnNo !== member.turnNo) rec = null;
     for (const value of [rec?.primaryAId, rec?.answerId, ...(Array.isArray(rec?.answerIds) ? rec.answerIds : []), ...(Array.isArray(rec?._aliasIds) ? rec._aliasIds : [])]) {
@@ -2540,8 +6977,7 @@
       } catch {}
     }
     try {
-      const rec = TURN_RUNTIME()?.getTurnRecordByTurnNo?.(member.turnNo)
-        || turnRecordForTitleListIdentity(member.answerId || member.id, 0);
+      const rec = turnRecordForTitleListIdentity(member.answerId || member.questionId || member.id, member.turnNo);
       const metaTitle = String(rec?.title || rec?.answerTitle || '').trim();
       if (!isSyntheticTitlePlaceholder(metaTitle)) return { text: metaTitle, source: 'metadata', rank: 1, answerId: member.answerId };
     } catch {}
@@ -2551,6 +6987,10 @@
 
   function setTitleListMemberFlowHidden(member = null, pageNum = 0, hidden = false) {
     if (!member) return false;
+    if (
+      hidden
+      && S.nativeRangeActivePages.has(collapsedNativeRangeKey(resolveChatId(), pageNum))
+    ) return false;
     // Hide/release every shell for this canonical turn, not only the first
     // section lookup. ChatGPT can briefly retain an older shell while a new
     // hydrated shell is mounted; either one becoming visible is a flow leak.
@@ -3384,11 +7824,6 @@
       const sectionRecord = turnRecordForTitleListIdentity(sectionId);
       if (sectionRecord && Number(sectionRecord.turnNo || 0) === Number(member.turnNo || 0)) out.add(section);
     }
-    if (wantedRole === 'user' && member.turnNo > 0) {
-      const sorted = sections.slice().sort((a, b) => turnNumberOfSection(a) - turnNumberOfSection(b));
-      const fallback = sorted[member.turnNo - 1] || null;
-      if (fallback) out.add(fallback);
-    }
     return Array.from(out).filter((section) => section?.isConnected);
   }
 
@@ -3408,10 +7843,160 @@
     return Array.from(out).filter((anchor) => anchor?.isConnected);
   }
 
-  function setTitleListFlowAnchorHidden(anchor = null, pageNum = 0, hidden = false) {
+  function clearTitleListFlowHiddenNode(anchor = null) {
+    if (!anchor?.style) return false;
+    const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
+    const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
+    try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
+    try { anchor.style.removeProperty('display'); } catch {}
+    try { anchor.style.removeProperty('--h2o-title-inline-display'); } catch {}
+    return !!(hadStamp || hadInlineHide);
+  }
+
+  function buildTitleListFlowOwnershipSnapshot(modelInput = null) {
+    const model = modelInput?.pages ? modelInput : buildTitleListPresentationPageModel();
+    const identityToPage = new Map();
+    const orderToPage = new Map();
+    for (const page of Array.isArray(model?.pages) ? model.pages : []) {
+      const pageNo = Math.max(1, Number(page?.pageNo || 0) || 0);
+      for (const member of Array.isArray(page?.turnRecords) ? page.turnRecords : []) {
+        const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+        if (order) orderToPage.set(order, pageNo);
+        for (const value of [
+          member?.id,
+          member?.questionId,
+          member?.answerId,
+          member?.turnId,
+          ...(Array.isArray(member?.aliasIds) ? member.aliasIds : []),
+        ]) {
+          const identity = String(value || '').trim();
+          if (identity) identityToPage.set(identity, pageNo);
+        }
+      }
+    }
+    return { model, identityToPage, orderToPage };
+  }
+
+  function classifyTitleListFlowOwnership(node = null, snapshotInput = null) {
+    if (!node) return { kind: 'neutral', pageNo: 0, pages: [], sections: 0, unknown: 0 };
+    const snapshot = snapshotInput?.identityToPage
+      ? snapshotInput
+      : buildTitleListFlowOwnershipSnapshot();
+    if (node.getAttribute?.('data-h2o-native-ts') === '1') {
+      const order = Math.max(0, Number(titleListAdjacentTurnOrders(node)[0] || 0) || 0);
+      const pageNo = Math.max(0, Number(snapshot.orderToPage.get(order) || 0) || 0);
+      return pageNo
+        ? { kind: 'owned', pageNo, pages: [pageNo], sections: 0, unknown: 0, timestamp: true }
+        : { kind: 'foreign', pageNo: 0, pages: [], sections: 0, unknown: 1, timestamp: true };
+    }
+    const sections = [];
+    try {
+      if (node.matches?.(TURN_HOST_SEL)) sections.push(node);
+      for (const section of Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || [])) {
+        if (!sections.includes(section)) sections.push(section);
+      }
+    } catch {}
+    if (!sections.length) return { kind: 'neutral', pageNo: 0, pages: [], sections: 0, unknown: 0 };
+    const pages = new Set();
+    let unknown = 0;
+    for (const section of sections) {
+      const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+      const pageNo = identity ? Math.max(0, Number(snapshot.identityToPage.get(identity) || 0) || 0) : 0;
+      if (pageNo) pages.add(pageNo);
+      else unknown += 1;
+    }
+    const pageList = Array.from(pages).sort((a, b) => a - b);
+    if (pageList.length > 1 || (pageList.length && unknown)) {
+      return { kind: 'mixed', pageNo: 0, pages: pageList, sections: sections.length, unknown };
+    }
+    if (pageList.length === 1) {
+      return { kind: 'owned', pageNo: pageList[0], pages: pageList, sections: sections.length, unknown: 0 };
+    }
+    return { kind: 'foreign', pageNo: 0, pages: [], sections: sections.length, unknown };
+  }
+
+  function reconcileTitleListFlowHiddenArtifacts(modelInput = null, activePagesInput = null) {
+    const snapshot = buildTitleListFlowOwnershipSnapshot(modelInput);
+    const activePages = activePagesInput instanceof Set
+      ? activePagesInput
+      : new Set(Array.from(readTitleListPages(resolveChatId())));
+    let scanned = 0;
+    let kept = 0;
+    let released = 0;
+    let mixedReleased = 0;
+    let foreignReleased = 0;
+    let wrongOwnerReleased = 0;
+    let nodes = [];
+    try { nodes = Array.from(document.querySelectorAll(`[${ATTR_TITLE_LIST_FLOW_HIDDEN}]`)); } catch {}
+    for (const node of nodes) {
+      scanned += 1;
+      const markerPage = Math.max(0, Number(node.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+      const ownership = classifyTitleListFlowOwnership(node, snapshot);
+      const valid = markerPage > 0
+        && activePages.has(markerPage)
+        && ownership.kind === 'owned'
+        && ownership.pageNo === markerPage;
+      if (valid) {
+        kept += 1;
+        continue;
+      }
+      if (ownership.kind === 'mixed') mixedReleased += 1;
+      else if (ownership.kind === 'foreign' || ownership.kind === 'neutral') foreignReleased += 1;
+      else if (ownership.pageNo !== markerPage) wrongOwnerReleased += 1;
+      if (clearTitleListFlowHiddenNode(node)) released += 1;
+    }
+    return {
+      scanned,
+      kept,
+      released,
+      mixedReleased,
+      foreignReleased,
+      wrongOwnerReleased,
+      activePages: Array.from(activePages).sort((a, b) => a - b),
+      snapshot,
+    };
+  }
+
+  function setTitleListFlowAnchorHidden(anchor = null, pageNum = 0, hidden = false, opts = {}) {
     if (!anchor?.style) return false;
     const num = Math.max(1, Number(pageNum || 0) || 0);
+    let existingOwner = Math.max(0, Number(anchor.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+    const clearOwnedStamp = () => {
+      if (typeof clearTitleListFlowHiddenNode === 'function') return clearTitleListFlowHiddenNode(anchor);
+      const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
+      const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
+      try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
+      try { anchor.style.removeProperty('display'); } catch {}
+      return !!(hadStamp || hadInlineHide);
+    };
     if (hidden) {
+      if (
+        typeof buildTitleListFlowOwnershipSnapshot === 'function'
+        && typeof classifyTitleListFlowOwnership === 'function'
+      ) {
+        const snapshot = opts?.ownershipSnapshot?.identityToPage
+          ? opts.ownershipSnapshot
+          : buildTitleListFlowOwnershipSnapshot();
+        const ownership = classifyTitleListFlowOwnership(anchor, snapshot);
+        const stampAllowed = ownership.kind === 'owned'
+          ? ownership.pageNo === num
+          : ownership.kind === 'neutral' && opts?.allowNeutral === true;
+        if (!stampAllowed) {
+          let existingOwnerStillValid = false;
+          if (existingOwner && ownership.kind === 'owned' && ownership.pageNo === existingOwner) {
+            try {
+              existingOwnerStillValid = typeof readTitleListPages !== 'function'
+                || readTitleListPages(resolveChatId()).has(existingOwner);
+            } catch {}
+          }
+          if (existingOwner && !existingOwnerStillValid) clearOwnedStamp();
+          return false;
+        }
+      }
+      if (existingOwner && existingOwner !== num) {
+        clearOwnedStamp();
+        existingOwner = 0;
+      }
       // A wrapper still inline-adopted in the stack must return to canonical
       // flow before the page-level hide projection is applied.
       if (anchor.hasAttribute?.(ATTR_TITLE_STACK_INLINE)) restoreInlineTurnToFlow(anchor);
@@ -3425,11 +8010,376 @@
       try { anchor.style.setProperty('display', 'none', 'important'); } catch {}
       return !alreadyStamped || !alreadyHidden;
     }
-    const hadStamp = anchor.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN);
-    const hadInlineHide = String(anchor.style.getPropertyValue?.('display') || '').toLowerCase() === 'none';
-    try { anchor.removeAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN); } catch {}
-    try { anchor.style.removeProperty('display'); } catch {}
-    return !!(hadStamp || hadInlineHide);
+    if (existingOwner && existingOwner !== num) return false;
+    return clearOwnedStamp();
+  }
+
+  function syncTitleOnlyModeRootAttribute(chatId = '') {
+    const id = String(chatId || resolveChatId()).trim();
+    const pages = Array.from(readTitleListPages(id))
+      .map((value) => Math.max(1, Number(value || 0) || 0))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
+    try {
+      if (pages.length) document.documentElement?.setAttribute?.(ATTR_TITLE_ONLY_ACTIVE_PAGES, pages.join(','));
+      else document.documentElement?.removeAttribute?.(ATTR_TITLE_ONLY_ACTIVE_PAGES);
+    } catch {}
+    return pages;
+  }
+
+  function titleListDirectFlowChild(root = null, node = null) {
+    if (!root || !node || !root.contains?.(node)) return null;
+    let current = node;
+    while (current?.parentElement && current.parentElement !== root) current = current.parentElement;
+    return current?.parentElement === root ? current : null;
+  }
+
+  function titleListFlowArtifactAllowed(node = null, container = null) {
+    if (!node) return false;
+    if (node === container || node.contains?.(container)) return true;
+    try {
+      if (node.matches?.(
+        '.cgxui-chat-page-divider, .cgxui-pgnw-page-divider,'
+        + ` ${TITLE_LIST_SYNTH_SEL}, [${ATTR_TITLE_INLINE_SLOT}="1"], [data-h2o-native-ts="1"]`
+      )) return true;
+    } catch {}
+    return false;
+  }
+
+  function titleListTurnOrderForSection(section = null) {
+    if (!section) return 0;
+    const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+    const record = turnRecordForTitleListIdentity(identity);
+    const exact = Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+    if (exact) return exact;
+    const role = getTurnHostRole(section);
+    const sections = listTurnSections();
+    const users = sections.filter((candidate) => getTurnHostRole(candidate) === 'user');
+    if (role === 'user') return Math.max(0, users.indexOf(section) + 1);
+    if (role === 'assistant') {
+      const previous = getPreviousTurnHost(section);
+      return Math.max(0, users.indexOf(previous) + 1);
+    }
+    return 0;
+  }
+
+  function titleListExactTurnOrderForSection(section = null) {
+    if (!section) return 0;
+    const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+    if (!identity) return 0;
+    const record = turnRecordForTitleListIdentity(identity);
+    return Math.max(0, Number(record?.order || record?.turnNo || record?.idx || 0) || 0);
+  }
+
+  function titleListAdjacentTurnOrders(node = null) {
+    if (!node) return [];
+    const before = [];
+    const after = [];
+    for (const section of listTurnSections()) {
+      let relation = 0;
+      try { relation = node.compareDocumentPosition(section); } catch {}
+      if (relation & 4) after.push(section);
+      else if (relation & 2) before.push(section);
+    }
+    // Native separators introduce the following host turn. Ownership is
+    // therefore the first following USER turn when one exists, not both
+    // adjacent pages. At a Page 1/Page 2 boundary this keeps Page 2's
+    // separator visible when only Page 1 is title-listed. The previous USER
+    // turn is a tail fallback for a separator mounted after the final turn.
+    const next = after.find((section) => getTurnHostRole(section) === 'user') || after[0] || null;
+    const previous = before.slice().reverse().find((section) => getTurnHostRole(section) === 'user')
+      || before[before.length - 1]
+      || null;
+    const order = titleListExactTurnOrderForSection(next || previous);
+    return order ? [order] : [];
+  }
+
+  function titleListMemberMateriallyPresent(member = null) {
+    if (!member) return false;
+    const sections = titleListMemberSections(member);
+    const required = [sections.questionSection];
+    if (member.type === 'answer') required.push(sections.answerSection);
+    if (required.some((section) => !section?.isConnected)) return false;
+    for (const section of required) {
+      try {
+        if (String(section.style?.getPropertyValue?.('display') || '').toLowerCase() === 'none') return false;
+        if (section.closest?.(`[${ATTR_TITLE_LIST_FLOW_HIDDEN}]`)) return false;
+        if (section.querySelector?.(
+          '[data-h2o-unmounted="1"], [data-h2o-um-turn-hidden="1"], .cgxui-unmounted-placeholder'
+        )) return false;
+      } catch { return false; }
+    }
+    return true;
+  }
+
+  function setOrphanTitleListTimestampHidden(timestamp = null, hidden = false) {
+    if (!timestamp?.style) return false;
+    const had = timestamp.hasAttribute?.(ATTR_TITLE_LIST_ORPHAN_TIMESTAMP_HIDDEN);
+    if (hidden) {
+      try { timestamp.setAttribute(ATTR_TITLE_LIST_ORPHAN_TIMESTAMP_HIDDEN, '1'); } catch {}
+      try { timestamp.style.setProperty('display', 'none', 'important'); } catch {}
+      return !had;
+    }
+    try { timestamp.removeAttribute(ATTR_TITLE_LIST_ORPHAN_TIMESTAMP_HIDDEN); } catch {}
+    if (!timestamp.hasAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN)) {
+      try { timestamp.style.removeProperty('display'); } catch {}
+    }
+    return !!had;
+  }
+
+  function syncTitleListNativeTimestampVisibility(model = null, activePagesInput = null) {
+    const pageModel = model?.pages ? model : buildTitleListPresentationPageModel();
+    const activePages = activePagesInput instanceof Set
+      ? activePagesInput
+      : new Set(Array.from(readTitleListPages(resolveChatId())));
+    const memberByOrder = new Map();
+    for (const page of Array.isArray(pageModel?.pages) ? pageModel.pages : []) {
+      for (const member of Array.isArray(page?.turnRecords) ? page.turnRecords : []) {
+        const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+        if (order) memberByOrder.set(order, member);
+      }
+    }
+
+    // Reuse the existing semantic native-timestamp recognizer. Its scan only
+    // applies the stable `data-h2o-native-ts` marker; the user's timestamp
+    // preference and content remain untouched.
+    try { (TOPW.H2O?.NativeTimestamps || W.H2O?.NativeTimestamps)?.scan?.(); } catch {}
+    let hidden = 0;
+    let shown = 0;
+    let orphanHidden = 0;
+    let timestamps = [];
+    try { timestamps = Array.from(document.querySelectorAll('[data-h2o-native-ts="1"]')); } catch {}
+    for (const timestamp of timestamps) {
+      if (!activePages.size) {
+        const existingOwner = Math.max(0, Number(timestamp.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) || 0) || 0);
+        if (existingOwner && setTitleListFlowAnchorHidden(timestamp, existingOwner, false)) shown += 1;
+        setOrphanTitleListTimestampHidden(timestamp, false);
+        continue;
+      }
+      const order = Math.max(0, Number(titleListAdjacentTurnOrders(timestamp)[0] || 0) || 0);
+      if (!order) {
+        if (setOrphanTitleListTimestampHidden(timestamp, true)) orphanHidden += 1;
+        continue;
+      }
+      const pageNum = Math.max(1, Math.ceil(order / TITLE_LIST_PAGE_SIZE));
+      const pageExists = pageNum <= Number(pageModel?.pageCount || 0);
+      const member = memberByOrder.get(order) || null;
+      const normalMaterialized = pageExists
+        && !activePages.has(pageNum)
+        && titleListMemberMateriallyPresent(member);
+      const shouldHide = !normalMaterialized;
+      setOrphanTitleListTimestampHidden(timestamp, false);
+      if (shouldHide) {
+        if (setTitleListFlowAnchorHidden(timestamp, pageNum, true)) hidden += 1;
+      } else if (setTitleListFlowAnchorHidden(timestamp, pageNum, false)) {
+        shown += 1;
+      }
+    }
+    return { hidden, shown, orphanHidden, scanned: timestamps.length };
+  }
+
+  function stampTitleListNativeTimestampArtifacts(members = [], pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const orders = new Set(members.map((member) => Number(member?.turnNo || 0)).filter(Boolean));
+    if (!orders.size) return 0;
+    try { (TOPW.H2O?.NativeTimestamps || W.H2O?.NativeTimestamps)?.scan?.(); } catch {}
+    let hidden = 0;
+    let timestamps = [];
+    try { timestamps = Array.from(document.querySelectorAll('[data-h2o-native-ts="1"]')); } catch {}
+    for (const timestamp of timestamps) {
+      if (!titleListAdjacentTurnOrders(timestamp).some((order) => orders.has(order))) continue;
+      if (setTitleListFlowAnchorHidden(timestamp, num, true)) hidden += 1;
+    }
+    return hidden;
+  }
+
+  // One synchronous title-only projection owns every visibility write for a
+  // listed page. It hides complete turn wrappers plus unknown host-owned
+  // siblings in the page range, while explicitly allowing only the H2O title
+  // stack, its inline-open slot, and page-divider controls.
+  function applyAtomicTitleOnlyPageProjection(pageNum = 0, chatId = '', members = [], container = null) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    const id = String(chatId || resolveChatId()).trim();
+    const pageModel = typeof buildTitleListPresentationPageModel === 'function'
+      ? buildTitleListPresentationPageModel()
+      : null;
+    const cleanup = (
+      typeof reconcileTitleListFlowHiddenArtifacts === 'function'
+      && typeof readTitleListPages === 'function'
+    )
+      ? reconcileTitleListFlowHiddenArtifacts(
+        pageModel,
+        new Set(Array.from(readTitleListPages(id)))
+      )
+      : {
+        scanned: 0,
+        kept: 0,
+        released: 0,
+        mixedReleased: 0,
+        foreignReleased: 0,
+        wrongOwnerReleased: 0,
+        snapshot: null,
+      };
+    const ownershipSnapshot = cleanup.snapshot;
+    let divider = null;
+    try {
+      divider = document.querySelector(
+        `.cgxui-chat-page-divider[data-page-num="${String(num)}"],`
+        + ` .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`
+      );
+    } catch {}
+    const flowRoot = divider?.parentElement || container?.parentElement || null;
+    const identityToOrder = new Map();
+    for (const member of members) {
+      const order = Math.max(0, Number(member?.turnNo || 0) || 0);
+      if (!order) continue;
+      for (const value of [
+        member?.id,
+        member?.questionId,
+        member?.answerId,
+        member?.turnId,
+        ...(Array.isArray(member?.aliasIds) ? member.aliasIds : []),
+      ]) {
+        const identity = String(value || '').trim();
+        if (identity) identityToOrder.set(identity, order);
+      }
+    }
+
+    const protectedAnchors = new Set();
+    for (const member of members) {
+      const row = findStackRowForMember(container, member);
+      const explicitlyOpened = row?.getAttribute?.('data-h2o-title-row-opened') === '1'
+        && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
+      if (!explicitlyOpened) continue;
+      for (const anchor of memberAllFlowAnchors(member)) protectedAnchors.add(anchor);
+    }
+
+    // Resolve ownership from exact current qId/aId/turn identities. A shared
+    // conversation wrapper that contains Page 1 and Page 2 is "mixed" and
+    // can never receive a Page 1 hide stamp. We recurse until reaching maximal
+    // page-owned subtrees; neutral siblings are hidden only when bracketed by
+    // page-owned turn artifacts inside that same parent.
+    const classifyArtifact = (node) => {
+      if (!node) return { kind: 'neutral', owned: 0, foreign: 0 };
+      const sections = [];
+      try {
+        if (node.matches?.(TURN_HOST_SEL)) sections.push(node);
+        for (const section of Array.from(node.querySelectorAll?.(TURN_HOST_SEL) || [])) {
+          if (!sections.includes(section)) sections.push(section);
+        }
+      } catch {}
+      if (!sections.length) return { kind: 'neutral', owned: 0, foreign: 0 };
+      let owned = 0;
+      let foreign = 0;
+      for (const section of sections) {
+        const identity = String(section.getAttribute?.('data-turn-id') || '').trim();
+        if (identity && identityToOrder.has(identity)) owned += 1;
+        else foreign += 1;
+      }
+      return {
+        kind: owned && foreign ? 'mixed' : owned ? 'owned' : 'foreign',
+        owned,
+        foreign,
+      };
+    };
+    const intersectsProtectedAnchor = (node) => {
+      for (const anchor of protectedAnchors) {
+        try {
+          if (node === anchor || node.contains?.(anchor) || anchor.contains?.(node)) return true;
+        } catch {}
+      }
+      return false;
+    };
+    let hidden = 0;
+    const projectOwnedChildren = (parent) => {
+      const children = Array.from(parent?.children || []);
+      if (!children.length) return;
+      const classes = children.map((node) => classifyArtifact(node));
+      const pageBearingIndexes = classes
+        .map((entry, index) => ((entry.kind === 'owned' || entry.kind === 'mixed') && entry.owned > 0 ? index : -1))
+        .filter((index) => index >= 0);
+      const first = pageBearingIndexes.length ? Math.min(...pageBearingIndexes) : -1;
+      const last = pageBearingIndexes.length ? Math.max(...pageBearingIndexes) : -1;
+      let previousBoundary = -1;
+      let nextBoundary = children.length;
+      if (first >= 0) {
+        for (let index = 0; index < first; index += 1) {
+          const dividerPage = Math.max(0, Number(children[index]?.getAttribute?.('data-page-num') || 0) || 0);
+          if (classes[index]?.kind === 'foreign' || dividerPage === num) previousBoundary = index;
+        }
+      }
+      if (last >= 0) {
+        for (let index = last + 1; index < children.length; index += 1) {
+          const dividerPage = Math.max(0, Number(children[index]?.getAttribute?.('data-page-num') || 0) || 0);
+          if (classes[index]?.kind === 'foreign' || dividerPage > num) {
+            nextBoundary = index;
+            break;
+          }
+        }
+      }
+      for (let index = 0; index < children.length; index += 1) {
+        const node = children[index] || null;
+        const ownership = classes[index];
+        if (!node || titleListFlowArtifactAllowed(node, container)) continue;
+        if (ownership.kind === 'mixed') {
+          projectOwnedChildren(node);
+          continue;
+        }
+        if (ownership.kind === 'owned') {
+          if (intersectsProtectedAnchor(node)) {
+            projectOwnedChildren(node);
+            continue;
+          }
+          if (setTitleListFlowAnchorHidden(node, num, true, { ownershipSnapshot })) hidden += 1;
+          continue;
+        }
+        // Unknown host-owned siblings (quote cards, footer/action rows, etc.)
+        // are page-owned only when they are enclosed by exact page-owned turn
+        // artifacts in this same DOM parent. Never sweep past a foreign turn.
+        if (
+          ownership.kind === 'neutral'
+          && first >= 0
+          && index > previousBoundary
+          && index < nextBoundary
+          && !intersectsProtectedAnchor(node)
+        ) {
+          if (setTitleListFlowAnchorHidden(node, num, true, {
+            ownershipSnapshot,
+            allowNeutral: true,
+          })) hidden += 1;
+        }
+      }
+    };
+    if (flowRoot) projectOwnedChildren(flowRoot);
+    else {
+      // Missing divider/root is a hydration edge. Hide only exact member
+      // anchors; do not infer a wider page range from visual position.
+      for (const member of members) {
+        for (const anchor of memberAllFlowAnchors(member)) {
+          if (classifyArtifact(anchor).kind !== 'owned' || intersectsProtectedAnchor(anchor)) continue;
+          if (setTitleListFlowAnchorHidden(anchor, num, true, { ownershipSnapshot })) hidden += 1;
+        }
+      }
+    }
+    const nativeTimestampsHidden = stampTitleListNativeTimestampArtifacts(members, num);
+    const activePages = syncTitleOnlyModeRootAttribute(id);
+    return {
+      ok: true,
+      status: 'title-only',
+      pageNum: num,
+      source: readTitleListPresentationAuthority().source,
+      hidden,
+      nativeTimestampsHidden,
+      cleanup: {
+        scanned: cleanup.scanned,
+        kept: cleanup.kept,
+        released: cleanup.released,
+        mixedReleased: cleanup.mixedReleased,
+        foreignReleased: cleanup.foreignReleased,
+        wrongOwnerReleased: cleanup.wrongOwnerReleased,
+      },
+      activePages,
+    };
   }
 
   function titleListRectSnapshot(el = null) {
@@ -3530,7 +8480,7 @@
       // CSS override makes it visible here; if ChatGPT reparents this same
       // node back to normal flow, the global stamped rule hides it instantly
       // until the canonical repair re-adopts it.
-      try { anchor.setAttribute(ATTR_TITLE_LIST_FLOW_HIDDEN, String(pageNum)); } catch {}
+      setTitleListFlowAnchorHidden(anchor, pageNum, true);
       try { anchor.style.removeProperty('display'); } catch {}
       adopted.push(anchor);
     }
@@ -3824,7 +8774,17 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     const reason = String(opts?.reason || 'stack-sync').trim() || 'stack-sync';
+    const transactionKey = collapsedNativeRangeKey(id, num);
+    const transaction = S.atomicPageCollapseTransactions.get(transactionKey) || null;
     if (!active) {
+      if (transaction) {
+        return expandPageWithRenderedBoundaries(num, {
+          chatId: id,
+          source: `synthetic-release:${reason}`,
+        });
+      }
+      releaseCollapsedNativeRange(num);
+      S.nativeRangeActivePages.delete(transactionKey);
       let released = 0;
       for (const stale of getSyntheticTitleListContainers(num)) {
         restoreAllInlineTurns(stale);
@@ -3834,15 +8794,72 @@
       released += sweepSyntheticTitleListHidden(num);
       S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
       getTitleListStackStats(num, id).activeStackId = '';
+      syncTitleOnlyModeRootAttribute(id);
       try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-release:${reason}`); } catch {}
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
-    const members = pureCanonicalPageMemberDetails(num);
-    if (!members.length) {
-      // No canonical membership yet (turn ledger still hydrating): keep the
-      // legacy in-place behavior for now; the next visuals pass retries.
-      return { ok: true, status: 'no-members', pageNum: num, rows: 0 };
+    if (transaction) {
+      const current = validateCommittedAtomicPageCollapse(transaction);
+      if (!current.ok) {
+        return expandPageWithRenderedBoundaries(num, {
+          chatId: id,
+          source: `synthetic-validate:${reason}:${current.reason}`,
+        });
+      }
+      return {
+        ok: true,
+        status: 'current',
+        pageNum: num,
+        rows: transaction.titleRowsPrepared.length,
+        stackId: transaction.titleListContainer.id,
+        reason,
+        titleOnly: {
+          ok: true,
+          status: 'collapsed',
+          hidden: transaction.hostWrappers.length,
+          mutations: 0,
+        },
+      };
     }
+    const readiness = getCollapsedNativeBoundaryReadiness(num);
+    return failClosedCollapsedTitleList(num, id, readiness, reason);
+
+    /* Legacy detached-stack repair remains below for diagnostic extraction.
+       Stage 2C-2 live activation returns above and cannot enter it. */
+    S.nativeRangeActivePages.add(transactionKey);
+    clearCollapsedBoundaryDiagnostic(num, id);
+    const authority = readTitleListPresentationAuthority();
+    const members = authority.members.filter((member) => Math.ceil(Number(member?.turnNo || 0) / 25) === num);
+    if (!members.length) {
+      // An effective path shorter than this page removes the stale canonical
+      // stack without mutating the durable page/title intent. Canonical return
+      // can therefore rebuild it immediately from the canonical authority.
+      let released = 0;
+      for (const stale of getSyntheticTitleListContainers(num)) {
+        restoreAllInlineTurns(stale);
+        released += releaseTitleStackBars(stale);
+        try { stale.remove(); } catch {}
+      }
+      released += sweepSyntheticTitleListHidden(num);
+      S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+      syncTitleOnlyModeRootAttribute(id);
+      return {
+        ok: true,
+        status: authority.count > 0 && num > authority.pageCount ? 'page-outside-presentation' : 'no-members',
+        pageNum: num,
+        rows: 0,
+        released,
+        source: authority.source,
+      };
+    }
+    // Clean-before-project: every repair/bootstrap pass reclassifies all
+    // temporary stamps against the current authority before any member row
+    // can write a new one. This releases stale Page 1 stamps from Page 2
+    // sections and wrappers that became mixed during native remount.
+    reconcileTitleListFlowHiddenArtifacts(
+      buildTitleListPresentationPageModel(),
+      new Set(Array.from(readTitleListPages(id)))
+    );
     let divider = null;
     try {
       divider = document.querySelector(`.cgxui-chat-page-divider[data-page-num="${String(num)}"], .cgxui-pgnw-page-divider[data-page-num="${String(num)}"]`);
@@ -4043,11 +9060,26 @@
       }
     } catch {}
     stats.lastListSettledAt = Date.now();
+    const titleOnly = { ok: false, status: 'legacy-title-list-path-retired' };
+    if (!titleOnly.ok) {
+      return failClosedCollapsedTitleList(num, id, readiness, `${reason}:native-range`);
+    }
     // One RAF-coalesced exact-ID pass clears any stale button projection left
     // by a prior/hot-reloaded alias-aware build without multiplying work by
     // the number of title-list rows.
     try { WASH_PUBLIC()?.repairMiniMap?.(`title-list-sync:${reason}`); } catch {}
-    return { ok: true, status: 'ok', pageNum: num, rows: members.length, stackId: container.id, reason };
+    return {
+      ok: true,
+      status: 'ok',
+      pageNum: num,
+      rows: members.length,
+      stackId: container.id,
+      reason,
+      source: authority.source,
+      presentationCount: authority.count,
+      pageCount: authority.pageCount,
+      titleOnly,
+    };
   }
 
   function scheduleActiveTitleListRepair(reason = 'canonical-index-updated', delay = 16, pageNum = 0) {
@@ -4059,17 +9091,9 @@
     }
     S.titleListRepairTimer = W.setTimeout(() => {
       S.titleListRepairTimer = 0;
-      const chatId = resolveChatId();
-      const activePages = readTitleListPages(chatId);
-      const requestedPages = S.titleListRepairAllPages
-        ? Array.from(activePages)
-        : Array.from(S.titleListRepairPages).filter((num) => activePages.has(num));
       S.titleListRepairPages.clear();
       S.titleListRepairAllPages = false;
-      if (!activePages.size) return;
-      for (const requested of requestedPages) {
-        try { syncSyntheticTitleList(requested, chatId, true, { reason }); } catch {}
-      }
+      reconcileAtomicPageCollapseTransactions(`scheduled:${reason}`);
     }, Math.max(0, Number(delay || 0) || 0));
     return true;
   }
@@ -4078,21 +9102,40 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     if (!isTitleListActive(num, id)) return { ok: true, status: 'inactive', hidden: 0 };
-    const container = getSyntheticTitleListContainer(num, id);
-    let hidden = 0;
-    for (const member of pureCanonicalPageMemberDetails(num)) {
-      const row = findStackRowForMember(container, member);
-      const explicitlyOpened = row?.getAttribute?.('data-h2o-title-row-opened') === '1'
-        && row?.getAttribute?.('data-h2o-title-row-opened-by') === 'dblclick';
-      if (!explicitlyOpened && setTitleListMemberFlowHidden(member, num, true)) hidden += 1;
+    const transaction = S.atomicPageCollapseTransactions.get(collapsedNativeRangeKey(id, num)) || null;
+    const current = validateCommittedAtomicPageCollapse(transaction);
+    if (!current.ok) {
+      return expandPageWithRenderedBoundaries(num, {
+        chatId: id,
+        source: `reassert:${current.reason}`,
+      });
     }
-    return { ok: true, status: 'ok', hidden };
+    return {
+      ok: true,
+      status: 'current',
+      hidden: transaction.hostWrappers.length,
+      mutations: 0,
+    };
   }
 
   function applyTitleListVisuals(pageNum = 0, opts = {}) {
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const active = isTitleListActive(num, id);
+    if (active) {
+      const current = reassertActiveTitleListFlowHidden(num, id);
+      return {
+        ok: current?.ok !== false,
+        status: current?.status || 'current',
+        chatId: id,
+        pageNum: num,
+        rows: S.atomicPageCollapseTransactions.get(
+          collapsedNativeRangeKey(id, num)
+        )?.titleRowsPrepared?.length || 0,
+        active: true,
+        atomic: true,
+      };
+    }
     const rows = getRows(num, id);
     const at = AT_PUBLIC();
     const um = UM_PUBLIC();
@@ -4111,6 +9154,29 @@
     const pageHasTitleIntent = titleIntentPageHasActiveState(num, ledger);
     const needsAnswerIds = !!active || explicitDotAction || pageHasTitleIntent;
     const answerIds = needsAnswerIds ? normalizeAnswerIds(getAuthoritativePageAnswerIds(num, id)) : [];
+
+    // Enter title-only mode before any collapse/unmount executor can expose a
+    // row-by-row teardown. All host flow is synchronously hidden behind the
+    // central projection in this same task; background collapse remains a
+    // performance operation and is never a visible transition.
+    let synth = active
+      ? syncSyntheticTitleList(num, id, true, {
+        reason: String(opts?.source || 'apply-title-list-visuals'),
+        boundaryReadiness: opts?.boundaryReadiness || null,
+      })
+      : null;
+    if (active && synth?.ok === false) {
+      return {
+        ok: false,
+        status: synth.status || 'collapsed-exact-boundary-unavailable',
+        chatId: id,
+        pageNum: num,
+        rows: rows.length,
+        active: false,
+        driver,
+        synth,
+      };
+    }
 
     if (answerIds.length && !skipAnswerBatch) {
       if (driver === 'engine') {
@@ -4154,9 +9220,11 @@
       }
     }
     if (!active) sweepQuestionHostRestore();
-    // Stable synthetic list: renders/updates the full-page canonical row list
-    // while active; removes it and releases the flow stamps when inactive.
-    const synth = syncSyntheticTitleList(num, id, !!active, { reason: String(opts?.source || 'apply-title-list-visuals') });
+    // Exit only after expansion/restoration has completed, so releasing the
+    // central stamp reveals one coherent normal-conversation state.
+    if (!active) {
+      synth = syncSyntheticTitleList(num, id, false, { reason: String(opts?.source || 'apply-title-list-visuals') });
+    }
 
     const intentReplay = pageHasTitleIntent
       ? applyTitleIntentToPage(num, { chatId: id, answerIds, animate: opts?.animate === true, ledger })
@@ -4177,13 +9245,29 @@
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const source = String(opts?.source || 'chat-pages-controller:title-list').trim() || 'chat-pages-controller:title-list';
-    const next = localReadTitleListPagesSet(id);
-    if (enabled) next.add(num); else next.delete(num);
-    localWriteTitleListPagesSet(id, Array.from(next));
-    const visual = applyTitleListVisuals(num, { chatId: id, source, animate: opts?.animate, skipAnswerBatch: opts?.skipAnswerBatch === true });
-    try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
-    scheduleDividerVisualRefresh(id, 0);
-    return { ok: true, status: 'ok', chatId: id, pageNum: num, enabled: !!enabled, visual };
+    if (enabled) {
+      // Only the explicit divider transaction may activate Stage 2C-2.
+      return {
+        ok: false,
+        status: 'explicit-atomic-activation-required',
+        chatId: id,
+        pageNum: num,
+        enabled: false,
+        source,
+      };
+    }
+    const expanded = expandPageWithRenderedBoundaries(num, { chatId: id, source });
+    if (expanded.status !== 'inactive') return expanded;
+    releaseCollapsedNativeRange(num);
+    localForgetTitleListPage(id, num);
+    for (const stale of getSyntheticTitleListContainers(num)) {
+      try { restoreAllInlineTurns(stale); } catch {}
+      try { releaseTitleStackBars(stale); } catch {}
+      try { stale.remove(); } catch {}
+    }
+    S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
+    syncTitleOnlyModeRootAttribute(id);
+    return { ok: true, status: 'inactive', chatId: id, pageNum: num, enabled: false, source };
   }
 
   function applyPageCollapsedVisuals(pageNum = 0, opts = {}) {
@@ -4242,6 +9326,26 @@
     const driver = normalizeVisualDriver(opts?.driver);
     const mode = String(opts?.mode || '').trim().toLowerCase();
     const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
+    // The atomic rendered-boundary transaction owns ordinary page collapse.
+    // Only the pagination/unmount engine driver keeps the legacy detach-based
+    // path — a different mechanism, not a second collapse implementation.
+    if (driver !== 'engine' && mode !== 'pagination') {
+      const transaction = executeAtomicPageCollapseTransaction(num, source, {
+        chatId: id,
+        desired: collapsed ? 'collapsed' : 'expanded',
+      });
+      return {
+        ok: transaction?.ok === true,
+        status: transaction?.status || 'ok',
+        chatId: id,
+        pageNum: num,
+        collapsed: !!collapsed,
+        source,
+        driver,
+        mode,
+        transaction,
+      };
+    }
     const next = localReadCollapsedPagesSet(id);
     if (collapsed) next.add(num); else next.delete(num);
     localWriteCollapsedPagesSet(id, Array.from(next));
@@ -4254,6 +9358,20 @@
   function togglePageCollapsed(pageNum = 0, opts = {}) {
     const id = String(opts?.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
+    const driver = normalizeVisualDriver(opts?.driver);
+    const mode = String(opts?.mode || '').trim().toLowerCase();
+    if (driver !== 'engine' && mode !== 'pagination') {
+      const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
+      const transaction = executeAtomicPageCollapseTransaction(num, source, { chatId: id });
+      return {
+        ok: transaction?.ok === true,
+        status: transaction?.status || 'ok',
+        chatId: id,
+        pageNum: num,
+        source,
+        transaction,
+      };
+    }
     return setPageCollapsed(num, !isPageCollapsed(num, id), Object.assign({}, opts, { chatId: id }));
   }
 
@@ -4639,20 +9757,36 @@
 
   function refreshAll(chatId = '', opts = {}) {
     const requestedId = String(chatId || resolveChatId()).trim();
+    const atomicValidation = reconcileAtomicPageCollapseTransactions(
+      String(opts?.reason || 'refresh')
+    );
     const visitPolicy = maybeApplyVisitStatePolicy(requestedId, opts);
     if (visitPolicy.deferred) {
       scheduleDeferredVisitRefresh(opts?.reason || 'refresh-chat-id');
       return { ok: false, status: 'visit-reset-deferred', chatId: '', pages: [] };
     }
     const id = String(visitPolicy.chatId || requestedId).trim();
+    const hydration = S.atomicPageCollapseTransactions.size
+      ? { ok: true, status: 'atomic-collapse-active' }
+      : reconcileTitleListPageHydration(id, {
+        reason: String(opts?.reason || 'refresh'),
+      });
     const pageNums = collectKnownPageNums(id);
     for (const pageNum of pageNums) {
-      applyPageVisuals(pageNum, { chatId: id, source: 'chat-pages-controller:refresh' });
+      if (isTitleListActive(pageNum, id)) reassertActiveTitleListFlowHidden(pageNum, id);
+      else applyPageVisuals(pageNum, { chatId: id, source: 'chat-pages-controller:refresh' });
     }
     sweepStalePageHiddenDomState(id);
     try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
     scheduleDividerVisualRefresh(id, 0);
-    return { ok: true, status: 'refreshed', chatId: id, pages: pageNums };
+    return {
+      ok: true,
+      status: 'refreshed',
+      chatId: id,
+      pages: pageNums,
+      hydration,
+      atomicValidation,
+    };
   }
 
   // Pure read-only membership for the debug snapshot: canonical turn-list
@@ -6166,6 +11300,64 @@
     }
   }
 
+  function syncActiveTitleListsNow(reason = 'presentation-updated') {
+    const results = reconcileAtomicPageCollapseTransactions(reason);
+    return {
+      ok: results.every((result) => result?.ok !== false),
+      status: results.length ? 'validated' : 'inactive',
+      pages: results.length,
+      results,
+    };
+  }
+
+  function titleListMutationTouchesOwnedFlow(payload = null) {
+    if (!payload?.conversationRelevant) return false;
+    for (const node of Array.isArray(payload?.addedElements) ? payload.addedElements : []) {
+      if (!node || node.nodeType !== 1) continue;
+      try {
+        if (
+          node.matches?.(`${TURN_HOST_SEL}, [role="separator"]`)
+          || node.querySelector?.(`${TURN_HOST_SEL}, [role="separator"]`)
+        ) return true;
+        if (
+          node.matches?.(`${TITLE_LIST_SYNTH_SEL}, [data-cgxui-owner="chtpgs"]`)
+          || node.closest?.(TITLE_LIST_SYNTH_SEL)
+        ) continue;
+      } catch {}
+    }
+    return false;
+  }
+
+  function bindTitleListObserverHub() {
+    if (typeof S.titleListObserverHubOff === 'function') return true;
+    const hub = W.H2O?.obs || TOPW.H2O?.obs || null;
+    if (!hub || typeof hub.onMutations !== 'function') return false;
+    try { hub.ensureRoot?.('chat-pages:title-list'); } catch {}
+    try {
+      S.titleListObserverHubOff = hub.onMutations('chat-pages:title-list', (payload) => {
+        const chatId = resolveChatId();
+        if (!readTitleListPages(chatId).size) return;
+        if (!titleListMutationTouchesOwnedFlow(payload)) return;
+        // Observer Hub already batches native remounts into one microtask.
+        // Reapply synchronously here so a newly mounted shell or timestamp is
+        // stamped before the browser's next paint; no timer or second observer.
+        syncActiveTitleListsNow('observer-hub-remount');
+      });
+      return typeof S.titleListObserverHubOff === 'function';
+    } catch {
+      S.titleListObserverHubOff = null;
+      return false;
+    }
+  }
+
+  function unbindTitleListObserverHub() {
+    if (typeof S.titleListObserverHubOff !== 'function') return false;
+    const off = S.titleListObserverHubOff;
+    S.titleListObserverHubOff = null;
+    try { off(); } catch {}
+    return true;
+  }
+
   function bind() {
     if (S.listenersBound) {
       S.bound = true;
@@ -6225,66 +11417,18 @@
       if (!pageNum) return;
       try { ev.preventDefault(); ev.stopPropagation(); } catch {}
       const chatId = resolveChatId();
-      const answerIds = getAuthoritativePageAnswerIds(pageNum, chatId);
-      // Deterministic mass action: resolve over canonical page membership and
-      // the durable intent ledger, not the current hydrated title-bar subset.
-      const intentSummary = getResolvedPageTitleIntentSummary(pageNum, chatId);
-      const nextEnabled = !intentSummary.allCollapsed;
-      writePageTitleIntent(pageNum, nextEnabled ? 'collapsed' : 'expanded', {
-        chatId,
-        answerIds,
-        source: 'chat-page-divider:circle',
-      });
-      // A newer page intent supersedes older per-row open projections. Return
-      // any inline Q+A wrappers to flow before the resolved batch runs; the
-      // stack sync below will then hide or release them deterministically.
-      resetOpenedTitleListRows(pageNum);
-      const routed = CM_ROUTER_API()?.routeChatPageDotClick?.({
-        pageNum,
-        chatId,
-        dividerEl: divider,
-        pageAnswerIds: answerIds,
-        nextEnabled,
-      });
-
-      const routerHandledEngineBatch = routed?.handled === true
-        && routed?.backend === 'engine'
-        && /^batch-(collapse|expand)-page$/.test(String(routed?.action || ''));
-      const routerAttemptedEngineBatch = routed?.handled === false
-        && routed?.backend === 'engine'
-        && /^(batch-toggle-unavailable|batch-(collapse|expand)-failed)$/.test(String(routed?.action || ''));
-
-      if (routed?.handled === true) {
-        setTitleListMode(pageNum, nextEnabled, {
-          chatId,
-          source: 'chat-page-divider:dot',
-          animate: false,
-          skipAnswerBatch: routerHandledEngineBatch,
-        });
-        return;
-      }
-      // Legacy fallback: batch toggle via Title Bar API (normal answer rows only)
-      const at = AT_PUBLIC();
-      let legacyBatchApplied = false;
-      if (at?.setCollapsed) {
-        S.titleListBatchDepth += 1;
-        try {
-          for (const answerId of answerIds) {
-            try { at.setCollapsed(answerId, nextEnabled, { animate: false, source: 'chat-page-divider:dot' }); } catch {}
-          }
-          legacyBatchApplied = true;
-        } finally {
-          S.titleListBatchDepth = Math.max(0, S.titleListBatchDepth - 1);
-          if (!S.titleListBatchDepth) S.titleListBatchDirty = false;
-        }
-      }
-      setTitleListMode(pageNum, nextEnabled, {
-        chatId,
-        source: 'chat-page-divider:dot',
-        animate: false,
-        skipAnswerBatch: routerAttemptedEngineBatch || legacyBatchApplied,
-      });
+      const activationSource = String(
+        ev?.h2oActivationSource || 'chat-page-divider:circle'
+      ).trim() || 'chat-page-divider:circle';
+      // Pointer activation converges on the single transaction owner, which
+      // decides collapse vs expansion, records the attempt diagnostic and maps
+      // its own failure feedback. No legacy readiness re-read here: it was the
+      // stale legacy reason that mislabelled a transaction failure as a
+      // missing next page boundary.
+      executeAtomicPageCollapseTransaction(pageNum, activationSource, { chatId });
     };
+
+    S.onDividerDotKeyDown = forwardCollapseControlKeyboardActivation;
 
     S.onAnswerCollapse = (ev) => {
       const answerId = String(ev?.detail?.answerId || '').trim();
@@ -6348,6 +11492,11 @@
       scheduleActiveTitleListRepair('core-index-updated', 16);
     };
 
+    S.onCoreTurnUpdated = (ev) => {
+      if (String(ev?.detail?.reason || '') !== 'effective-presentation') return;
+      syncActiveTitleListsNow('effective-presentation');
+    };
+
     S.onPaginationPageChanged = () => {
       try { refreshAll(resolveChatId()); } catch {}
     };
@@ -6359,6 +11508,7 @@
     };
 
     S.onRouteChanged = () => {
+      expandAllAtomicPageCollapses('route-change');
       try {
         W.setTimeout(() => {
           const id = resolveVisitChatId();
@@ -6404,10 +11554,12 @@
     document.addEventListener('dblclick', S.onDividerDblClick, true);
     window.addEventListener('click', S.onDividerClick, true);
     window.addEventListener('click', S.onDividerDotClick, true);
+    window.addEventListener('keydown', S.onDividerDotKeyDown, true);
     window.addEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged);
     window.addEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse);
     window.addEventListener(EV_TITLE_SET, S.onTitleSet);
     window.addEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated);
+    window.addEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated);
     window.addEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed);
     window.addEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged);
     window.addEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true);
@@ -6417,6 +11569,7 @@
     if (EV_PAGE_CHANGED.startsWith('evt:')) {
       window.addEventListener(EV_PAGE_CHANGED.slice(4), S.onPaginationPageChanged);
     }
+    bindTitleListObserverHub();
 
     S.listenersBound = true;
     S.bound = true;
@@ -6429,13 +11582,16 @@
 
   function unbind() {
     clearDividerClickTimer();
+    expandAllAtomicPageCollapses('unbind');
     try { document.removeEventListener('dblclick', S.onDividerDblClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerClick, true); } catch {}
     try { window.removeEventListener('click', S.onDividerDotClick, true); } catch {}
+    try { window.removeEventListener('keydown', S.onDividerDotKeyDown, true); } catch {}
     try { window.removeEventListener(EV_PAGE_CHANGED, S.onPaginationPageChanged); } catch {}
     try { window.removeEventListener(EV_ANSWER_COLLAPSE, S.onAnswerCollapse); } catch {}
     try { window.removeEventListener(EV_TITLE_SET, S.onTitleSet); } catch {}
     try { window.removeEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated); } catch {}
+    try { window.removeEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated); } catch {}
     try { window.removeEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed); } catch {}
     try { window.removeEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged); } catch {}
     try { window.removeEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true); } catch {}
@@ -6445,12 +11601,15 @@
     if (EV_PAGE_CHANGED.startsWith('evt:')) {
       try { window.removeEventListener(EV_PAGE_CHANGED.slice(4), S.onPaginationPageChanged); } catch {}
     }
+    unbindTitleListObserverHub();
     S.onDividerDblClick = null;
     S.onDividerClick = null;
     S.onDividerDotClick = null;
+    S.onDividerDotKeyDown = null;
     S.onAnswerCollapse = null;
     S.onTitleSet = null;
     S.onCoreIndexUpdated = null;
+    S.onCoreTurnUpdated = null;
     S.onPaginationPageChanged = null;
     S.onPaginationConfigChanged = null;
     S.onMiniMapTogglePageCollapsed = null;
@@ -6467,10 +11626,38 @@
     }
     S.titleListRepairPages.clear();
     S.titleListRepairAllPages = false;
+    S.titleListHydrationRecoveryIdentity = '';
+    S.titleListHydrationRecoveryIds.clear();
+    S.nativeRangeActivePages.clear();
+    S.atomicPageCollapseTransactions.clear();
+    S.atomicPageCollapseGuards.clear();
+    S.collapsedBoundaryDiagnostics.clear();
+    try {
+      for (const node of Array.from(document.querySelectorAll(`[${ATTR_COLLAPSE_FEEDBACK}]`))) {
+        try {
+          node.hidden = true;
+          node.textContent = '';
+          node.setAttribute('aria-hidden', 'true');
+          node.removeAttribute(ATTR_COLLAPSE_REASON);
+          node.removeAttribute('title');
+        } catch {}
+      }
+    } catch {}
     for (const campaign of S.dotExpandCampaigns.values()) {
       if (campaign?.timer) { try { W.clearTimeout(campaign.timer); } catch {} }
     }
     S.dotExpandCampaigns.clear();
+    try { UM_ADAPTER()?.setPresentationMountGuard?.(TITLE_LIST_PAGE_HYDRATION_OWNER, []); } catch {}
+    try { PG_ADAPTER()?.setPresentationFullFlowHold?.(TITLE_LIST_PAGE_HYDRATION_OWNER, false); } catch {}
+    S.titleListPageHydration = {
+      active: false,
+      source: '',
+      count: 0,
+      pageCount: 0,
+      normalPages: [],
+      guardedIds: 0,
+      paginationHeld: false,
+    };
     S.listenersBound = false;
     S.bound = false;
     return { ok: true, status: 'unbound', chatId: String(S.chatId || '').trim() };
@@ -6494,6 +11681,14 @@
       writeTitleListPages,
       isPageCollapsed,
       isTitleListActive,
+      resolveNativeTurnSlotSequence,
+      resolveNativePageHeadCoherence,
+      getCollapsedNativeBoundaryReadiness,
+      getRenderedPageBoundaryCapability,
+      getPageCollapseRangeDiagnostics,
+      getPageCollapseCapability,
+      getAtomicPageCollapseTransactionDiagnostic,
+      getCollapsedBoundaryDiagnostic,
       setTitleListMode,
       setPageCollapsed,
       togglePageCollapsed,

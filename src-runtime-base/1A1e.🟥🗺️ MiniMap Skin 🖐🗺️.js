@@ -76,6 +76,9 @@
     ROW_GAP_PX: 12,
     MARGIN_TOP_PX: 22,
     MARGIN_BOTTOM_PX: 18,
+    // Pointer target for the collapse dot. The painted dot stays small; this
+    // is the transparent, out-of-flow region that actually receives clicks.
+    DOT_HIT_SIZE_PX: 28,                                        // 👈 ↑ = easier to hit; ↓ = harder to hit
   });
 
   const CSS_ = Object.freeze({
@@ -1194,6 +1197,35 @@ ${S_BTN}[${ATTR_.CGXUI_STATE}~="noanswer"] .cgxui-mm-num{
   animation: cgxui-mnmp-noanswer-num-breathe 2.8s ease-in-out infinite;
 }
 
+/* Branch position/total for a turn that has more than one question or answer
+   variant. Pinned under the turn number so it never covers it, and it never
+   takes pointer events away from the box. */
+${S_BTN} .cgxui-mm-branch{
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  display: block;
+  max-width: 100%;
+  font-size: 7px;
+  line-height: 8px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+  opacity: 0.72;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  pointer-events: none;
+}
+
+${S_BTN} .cgxui-mm-branch[data-branch-parts="2"]{
+  font-size: 6px;
+  letter-spacing: 0;
+}
+
 ${S_BTN} .cgxui-mm-num{
   position: absolute;
   left: 50%;
@@ -1266,6 +1298,12 @@ html[data-cgxui-chat-pages="0"] [data-cgxui-chat-page-divider="1"]{
   display: none !important;
 }
 html [data-cgxui-chat-page-hidden="1"]{
+  display: none !important;
+}
+/* Thread Pages Controller is the sole writer. This direct-flow range marker
+   defeats host --last-known-height reservation only after both exact native
+   page-start wrappers are already mounted and source-proven. */
+html [data-cgxui-chat-page-native-hidden]{
   display: none !important;
 }
 /* ── React-resistant sibling/toolbar hiding ──
@@ -1462,16 +1500,83 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
 }
 .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider-dot{
-  width: 8px;
-  height: 8px;
-  min-width: 8px;
-  min-height: 8px;
+  position: relative;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
   border-radius: 999px;
   background: color-mix(in srgb, currentColor 82%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);
   opacity: 0.92;
   cursor: pointer;
   transition: opacity 0.18s ease, filter 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+/* Interactive hit target for the collapse control: a REAL transparent child
+   node created by MiniMap Core, not a generated region. A ::before was tried
+   first and rejected - the live pointer test still landed on the label and
+   opened the Tags cloud, so only an actual element in the hit-test tree is
+   trusted here. The child is absolutely positioned, so it never participates
+   in layout and cannot shift the divider text or widen the label, and it is
+   raised above the sibling label text so it wins the topmost hit test. Its
+   event target resolves through closest('.cgxui-chat-page-divider-dot') to the
+   dot, which stays the sole role, tabindex, keyboard and collapse-state owner:
+   no second listener, predicate or state owner exists. */
+.cgxui-chat-page-divider-dot-hit,
+.cgxui-pgnw-page-divider-dot-hit{
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: ${CHAT_PAGE_DIVIDER_LAYOUT.DOT_HIT_SIZE_PX}px;
+  height: ${CHAT_PAGE_DIVIDER_LAYOUT.DOT_HIT_SIZE_PX}px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  pointer-events: auto;
+  cursor: inherit;
+  z-index: 3;
+}
+.cgxui-chat-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-chat-page-divider-dot,
+.cgxui-pgnw-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-pgnw-page-divider-dot{
+  cursor: not-allowed !important;
+  outline: 2px dashed currentColor;
+  outline-offset: 3px;
+  filter: grayscale(0.72) brightness(0.82);
+}
+.cgxui-chat-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-chat-page-divider-dot::after,
+.cgxui-pgnw-page-divider[data-h2o-collapse-readiness="collapsed-exact-boundary-unavailable"] .cgxui-pgnw-page-divider-dot::after{
+  content: "!";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  color: currentColor;
+  font: 800 9px/1 ui-sans-serif, system-ui, sans-serif;
+}
+.cgxui-chat-page-collapse-feedback{
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cgxui-chat-page-bg, rgba(15, 23, 42, 0.96)) 92%, black 8%);
+  color: var(--cgxui-chat-page-fg, rgba(241,245,249,0.98));
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+  font: 600 12px/1.35 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+  letter-spacing: 0;
+  text-transform: none;
+  text-align: center;
+  white-space: normal;
+  pointer-events: none;
+}
+.cgxui-chat-page-collapse-feedback[hidden]{
+  display: none !important;
 }
 .cgxui-chat-page-divider[data-cgxui-chat-page-title-state="expanded"] .cgxui-chat-page-divider-dot,
 .cgxui-pgnw-page-divider[data-cgxui-chat-page-title-state="expanded"] .cgxui-pgnw-page-divider-dot{
@@ -1494,6 +1599,7 @@ html [data-cgxui-chat-page-no-answer="1"] [data-cgxui="atns-answer-title"][data-
 }
 .cgxui-chat-page-divider,
 .cgxui-pgnw-page-divider[data-cgxui-chat-page-divider="1"]{
+  position: relative;
   cursor: pointer;
 }
 .cgxui-chat-page-divider:hover .cgxui-chat-page-divider-label,

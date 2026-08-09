@@ -11,7 +11,20 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
 const MINIMAP_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
-const coreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
+// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
+// implementation, so the H2O Core source it reads is now the aggregate of the
+// three files the code actually lives in. No assertion changes: positive checks
+// and by-name extraction still find the code, and negative checks get strictly
+// stronger because a forbidden pattern must be absent from all three.
+const H2O_CORE_AGGREGATE_SOURCES = [
+  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
+  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
+  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
+];
+const coreSource = H2O_CORE_AGGREGATE_SOURCES
+  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
+  .join('\n');
 const miniMapSource = fs.readFileSync(path.join(ROOT, MINIMAP_PATH), 'utf8');
 const CHAT_KEY = 'fixture-chat-completeness';
 
@@ -163,7 +176,11 @@ if (countOccurrences(coreSource, 'getChatAtlasHistoricalCompleteness,') !== 1) {
 if (countOccurrences(miniMapSource, 'getCacheCompletenessDiagnostics,') !== 1) {
   throw new Error('minimap-diagnostic-export-anchor-invalid');
 }
-if (countOccurrences(coreSource, 'TOPW') !== 0) {
+// This ban is about H2O Core's own completeness lookup, so it is scoped to the
+// H2O Core file rather than the aggregate. 0A3a/0A3b legitimately resolve the
+// top window when brokering, which is not what this rule forbids.
+const coreOnlySource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+if (countOccurrences(coreOnlySource, 'TOPW') !== 0) {
   throw new Error('production-completeness-lookup-must-not-reference-TOPW');
 }
 
@@ -414,7 +431,7 @@ fixture('ordinary and project routes normalize to one chat key', () => {
 });
 
 fixture('production completeness lookup has no TOPW binding', () => {
-  equal(countOccurrences(coreSource, 'TOPW'), 0);
+  equal(countOccurrences(coreOnlySource, 'TOPW'), 0);
   check(!coreProgram.includes('TOPW'));
 });
 

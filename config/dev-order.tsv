@@ -8,6 +8,8 @@
 🟢	0A0a.⬛️🚀 Loader Bridge 🚀.user.js
 🟢	0A1a.⬛️🧠 H2O Core 🧠.js
 🟢	0A2a.⬛️🛰 Observer Hub 🛰.js
+🟢	0A3a.⬛️🧭 Chat Atlas Core 🧭.js
+🟢	0A3b.⬛️📒 Chat Atlas Ledger 📒.js
 
 # =========================
 # 🪟 CHAT FLOW
@@ -25,6 +27,7 @@
 🟢	0C1b.⚫️🪟 Pagination Windowing (Chat 🔗 Adapter) 🪟.js
 🟢	0C2a.⬛️⛰️ Unmount Messages Engine ⛰️.js
 🟢	0C2b.⚫️⛰️ Unmount Messages (Chat 🔗 Adapter) ⛰️.js
+🟢	0C3a.⬛️📐 Chat Page Structure Engine 📐.js
 
 # =========================
 # 🗄️ DATA
