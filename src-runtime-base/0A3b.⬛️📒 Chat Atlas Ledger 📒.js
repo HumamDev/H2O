@@ -76,6 +76,10 @@
     try { return TOPW.H2O_CHAT_ATLAS_CORE || W.H2O_CHAT_ATLAS_CORE || null; } catch { return null; }
   };
   const host = () => core()?.getHost?.() || null;
+  // Milestone 2B-2 moved the central Chat Atlas implementation into 0A3a, so the
+  // helpers below now resolve from the broker's own scope rather than from H2O
+  // Core's host surface. Resolution stays per call and inert when absent.
+  const atlas = () => core()?.getAtlasHost?.() || null;
 
   // generic turn model / state owned by H2O Core
   const turnState = new Proxy({}, {
@@ -83,39 +87,39 @@
     set: () => true,   // the Ledger never writes generic turn state
   });
   const completeTurnIndexAuthorityState = new Proxy({}, {
-    get: (_t, k) => host()?.completeTurnIndexAuthorityState?.[k],
+    get: (_t, k) => atlas()?.completeTurnIndexAuthorityState?.[k],
     set: () => true,   // nor central Chat Atlas authority state
   });
 
   const buildCanonicalTurnId = (...a) => host()?.buildCanonicalTurnId?.(...a);
   const buildTurns = (...a) => host()?.buildTurns?.(...a);
-  const getEffectivePresentationIndex = (...a) => host()?.getEffectivePresentationIndex?.(...a);
+  const getEffectivePresentationIndex = (...a) => atlas()?.getEffectivePresentationIndex?.(...a);
 
-  // central Chat Atlas helpers still resident in 0A1a (2B relocates these)
-  const chatAtlasCanonicalPresentationIndex = (...a) => host()?.chatAtlasCanonicalPresentationIndex?.(...a);
-  const chatAtlasClearBranchSelectionStale = (...a) => host()?.chatAtlasClearBranchSelectionStale?.(...a);
-  const chatAtlasCloseBranchTransaction = (...a) => host()?.chatAtlasCloseBranchTransaction?.(...a);
-  const chatAtlasCompleteBranchExpansionCheckpoint = (...a) => host()?.chatAtlasCompleteBranchExpansionCheckpoint?.(...a);
-  const chatAtlasCompleteIndexAuthorityActive = (...a) => host()?.chatAtlasCompleteIndexAuthorityActive?.(...a) === true;
-  const chatAtlasCompleteIndexIdentity = (...a) => host()?.chatAtlasCompleteIndexIdentity?.(...a);
-  const chatAtlasCurrentChatKey = (...a) => host()?.chatAtlasCurrentChatKey?.(...a) ?? '';
-  const chatAtlasCv2CurrentIds = (...a) => host()?.chatAtlasCv2CurrentIds?.(...a);
-  const chatAtlasEvaluateHistoricalCompleteness = (...a) => host()?.chatAtlasEvaluateHistoricalCompleteness?.(...a);
-  const chatAtlasFailClosedPreExpansionReturn = (...a) => host()?.chatAtlasFailClosedPreExpansionReturn?.(...a);
-  const chatAtlasFreeze = (...a) => host()?.chatAtlasFreeze?.(...a) ?? (a.length ? a[0] : undefined);
-  const chatAtlasFullIndexRoute = (...a) => host()?.chatAtlasFullIndexRoute?.(...a);
-  const chatAtlasNormalizeChatKey = (...a) => host()?.chatAtlasNormalizeChatKey?.(...a) ?? '';
-  const chatAtlasNormalizeId = (...a) => host()?.chatAtlasNormalizeId?.(...a) ?? '';
-  const chatAtlasNow = (...a) => host()?.chatAtlasNow?.(...a) ?? Date.now();
-  const chatAtlasNullableCount = (...a) => host()?.chatAtlasNullableCount?.(...a) ?? 0;
-  const chatAtlasOpenBranchExpansion = (...a) => host()?.chatAtlasOpenBranchExpansion?.(...a);
-  const chatAtlasPairEvidence = (...a) => host()?.chatAtlasPairEvidence?.(...a);
-  const chatAtlasReadEvidence = (...a) => host()?.chatAtlasReadEvidence?.(...a);
-  const chatAtlasReadMiniMapCompletenessDiagnostics = (...a) => host()?.chatAtlasReadMiniMapCompletenessDiagnostics?.(...a);
-  const chatAtlasRealBranchExpansionTargetValidation = (...a) => host()?.chatAtlasRealBranchExpansionTargetValidation?.(...a);
-  const chatAtlasSelectedPathEvaluate = (...a) => host()?.chatAtlasSelectedPathEvaluate?.(...a);
-  const chatAtlasSelectedPathOverlayEvaluate = (...a) => host()?.chatAtlasSelectedPathOverlayEvaluate?.(...a);
-  const chatAtlasTraceTrustedLifecycle = (...a) => host()?.chatAtlasTraceTrustedLifecycle?.(...a);
+  // central Chat Atlas helpers, owned by 0A3a since Milestone 2B-2
+  const chatAtlasCanonicalPresentationIndex = (...a) => atlas()?.chatAtlasCanonicalPresentationIndex?.(...a);
+  const chatAtlasClearBranchSelectionStale = (...a) => atlas()?.chatAtlasClearBranchSelectionStale?.(...a);
+  const chatAtlasCloseBranchTransaction = (...a) => atlas()?.chatAtlasCloseBranchTransaction?.(...a);
+  const chatAtlasCompleteBranchExpansionCheckpoint = (...a) => atlas()?.chatAtlasCompleteBranchExpansionCheckpoint?.(...a);
+  const chatAtlasCompleteIndexAuthorityActive = (...a) => atlas()?.chatAtlasCompleteIndexAuthorityActive?.(...a) === true;
+  const chatAtlasCompleteIndexIdentity = (...a) => atlas()?.chatAtlasCompleteIndexIdentity?.(...a);
+  const chatAtlasCurrentChatKey = (...a) => atlas()?.chatAtlasCurrentChatKey?.(...a) ?? '';
+  const chatAtlasCv2CurrentIds = (...a) => atlas()?.chatAtlasCv2CurrentIds?.(...a);
+  const chatAtlasEvaluateHistoricalCompleteness = (...a) => atlas()?.chatAtlasEvaluateHistoricalCompleteness?.(...a);
+  const chatAtlasFailClosedPreExpansionReturn = (...a) => atlas()?.chatAtlasFailClosedPreExpansionReturn?.(...a);
+  const chatAtlasFreeze = (...a) => atlas()?.chatAtlasFreeze?.(...a) ?? (a.length ? a[0] : undefined);
+  const chatAtlasFullIndexRoute = (...a) => atlas()?.chatAtlasFullIndexRoute?.(...a);
+  const chatAtlasNormalizeChatKey = (...a) => atlas()?.chatAtlasNormalizeChatKey?.(...a) ?? '';
+  const chatAtlasNormalizeId = (...a) => atlas()?.chatAtlasNormalizeId?.(...a) ?? '';
+  const chatAtlasNow = (...a) => atlas()?.chatAtlasNow?.(...a) ?? Date.now();
+  const chatAtlasNullableCount = (...a) => atlas()?.chatAtlasNullableCount?.(...a) ?? 0;
+  const chatAtlasOpenBranchExpansion = (...a) => atlas()?.chatAtlasOpenBranchExpansion?.(...a);
+  const chatAtlasPairEvidence = (...a) => atlas()?.chatAtlasPairEvidence?.(...a);
+  const chatAtlasReadEvidence = (...a) => atlas()?.chatAtlasReadEvidence?.(...a);
+  const chatAtlasReadMiniMapCompletenessDiagnostics = (...a) => atlas()?.chatAtlasReadMiniMapCompletenessDiagnostics?.(...a);
+  const chatAtlasRealBranchExpansionTargetValidation = (...a) => atlas()?.chatAtlasRealBranchExpansionTargetValidation?.(...a);
+  const chatAtlasSelectedPathEvaluate = (...a) => atlas()?.chatAtlasSelectedPathEvaluate?.(...a);
+  const chatAtlasSelectedPathOverlayEvaluate = (...a) => atlas()?.chatAtlasSelectedPathOverlayEvaluate?.(...a);
+  const chatAtlasTraceTrustedLifecycle = (...a) => atlas()?.chatAtlasTraceTrustedLifecycle?.(...a);
 
   // ═══════════════════════════════════════════════════════════════════════════
   // EXTRACTED LEDGER IMPLEMENTATION — moved verbatim from 0A1a H2O Core.
@@ -3036,7 +3040,7 @@
     const cleared = chatAtlasClearBranchSelectionStale(checkpoint, 'native-branch-returned-to-canonical');
     if (cleared) chatAtlasCloseBranchTransaction('published', 'native-branch-returned-to-canonical', String(intent.token || ''));
     if (cleared && completeTurnIndexAuthorityState.trustedSelectedPathIntent?.token === intent.token) {
-      host()?.clearTrustedSelectedPathIntent?.();
+      core()?.clearTrustedSelectedPathIntent?.();
       chatAtlasTraceTrustedLifecycle('trusted-intent-cleared', {
         reason: 'native-branch-returned-to-canonical',
         qId,

@@ -14,7 +14,12 @@ const TITLE_PATH = 'src-runtime-base/1C1a.🟥📛 Turn Title Bar 📛.js';
 const TIMESTAMP_PATH = 'src-runtime-base/1Z1a.🔴⏳ Answer Timestamp ⏳.js';
 const ANSWER_NUMBER_PATH = 'src-runtime-base/1X1a.🔴🧮 Answer Numbers 🧮.js';
 const QUESTION_NUMBER_PATH = 'src-runtime-base/2X1a.🟡🔢 Question Numbers 🔢.js';
-const CORE_RUNTIME_SOURCE = fs.readFileSync(path.join(ROOT, CORE_RUNTIME_PATH), 'utf8');
+// Milestone 2B-2 moved the central Chat Atlas authority out of H2O Core into
+// 0A3a Chat Atlas Core. This validator asserts on that implementation, so the
+// H2O Core source it reads is the aggregate of the files the code now lives in.
+// No assertion changes; negative checks span both owners, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
+const CORE_RUNTIME_SOURCE = `${fs.readFileSync(path.join(ROOT, CORE_RUNTIME_PATH), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 const CORE_STUDIO_SOURCE = fs.readFileSync(path.join(ROOT, CORE_STUDIO_PATH), 'utf8');
 const TITLE_SOURCE = fs.readFileSync(path.join(ROOT, TITLE_PATH), 'utf8');
 const TIMESTAMP_SOURCE = fs.readFileSync(path.join(ROOT, TIMESTAMP_PATH), 'utf8');

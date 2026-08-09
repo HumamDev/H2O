@@ -16,7 +16,12 @@ const PAGE_REL = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js
 const CAPABILITY_VALIDATOR_REL = 'tools/validation/chat-atlas/validate-chat-atlas-cv3-24-rendered-boundary-collapse-capability.mjs';
 const PARENT_COMMIT = '9bd4a69e7daaac7cde34df59067c0802cc6f547d';
 const PRE_BRIDGE_COMMIT = '1b88533ba7f2d331dfc81370ddc26977518b41cf';
-const CURRENT_CORE = fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8');
+// Milestone 2B-2 moved the central Chat Atlas authority out of H2O Core into
+// 0A3a Chat Atlas Core. This validator asserts on that implementation, so the
+// H2O Core source it reads is the aggregate of the files the code now lives in.
+// No assertion changes; negative checks span both owners, which is stronger.
+const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
+const CURRENT_CORE = `${fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
 const CURRENT_REBUILD = fs.readFileSync(path.join(ROOT, REBUILD_REL), 'utf8');
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_REL), 'utf8');
 const PARENT_REBUILD = execFileSync('git', ['show', `${PARENT_COMMIT}:${REBUILD_REL}`], {
