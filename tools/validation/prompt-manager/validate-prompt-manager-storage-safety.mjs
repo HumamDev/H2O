@@ -67,10 +67,23 @@ function makeStorage(seed = {}) {
   return {
     failWrites: false,
     failEnumeration: false,
+    /* [2C] Per-key write failure. `failWrites` fails everything, which cannot
+     * express "the SECOND of two stores failed" — the exact case the import
+     * rollback exists for. Null by default, so every earlier case is unchanged. */
+    failWriteFor: null,
+    sneakWriteFor: null,
     writes: 0,
     getItem(k) { return map.has(k) ? map.get(k) : null; },
     setItem(k, v) {
       if (this.failWrites) throw new Error('QuotaExceededError (mock)');
+      if (this.failWriteFor && this.failWriteFor(String(k))) {
+      /* [2C-closure] A storage layer that writes and STILL throws. Independent
+       * review found the rollback trusting the return value and reporting a
+       * failure for bytes that were in fact correct, so the mock has to be able
+       * to lie the same way. */
+      if (this.sneakWriteFor && this.sneakWriteFor(String(k))) map.set(k, String(v));
+      throw new Error('QuotaExceededError (mock, per-key)');
+    }
       this.writes += 1;
       map.set(k, String(v));
     },
@@ -174,6 +187,8 @@ function makeSandbox(storage, opts = {}) {
     MutationObserver: class { observe() {} disconnect() {} },
     ResizeObserver: class { observe() {} disconnect() {} },
     CSS: { escape: (s) => String(s) },
+    // Real browsers expose TextEncoder; the portability byte gate needs it.
+    TextEncoder,
   };
   // Frozen clock: UTIL_now() is Date.now(), so overriding the sandbox's Date
   // pins every timestamp the module derives. Used to force quarantine key
@@ -2428,6 +2443,797 @@ function main() {
     assert.deepEqual(Array.from(out), [], 'corrupt still yields an empty list');
     assert.equal(store.getItem(promptsKey(t)), '{"broken": [1,2,', 'primary bytes preserved');
     assert.ok(t.diag.counters.corruptReads > 0);
+  });
+
+
+  /* ══════════ PHASE 2C — PORTABILITY STORAGE SAFETY ══════════
+   * Import is the only operation in this module that writes TWO live stores in
+   * one user action, so it is the only one that can leave the pair disagreeing.
+   * These cases approach it from the storage side: what bytes exist, which keys
+   * were touched, and whether a failure left anything half-applied.
+   *
+   * Nothing here reimplements the import; every case drives the shipped
+   * controller through the real storage mock. */
+
+  const quickKey2C = (t) => t.keys.quick;
+  const backupKey2C = (t) => t.keys.importBackup;
+
+  /* A prompt/quick pair in the exact shape the exporter emits, so a staged
+   * envelope is the same data the UI would hand the controller. */
+  const P2C = (id, o = {}) => ({
+    id, title: o.title ?? `T-${id}`, body: o.body ?? `B-${id}`,
+    type: o.type ?? 'prompt', favorite: o.favorite ?? false,
+    createdAt: o.createdAt ?? 1, updatedAt: o.updatedAt ?? 2,
+  });
+  const Q2C = (id, o = {}) => ({
+    id, text: o.text ?? `Q-${id}`, order: o.order ?? 0,
+    createdAt: o.createdAt ?? 1, updatedAt: o.updatedAt ?? 2,
+  });
+
+  /* Load a module with a known live library and a validated pending import. */
+  function seed2C(store, { prompts = [P2C('a'), P2C('b')], quick = [Q2C('q1')] } = {}) {
+    const ctx = loadModule(store);
+    const { t } = ctx;
+    t.engine.commitPrompts(prompts);
+    t.engine.commitQuick(quick);
+    ctx.stage = (importPrompts, importQuick) => {
+      const res = t.portability.validateImportEnvelope({
+        kind: t.portability.kind,
+        version: t.portability.version,
+        exportedAt: 1_800_000_000_000,
+        prompts: importPrompts,
+        quickReplies: importQuick,
+      });
+      assert.ok(res.ok, `fixture envelope must validate: ${res.error}`);
+      t.state.ui.port.pending = { envelope: res.envelope };
+    };
+    ctx.snapshot = () => ({
+      prompts: store.getItem(promptsKey(t)),
+      quick: store.getItem(quickKey2C(t)),
+      backup: store.getItem(backupKey2C(t)),
+    });
+    return ctx;
+  }
+
+  check('2C-S1: staging a valid file writes nothing at all', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    c.stage([P2C('z')], [Q2C('q9')]);
+    assert.equal(c.t.portability.controller.isPending(), true, 'the confirmation is staged');
+    assert.deepEqual(c.snapshot(), before, 'and not one live byte changed');
+    assert.equal(store.writes, writes, 'setItem was never called');
+    assert.equal(store.getItem(backupKey2C(c.t)), null, 'no backup is written merely by staging');
+  });
+
+  check('2C-S2: an invalid file performs zero writes and never quarantines', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    const corruptBefore = c.t.diag.counters.corruptReads;
+    for (const bad of ['not json', '{"kind":"wrong"}', '[]', '', '{"kind":"h2o-prompt-manager-portability","version":99}']) {
+      assert.equal(c.t.portability.parseImportText(bad).ok, false);
+    }
+    assert.deepEqual(c.snapshot(), before, 'live bytes untouched');
+    assert.equal(store.writes, writes, 'no write attempted');
+    assert.equal(c.t.diag.counters.corruptReads, corruptBefore,
+      'a user-supplied file is not an internal corrupt read');
+    assert.deepEqual(store._keys().filter(k => k.includes('.corrupt.')), [],
+      'and nothing was quarantined');
+  });
+
+  check('2C-S3: the pre-import backup holds Prompts and Quick only', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    // Populate every capture store first, so a leak would be visible.
+    c.t.storage.setJSON(c.t.keys.history, [{ id: 'h', text: 'captured', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.drafts, [{ id: 'd', text: 'captured', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.pasted, [{ id: 'p', text: 'captured', createdAt: 1 }]);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), true);
+    const raw = store.getItem(backupKey2C(c.t));
+    assert.ok(raw, 'a backup exists');
+    const b = JSON.parse(raw);
+    assert.deepEqual(Object.keys(b).sort(), ['kind', 'prompts', 'quickReplies', 'savedAt', 'version']);
+    assert.deepEqual(b.prompts.map(r => r.id), ['a', 'b'], 'the PRE-import library');
+    assert.deepEqual(b.quickReplies.map(r => r.id), ['q1']);
+    assert.ok(!raw.includes('captured'), 'no capture content anywhere in the backup');
+  });
+
+  check('2C-S4: a failed backup write performs zero live writes', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    const failuresBefore = c.t.diag.counters.writeFailures;
+    store.failWriteFor = (k) => k.includes('import_backup');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(promptsKey(c.t)), before.prompts, 'Prompts untouched');
+    assert.equal(store.getItem(quickKey2C(c.t)), before.quick, 'Quick untouched');
+    assert.equal(store.getItem(backupKey2C(c.t)), null, 'and no backup landed');
+    assert.ok(c.t.diag.counters.writeFailures > failuresBefore, 'the failure is counted');
+    assert.equal(c.t.state.dataError, true, 'and flagged');
+  });
+
+  check('2C-S5: a Prompt write failure leaves both live stores byte-identical', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    store.failWriteFor = (k) => k.includes('state:prompts');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(promptsKey(c.t)), before.prompts);
+    assert.equal(store.getItem(quickKey2C(c.t)), before.quick,
+      'the second store was never reached');
+  });
+
+  check('2C-S6: a Quick write failure rolls the already-written Prompt store back', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    store.failWriteFor = (k) => k.includes('state:quick_replies');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(promptsKey(c.t)), before.prompts,
+      'the Prompt store is back to its pre-import bytes');
+    assert.equal(store.getItem(quickKey2C(c.t)), before.quick);
+    const pairs = [JSON.parse(store.getItem(promptsKey(c.t))).map(r => r.id),
+      JSON.parse(store.getItem(quickKey2C(c.t))).map(r => r.id)];
+    assert.deepEqual(pairs, [['a', 'b'], ['q1']], 'never a mixed old/new pair');
+  });
+
+  check('2C-S7: rollback restores exact raw bytes, not a re-serialization', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    /* A legacy record the tolerant loader normalizes in memory. If rollback
+     * wrote back a parsed-and-restringified value, these bytes would change
+     * even though the failed import never touched this record. */
+    const legacy = '[{"id":"legacy","title":"L","body":"B"}]';
+    store._map.set(promptsKey(c.t), legacy);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    store.failWriteFor = (k) => k.includes('state:quick_replies');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(promptsKey(c.t)), legacy, 'byte-for-byte the original string');
+    assert.ok(!store.getItem(promptsKey(c.t)).includes('createdAt'),
+      'no field was materialized by the rollback');
+  });
+
+  check('2C-S8: an absent key is restored as absent, never as an empty array', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    store._map.delete(quickKey2C(c.t));
+    assert.equal(store.getItem(quickKey2C(c.t)), null, 'precondition: absent');
+    c.stage([P2C('z')], [Q2C('q9')]);
+    store.failWriteFor = (k) => k.includes('state:quick_replies');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(quickKey2C(c.t)), null,
+      'still absent — "[]" would be a different state entirely');
+    assert.ok(!store._keys().includes(quickKey2C(c.t)), 'the key itself does not exist');
+  });
+
+  check('2C-S9: in-memory authority is adopted only after complete storage success', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+
+    store.failWriteFor = (k) => k.includes('state:quick_replies');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.deepEqual(Array.from(c.t.state.data.prompts).map(r => r.id), ['a', 'b'],
+      'memory still holds the pre-import library');
+    assert.deepEqual(Array.from(c.t.state.data.quick).map(r => r.id), ['q1']);
+
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), true);
+    assert.deepEqual(Array.from(c.t.state.data.prompts).map(r => r.id), ['z']);
+    assert.deepEqual(Array.from(c.t.state.data.quick).map(r => r.id), ['q9']);
+    assert.deepEqual(JSON.parse(store.getItem(promptsKey(c.t))).map(r => r.id), ['z'],
+      'and memory agrees with the bytes');
+  });
+
+  check('2C-S10: a successful import leaves every capture store byte-identical', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.storage.setJSON(c.t.keys.history, [{ id: 'h', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.drafts, [{ id: 'd', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.pasted, [{ id: 'p', text: 'keep', createdAt: 1 }]);
+    const before = {
+      h: store.getItem(c.t.keys.history),
+      d: store.getItem(c.t.keys.drafts),
+      p: store.getItem(c.t.keys.pasted),
+    };
+    c.stage([P2C('z')], [Q2C('q9')]);
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), true);
+    assert.equal(store.getItem(c.t.keys.history), before.h);
+    assert.equal(store.getItem(c.t.keys.drafts), before.d);
+    assert.equal(store.getItem(c.t.keys.pasted), before.p);
+  });
+
+  check('2C-S11: import touches only the three portability keys — no seed, no quarantine', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const seedBefore = store.getItem(c.t.keys.seeded);
+    const before = new Set(store._keys());
+    c.stage([P2C('z')], [Q2C('q9')]);
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'merge'), true);
+    const added = store._keys().filter(k => !before.has(k));
+    assert.deepEqual(added, [backupKey2C(c.t)],
+      `only the backup key is new (saw ${JSON.stringify(added)})`);
+    assert.equal(store.getItem(c.t.keys.seeded), seedBefore, 'the seed marker is untouched');
+    assert.deepEqual(store._keys().filter(k => k.includes('.corrupt.')), [], 'nothing quarantined');
+    assert.equal(c.t.diag.counters.seeds === undefined ? 0 : c.t.diag.counters.seeds,
+      c.t.diag.counters.seeds, 'and no reseed was triggered');
+  });
+
+  check('2C-S12: only one backup key ever exists — no unbounded backup log', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    for (let i = 0; i < 4; i += 1) {
+      c.stage([P2C(`z${i}`)], [Q2C('q9')]);
+      assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), true);
+    }
+    const backups = store._keys().filter(k => k.includes('import_backup'));
+    assert.deepEqual(backups, [backupKey2C(c.t)], 'exactly one key, overwritten in place');
+    const b = JSON.parse(store.getItem(backupKey2C(c.t)));
+    assert.deepEqual(b.prompts.map(r => r.id), ['z2'],
+      'holding the state from immediately before the last import');
+  });
+
+  check('2C-S13: changed events publish on success and never on failure', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+
+    const beforeFail = changedEvents(c.emitted).length;
+    store.failWriteFor = (k) => k.includes('state:quick_replies');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(changedEvents(c.emitted).length, beforeFail,
+      'a rolled-back import publishes nothing');
+
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), true);
+    assert.ok(changedEvents(c.emitted).length > beforeFail, 'a successful import publishes');
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE — LOSSLESS EXPORT + BYTE-VERIFIED ROLLBACK ══════════════ */
+
+  check('2C-C1: a lossy library is refused for export, with zero storage side effects', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    for (const [why, prompts, quick] of [
+      ['missing id', [P2C('a'), (() => { const r = P2C('b'); delete r.id; return r; })()], [Q2C('q1')]],
+      ['duplicate id', [P2C('a'), P2C('a')], [Q2C('q1')]],
+      ['non-boolean favorite', [{ ...P2C('a'), favorite: 1 }], [Q2C('q1')]],
+      ['duplicate quick id', [P2C('a')], [Q2C('q1'), Q2C('q1')]],
+    ]) {
+      c.t.state.data.prompts = prompts;
+      c.t.state.data.quick = quick;
+      assert.equal(c.t.portability.controller.exportLibrary(undefined), false, `refused: ${why}`);
+      assert.equal(c.t.state.ui.feedback.kind, 'error', `persistent error: ${why}`);
+      assert.notEqual(c.t.state.ui.feedback.message, 'Exported', `never "Exported": ${why}`);
+    }
+    assert.deepEqual(c.snapshot(), before, 'every storage key is byte-identical');
+    assert.equal(store.writes, writes, 'and setItem was never called');
+  });
+
+  check('2C-C2: a lossless library exports every record and writes nothing', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    const built = c.t.portability.buildExportEnvelope(c.t.state.data.prompts, c.t.state.data.quick, 1);
+    assert.ok(built.ok, `expected success: ${built.error}`);
+    assert.equal(built.envelope.prompts.length, c.t.state.data.prompts.length);
+    assert.equal(built.envelope.quickReplies.length, c.t.state.data.quick.length);
+    assert.deepEqual(c.snapshot(), before, 'exporting reads only');
+    assert.equal(store.writes, writes);
+  });
+
+  check('2C-C3: rollback is judged by the final bytes, not by the setter result', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    let promptWrites = 0;
+    store.failWriteFor = (k) => {
+      if (k.includes('state:quick_replies')) return true;
+      if (k.includes('state:prompts')) { promptWrites += 1; return promptWrites > 1; }
+      return false;
+    };
+    // The restoring Prompt write throws AND lands: the bytes end up correct.
+    store.sneakWriteFor = (k) => k.includes('state:prompts');
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null; store.sneakWriteFor = null;
+    assert.equal(store.getItem(promptsKey(c.t)), before.prompts,
+      'the Prompt bytes really are the pre-import bytes');
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.write,
+      'so this is an ordinary write failure, NOT a rollback failure');
+    assert.notEqual(c.t.state.ui.feedback.message, c.t.portability.messages.rollback);
+  });
+
+  check('2C-C4: a genuine degraded rollback syncs memory to the actual disk state', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    let promptWrites = 0;
+    store.failWriteFor = (k) => {
+      if (k.includes('state:quick_replies')) return true;
+      if (k.includes('state:prompts')) { promptWrites += 1; return promptWrites > 1; }
+      return false;
+    };
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    const diskP = JSON.parse(store.getItem(promptsKey(c.t))).map(r => r.id);
+    const diskQ = JSON.parse(store.getItem(quickKey2C(c.t))).map(r => r.id);
+    assert.deepEqual(diskP, ['z'], 'the Prompt store holds the new value');
+    assert.deepEqual(diskQ, ['q1'], 'the Quick store holds the old one');
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.rollback);
+    assert.deepEqual(Array.from(c.t.state.data.prompts).map(r => r.id), diskP,
+      'memory now matches the bytes that actually persist');
+    assert.deepEqual(Array.from(c.t.state.data.quick).map(r => r.id), diskQ);
+  });
+
+  check('2C-C5: degraded reconciliation performs zero storage writes', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    let promptWrites = 0;
+    store.failWriteFor = (k) => {
+      if (k.includes('state:quick_replies')) return true;
+      if (k.includes('state:prompts')) { promptWrites += 1; return promptWrites > 1; }
+      return false;
+    };
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    const after = store.writes;
+    const keysAfter = store._keys().slice().sort();
+    // The pure decoder, exercised directly, adds nothing.
+    c.t.portability.decodeRawList({ ok: true, present: true, raw: store.getItem(promptsKey(c.t)) });
+    c.t.portability.decodeRawList({ ok: true, present: false, raw: null });
+    assert.equal(store.writes, after, 'no further write');
+    assert.deepEqual(store._keys().slice().sort(), keysAfter, 'and no new key');
+  });
+
+  check('2C-C6: an undecodable degraded state fails closed and latches recovery', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    let promptWrites = 0;
+    store.failWriteFor = (k) => {
+      if (k.includes('state:quick_replies')) return true;
+      if (k.includes('state:prompts')) {
+        promptWrites += 1;
+        if (promptWrites > 1) { store._map.set(promptsKey(c.t), 'not-json-at-all'); return true; }
+      }
+      return false;
+    };
+    const memBefore = Array.from(c.t.state.data.prompts).map(r => r.id);
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(c.t.state.ui.port.recoveryRequired, true, 'recovery is latched');
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.recovery);
+    assert.deepEqual(Array.from(c.t.state.data.prompts).map(r => r.id), memBefore,
+      'no list was invented — memory is left exactly as it was');
+    // and the next portability mutation fails closed
+    c.stage([P2C('y')], [Q2C('q8')]);
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'merge'), false);
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.recovery);
+  });
+
+  check('2C-C7: a library that cannot be backed up aborts the import before any write', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.state.data.prompts = [P2C('a'), P2C('a')]; // duplicate id: not snapshottable
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    const writes = store.writes;
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    assert.equal(c.t.state.ui.feedback.kind, 'error');
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.storePrompts,
+      'the strict live-authority gate catches the unsnapshottable pair first');
+    assert.deepEqual(c.snapshot(), before, 'no live byte, and no backup byte, changed');
+    assert.equal(store.writes, writes, 'setItem was never called');
+    assert.equal(store.getItem(backupKey2C(c.t)), null, 'no backup was written');
+  });
+
+  check('2C-C8: capture stores and quarantine survive every degraded path', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.storage.setJSON(c.t.keys.history, [{ id: 'h', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.drafts, [{ id: 'd', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.pasted, [{ id: 'p', text: 'keep', createdAt: 1 }]);
+    const before = {
+      h: store.getItem(c.t.keys.history),
+      d: store.getItem(c.t.keys.drafts),
+      p: store.getItem(c.t.keys.pasted),
+    };
+    const corruptBefore = c.t.diag.counters.corruptReads;
+    c.stage([P2C('z')], [Q2C('q9')]);
+    let promptWrites = 0;
+    store.failWriteFor = (k) => {
+      if (k.includes('state:quick_replies')) return true;
+      if (k.includes('state:prompts')) { promptWrites += 1; return promptWrites > 1; }
+      return false;
+    };
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    store.failWriteFor = null;
+    assert.equal(store.getItem(c.t.keys.history), before.h);
+    assert.equal(store.getItem(c.t.keys.drafts), before.d);
+    assert.equal(store.getItem(c.t.keys.pasted), before.p);
+    assert.deepEqual(store._keys().filter(k => k.includes('.corrupt.')), [], 'nothing quarantined');
+    assert.equal(c.t.diag.counters.corruptReads, corruptBefore);
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE 2 — CANONICAL IDENTITY + READ RACE ══════════════ */
+
+  check('2C-D1: a padded-id library refuses export with zero storage side effects', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    for (const [why, id] of [['leading', ' a'], ['trailing', 'a '], ['both', ' a '], ['tab', '\ta']]) {
+      c.t.state.data.prompts = [{ ...P2C('ok'), id }];
+      c.t.state.data.quick = [Q2C('q1')];
+      assert.equal(c.t.portability.controller.exportLibrary(undefined), false, `refused: ${why}`);
+      assert.equal(c.t.state.ui.feedback.kind, 'error');
+      assert.notEqual(c.t.state.ui.feedback.message, 'Exported');
+    }
+    assert.deepEqual(c.snapshot(), before, 'storage untouched');
+    assert.equal(store.writes, writes, 'setItem never called');
+  });
+
+  check('2C-D2: the Phase-1 tolerant reader still loads what portability refuses', () => {
+    const store = makeStorage();
+    const c = loadModule(store);
+    // A library portability would refuse: padded id, duplicate id, no id.
+    const raw = JSON.stringify([
+      { id: ' spaced ', title: 'A', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 },
+      { id: 'dup', title: 'B', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 },
+      { id: 'dup', title: 'C', body: 'b', favorite: false, type: 'prompt', createdAt: 1, updatedAt: 1 },
+    ]);
+    store._map.set(promptsKey(c.t), raw);
+    const loaded = c.t.engine.loadPrompts();
+    assert.equal(loaded.length, 3, 'the tolerant reader keeps every record');
+    assert.equal(Array.from(loaded)[0].id, ' spaced ', 'and does not trim the id either');
+    assert.equal(store.getItem(promptsKey(c.t)), raw, 'the stored bytes are unchanged');
+    // Portability, and only portability, refuses it.
+    assert.equal(c.t.portability.buildExportEnvelope(loaded, [], 1).ok, false);
+  });
+
+  check('2C-D3: a non-array collection is never exported as an empty library', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = c.snapshot();
+    const writes = store.writes;
+    for (const bad of [{ bad: true }, null, 'x', 7]) {
+      c.t.state.data.prompts = bad;
+      c.t.state.data.quick = [Q2C('q1')];
+      assert.equal(c.t.portability.controller.exportLibrary(undefined), false, `refused: ${String(bad)}`);
+      assert.notEqual(c.t.state.ui.feedback.message, 'Exported');
+    }
+    assert.deepEqual(c.snapshot(), before);
+    assert.equal(store.writes, writes);
+  });
+
+  check('2C-D4: an unsnapshottable non-array library aborts the import before any write', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.state.data.prompts = { bad: true };
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    const writes = store.writes;
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    assert.equal(c.t.state.ui.feedback.kind, 'error');
+    assert.deepEqual(c.snapshot(), before, 'no live byte and no backup byte');
+    assert.equal(store.writes, writes);
+    assert.equal(store.getItem(backupKey2C(c.t)), null);
+  });
+
+  check('2C-D5: a stale FileReader completion writes nothing', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const readers = [];
+    c.sandbox.FileReader = class {
+      constructor() { this.result = null; this.onload = null; this.onerror = null; readers.push(this); }
+      readAsText(f) { this.file = f; }
+    };
+    const env = (id) => JSON.stringify({
+      kind: c.t.portability.kind, version: c.t.portability.version, exportedAt: 1,
+      prompts: [P2C(id)], quickReplies: [Q2C(`q-${id}`)],
+    });
+    const file = (text) => ({ size: text.length, __text: text });
+    const finish = (r) => { r.result = r.file.__text; if (r.onload) r.onload(); };
+
+    c.t.portability.controller.beginImport(undefined, file(env('A')));
+    c.t.portability.controller.beginImport(undefined, file(env('B')));
+    finish(readers[1]);
+    const writes = store.writes;
+    const snapshot = c.snapshot();
+    finish(readers[0]);                       // stale
+    if (readers[0].onerror) readers[0].onerror();
+    assert.equal(store.writes, writes, 'the stale completion performed no write');
+    assert.deepEqual(c.snapshot(), snapshot, 'and changed no stored byte');
+    assert.deepEqual(
+      Array.from(c.t.state.ui.port.pending.envelope.prompts).map(r => r.id), ['B'],
+      'the pending import is still the newest selection');
+  });
+
+  check('2C-D6: the read generation is never persisted', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const before = store._keys().slice().sort();
+    c.sandbox.FileReader = class {
+      constructor() { this.onload = null; this.onerror = null; }
+      readAsText() {}
+    };
+    for (let i = 0; i < 4; i += 1) {
+      c.t.portability.controller.beginImport(undefined, { size: 10, __text: '{}' });
+    }
+    assert.deepEqual(store._keys().slice().sort(), before, 'no new storage key');
+    for (const k of store._keys()) {
+      assert.ok(!String(store.getItem(k)).includes('readSeq'), `no readSeq inside ${k}`);
+    }
+    assert.ok(c.t.state.ui.port.readSeq >= 4, 'the counter advanced in memory only');
+  });
+
+  check('2C-D7: recoveryRequired blocks portability writes but not ordinary saves', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.state.ui.port.recoveryRequired = true;
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false, 'import blocked');
+    assert.equal(c.t.portability.controller.exportLibrary(undefined), false, 'export blocked');
+    assert.deepEqual(c.snapshot(), before, 'and neither wrote a byte');
+    // The ordinary engine commit path is unaffected: Prompt Manager stays usable.
+    assert.equal(c.t.engine.commitPrompts([P2C('n1')]), true, 'a normal save still works');
+    assert.deepEqual(JSON.parse(store.getItem(promptsKey(c.t))).map(r => r.id), ['n1']);
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE 3 — QUICK ORDER · LIVE STORE · BYTE SIZE ══════════════ */
+
+  check('2C-E1: the imported Quick sequence survives a real persist + reload', () => {
+    const store = makeStorage();
+    const c = seed2C(store, { quick: [] });
+    const local = [
+      { id: 'A', text: 'a', order: 0, createdAt: 1, updatedAt: 1 },
+      { id: 'B', text: 'b', order: 1, createdAt: 1, updatedAt: 1 },
+      { id: 'C', text: 'c', order: 2, createdAt: 1, updatedAt: 1 },
+    ];
+    c.t.engine.commitQuick(local);
+    const imported = [{ id: 'B', text: 'B2', order: 99, createdAt: 1, updatedAt: 1 }];
+    const cand = c.t.portability.buildImportCandidates('merge',
+      { prompts: [], quick: c.t.state.data.quick },
+      { prompts: [], quickReplies: imported });
+    assert.deepEqual(Array.from(cand.quick).map(r => r.id), ['A', 'B', 'C'], 'candidate sequence');
+    assert.equal(c.t.engine.commitQuick(cand.quick), true);
+    assert.deepEqual(Array.from(c.t.engine.loadQuick()).map(r => r.id), ['A', 'B', 'C'],
+      'and the real loader agrees — the foreign order 99 did not move B to the end');
+  });
+
+  check('2C-E2: a malformed Prompt primary refuses export and survives byte-identically', () => {
+    const store = makeStorage();
+    const c = loadModule(store);
+    const CORRUPT = '{bad json';
+    store._map.set(c.t.keys.prompts, CORRUPT);
+    c.t.storage.setJSON(c.t.keys.quick, []);
+    c.t.state.data.prompts = c.t.engine.loadPrompts();   // Phase-1: yields []
+    c.t.state.data.quick = c.t.engine.loadQuick();
+    assert.deepEqual(Array.from(c.t.state.data.prompts), [], 'precondition: memory shows empty');
+    const writes = store.writes;
+    assert.equal(c.t.portability.controller.exportLibrary(undefined), false);
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.storePrompts);
+    assert.equal(store.getItem(c.t.keys.prompts), CORRUPT, 'the corrupt bytes are untouched');
+    assert.equal(store.writes, writes, 'and the refusal wrote nothing');
+  });
+
+  check('2C-E3: a malformed primary refuses import before backup or live write', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const CORRUPT = '{bad json';
+    store._map.set(promptsKey(c.t), CORRUPT);
+    c.t.state.data.prompts = c.t.engine.loadPrompts();
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const before = c.snapshot();
+    const writes = store.writes;
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'merge'), false);
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.storePrompts);
+    assert.equal(store.getItem(promptsKey(c.t)), CORRUPT, 'the corrupt primary was not overwritten');
+    assert.equal(store.getItem(backupKey2C(c.t)), before.backup, 'no backup was written');
+    assert.equal(store.writes, writes, 'setItem was never called');
+  });
+
+  check('2C-E4: the preflight itself performs no write and no quarantine of its own', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    store._map.set(promptsKey(c.t), '{bad json');
+    const quarantineBefore = store._keys().filter(k => k.includes('.corrupt.')).sort();
+    const writes = store.writes;
+    const keys = store._keys().slice().sort();
+    for (let i = 0; i < 3; i += 1) {
+      c.t.portability.checkLiveStoreAuthority(c.t.state.data.prompts, c.t.state.data.quick);
+    }
+    assert.equal(store.writes, writes, 'zero writes');
+    assert.deepEqual(store._keys().slice().sort(), keys, 'zero new keys');
+    assert.deepEqual(store._keys().filter(k => k.includes('.corrupt.')).sort(), quarantineBefore,
+      'zero quarantine entries created by the preflight');
+  });
+
+  check('2C-E5: an absent primary with a non-empty memory fails closed', () => {
+    const store = makeStorage();
+    const c = loadModule(store);
+    c.t.state.data.prompts = [P2C('a')];
+    c.t.state.data.quick = [];
+    assert.equal(store.getItem(c.t.keys.prompts), null, 'precondition: no primary key');
+    const res = c.t.portability.checkLiveStoreAuthority(c.t.state.data.prompts, c.t.state.data.quick);
+    assert.equal(res.ok, false, 'storage and memory disagree');
+    assert.equal(c.t.portability.controller.exportLibrary(undefined), false);
+    // and the coherent empty case is still allowed
+    c.t.state.data.prompts = [];
+    assert.equal(c.t.portability.checkLiveStoreAuthority([], []).ok, true);
+  });
+
+  check('2C-E6: an export larger than the import cap is refused, writing nothing', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const P = c.t.portability;
+    const chunk = 'x'.repeat(4000);
+    const big = [];
+    let bytes = 0;
+    for (let i = 0; bytes <= P.maxBytes; i += 1) {
+      big.push({ ...P2C(`p${i}`), body: chunk });
+      bytes = P.utf8Bytes(P.serializeExport({
+        kind: P.kind, version: P.version, exportedAt: 1, prompts: big, quickReplies: [],
+      }));
+    }
+    c.t.engine.commitPrompts(big);
+    c.t.engine.commitQuick([]);
+    const snapshot = store._keys().slice().sort();
+    const writes = store.writes;
+    assert.equal(P.controller.exportLibrary(undefined), false, 'refused');
+    assert.equal(c.t.state.ui.feedback.message, P.messages.exportTooLarge);
+    assert.equal(c.t.state.ui.feedback.kind, 'error');
+    assert.equal(store.writes, writes, 'zero storage writes');
+    assert.deepEqual(store._keys().slice().sort(), snapshot, 'zero new keys');
+  });
+
+  check('2C-E7: the byte authority is real UTF-8, not String.length', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const P = c.t.portability;
+    assert.equal(P.utf8Bytes('a'), 1);
+    assert.equal(P.utf8Bytes('é'), 2);
+    assert.equal(P.utf8Bytes('€'), 3);
+    assert.equal(P.utf8Bytes('🙂'), 4);
+    assert.equal('🙂'.length, 2, 'which a code-unit count would have under-reported');
+    assert.equal(P.utf8Bytes(''), 0);
+  });
+
+  /* ══════ PHASE 2C CLOSURE 4 — LIVE COHERENCE + COMPLETE RECORDS ══════ */
+
+  check('2C-F1: valid-but-stale Prompt storage cannot be exported or rewritten', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const stale = PJ([P2C('newer')]);
+    store._map.set(promptsKey(c.t), stale);
+    const writes = store.writes;
+    assert.equal(c.t.portability.controller.exportLibrary(undefined), false);
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.changedPrompts);
+    assert.equal(store.getItem(promptsKey(c.t)), stale);
+    assert.equal(store.writes, writes, 'the refusal writes nothing');
+  });
+
+  check('2C-F2: valid-but-stale Quick storage blocks Apply before backup/live writes', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.stage([P2C('z')], [Q2C('q9')]);
+    const stale = PJ([Q2C('newer')]);
+    store._map.set(quickKey2C(c.t), stale);
+    const before = c.snapshot(); const writes = store.writes;
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'merge'), false);
+    assert.equal(c.t.state.ui.feedback.message, c.t.portability.messages.changedQuick);
+    assert.deepEqual(c.snapshot(), before);
+    assert.equal(store.writes, writes);
+    assert.equal(store.getItem(backupKey2C(c.t)), null);
+  });
+
+  check('2C-F3: Quick physical array order is not a second authority', () => {
+    const store = makeStorage();
+    const c = seed2C(store, { quick: [Q2C('A', { order: 0 }), Q2C('B', { order: 1 })] });
+    const a = Q2C('A', { order: 0 }); const b = Q2C('B', { order: 1 });
+    store._map.set(quickKey2C(c.t), PJ([b, a]));
+    const writes = store.writes;
+    assert.equal(c.t.portability.checkLiveStoreAuthority(
+      c.t.state.data.prompts, c.t.state.data.quick).ok, true);
+    assert.equal(store.writes, writes, 'comparison sorts copies only');
+    assert.equal(store.getItem(quickKey2C(c.t)), PJ([b, a]), 'physical bytes stay untouched');
+  });
+
+  check('2C-F4: structural equality ignores whitespace and property insertion order', () => {
+    const store = makeStorage();
+    const c = seed2C(store, { prompts: [P2C('A')], quick: [] });
+    store._map.set(promptsKey(c.t),
+      '[ { "updatedAt":2, "createdAt":1, "favorite":false, "type":"prompt", "body":"B-A", "title":"T-A", "id":"A" } ]');
+    assert.equal(c.t.portability.checkLiveStoreAuthority(
+      c.t.state.data.prompts, c.t.state.data.quick).ok, true);
+  });
+
+  check('2C-F5: an unknown Prompt own key cannot disappear through controller Export', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const local = [{ ...P2C('same'), extraSecret: 'KEEP-ME' }];
+    c.t.state.data.prompts = local;
+    store._map.set(promptsKey(c.t), PJ(local));
+    const before = c.snapshot(); const writes = store.writes;
+    assert.equal(c.t.portability.controller.exportLibrary(undefined), false);
+    assert.deepEqual(c.snapshot(), before);
+    assert.equal(store.writes, writes);
+  });
+
+  check('2C-F6: an unknown Quick own key makes both export and backup construction refuse', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const local = [{ ...Q2C('same'), extraSecret: { keep: true } }];
+    assert.equal(c.t.portability.buildExportEnvelope([], local, 1).ok, false);
+    assert.equal(c.t.portability.buildBackupEnvelope([], local, 1).ok, false);
+  });
+
+  check('2C-F7: an unknown local Prompt field aborts Import without creating a backup', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    const local = [{ ...P2C('same'), extraSecret: 'KEEP-ME' }];
+    c.t.state.data.prompts = local;
+    store._map.set(promptsKey(c.t), PJ(local));
+    c.stage([P2C('same', { title: 'imported' })], [Q2C('q9')]);
+    const before = c.snapshot(); const writes = store.writes;
+    assert.equal(c.t.portability.controller.applyImport(undefined, 'replace'), false);
+    assert.deepEqual(c.snapshot(), before);
+    assert.equal(store.writes, writes);
+    assert.equal(store.getItem(backupKey2C(c.t)), null);
+  });
+
+  check('2C-F8: complete-record refusals mutate no input, capture, or quarantine store', () => {
+    const store = makeStorage();
+    const c = seed2C(store);
+    c.t.storage.setJSON(c.t.keys.history, [{ id: 'h', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.drafts, [{ id: 'd', text: 'keep', createdAt: 1 }]);
+    c.t.storage.setJSON(c.t.keys.pasted, [{ id: 'p', text: 'keep', createdAt: 1 }]);
+    const prompts = [{ ...P2C('same'), extraSecret: ['KEEP-ME'] }];
+    const quick = [Q2C('q1')];
+    const beforeP = PJ(prompts); const beforeQ = PJ(quick);
+    const captures = [c.t.keys.history, c.t.keys.drafts, c.t.keys.pasted]
+      .map(k => [k, store.getItem(k)]);
+    const quarantine = store._keys().filter(k => k.includes('.corrupt.')).sort();
+    assert.equal(c.t.portability.buildExportEnvelope(prompts, quick, 1).ok, false);
+    assert.equal(c.t.portability.buildBackupEnvelope(prompts, quick, 1).ok, false);
+    assert.equal(PJ(prompts), beforeP); assert.equal(PJ(quick), beforeQ);
+    for (const [k, v] of captures) assert.equal(store.getItem(k), v);
+    assert.deepEqual(store._keys().filter(k => k.includes('.corrupt.')).sort(), quarantine);
+  });
+
+  check('2C-S14: opening the panel or the Import control rewrites no stored library', () => {
+    const store = makeStorage();
+    const legacyPrompts = '[{"id":"legacy","title":"L","body":"B"}]';
+    const legacyQuick = '[{"id":"lq","text":"Y"}]';
+    const c = loadModule(store);
+    store._map.set(promptsKey(c.t), legacyPrompts);
+    store._map.set(quickKey2C(c.t), legacyQuick);
+    const writes = store.writes;
+    // Everything the Import control does before a file is chosen.
+    c.t.portability.controller.sync(undefined);
+    c.t.portability.controller.clearPending(undefined);
+    assert.equal(c.t.portability.controller.isPending(), false);
+    assert.equal(store.getItem(promptsKey(c.t)), legacyPrompts, 'legacy Prompt bytes untouched');
+    assert.equal(store.getItem(quickKey2C(c.t)), legacyQuick, 'legacy Quick bytes untouched');
+    assert.equal(store.writes, writes, 'and no write was attempted at all');
   });
 
   console.log('');

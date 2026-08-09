@@ -31,6 +31,12 @@ const PINNED_REORDER_SHA256 = 'b98828ae27d871fd69d65ca17633619a922d5ec4e26196ab1
 // block makes any drift a hard failure.
 const PINNED_QUARANTINE_SHA256 = '6c7c001165d5b3c9bf7b49ee724716e9df3f2e1b57f05ef1e26698e3fd3849ad';
 
+// [2C] Portability is additive: it must not reach into the Phase-2B retrieval
+// rules at all. Pinning the digest of the ranking block — the constants through
+// to the move-availability authority — makes any drift a hard failure rather
+// than a scoring change nobody notices until a list looks subtly wrong.
+const PINNED_RANKING_SHA256 = '8d8c7c8c5a516f42faa6c0f4cb4253d51e5e046fb64fd43dbfb41687d6a9de32';
+
 const SRC = fs.readFileSync(path.join(REPO_ROOT, MODULE_REL), 'utf8');
 
 const PASS = [];
@@ -1412,16 +1418,29 @@ function main() {
       'an unknown id must not report a storage failure it never attempted');
   });
 
-  check('[fix] the corrections introduced no Phase 2C surface', () => {
+  check('[fix] the corrections introduced no out-of-scope surface', () => {
     /* [2B] `lastUsedAt`, `useCount`, the Favorites filter token and rankPrompts
      * were listed here as future surface that Phase 2A must not anticipate.
      * Phase 2B ships them deliberately, so they move out of this prohibition
-     * and into the [2B] cases that pin their exact shape. Everything that is
-     * still genuinely out of scope stays listed. */
+     * and into the [2B] cases that pin their exact shape.
+     *
+     * [2C] `createObjectURL` and a backup key were listed for the same reason:
+     * they were Phase 2C's surface, and Phase 2A must not have grown them
+     * early. Phase 2C now ships both under an explicit contract, so they move
+     * out of this list and into the [2C] cases that pin their exact shape —
+     * exactly one download helper, exactly one backup key, and a write order
+     * proven by 2C-I13/2C-I14/2C-I17. The prohibition is not weakened: what
+     * remains listed is what is STILL out of scope, plus the spellings Phase 2C
+     * deliberately did not adopt. */
     for (const pat of [/LIBRARY_PM/, /schemaVersion/, /\bexportPrompts\b/, /\bimportPrompts\b/,
-                       /:backup:/, /createObjectURL/]) {
-      assert.doesNotMatch(CODE, pat, `Phase 2C surface leaked: ${pat}`);
+                       /:backup:/]) {
+      assert.doesNotMatch(CODE, pat, `out-of-scope surface leaked: ${pat}`);
     }
+    // The one download helper that Phase 2C does ship stays bounded to it.
+    assert.equal((CODE.match(/createObjectURL/g) || []).length, 1,
+      'exactly one object-URL creation site, and it lives in the portability block');
+    assert.ok(SRC.indexOf('URL.createObjectURL') > SRC.indexOf('📦 PORTABILITY — controller'),
+      'that site is inside the portability controller');
   });
 
   /* ══════════════ STALE TARGET + PERSISTENT FEEDBACK CLOSURE ══════════════ */
@@ -1780,7 +1799,15 @@ function main() {
   });
 
   check('[2B] no fuzzy-search or external ranking dependency', () => {
-    for (const pat of [/fuse\.?js/i, /levenshtein/i, /\bfuzzy\b/i, /require\(/, /\bimport\s+[\w{]/, /jaro|winkler|trigram/i]) {
+    /* [2C] The module-loading pattern was `/\bimport\s+[\w{]/`, which is a
+     * substring test for the WORD "import" rather than for an import
+     * STATEMENT. Phase 2C ships the user-facing message "Unsupported import
+     * version", so that spelling now appears legitimately in a string literal.
+     * The pattern is narrowed to an actual ES import at the start of a line —
+     * which is what this case was always about — and the dynamic form is
+     * covered alongside it, so the prohibition is tighter, not looser. */
+    for (const pat of [/fuse\.?js/i, /levenshtein/i, /\bfuzzy\b/i, /require\(/,
+                       /^\s*import\s+[\w{*]/m, /\bimport\s*\(/, /jaro|winkler|trigram/i]) {
       assert.doesNotMatch(CODE, pat, `external/fuzzy search surface leaked: ${pat}`);
     }
   });
@@ -1915,12 +1942,26 @@ function main() {
     }
   });
 
-  check('[2B] no Phase 2C surface entered the module', () => {
-    for (const pat of [/\bexportPrompts\b/, /\bimportPrompts\b/, /backup:v1/, /:backup:/,
-                       /downloadBlob|createObjectURL/, /\bfolders?\b:/, /\btags\b:/,
+  check('[2B] no out-of-scope surface entered the module', () => {
+    /* [2C] `backup:v1`, `:backup:` and the download helper were listed as Phase
+     * 2C surface that Phase 2B must not anticipate. Phase 2C ships them under
+     * an explicit contract, so they move into the [2C] cases that pin their
+     * exact shape — one backup key at `state:import_backup:v1`, one download
+     * helper, and the write ordering proven by 2C-I13/2C-I14/2C-I18.
+     *
+     * Everything genuinely still out of scope stays listed, and the Phase-2C
+     * spellings deliberately NOT adopted (`exportPrompts`, `importPrompts`,
+     * `downloadBlob`) remain prohibited so a second, divergent implementation
+     * cannot appear beside the one that shipped. */
+    for (const pat of [/\bexportPrompts\b/, /\bimportPrompts\b/, /downloadBlob/,
+                       /\bfolders?\b:/, /\btags\b:/,
                        /highlightMatch|<mark>/, /commandPalette/]) {
-      assert.doesNotMatch(CODE, pat, `Phase 2C / out-of-scope surface leaked: ${pat}`);
+      assert.doesNotMatch(CODE, pat, `out-of-scope surface leaked: ${pat}`);
     }
+    // The one backup key that Phase 2C does ship is a single named constant.
+    assert.equal((CODE.match(/import_backup/g) || []).length, 1,
+      'exactly one backup key spelling, defined once');
+    assert.match(CODE, /const KEY_PM_STATE_IMPORT_BACKUP_V1 = /);
   });
 
   check('[2B] Phase 2A behaviour is preserved verbatim', () => {
@@ -2141,6 +2182,995 @@ function main() {
     assert.match(o, /ENGINE_PM_reorderVisible\(arr, ids, targetId, dir\)/);
     assert.match(o, /ENGINE_PM_selectPromptView\(candidate, category, query, now\)/);
     assert.match(o, /if \(reranked\[i\] !== expected\[i\]\) return false;/);
+  });
+
+  /* ══════════════ PHASE 2C — PORTABILITY ══════════════
+   * Portability is the first feature in this module that writes two live stores
+   * in one action and the first that reads a file from outside the browser.
+   * These invariants pin the contract those two facts create: exactly one
+   * envelope shape, exactly two portable collections, and a write order in
+   * which nothing is adopted until every byte has landed. */
+
+  /* The two portability blocks, comment-stripped, for "is this ACTIVE code?"
+   * questions that must not be answered by the block's own prose. */
+  const PORT_PURE = (() => {
+    const a = SRC.indexOf('📦 PORTABILITY — export / import');
+    const b = SRC.indexOf('🧪 TEST HOOK', a);
+    return (a === -1 || b <= a) ? '' : SRC.slice(a, b);
+  })();
+  const PORT_CTL = (() => {
+    const a = SRC.indexOf('📦 PORTABILITY — controller');
+    const b = SRC.indexOf('if (W.__H2O_PM_TEST__ === true)', a);
+    return (a === -1 || b <= a) ? '' : SRC.slice(a, b);
+  })();
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map(l => l.replace(/^\s*\/\/.*$/, '')).join('\n');
+  const PORT_CODE = `${stripComments(PORT_PURE)}\n${stripComments(PORT_CTL)}`;
+
+  check('2C-I1: both portability blocks exist and are locatable', () => {
+    assert.ok(PORT_PURE.length > 0, 'the pure export/import block exists');
+    assert.ok(PORT_CTL.length > 0, 'the controller block exists');
+    assert.ok(PORT_PURE.indexOf('PORT_PM_buildExportEnvelope') !== -1);
+    assert.ok(PORT_CTL.indexOf('const PORT_PM = {') !== -1);
+  });
+
+  check('2C-I2: exactly one versioned portability kind', () => {
+    const kinds = CODE.match(/const PORT_PM_KIND = '[^']+'/g) || [];
+    assert.equal(kinds.length, 1, `one kind constant (found ${kinds.length})`);
+    assert.match(kinds[0], /'h2o-prompt-manager-portability'/);
+    const literals = (CODE.match(/'h2o-prompt-manager-portability'/g) || []).length;
+    assert.equal(literals, 1, 'the literal appears once — the constant is the only authority');
+  });
+
+  check('2C-I3: exactly one supported portability version, compared strictly', () => {
+    const vers = CODE.match(/const PORT_PM_VERSION = \d+;/g) || [];
+    assert.equal(vers.length, 1, `one version constant (found ${vers.length})`);
+    assert.match(PORT_CODE, /parsed\.version !== PORT_PM_VERSION/,
+      'the gate compares with !== against that one constant');
+    assert.ok(!/parsed\.version\s*[<>]=?/.test(PORT_CODE),
+      'no range check — an unsupported version is rejected, never tolerated');
+  });
+
+  check('2C-I4: the backup envelope carries its own kind and version', () => {
+    assert.match(CODE, /const PORT_PM_BACKUP_KIND = 'h2o-prompt-manager-import-backup';/);
+    assert.match(CODE, /const PORT_PM_BACKUP_VERSION = \d+;/);
+    assert.ok(!CODE.includes('PORT_PM_BACKUP_KIND = PORT_PM_KIND'),
+      'a backup can never be mistaken for a portability file');
+  });
+
+  check('2C-I5: the portable surface is Prompts and Quick Replies only', () => {
+    assert.match(CODE, /const PORT_PM_ENVELOPE_KEYS = Object\.freeze\(\['kind', 'version', 'exportedAt', 'prompts', 'quickReplies'\]\)/,
+      'the declared envelope keys are exactly the five');
+    const env = PORT_CODE.slice(PORT_CODE.indexOf('const PORT_PM_buildExportEnvelope'),
+      PORT_CODE.indexOf('const PORT_PM_serializeExport'));
+    assert.match(env, /PORT_PM_projectList\(prompts, PORT_PM_exportPrompt/);
+    assert.match(env, /PORT_PM_projectList\(quick, PORT_PM_exportQuick/);
+    assert.ok(!/Array\.isArray\(prompts\) \? prompts : \[\]/.test(env),
+      'a non-array collection is never normalized into an empty library');
+    assert.ok(!/Array\.isArray\(quick\) \? quick : \[\]/.test(env));
+    assert.equal((env.match(/PORT_PM_projectList\(/g) || []).length, 2,
+      'exactly two collections are projected');
+    assert.match(env, /prompts: p\.list/);
+    assert.match(env, /quickReplies: q\.list/);
+  });
+
+  check('2C-I6: History, Drafts and Pasted never reach the export payload', () => {
+    for (const key of ['KEY_PM_STATE_HISTORY_V1', 'KEY_PM_STATE_DRAFTS_V1', 'KEY_PM_STATE_PASTED_V1']) {
+      assert.ok(!PORT_CODE.includes(key), `no ${key} anywhere in the portability code`);
+    }
+    for (const fn of ['loadHistory', 'loadDrafts', 'loadPasted', 'loadHistoryStrict',
+      'loadDraftsStrict', 'loadPastedStrict', 'pushHistory', 'pushDraft', 'pushPasted']) {
+      assert.ok(!PORT_CODE.includes(fn), `the portability code never calls ${fn}`);
+    }
+  });
+
+  check('2C-I7: the export payload reads only the two in-memory collections', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary('), PORT_CTL.indexOf('beginImport('));
+    const reads = ex.match(/STATE_PM\.data\.\w+/g) || [];
+    assert.deepEqual(Array.from(new Set(reads)).sort(),
+      ['STATE_PM.data.prompts', 'STATE_PM.data.quick'],
+      'nothing but Prompts and Quick is read for an export');
+    /* The only UI read is `STATE_PM.ui.root`, the default-parameter lookup for
+     * the panel node the feedback line lives on. Content-bearing UI state —
+     * the query, the filters, the editor draft — must not appear. */
+    const uiReads = Array.from(new Set(ex.match(/STATE_PM\.ui\.\w+/g) || []));
+    assert.deepEqual(uiReads, ['STATE_PM.ui.root'],
+      `the export path reads no UI state but the root node (saw ${JSON.stringify(uiReads)})`);
+  });
+
+  check('2C-I8: a strict import validator exists and rejects unknown keys', () => {
+    assert.match(CODE, /const PORT_PM_validateImportEnvelope = /);
+    assert.match(CODE, /const PORT_PM_validateImportPrompt = /);
+    assert.match(CODE, /const PORT_PM_validateImportQuick = /);
+    assert.match(PORT_CODE, /PORT_PM_onlyKnownKeys\(parsed, PORT_PM_ENVELOPE_KEYS\)/);
+    assert.match(PORT_CODE, /PORT_PM_onlyKnownKeys\(rec, PORT_PM_PROMPT_KEYS\)/);
+    assert.match(PORT_CODE, /PORT_PM_onlyKnownKeys\(rec, PORT_PM_QUICK_KEYS\)/);
+  });
+
+  check('2C-I9: duplicate imported IDs reject the file with collection-specific messages', () => {
+    assert.match(PORT_CODE, /seenPrompt\.has\(rec\.id\)[\s\S]{0,60}PM_MSG_PORT_DUP_PROMPT/);
+    assert.match(PORT_CODE, /seenQuick\.has\(rec\.id\)[\s\S]{0,60}PM_MSG_PORT_DUP_QUICK/);
+    assert.notEqual(
+      (CODE.match(/const PM_MSG_PORT_DUP_PROMPT = '([^']+)'/) || [])[1],
+      (CODE.match(/const PM_MSG_PORT_DUP_QUICK = '([^']+)'/) || [])[1],
+      'the two messages are distinct');
+    for (const forbidden of ['dedupe', 'deduplicate', 'renameId', 'suffixId']) {
+      assert.ok(!PORT_CODE.includes(forbidden), `no ${forbidden} — collisions reject, never repair`);
+    }
+  });
+
+  check('2C-I10: import validation never quarantines a user-supplied file', () => {
+    assert.ok(!PORT_CODE.includes('ENGINE_PM_quarantine'),
+      'quarantine is for internal storage corruption, not for a file the user chose');
+    assert.ok(!PORT_CODE.includes('corruptReads'), 'and no corrupt-read counter is touched');
+  });
+
+  check('2C-I11: both Merge and Replace exist as deterministic candidate builders', () => {
+    assert.match(CODE, /const PORT_PM_mergePromptRecords = /);
+    assert.match(CODE, /const PORT_PM_mergeQuickRecords = /);
+    assert.match(CODE, /const PORT_PM_buildImportCandidates = /);
+    assert.match(PORT_CODE, /if \(mode === 'replace'\)/, 'replace is an explicit branch');
+    assert.match(PORT_CODE, /mode: 'merge'/, 'and merge is the other');
+  });
+
+  check('2C-I12: merge keys on record id and preserves the local slot', () => {
+    const m = PORT_CODE.slice(PORT_CODE.indexOf('const PORT_PM_mergeById'),
+      PORT_CODE.indexOf('const PORT_PM_mergePromptRecords'));
+    assert.match(m, /const out = Array\.isArray\(localList\) \? localList\.slice\(\) : \[\]/,
+      'the local array is copied, never mutated');
+    assert.match(m, /out\[at\] = rec/, 'an existing id updates in place');
+    assert.match(m, /out\.push\(rec\)/, 'and a new id appends');
+    assert.ok(!/\.splice\(/.test(m), 'no slot is moved');
+    assert.ok(!/\.sort\(/.test(m), 'and manual order is never re-sorted');
+  });
+
+  check('2C-I13: a pre-import backup key exists and is a single latest snapshot', () => {
+    assert.match(CODE, /const KEY_PM_STATE_IMPORT_BACKUP_V1 = `\$\{NS_DISK\}:state:import_backup:v1`;/);
+    assert.match(CODE, /const PORT_PM_buildBackupEnvelope = /);
+    const writes = (PORT_CODE.match(/setJSON\(KEY_PM_STATE_IMPORT_BACKUP_V1/g) || []).length;
+    assert.equal(writes, 1, 'exactly one backup write site');
+    assert.ok(!/import_backup[^`']*\$\{/.test(PORT_CODE),
+      'the backup key is a constant, not a timestamped series');
+  });
+
+  check('2C-I14: the backup is written before any live store write', () => {
+    const i = PORT_CTL.indexOf('applyImport(root =');
+    const block = PORT_CTL.slice(i);
+    const backup = block.indexOf('KEY_PM_STATE_IMPORT_BACKUP_V1');
+    const wp = block.indexOf('ENGINE_PM.persistPrompts(');
+    const wq = block.indexOf('ENGINE_PM.persistQuick(');
+    assert.ok(backup !== -1 && wp !== -1 && wq !== -1, 'all three sites are present');
+    assert.ok(backup < wp && backup < wq, 'the backup precedes both live writes');
+  });
+
+  check('2C-I15: live import writes are bytes-only, never the adopting commit path', () => {
+    const i = PORT_CTL.indexOf('applyImport(root =');
+    const block = PORT_CTL.slice(i);
+    assert.match(block, /ENGINE_PM\.persistPrompts\(/);
+    assert.match(block, /ENGINE_PM\.persistQuick\(/);
+    for (const adopting of ['commitPrompts', 'commitQuick', 'savePrompts', 'saveQuick']) {
+      assert.ok(!block.includes(`ENGINE_PM.${adopting}(`),
+        `${adopting} would adopt in-memory state before the pair is proven written`);
+    }
+  });
+
+  check('2C-I16: a rollback path restores BOTH stores on either failure', () => {
+    const i = PORT_CTL.indexOf('applyImport(root =');
+    const block = PORT_CTL.slice(i);
+    assert.match(block, /const rollback = /, 'one rollback authority');
+    assert.match(block, /PORT_PM_restoreRaw\(KEY_PM_STATE_PROMPTS_V1, beforePrompts\)/);
+    assert.match(block, /PORT_PM_restoreRaw\(KEY_PM_STATE_QUICK_V1, beforeQuick\)/);
+    assert.ok((block.match(/rollback\(\)/g) || []).length >= 2,
+      'both write-failure branches roll back');
+  });
+
+  check('2C-I17: rollback restores exact raw bytes and distinguishes absence', () => {
+    const r = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_restoreRaw'));
+    assert.match(r, /UTIL_storage\.readRaw\(key\)/, 'the current bytes are read before rewriting');
+    assert.match(r, /if \(!snap\.present\) return UTIL_storage\.del\(key\)/,
+      'an absent key is restored by REMOVING it');
+    assert.match(r, /return UTIL_storage\.setStr\(key, snap\.raw\)/,
+      'and a present key by writing back its exact string');
+    assert.ok(!r.includes('setJSON'), 'never a re-serialization of a parsed value');
+    assert.ok(!r.includes("'[]'") && !r.includes('"[]"'),
+      'and absence is never expressed as an empty array literal');
+    const pre = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    assert.match(pre, /UTIL_storage\.readRaw\(KEY_PM_STATE_PROMPTS_V1\)/);
+    assert.match(pre, /UTIL_storage\.readRaw\(KEY_PM_STATE_QUICK_V1\)/);
+  });
+
+  check('2C-I18: in-memory adoption and events follow complete storage success', () => {
+    const i = PORT_CTL.indexOf('applyImport(root =');
+    const block = PORT_CTL.slice(i);
+    const wq = block.indexOf('ENGINE_PM.persistQuick(');
+    const adoptP = block.indexOf('STATE_PM.data.prompts = candidates.prompts');
+    const adoptQ = block.indexOf('STATE_PM.data.quick = candidates.quick');
+    const emit = block.indexOf('UTIL_emitPmChanged(');
+    assert.ok(adoptP !== -1 && adoptQ !== -1 && emit !== -1);
+    assert.ok(wq < adoptP && wq < adoptQ, 'no adoption before the second write returned');
+    /* [2C-closure] The degraded path also assigns STATE_PM.data.* and emits,
+     * and it is defined ABOVE the writes as a closure. Compare against the
+     * SUCCESS-path adoption specifically — the last assignment in the block —
+     * rather than the first occurrence anywhere. */
+    const emitAfterAdopt = block.indexOf('UTIL_emitPmChanged(', adoptQ);
+    assert.ok(emitAfterAdopt !== -1 && adoptQ < emitAfterAdopt,
+      'the success path publishes after adoption');
+    /* [2C-closure] `reconcileDegraded` is DEFINED above the writes and also
+     * assigns STATE_PM.data.*, so a naive "no assignment before the writes"
+     * text scan now trips on a closure that can only RUN after a rollback has
+     * already failed. The rule is unchanged and is asserted more precisely:
+     * every pre-write assignment must live inside that closure, and that
+     * closure must only be reachable when rollback() reported not-ok. */
+    const degStart = block.indexOf('const reconcileDegraded = ');
+    const degEnd = block.indexOf('// 3+4.', degStart);
+    assert.ok(degStart !== -1 && degEnd > degStart, 'the degraded closure is locatable');
+    const outsideDegraded = block.slice(0, degStart) + block.slice(degEnd, wq);
+    assert.ok(!outsideDegraded.includes('STATE_PM.data.prompts ='),
+      'nothing outside the degraded closure assigns the live arrays ahead of the writes');
+    assert.ok(!outsideDegraded.includes('STATE_PM.data.quick ='));
+
+    const degraded = block.slice(degStart, degEnd);
+    assert.match(degraded, /STATE_PM\.data\.prompts = dp\.list/,
+      'the degraded adoption comes from the DECODED surviving bytes');
+    assert.match(degraded, /STATE_PM\.data\.quick = dq\.list/);
+    assert.ok(!degraded.includes('candidates.'),
+      'the degraded path never silently adopts the import candidate');
+    for (const call of block.match(/return reconcileDegraded\(rb\);/g) || []) {
+      assert.ok(call, 'reconcileDegraded is only reached through a returned failure');
+    }
+    assert.match(block, /if \(rb\.ok\) \{ FEEDBACK_PM\.say\(PM_MSG_PORT_WRITE, 'error', root\); return false; \}\s*\n\s*return reconcileDegraded\(rb\);/,
+      'a successful rollback reports an ordinary write failure; only a failed one degrades');
+  });
+
+  check('2C-I19: no success feedback exists on any failure branch', () => {
+    const i = PORT_CTL.indexOf('applyImport(root =');
+    const block = PORT_CTL.slice(i, PORT_CTL.indexOf('function PORT_PM_download'));
+    const success = block.indexOf("'Imported — replaced'");
+    const adopt = block.indexOf('STATE_PM.data.prompts = candidates.prompts');
+    assert.ok(success !== -1 && adopt !== -1 && adopt < success,
+      'the only "Imported" message sits after adoption');
+    /* Matched to end of line, not to the first ")": one branch reads
+     * `say(rollback() ? A : B, 'error', root)` and a lazy paren match would
+     * stop inside the ternary and miss the kind argument entirely. */
+    for (const m of block.match(/FEEDBACK_PM\.say\(.*$/gm) || []) {
+      if (m.includes('Imported')) continue;
+      assert.ok(m.includes("'error'"), `every other import message is an error: ${m.trim()}`);
+    }
+  });
+
+  check('2C-I20: portability introduces no native dialog', () => {
+    for (const re of [/[^.\w]alert\s*\(/, /[^.\w]confirm\s*\(/, /[^.\w]prompt\s*\(/]) {
+      assert.ok(!re.test(PORT_CODE), `no native dialog matching ${re}`);
+    }
+    assert.match(PORT_CTL, /UI_PM_IMPORT_MERGE|UI_PM_IMPORT_REPLACE|UI_PM_IMPORT_CANCEL/,
+      'the confirmation is inline controls instead');
+  });
+
+  check('2C-I21: no autoSend field is introduced on a Prompt record', () => {
+    for (const shape of ['const PORT_PM_exportPrompt', 'const PORT_PM_validateImportPrompt']) {
+      const i = PORT_PURE.indexOf(shape);
+      assert.ok(i !== -1, `${shape} exists`);
+      const body = PORT_PURE.slice(i, i + 1400);
+      assert.ok(!body.includes('autoSend'), `${shape} carries no autoSend field`);
+    }
+    assert.ok(!PORT_PM_PROMPT_KEYS_HAS_AUTOSEND(), 'and the declared Prompt key list has none');
+    function PORT_PM_PROMPT_KEYS_HAS_AUTOSEND() {
+      const m = CODE.match(/const PORT_PM_PROMPT_KEYS = Object\.freeze\(\[([^\]]*)\]\)/);
+      return !!(m && m[1].includes('autoSend'));
+    }
+  });
+
+  check('2C-I22: the public API is still exactly six methods', () => {
+    const api = SRC.match(/^ {2}MOD_OBJ\.api\.\w+ = /gm) || [];
+    assert.equal(api.length, 6, `six public methods (found ${api.length})`);
+    assert.ok(!PORT_CODE.includes('MOD_OBJ.api'),
+      'portability never writes to the public API surface');
+    for (const leak of ['MOD_OBJ.api.exportLibrary', 'MOD_OBJ.api.importLibrary', 'MOD_OBJ.api.portability']) {
+      assert.ok(!SRC.includes(leak), `no ${leak}`);
+    }
+  });
+
+  check('2C-I23: Phase-2B ranking helpers are byte-identical', () => {
+    const a = SRC.indexOf('  const PM_RANK_TITLE_EXACT = 1000;');
+    const b = SRC.indexOf('  const ENGINE_PM_touchPromptUsage =');
+    assert.ok(a !== -1 && b > a, 'the ranking block is locatable');
+    const digest = crypto.createHash('sha256').update(SRC.slice(a, b), 'utf8').digest('hex');
+    assert.equal(digest, PINNED_RANKING_SHA256,
+      'Phase 2C must not alter a single byte of the retrieval rules');
+  });
+
+  check('2C-I24: Phase-2A editor and feedback authorities are preserved', () => {
+    // The editor still owns validation, dirty tracking, the two-step delete and
+    // the stale-target guard; feedback still keeps errors persistent.
+    for (const sym of ['EDITOR_PM_validate', 'EDITOR_PM_isDirty', 'EDITOR_PM_hasTarget',
+      'PM_MSG_TARGET_GONE', 'armDelete(root)', 'discardArmed']) {
+      assert.ok(SRC.includes(sym), `${sym} survives Phase 2C`);
+    }
+    const say = SRC.slice(SRC.indexOf('say(message, kind = '), SRC.indexOf('hide(root = '));
+    assert.match(say, /if \(kind !== 'error'\)/, 'errors still do not auto-clear');
+  });
+
+  check('2C-I25: Phase-1 capture and storage protections are preserved', () => {
+    for (const sym of ['ENGINE_PM_quarantine', 'ENGINE_PM_readArray', 'ENGINE_PM_readCaptureStore',
+      'ENGINE_PM_verifyCaptureOccurrence', 'ENGINE_PM_noteWriteFailure',
+      'migrateKeysOnce', 'migrateDraftsFromHistoryOnce', 'PM_QUARANTINE_MAX_CANDIDATES']) {
+      assert.ok(SRC.includes(sym), `${sym} survives Phase 2C`);
+    }
+    // Same extraction as the Phase-1 case that owns this pin, so the two can
+    // never disagree about which bytes are being protected.
+    const m = SRC.match(/  const ENGINE_PM_quarantine = [\s\S]*?\n  \};/);
+    assert.ok(m, 'ENGINE_PM_quarantine is still locatable');
+    const digest = crypto.createHash('sha256').update(m[0]).digest('hex');
+    assert.equal(digest, PINNED_QUARANTINE_SHA256, 'the quarantine block is byte-identical');
+  });
+
+  check('2C-I26: the portability test hook is flag-gated like every other helper', () => {
+    const hook = SRC.slice(SRC.indexOf('if (W.__H2O_PM_TEST__ === true)'));
+    assert.ok(hook.includes('portability: Object.freeze({'), 'exposed only inside the gate');
+    const beforeGate = SRC.slice(0, SRC.indexOf('if (W.__H2O_PM_TEST__ === true)'));
+    assert.ok(!beforeGate.includes('MOD_OBJ.__test'), 'nothing is exposed outside it');
+    assert.ok(!PORT_CODE.includes('__H2O_PM_TEST__'),
+      'and the portability code itself has no test-only branch');
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE — LOSSLESS EXPORT + TRUTHFUL ROLLBACK ══════════════
+   * Independent review found two data-safety defects: export silently skipped
+   * records it could not represent while still reporting success, and rollback
+   * judged itself by what the setters returned rather than by the bytes that
+   * ended up persisted. These invariants pin both corrections. */
+
+  check('2C-X1: export never skips a record into a success envelope', () => {
+    const proj = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_projectList'),
+      PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'));
+    assert.ok(proj.length > 0, 'the projection authority is locatable');
+    assert.ok(!/\bcontinue\b/.test(stripComments(proj)),
+      'no `continue` — a record is either represented or the projection fails');
+    assert.match(proj, /const canonical = validate\(rec\)/,
+      'the ORIGINAL record reaches the strict validator before projection');
+    assert.match(proj, /if \(!canonical\) return \{ ok: false/, 'an unusable source record refuses');
+    assert.match(proj, /const id = canonical\.id;/, 'identity comes from the validated canonical source');
+    assert.match(proj, /if \(seen\.has\(id\)\) return \{ ok: false/, 'a duplicate id refuses');
+    assert.match(proj, /const projected = validate\(project\(canonical, id\)\)/,
+      'the historical projector must round-trip through the strict validator');
+    assert.match(proj, /JSON\.stringify\(projected\) !== JSON\.stringify\(canonical\)/,
+      'and may not omit or change a declared canonical value');
+    for (const forbidden of ['UTIL_cryptoId', 'crypto.randomUUID', '(copy)', 'suffix']) {
+      assert.ok(!proj.includes(forbidden), `no id is generated or renamed (${forbidden})`);
+    }
+  });
+
+  check('2C-X2: successful export cardinality equals source cardinality', () => {
+    const env = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_serializeExport'));
+    assert.match(env, /if \(p\.list\.length !== prompts\.length\) return fail\(/,
+      'Prompt cardinality is checked, not assumed');
+    assert.match(env, /if \(q\.list\.length !== quick\.length\) return fail\(/,
+      'Quick cardinality is checked, not assumed');
+    assert.match(env, /PORT_PM_validateImportEnvelope\(envelope\)/,
+      'and the finished envelope is re-validated by the module\'s own importer');
+  });
+
+  check('2C-X3: duplicate local ids abort the export with a distinct message', () => {
+    assert.match(CODE, /const PM_MSG_PORT_EXPORT_DUP_PROMPT = '[^']+'/);
+    assert.match(CODE, /const PM_MSG_PORT_EXPORT_DUP_QUICK = '[^']+'/);
+    const dupP = (CODE.match(/const PM_MSG_PORT_EXPORT_DUP_PROMPT = '([^']+)'/) || [])[1];
+    const dupQ = (CODE.match(/const PM_MSG_PORT_EXPORT_DUP_QUICK = '([^']+)'/) || [])[1];
+    assert.notEqual(dupP, dupQ, 'the two collections report distinctly');
+    for (const m of [dupP, dupQ]) {
+      assert.ok(!/title|body|text|content/i.test(m), `no record content in "${m}"`);
+    }
+  });
+
+  check('2C-X4: export failure happens before any download side effect', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary(root ='), PORT_CTL.indexOf('beginImport('));
+    const build = ex.indexOf('PORT_PM_buildExportEnvelope(');
+    const guard = ex.indexOf('if (!built.ok)');
+    const download = ex.indexOf('PORT_PM_download(');
+    const serialize = ex.indexOf('PORT_PM_serializeExport(');
+    assert.ok(build !== -1 && guard !== -1 && download !== -1 && serialize !== -1);
+    assert.ok(build < guard, 'the envelope is built first');
+    assert.ok(guard < serialize && guard < download,
+      'the refusal returns before serialization and before the download path');
+    assert.ok(!ex.slice(0, guard).includes('createObjectURL'),
+      'no object URL can exist when the export is refused');
+    const success = ex.indexOf("FEEDBACK_PM.say('Exported'");
+    assert.ok(success > download, 'success is reported only after the download path returned');
+  });
+
+  check('2C-X5: the pre-import backup uses the same all-or-nothing projection', () => {
+    const b = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildBackupEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_rawEquals'));
+    assert.match(b, /PORT_PM_projectList\(prompts, PORT_PM_exportPrompt, PORT_PM_validateImportPrompt/);
+    assert.match(b, /PORT_PM_projectList\(quick, PORT_PM_exportQuick, PORT_PM_validateImportQuick/);
+    assert.match(b, /if \(!p\.ok\) return \{ ok: false/);
+    assert.match(b, /if \(!q\.ok\) return \{ ok: false/);
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const built = apply.indexOf('const backupBuilt = ');
+    const guard = apply.indexOf('if (!backupBuilt.ok)');
+    const wp = apply.indexOf('ENGINE_PM.persistPrompts(');
+    assert.ok(built !== -1 && guard !== -1 && guard < wp,
+      'a backup that cannot be built aborts before any live write');
+  });
+
+  check('2C-X6: rollback success is decided by re-read bytes, not by return values', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const rb = apply.slice(apply.indexOf('const rollback = '), apply.indexOf('const reconcileDegraded'));
+    assert.match(rb, /PORT_PM_restoreRaw\(KEY_PM_STATE_PROMPTS_V1, beforePrompts\);/);
+    assert.match(rb, /PORT_PM_restoreRaw\(KEY_PM_STATE_QUICK_V1, beforeQuick\);/);
+    assert.match(rb, /UTIL_storage\.readRaw\(KEY_PM_STATE_PROMPTS_V1\)/, 'the key is re-read after restoring');
+    assert.match(rb, /UTIL_storage\.readRaw\(KEY_PM_STATE_QUICK_V1\)/);
+    assert.match(rb, /PORT_PM_rawEquals\(beforePrompts, nowPrompts\)/);
+    assert.match(rb, /PORT_PM_rawEquals\(beforeQuick, nowQuick\)/);
+    assert.ok(!/const rp = |const rq = |if \(!rp \|\| !rq\)/.test(rb),
+      'the verdict no longer comes from the restore helpers\' return values');
+    const eq = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_rawEquals'),
+      PORT_PURE.indexOf('const PORT_PM_decodeRawList'));
+    assert.match(eq, /cur\.raw === snap\.raw/, 'exact raw string comparison');
+    assert.ok(!eq.includes('JSON.parse'), 'never a normalized comparison');
+  });
+
+  check('2C-X7: the degraded path reads the ACTUAL surviving stores', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const deg = apply.slice(apply.indexOf('const reconcileDegraded'), apply.indexOf('// 3+4.'));
+    assert.match(deg, /PORT_PM_decodeRawList\(rb\.nowPrompts\)/);
+    assert.match(deg, /PORT_PM_decodeRawList\(rb\.nowQuick\)/);
+    for (const mutating of ['loadPrompts', 'loadQuick', 'ENGINE_PM_quarantine', 'markSeeded',
+      'persistPrompts', 'persistQuick', 'commitPrompts', 'commitQuick',
+      'setJSON', 'setStr', 'UTIL_storage.del']) {
+      assert.ok(!deg.includes(mutating),
+        `the degraded read never calls ${mutating} — it must not mutate storage`);
+    }
+  });
+
+  check('2C-X8: the degraded decoder is pure and fails closed', () => {
+    const d = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_decodeRawList'),
+      PORT_PURE.indexOf('const PORT_PM_restoreRaw'));
+    assert.match(d, /if \(!snap\.present\) return \{ ok: true, list: \[\] \}/,
+      'absence resolves to the module\'s existing empty-list contract');
+    assert.match(d, /catch \{ return \{ ok: false, list: \[\] \}; \}/, 'unparseable fails closed');
+    assert.match(d, /if \(!Array\.isArray\(parsed\)\) return \{ ok: false/, 'a non-array fails closed');
+    for (const mutating of ['setItem', 'setStr', 'setJSON', 'removeItem', 'del(']) {
+      assert.ok(!d.includes(mutating), `the decoder never writes (${mutating})`);
+    }
+  });
+
+  check('2C-X9: an undecodable degraded state latches recovery-required', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const deg = apply.slice(apply.indexOf('const reconcileDegraded'), apply.indexOf('// 3+4.'));
+    assert.match(deg, /if \(!dp\.ok \|\| !dq\.ok\)/, 'either undecodable store is caught');
+    assert.match(deg, /recoveryRequired = true/, 'and latches the flag');
+    assert.match(deg, /FEEDBACK_PM\.say\(PM_MSG_PORT_RECOVERY, 'error', root\)/);
+    // and the flag gates further portability mutation
+    assert.match(PORT_CTL, /if \(PORT_PM\.st\(\)\.recoveryRequired\) \{[\s\S]{0,200}return false;/,
+      'a latched recovery requirement fails closed');
+    assert.ok((PORT_CTL.match(/recoveryRequired\)/g) || []).length >= 2,
+      'both the staging and the applying path are gated');
+    assert.match(CODE, /port: \{ pending: null, recoveryRequired: false, readSeq: 0 \}/,
+      'the flag is memory-only state, so a reload clears it');
+  });
+
+  check('2C-X10: no normal Imported success is reachable on any degraded path', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='),
+      PORT_CTL.indexOf('function PORT_PM_download'));
+    const degRaw = apply.slice(apply.indexOf('const reconcileDegraded'), apply.indexOf('// 3+4.'));
+    // Comment-stripped: the block documents WHY it never reports "Imported".
+    const deg = stripComments(degRaw);
+    assert.ok(!deg.includes('Imported'), 'the degraded closure never says Imported');
+    assert.ok(!deg.includes("'info'"), 'and never uses transient success feedback');
+    assert.match(deg, /return false;\s*\};/, 'it always reports failure to its caller');
+    for (const forbidden of ['touchPromptUsage', 'useCount', 'lastUsedAt', 'updatedAt']) {
+      assert.ok(!deg.includes(forbidden), `degraded reconciliation never touches ${forbidden}`);
+    }
+    assert.match(deg, /UTIL_emitPmChanged\(\{ what: 'prompts' \}\)/,
+      'but consumers ARE told the in-memory pair changed');
+    assert.match(deg, /UTIL_emitPmChanged\(\{ what: 'quick' \}\)/);
+  });
+
+  check('2C-X11: the closure leaves capture stores and the public API alone', () => {
+    for (const sym of ['KEY_PM_STATE_HISTORY_V1', 'KEY_PM_STATE_DRAFTS_V1', 'KEY_PM_STATE_PASTED_V1',
+      'loadHistory', 'loadDrafts', 'loadPasted', 'ENGINE_PM_quarantine']) {
+      assert.ok(!PORT_CODE.includes(sym), `portability still never names ${sym}`);
+    }
+    const api = SRC.match(/^ {2}MOD_OBJ\.api\.\w+ = /gm) || [];
+    assert.equal(api.length, 6, `still exactly six public methods (found ${api.length})`);
+    assert.ok(!PORT_CODE.includes('MOD_OBJ.api'));
+    assert.ok(!/autoSend/.test(PORT_CODE), 'and no Prompt-record autoSend');
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE 2 — CANONICAL IDENTITY + READ RACE ══════════════
+   * Independent inspection of the closure bundle found three more edge cases:
+   * portability trimmed ids (a repair, not a validation), buildExportEnvelope
+   * normalized a non-array collection into an empty successful export, and
+   * concurrent FileReader completions could stage the wrong file. */
+
+  check('2C-Y1: portability ids are validated, never trimmed', () => {
+    const idBlock = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_isCanonicalId'),
+      PORT_PURE.indexOf('const PORT_PM_finiteNumber'));
+    assert.ok(idBlock.length > 0, 'the canonical-id authority exists');
+    assert.match(idBlock, /typeof v === 'string' && v\.length > 0 && v === v\.trim\(\)/,
+      'canonical means: a non-empty string that already equals its trimmed form');
+    assert.match(idBlock, /PORT_PM_isCanonicalId\(rec\.id\)\) \? rec\.id : ''/,
+      'a valid id is returned EXACTLY as stored');
+    assert.ok(!/rec\.id\.trim\(\)/.test(idBlock), 'nothing returns a trimmed id');
+    // and no other portability site trims an id back into existence
+    const code = stripComments(PORT_CODE);
+    assert.ok(!/\.id\.trim\(\)/.test(code), 'no portability site trims a record id');
+    assert.ok(!/id: [a-zA-Z]+\.trim\(\)/.test(code), 'and none assigns a trimmed id');
+  });
+
+  check('2C-Y2: one canonical-id authority serves every portability path', () => {
+    const code = stripComments(PORT_CODE);
+    assert.equal((code.match(/const PORT_PM_isCanonicalId = /g) || []).length, 1,
+      'exactly one definition');
+    assert.equal((code.match(/const PORT_PM_recordId = /g) || []).length, 1);
+    // strict import, export projection, duplicate detection and merge all route
+    // through it rather than re-deriving identity
+    for (const site of ['const PORT_PM_validateImportPrompt', 'const PORT_PM_validateImportQuick',
+      'const PORT_PM_mergeById']) {
+      const i = code.indexOf(site);
+      assert.ok(i !== -1, `${site} exists`);
+      const body = code.slice(i, i + 1400);
+      assert.ok(body.includes('PORT_PM_recordId('),
+        `${site} uses the canonical identity authority`);
+    }
+    const proj = code.slice(code.indexOf('const PORT_PM_projectList'),
+      code.indexOf('const PORT_PM_buildExportEnvelope'));
+    assert.match(proj, /const canonical = validate\(rec\)/,
+      'projectList delegates identity to the strict record validators');
+    assert.match(proj, /const id = canonical\.id;/,
+      'and only consumes the canonical id they return');
+  });
+
+  check('2C-Y3: the Phase-1 tolerant readers keep their own contract', () => {
+    // Strictness is scoped to portability: the storage readers must NOT have
+    // grown an id rule, or a library that portability refuses would stop loading.
+    const load = SRC.slice(SRC.indexOf('    loadPrompts() {'), SRC.indexOf('    persistPrompts(list) {'));
+    assert.ok(!load.includes('PORT_PM_isCanonicalId'), 'loadPrompts is untouched by the id rule');
+    assert.ok(!load.includes('PORT_PM_recordId'));
+    const loadQ = SRC.slice(SRC.indexOf('    loadQuick() {'), SRC.indexOf('    saveQuick(list) {'));
+    assert.ok(!loadQ.includes('PORT_PM_isCanonicalId'), 'loadQuick is untouched too');
+    assert.match(SRC, /const ENGINE_PM_validRecordId = [\s\S]{0,200}rec\.id\.trim\(\)/,
+      'and the Phase-1 tolerant id helper still trims, as it always did');
+  });
+
+  check('2C-Y4: buildExportEnvelope never normalizes a non-array into []', () => {
+    /* Comment-stripped: the block documents the defect by QUOTING the removed
+     * line, so a raw substring scan would trip on its own explanation. */
+    const env = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_serializeExport')));
+    assert.ok(!/Array\.isArray\(prompts\) \? prompts : \[\]/.test(env),
+      'the normalizing ternary is gone from the code');
+    assert.ok(!/Array\.isArray\(quick\) \? quick : \[\]/.test(env));
+    assert.ok(!/const srcPrompts|const srcQuick/.test(env),
+      'and no normalized local shadows the caller\'s collection');
+    assert.match(env, /PORT_PM_projectList\(prompts, /, 'the caller hands the input over untouched');
+    assert.match(env, /PORT_PM_projectList\(quick, /);
+    // the projection is the single gate, and it refuses a non-array
+    const proj = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_projectList'),
+      PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'));
+    assert.match(proj, /if \(!Array\.isArray\(list\)\) return \{ ok: false/,
+      'a non-array collection refuses');
+  });
+
+  check('2C-Y5: the backup builder is fail-closed for non-arrays too', () => {
+    const b = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildBackupEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_rawEquals'));
+    assert.ok(!/Array\.isArray/.test(b), 'it does not pre-normalize either collection');
+    assert.match(b, /PORT_PM_projectList\(prompts, /);
+    assert.match(b, /PORT_PM_projectList\(quick, /);
+    assert.match(b, /if \(!p\.ok\) return \{ ok: false/);
+    assert.match(b, /if \(!q\.ok\) return \{ ok: false/);
+  });
+
+  check('2C-Y6: exactly one read-generation authority exists', () => {
+    assert.match(CODE, /port: \{ pending: null, recoveryRequired: false, readSeq: 0 \}/,
+      'readSeq lives in the port state slot');
+    const code = stripComments(PORT_CTL);
+    assert.equal((code.match(/nextRead\(\) \{/g) || []).length, 1, 'one generator');
+    assert.equal((code.match(/isCurrentRead\(token\) \{ return/g) || []).length, 1,
+      'one comparator definition');
+    assert.ok((code.match(/PORT_PM\.isCurrentRead\(token\)/g) || []).length >= 3,
+      'and every asynchronous completion consults it');
+    assert.match(code, /st\.readSeq = \(Number\(st\.readSeq\) \|\| 0\) \+ 1/, 'monotonic increment');
+    assert.ok(!/readSeq/.test(stripComments(PORT_PURE)),
+      'the pure block has no read state — this is controller-only');
+  });
+
+  check('2C-Y7: every FileReader completion checks its token first', () => {
+    const begin = PORT_CTL.slice(PORT_CTL.indexOf('beginImport(root, file)'),
+      PORT_CTL.indexOf('cancelImport(root ='));
+    assert.match(begin, /const token = PORT_PM\.nextRead\(\);/, 'a token is taken at selection time');
+    for (const cb of ['reader.onerror = ', 'reader.onload = ']) {
+      const i = begin.indexOf(cb);
+      assert.ok(i !== -1, `${cb} exists`);
+      const body = begin.slice(i, begin.indexOf('};', begin.indexOf('SAFE_try', i)));
+      const guard = body.indexOf('if (!PORT_PM.isCurrentRead(token)) return false;');
+      assert.ok(guard !== -1, `${cb} validates its token`);
+      for (const effect of ['FEEDBACK_PM.say', 'st().pending =', 'PORT_PM.sync']) {
+        const at = body.indexOf(effect);
+        if (at !== -1) assert.ok(guard < at, `${cb}: the token check precedes ${effect}`);
+      }
+    }
+    assert.ok((begin.match(/isCurrentRead\(token\)/g) || []).length >= 3,
+      'and the parse path re-checks after the async work');
+  });
+
+  check('2C-Y8: a new selection clears and syncs the previous preview immediately', () => {
+    const begin = PORT_CTL.slice(PORT_CTL.indexOf('beginImport(root, file)'),
+      PORT_CTL.indexOf('cancelImport(root ='));
+    const token = begin.indexOf('const token = PORT_PM.nextRead();');
+    const clear = begin.indexOf('PORT_PM.st().pending = null;');
+    const sync = begin.indexOf('PORT_PM.sync(root);');
+    const recovery = begin.indexOf('recoveryRequired');
+    const reader = begin.indexOf('new FileReader()');
+    assert.ok(token !== -1 && clear !== -1 && sync !== -1 && reader !== -1);
+    assert.ok(token < clear && clear < sync, 'generation, then clear, then sync');
+    assert.ok(sync < recovery, 'the preview is hidden before any early return');
+    assert.ok(sync < reader, 'and before the new read starts');
+  });
+
+  check('2C-Y9: clearing and cancelling retire the read generation', () => {
+    const clear = PORT_CTL.slice(PORT_CTL.indexOf('clearPending(root) {'),
+      PORT_CTL.indexOf('exportLibrary(root ='));
+    assert.match(clear, /PORT_PM\.nextRead\(\);/, 'clearPending retires the generation');
+    const cancel = PORT_CTL.slice(PORT_CTL.indexOf('cancelImport(root ='),
+      PORT_CTL.indexOf('applyImport(root ='));
+    assert.match(cancel, /PORT_PM\.clearPending\(root\);/, 'cancel routes through it');
+    assert.ok(cancel.indexOf('PORT_PM.clearPending(root);') < cancel.indexOf('if (!wasPending) return false;'),
+      'and does so BEFORE the early return, so a read in flight is retired even with no confirmation open');
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    assert.match(apply, /PORT_PM\.clearPending\(root\);/,
+      'a successful import clears — and therefore retires — as well');
+  });
+
+  check('2C-Y10: recoveryRequired gates both portability mutations and export', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary(root ='), PORT_CTL.indexOf('beginImport(root, file)'));
+    const gate = ex.indexOf('if (PORT_PM.st().recoveryRequired)');
+    const build = ex.indexOf('PORT_PM_buildExportEnvelope(');
+    assert.ok(gate !== -1 && build !== -1 && gate < build, 'export is gated before it builds anything');
+    assert.ok(!ex.slice(0, gate).includes('createObjectURL'));
+    const begin = PORT_CTL.slice(PORT_CTL.indexOf('beginImport(root, file)'), PORT_CTL.indexOf('cancelImport(root ='));
+    assert.match(begin, /if \(PORT_PM\.st\(\)\.recoveryRequired\)/, 'staging is gated');
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    assert.match(apply, /if \(PORT_PM\.st\(\)\.recoveryRequired\)/, 'applying is gated');
+    assert.ok((PORT_CTL.match(/recoveryRequired\)/g) || []).length >= 4,
+      'export, staging, applying and the async re-check');
+    // and the gate stays inside portability
+    assert.ok(!SRC.slice(SRC.indexOf('const EDITOR_PM = {'), SRC.indexOf('const PORT_PM = {')).includes('recoveryRequired'),
+      'the editor is not disabled by a portability recovery state');
+  });
+
+  check('2C-Y11: the recovery gate does not widen the public API', () => {
+    const api = SRC.match(/^ {2}MOD_OBJ\.api\.\w+ = /gm) || [];
+    assert.equal(api.length, 6, `still exactly six public methods (found ${api.length})`);
+    assert.ok(!PORT_CODE.includes('MOD_OBJ.api'));
+    // The UI reflects the gate rather than exposing a new entry point.
+    const sync = PORT_CTL.slice(PORT_CTL.indexOf('sync(root ='), PORT_CTL.indexOf('clearPending(root) {'));
+    assert.match(sync, /e\.importBtn\.disabled = blocked/);
+    assert.match(sync, /e\.exportBtn\.disabled = blocked/);
+    assert.ok(!sync.includes('e.cancel.disabled'), 'Cancel stays available to dismiss stale UI');
+  });
+
+  check('2C-Y12: the approved rollback closure is structurally intact', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    for (const marker of [
+      'UTIL_storage.readRaw(KEY_PM_STATE_PROMPTS_V1)',
+      'UTIL_storage.readRaw(KEY_PM_STATE_QUICK_V1)',
+      'const backupBuilt = PORT_PM_buildBackupEnvelope(',
+      'const rollback = ',
+      'PORT_PM_restoreRaw(KEY_PM_STATE_PROMPTS_V1, beforePrompts)',
+      'PORT_PM_restoreRaw(KEY_PM_STATE_QUICK_V1, beforeQuick)',
+      'PORT_PM_rawEquals(beforePrompts, nowPrompts)',
+      'PORT_PM_rawEquals(beforeQuick, nowQuick)',
+      'const reconcileDegraded = ',
+      'PORT_PM_decodeRawList(rb.nowPrompts)',
+      'PORT_PM_decodeRawList(rb.nowQuick)',
+      'recoveryRequired = true',
+      'ENGINE_PM.persistPrompts(',
+      'ENGINE_PM.persistQuick(',
+    ]) {
+      assert.ok(apply.includes(marker), `still present: ${marker}`);
+    }
+    for (const adopting of ['commitPrompts', 'commitQuick', 'savePrompts', 'saveQuick']) {
+      assert.ok(!apply.includes(`ENGINE_PM.${adopting}(`), `${adopting} still absent from the import path`);
+    }
+  });
+
+  /* ══════════════ PHASE 2C CLOSURE 3 — QUICK ORDER · LIVE STORE · BYTE SIZE ══════════════ */
+
+  check('2C-Z1: the imported Quick sequence is encoded durably into `order`', () => {
+    const seq = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_sequenceQuick'),
+      PORT_PURE.indexOf('/* Candidate builder.'));
+    assert.ok(seq.length > 0, 'the sequencing authority exists');
+    assert.match(seq, /\{ \.\.\.rec, order: i \}/, 'order is the final array index');
+    assert.ok(!/\.sort\(/.test(seq), 'it re-derives rather than re-sorts');
+    assert.ok(!/rec\.order/.test(stripComments(seq)), 'the incoming order is never consulted');
+  });
+
+  check('2C-Z2: both candidate modes route Quick through the sequencer', () => {
+    const env = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildImportCandidates'),
+      PORT_PURE.indexOf('const PORT_PM_buildBackupEnvelope'));
+    assert.match(env, /quick: PORT_PM_sequenceQuick\(impQuick\)/, 'replace');
+    assert.match(env, /quick: PORT_PM_sequenceQuick\(mq\.list\)/, 'merge');
+    assert.equal((env.match(/PORT_PM_sequenceQuick\(/g) || []).length, 2, 'exactly the two modes');
+    assert.ok(!/prompts: PORT_PM_sequenceQuick/.test(env), 'Prompts are never sequenced');
+  });
+
+  check('2C-Z3: the runtime order authority it must satisfy is unchanged', () => {
+    // loadQuick still sorts by `order`; that is precisely why the candidate has
+    // to encode its sequence there.
+    const lq = SRC.slice(SRC.indexOf('    loadQuick() {'), SRC.indexOf('    saveQuick(list) {'));
+    assert.match(lq, /\.sort\(\(a, b\) => \(a\?\.order \|\| 0\) - \(b\?\.order \|\| 0\)\)/,
+      'loadQuick still sorts by order');
+    assert.ok(!lq.includes('PORT_PM_'), 'and portability did not reach into it');
+    const trayAt = SRC.indexOf('    renderQuickTray(root) {');
+    assert.ok(trayAt !== -1, 'the tray renderer is locatable');
+    const tray = SRC.slice(trayAt, trayAt + 900);
+    assert.match(tray, /sort\(\(a, b\) => \(a\.order \|\| 0\) - \(b\.order \|\| 0\)\)/,
+      'and the tray renderer sorts the same way');
+    assert.ok(!tray.includes('PORT_PM_'), 'the tray renderer was not touched by portability');
+  });
+
+  check('2C-Z4: a read-only live-store preflight exists', () => {
+    const pf = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes'));
+    assert.ok(pf.length > 0, 'the preflight exists');
+    assert.match(pf, /ENGINE_PM_readArray\(key\)/, 'it uses the classified pure reader');
+    assert.match(pf, /KEY_PM_STATE_PROMPTS_V1/);
+    assert.match(pf, /KEY_PM_STATE_QUICK_V1/);
+    assert.match(pf, /rd\.kind === PM_READ_CORRUPT/, 'malformed or non-array is unsafe');
+    assert.match(pf, /const persisted = \(rd\.kind === PM_READ_ABSENT\) \? \[\] : rd\.value/,
+      'absence is the canonical empty persisted collection');
+    assert.match(pf, /PORT_PM_projectList\(persisted, project, validate/,
+      'valid live arrays still pass through the strict collection authority');
+    assert.match(pf, /PORT_PM_projectList\(mem, project, validate/,
+      'and are compared with strict current memory rather than accepted on health alone');
+    assert.match(pf, /JSON\.stringify\(liveLogical\) !== JSON\.stringify\(memoryLogical\)/,
+      'any canonical logical mismatch fails closed');
+  });
+
+  check('2C-Z5: the preflight mutates nothing', () => {
+    const pf = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes')));
+    for (const mutating of ['ENGINE_PM_quarantine', 'setJSON', 'setStr', 'setItem',
+      'removeItem', 'UTIL_storage.del', 'markSeeded', 'loadPrompts', 'loadQuick',
+      'persistPrompts', 'persistQuick', 'commitPrompts', 'commitQuick']) {
+      assert.ok(!pf.includes(mutating), `the preflight never calls ${mutating}`);
+    }
+    // and it is specific to the two portable stores, not a broad dataError gate
+    assert.ok(!pf.includes('dataError'),
+      'it does not lean on a flag that History/Drafts/Pasted can also set');
+  });
+
+  check('2C-Z6: export calls the preflight before it builds or downloads anything', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary(root ='), PORT_CTL.indexOf('beginImport(root, file)'));
+    const pre = ex.indexOf('PORT_PM_checkLiveStoreAuthority(');
+    const build = ex.indexOf('PORT_PM_buildExportEnvelope(');
+    const serialize = ex.indexOf('PORT_PM_serializeExport(');
+    const download = ex.indexOf('PORT_PM_download(');
+    assert.ok(pre !== -1 && build !== -1 && serialize !== -1 && download !== -1);
+    assert.ok(pre < build && pre < serialize && pre < download,
+      'the store check precedes build, serialize and download');
+    assert.ok(!ex.slice(0, pre).includes('createObjectURL'));
+  });
+
+  check('2C-Z7: apply re-checks the live store before candidates, backup and writes', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const pre = apply.indexOf('PORT_PM_checkLiveStoreAuthority(');
+    const cand = apply.indexOf('PORT_PM_buildImportCandidates(');
+    const backup = apply.indexOf('KEY_PM_STATE_IMPORT_BACKUP_V1');
+    const wp = apply.indexOf('ENGINE_PM.persistPrompts(');
+    const wq = apply.indexOf('ENGINE_PM.persistQuick(');
+    assert.ok(pre !== -1, 'the mandatory re-check exists');
+    assert.ok(pre < cand && pre < backup && pre < wp && pre < wq,
+      'it precedes candidates, the backup and both live writes');
+    // selection is gated too
+    const begin = PORT_CTL.slice(PORT_CTL.indexOf('beginImport(root, file)'), PORT_CTL.indexOf('cancelImport(root ='));
+    assert.match(begin, /PORT_PM_checkLiveStoreAuthority\(/, 'staging checks it as well');
+    assert.ok(begin.indexOf('PORT_PM_checkLiveStoreAuthority(') < begin.indexOf('new FileReader()'),
+      'and does so before any FileReader work');
+  });
+
+  check('2C-Z8: corrupt live storage cannot become a successful empty portability op', () => {
+    // The only route to a portability mutation runs through the preflight, and
+    // the preflight treats PM_READ_CORRUPT as unsafe rather than as [].
+    const pf = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes'));
+    assert.ok(!/PM_READ_CORRUPT[\s\S]{0,80}ok: true/.test(pf),
+      'a corrupt read never resolves to a safe verdict');
+    assert.equal((PORT_CTL.match(/PORT_PM_checkLiveStoreAuthority\(/g) || []).length, 3,
+      'export, staging and apply — the three mutation boundaries');
+  });
+
+  check('2C-Z9: one real UTF-8 byte authority exists and is used on both sides', () => {
+    const u = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_utf8Bytes'),
+      PORT_PURE.indexOf('const PORT_PM_decodeRawList'));
+    assert.match(u, /new TextEncoder\(\)\.encode\(/, 'it measures real bytes');
+    assert.match(u, /typeof TextEncoder !== 'function'\) return null/, 'and fails closed');
+    assert.match(u, /catch \{ return null; \}/);
+    assert.equal((stripComments(PORT_CODE).match(/const PORT_PM_utf8Bytes = /g) || []).length, 1,
+      'exactly one definition');
+    // parser side
+    const parse = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_parseImportText'),
+      PORT_PURE.indexOf('/* ── Merge'));
+    assert.match(parse, /const bytes = PORT_PM_utf8Bytes\(s\)/, 'the parser measures bytes');
+    assert.match(parse, /bytes === null \|\| bytes > PORT_PM_MAX_BYTES/, 'and fails closed');
+    assert.ok(!/s\.length > PORT_PM_MAX_BYTES/.test(parse),
+      'the String.length gate is gone from the parser');
+  });
+
+  check('2C-Z10: the export size check precedes createObjectURL and the download', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary(root ='), PORT_CTL.indexOf('beginImport(root, file)'));
+    const serialize = ex.indexOf('PORT_PM_serializeExport(');
+    const size = ex.indexOf('const bytes = PORT_PM_utf8Bytes(text)');
+    const guard = ex.indexOf('bytes === null || bytes > PORT_PM_MAX_BYTES');
+    const download = ex.indexOf('PORT_PM_download(');
+    const success = ex.indexOf("FEEDBACK_PM.say('Exported'");
+    assert.ok(size !== -1 && guard !== -1, 'the export byte gate exists');
+    assert.ok(serialize < size, 'it measures the serialized text');
+    assert.ok(guard < download, 'and refuses before the download path');
+    assert.ok(guard < success, 'so success cannot be reported for an unimportable file');
+    assert.ok(!ex.slice(0, guard).includes('createObjectURL'),
+      'no object URL can exist when the size gate refuses');
+    assert.match(ex, /PM_MSG_PORT_EXPORT_TOO_LARGE/, 'with a truthful export-specific message');
+  });
+
+  check('2C-Z11: the export and import caps are the same constant', () => {
+    const code = stripComments(PORT_CODE);
+    assert.equal((code.match(/const PORT_PM_MAX_BYTES = /g) || []).length, 1, 'one cap');
+    assert.ok(code.includes('bytes > PORT_PM_MAX_BYTES'), 'both sides compare against it');
+    assert.ok(!/PORT_PM_MAX_BYTES \* |PORT_PM_MAX_BYTES \+ \d/.test(code),
+      'and neither side quietly scales it');
+  });
+
+  check('2C-Z12: the earlier closures remain structurally intact', () => {
+    for (const marker of [
+      'const PORT_PM_isCanonicalId = ', 'const PORT_PM_rawEquals = ',
+      'const PORT_PM_decodeRawList = ', 'const PORT_PM_restoreRaw = ',
+      'nextRead() {', 'isCurrentRead(token) { return',
+      'recoveryRequired = true', 'const reconcileDegraded = ',
+    ]) {
+      assert.ok(PORT_CODE.includes(marker), `still present: ${marker}`);
+    }
+    const api = SRC.match(/^ {2}MOD_OBJ\.api\.\w+ = /gm) || [];
+    assert.equal(api.length, 6);
+    assert.ok(!/autoSend/.test(PORT_CODE));
+    assert.ok(!PORT_CODE.includes('KEY_PM_STATE_HISTORY_V1'));
+  });
+
+  check('2C-Z13: the stale trimmed-id comment is gone', () => {
+    assert.ok(!PORT_PURE.includes('the id, which is trimmed'),
+      'the export projection no longer claims to trim the id');
+    assert.match(PORT_PURE, /Ids are not trimmed either/,
+      'and says what it actually does');
+  });
+
+  /* ═════ PHASE 2C CLOSURE 4 — LIVE AUTHORITY + COMPLETE RECORDS ═════ */
+
+  check('2C-AA1: VALID live arrays are compared with current in-memory authority', () => {
+    const pf = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes')));
+    const read = pf.indexOf('const rd = ENGINE_PM_readArray(key);');
+    const live = pf.indexOf('const live = PORT_PM_projectList(persisted, project, validate');
+    const memory = pf.indexOf('const memory = PORT_PM_projectList(mem, project, validate');
+    const compare = pf.indexOf('JSON.stringify(liveLogical) !== JSON.stringify(memoryLogical)');
+    assert.ok(read !== -1 && live > read && memory > live && compare > memory,
+      'classified read, strict live projection, strict memory projection, then comparison');
+  });
+
+  check('2C-AA2: PM_READ_VALID can never be a stand-alone success verdict', () => {
+    const pf = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes')));
+    assert.ok(!/PM_READ_VALID[\s\S]{0,100}ok: true/.test(pf),
+      'VALID is not treated as coherent merely because it parsed as an array');
+    assert.ok(pf.indexOf("return { ok: true, error: '' };") >
+      pf.indexOf('JSON.stringify(liveLogical) !== JSON.stringify(memoryLogical)'),
+      'success occurs only after canonical logical equality');
+  });
+
+  check('2C-AA3: Prompt manual sequence participates in coherence unchanged', () => {
+    const pf = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes'));
+    assert.match(pf, /const promptSequence = \(list\) => list\.slice\(\)/,
+      'Prompt comparison copies but never reorders');
+    assert.match(pf, /PM_MSG_PORT_CHANGED_PROMPTS, promptSequence\)/,
+      'the Prompt store uses that exact sequence authority');
+  });
+
+  check('2C-AA4: Quick coherence uses the unchanged runtime `order` semantics on copies', () => {
+    const pf = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes'));
+    assert.match(pf, /const quickSequence = \(list\) => list\.slice\(\)\s*\.sort\(\(a, b\) => \(a\?\.order \|\| 0\) - \(b\?\.order \|\| 0\)\)/,
+      'Quick copies are sorted exactly like ENGINE_PM.loadQuick');
+    assert.match(pf, /PM_MSG_PORT_CHANGED_QUICK, quickSequence\)/);
+    assert.ok(!/list\.sort\(/.test(stripComments(pf)), 'neither caller-owned array is sorted in place');
+  });
+
+  check('2C-AA5: stale storage returns before Export can build or download', () => {
+    const ex = PORT_CTL.slice(PORT_CTL.indexOf('exportLibrary(root ='), PORT_CTL.indexOf('beginImport(root, file)'));
+    const live = ex.indexOf('const live = PORT_PM_checkLiveStoreAuthority(');
+    const guard = ex.indexOf('if (!live.ok)');
+    const ret = ex.indexOf('return false;', guard);
+    const build = ex.indexOf('PORT_PM_buildExportEnvelope(');
+    const download = ex.indexOf('PORT_PM_download(');
+    assert.ok(live !== -1 && guard > live && ret > guard && ret < build && ret < download);
+  });
+
+  check('2C-AA6: Apply mismatch returns before candidates, backup and all live writes', () => {
+    const apply = PORT_CTL.slice(PORT_CTL.indexOf('applyImport(root ='));
+    const live = apply.indexOf('const liveAtApply = PORT_PM_checkLiveStoreAuthority(');
+    const guard = apply.indexOf('if (!liveAtApply.ok)');
+    const ret = apply.indexOf('return false;', guard);
+    for (const later of ['PORT_PM_buildImportCandidates(', 'UTIL_storage.readRaw(',
+      'PORT_PM_buildBackupEnvelope(', 'ENGINE_PM.persistPrompts(', 'ENGINE_PM.persistQuick(']) {
+      const at = apply.indexOf(later);
+      assert.ok(at > ret, `${later} remains unreachable after a mismatch return`);
+    }
+    assert.ok(live !== -1 && guard > live && ret > guard);
+  });
+
+  check('2C-AA7: projectList strict-validates ORIGINAL records before projection', () => {
+    const proj = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_projectList'),
+      PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope')));
+    const original = proj.indexOf('const canonical = validate(rec);');
+    const originalGuard = proj.indexOf('if (!canonical)');
+    const projection = proj.indexOf('project(canonical, id)');
+    assert.ok(original !== -1 && original < originalGuard && originalGuard < projection,
+      'an unknown source key is seen before any selector can drop it');
+    assert.match(proj, /out\.push\(canonical\)/, 'the validated complete record is the output authority');
+  });
+
+  check('2C-AA8: unknown source keys cannot be sanitized away', () => {
+    for (const validator of ['const PORT_PM_validateImportPrompt', 'const PORT_PM_validateImportQuick']) {
+      const i = PORT_PURE.indexOf(validator);
+      const body = PORT_PURE.slice(i, i + 1800);
+      assert.match(body, /PORT_PM_onlyKnownKeys\(rec, PORT_PM_(?:PROMPT|QUICK)_KEYS\)/,
+        `${validator} owns the declared key gate`);
+    }
+    const proj = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_projectList'),
+      PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'));
+    assert.ok(proj.indexOf('validate(rec)') < proj.indexOf('project(canonical, id)'),
+      'the known-key gate necessarily runs on the source object first');
+  });
+
+  check('2C-AA9: backup and export share the same complete-record authority', () => {
+    const exportBlock = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildExportEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_serializeExport'));
+    const backupBlock = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_buildBackupEnvelope'),
+      PORT_PURE.indexOf('const PORT_PM_rawEquals'));
+    for (const block of [exportBlock, backupBlock]) {
+      assert.match(block, /PORT_PM_projectList\(prompts, PORT_PM_exportPrompt, PORT_PM_validateImportPrompt/);
+      assert.match(block, /PORT_PM_projectList\(quick, PORT_PM_exportQuick, PORT_PM_validateImportQuick/);
+    }
+    assert.equal((stripComments(PORT_PURE).match(/const PORT_PM_projectList = /g) || []).length, 1,
+      'there is one collection authority, not export/backup/preflight copies');
+  });
+
+  check('2C-AA10: optional Prompt presence is strict, not undefined-as-absent repair', () => {
+    const vp = PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_validateImportPrompt'),
+      PORT_PURE.indexOf('const PORT_PM_validateImportQuick'));
+    assert.match(vp, /PORT_PM_hasOwn\(rec, 'lastUsedAt'\)/);
+    assert.match(vp, /PORT_PM_hasOwn\(rec, 'useCount'\)/);
+    assert.ok(!/rec\.(?:lastUsedAt|useCount) !== undefined/.test(stripComments(vp)));
+  });
+
+  check('2C-AA11: coherence is structural and never raw-JSON-string equality', () => {
+    const pf = stripComments(PORT_PURE.slice(PORT_PURE.indexOf('const PORT_PM_checkLiveStoreAuthority'),
+      PORT_PURE.indexOf('const PORT_PM_utf8Bytes')));
+    assert.ok(!pf.includes('rd.raw'), 'the preflight does not compare storage byte strings');
+    assert.match(pf, /JSON\.stringify\(liveLogical\)/,
+      'only fixed-key canonical values are serialized for structural equality');
+    assert.match(pf, /PORT_PM_projectList\(persisted/);
+  });
+
+  check('2C-AA12: Q/S/Z, read generation, recovery and rollback authorities remain present', () => {
+    for (const marker of [
+      'const PORT_PM_sequenceQuick = ', 'const PORT_PM_checkLiveStoreAuthority = ',
+      'const PORT_PM_utf8Bytes = ', 'nextRead() {', 'isCurrentRead(token) { return',
+      'recoveryRequired = true', 'const PORT_PM_rawEquals = ', 'const rollback = ',
+      'const reconcileDegraded = ', 'PORT_PM_decodeRawList(rb.nowPrompts)',
+    ]) assert.ok(PORT_CODE.includes(marker), `preserved: ${marker}`);
+    assert.equal((PORT_CTL.match(/PORT_PM_checkLiveStoreAuthority\(/g) || []).length, 3,
+      'Export, beginImport and Apply remain the three portability boundaries');
   });
 
   console.log('');
