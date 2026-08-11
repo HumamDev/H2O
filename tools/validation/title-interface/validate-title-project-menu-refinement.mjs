@@ -149,6 +149,22 @@ vm.runInContext(
 
 assert.match(source, /return W\.H2O\?\.Projects \|\|/, 'the picker prefers the canonical H2O.Projects public authority');
 
+const chooserSource = extractFunction('openProjectChooser');
+assert.match(chooserSource, /const projects = canonicalProjectRows\(api\)/,
+  'project choices derive only from canonical Projects records');
+assert.match(chooserSource, /picker\.dataset\.hoProjectChoiceSurface = '1'/,
+  'the private project-choice surface has an explicit Title-owned marker');
+assert.match(chooserSource, /picker\.setAttribute\('role',\s*'listbox'\)/,
+  'the project picker is a choice list, not a generic action menu eligible for native-menu injection');
+assert.match(chooserSource, /button\.setAttribute\('role',\s*'option'\)/,
+  'every selectable project row is exposed as a project option');
+assert.match(chooserSource, /button\.dataset\.hoProjectChoice = '1'[\s\S]*button\.dataset\.projectId = project\.id/,
+  'every selectable project option carries its canonical project ID');
+assert.match(chooserSource, /projects\.forEach\(\(project\) => \{[\s\S]*picker\.appendChild\(button\)/,
+  'one rendered project option is appended for every canonical deduplicated project');
+assert.doesNotMatch(chooserSource, /Add to Library|Save to Folder|Add label|Add to folder|Rename/,
+  'generic non-project actions cannot be authored as project choices');
+
 const interactionSandbox = { Promise, String };
 interactionSandbox.globalThis = interactionSandbox;
 vm.createContext(interactionSandbox);

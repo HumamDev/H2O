@@ -1130,7 +1130,8 @@
     const picker = D.createElement('div');
     picker.className = 'ho-title-action-menu ho-title-project-picker';
     markTitleOwnedMenu(picker);
-    picker.setAttribute('role', 'menu');
+    picker.dataset.hoProjectChoiceSurface = '1';
+    picker.setAttribute('role', 'listbox');
     picker.setAttribute('aria-label', 'Move chat to project');
     const head = D.createElement('div');
     head.className = 'ho-menu-muted';
@@ -1154,8 +1155,10 @@
           action: `move-project:${project.id}`,
           trailing: current ? '<span class="ho-menu-check" aria-label="Current project">✓</span>' : '',
         });
-        button.setAttribute('role', 'menuitem');
+        button.setAttribute('role', 'option');
+        button.dataset.hoProjectChoice = '1';
         button.dataset.projectId = project.id;
+        button.setAttribute('aria-selected', current ? 'true' : 'false');
         button.addEventListener('click', (event) => {
           event.preventDefault();
           event.stopPropagation();
