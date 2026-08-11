@@ -32,9 +32,12 @@ function plain(value) {
 
 // Container-derived width: 48 px per side at normal widths, reduced to 8%
 // per side on narrow composer containers. No viewport calculation drives it.
-assert.match(source, /left:\s*min\(48px,\s*8%\)/, 'title bar needs a container-relative left inset');
-assert.match(source, /right:\s*min\(48px,\s*8%\)/, 'title bar needs a container-relative right inset');
-assert.match(source, /width:\s*auto;[\s\S]*max-width:\s*none;/, 'insets must determine responsive title-bar width');
+const visibleTitleRule = source.match(/\.ho-tab-title-under-input\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
+assert.match(visibleTitleRule, /align-self:\s*stretch;/, 'the visible title surface must stretch within the composer container');
+assert.match(visibleTitleRule, /margin-inline:\s*min\(48px,\s*8%\);/, 'the visible title surface needs responsive inline insets');
+assert.match(visibleTitleRule, /width:\s*auto;/, 'the visible title surface width must derive from its container');
+assert.match(visibleTitleRule, /max-width:\s*none;/, 'a legacy viewport cap must not defeat container-derived sizing');
+assert.doesNotMatch(visibleTitleRule, /width:\s*100%/, 'the visible title surface must not combine full width with inline margins');
 
 const geometrySandbox = { Math };
 geometrySandbox.globalThis = geometrySandbox;

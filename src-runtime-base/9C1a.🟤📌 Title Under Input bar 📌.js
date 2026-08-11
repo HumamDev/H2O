@@ -65,11 +65,15 @@
       margin-top: 0;
       text-align: center;
       display: inline-flex;
+      align-self: stretch;
       justify-content: center;
       align-items: center;
       gap: 7px;
       min-width: 0;
-      max-width: min(88vw, 760px);
+      width: auto;
+      max-width: none;
+      margin-inline: min(48px, 8%);
+      box-sizing: border-box;
       padding: 4px 7px;
       border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.08);
@@ -368,6 +372,7 @@
       top: 50%;
       width: auto;
       max-width: none;
+      margin-inline: 0;
       box-sizing: border-box;
       transform: translateY(-50%);
     }
