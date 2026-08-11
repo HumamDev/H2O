@@ -114,7 +114,13 @@ const ACCEPTED_P3C_INTEGRATION_HEAD = "8b82c85666e4a3be2307316d7b342ed3388065ef"
 const P3C_LIVE_ANCHOR_AUTHORIZED_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
 const P3C_LIVE_ANCHOR_SUBJECT =
   "test(publish): prove the payload validator never mutates the live canonical anchor";
-const EXPECTED_SCOPE = 19;
+// Current-main payload-validator baseline repair after the Activator baseline landed.
+// This is an exact one-validator phase: no descendant allowance and no production path.
+const ACCEPTED_CURRENT_MAIN_HEAD = "db49714cb9c3ce9f814056aa40160cc043cd2f5a";
+const CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const CURRENT_PAYLOAD_BASELINE_SUBJECT =
+  "test(publish): authorize current-main payload baseline after activator repair";
+const EXPECTED_SCOPE = 21;
 const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -459,6 +465,21 @@ function classifyPayloadScope(state) {
         JSON.stringify([...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS])) {
     return "p3c-live-anchor-committed";
   }
+  const currentPayloadBaseline = value.head === ACCEPTED_CURRENT_MAIN_HEAD &&
+    value.untracked.length === 0 && value.staged.length === 0;
+  if (currentPayloadBaseline &&
+      JSON.stringify(value.modifiedTracked) ===
+        JSON.stringify([...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS])) {
+    return "payload-current-baseline-uncommitted";
+  }
+  if (value.modifiedTracked.length === 0 && value.untracked.length === 0 &&
+      value.staged.length === 0 &&
+      value.parent === ACCEPTED_CURRENT_MAIN_HEAD &&
+      value.subject === CURRENT_PAYLOAD_BASELINE_SUBJECT &&
+      JSON.stringify(value.committedPaths) ===
+        JSON.stringify([...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS])) {
+    return "payload-current-baseline-committed";
+  }
   throw new Error("P3A source scope mismatch");
 }
 
@@ -671,6 +692,46 @@ function runScopeTests() {
         head: "future-p3c-c1", parent: ACCEPTED_P3C_INTEGRATION_HEAD,
         subject: P3C_LIVE_ANCHOR_SUBJECT, modifiedTracked: [], untracked: [],
         committedPaths: [...P3C_LIVE_ANCHOR_AUTHORIZED_PATHS], ...override,
+      })), /scope mismatch/u);
+    }
+  });
+  scopeTest("exact current-main payload-validator-only state is accepted", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: ACCEPTED_CURRENT_MAIN_HEAD,
+      modifiedTracked: [...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS],
+    })), "payload-current-baseline-uncommitted");
+    for (const override of [
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, PAYLOAD_MODULE_REL].sort() },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL].sort() },
+      { staged: [PAYLOAD_VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { modifiedTracked: [] },
+      { head: "0000000000000000000000000000000000000000" },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: ACCEPTED_CURRENT_MAIN_HEAD,
+        modifiedTracked: [...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS],
+        ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+  });
+  scopeTest("committed current-main payload baseline pins parent, subject and one path", () => {
+    assert.equal(classifyPayloadScope(baseScope({
+      head: "future-current-main-payload", parent: ACCEPTED_CURRENT_MAIN_HEAD,
+      subject: CURRENT_PAYLOAD_BASELINE_SUBJECT,
+      committedPaths: [...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS],
+    })), "payload-current-baseline-committed");
+    for (const override of [
+      { parent: "0000000000000000000000000000000000000000" },
+      { subject: P3C_LIVE_ANCHOR_SUBJECT },
+      { committedPaths: [PAYLOAD_VALIDATOR_REL, WRITER_VALIDATOR_REL].sort() },
+      { committedPaths: [PAYLOAD_VALIDATOR_REL, PAYLOAD_MODULE_REL].sort() },
+    ]) {
+      assert.throws(() => classifyPayloadScope(baseScope({
+        head: "future-current-main-payload", parent: ACCEPTED_CURRENT_MAIN_HEAD,
+        subject: CURRENT_PAYLOAD_BASELINE_SUBJECT,
+        committedPaths: [...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS],
+        ...override,
       })), /scope mismatch/u);
     }
   });
