@@ -174,6 +174,8 @@
   const CFG_PROJECTS_STARTUP_RERENDER_DEFER_MS = 900;
   const CFG_PROJECTS_RENDER_INITIAL_ROWS = 60;
   const CFG_PROJECTS_RENDER_CHUNK_ROWS = 90;
+  const CFG_PROJECTS_MOVE_UI_TIMEOUT_MS = 5000;
+  const CFG_PROJECTS_MOVE_CONFIRM_TIMEOUT_MS = 10000;
   const CFG_PROJECTS_SOURCE = 'snorlax-sidebar';
   const CFG_PROJECTS_TARGET_PATH = '/backend-api/gizmos/snorlax/sidebar';
   const CFG_PROJECTS_NATIVE_HEADER_NAMES = Object.freeze([
@@ -303,6 +305,7 @@
   STATE.projectsManualRefreshRunning = !!STATE.projectsManualRefreshRunning;
   STATE.projectsManualRefreshDoneUntil = Number(STATE.projectsManualRefreshDoneUntil || 0) || 0;
   STATE.projectsBooted = !!STATE.projectsBooted;
+  const PROJECTS_MOVE_INFLIGHT = new Map();
 
   function getRouteService() {
     return core.getService?.('route') || null;
@@ -1896,6 +1899,113 @@
     return rows.length ? rows : PROJECTS_mergeRows(domRows, projectsRaw);
   }
 
+  function PROJECTS_normalizeMoveChatId(value) {
+    let id = '';
+    try { id = H2O.ChatRegistry?.resolveChatId?.(value) || String(value || '').trim(); } catch {}
+    id = String(id || '').trim();
+    return !id || id.length > 512 || !/^[A-Za-z0-9._:-]+$/.test(id) || /^imported[-_:]/i.test(id) ? '' : id;
+  }
+  function PROJECTS_resolveMoveProject(raw) {
+    const requested = String(raw || '').trim();
+    const valid = projectCore()?.validateProjectId?.(requested) || { ok: !!requested && requested.length <= 512 && !/[\/\\\u0000-\u001f\u007f<>]/.test(requested) };
+    if (!valid.ok) return { ok: false, status: 'invalid-project-id' };
+    const seen = new Set();
+    const rows = PROJECTS_loadRowsFast().filter((row) => String(row?.id || row?.projectId || '').trim() === requested || PROJECTS_idFromHref(row?.href || '') === requested).map((row) => {
+      const id = String(row?.id || row?.projectId || '').trim(); const href = String(row?.href || '').split(/[?#]/)[0]; const key = `${id}\u0001${href}`;
+      if (!id || !href || seen.has(key)) return null; seen.add(key);
+      return { id, projectId: id, href, routeId: PROJECTS_idFromHref(href), title: normText(row?.title || row?.name || id) };
+    }).filter(Boolean);
+    return rows.length === 1 ? { ok: true, status: 'ok', project: rows[0] } : { ok: false, status: rows.length ? 'ambiguous-project-id' : 'project-not-found' };
+  }
+  function PROJECTS_projectAliases(project) { return new Set([String(project?.id || project?.projectId || '').trim(), String(project?.routeId || PROJECTS_idFromHref(project?.href || '')).trim()].filter(Boolean)); }
+  function PROJECTS_projectIdFromChatHref(href, chatId) {
+    let path = ''; try { path = new URL(String(href || ''), W.location?.origin || 'https://chatgpt.com').pathname; } catch { path = String(href || '').split(/[?#]/)[0]; }
+    const match = path.match(/^\/g\/([^/]+)\/c\/([^/]+)\/?$/i); if (!match) return '';
+    let foundChatId = match[2]; try { foundChatId = decodeURIComponent(foundChatId); } catch {}
+    return foundChatId === chatId ? match[1] : '';
+  }
+  function PROJECTS_findNativeChatAnchors(chatId) {
+    return [...D.querySelectorAll('a[href*="/c/"]')].filter((anchor) => {
+      if (!chatId || DOM_isH2OOwnedNode(anchor)) return false; const href = anchor.getAttribute?.('href') || ''; let resolved = '';
+      try { resolved = H2O.ChatRegistry?.parseChatIdFromHref?.(href) || ((href.match(/\/c\/([^/?#]+)/) || [])[1] || ''); } catch {}
+      return String(resolved || '') === chatId;
+    }).sort((a, b) => Number(!!b.closest?.('nav,aside')) - Number(!!a.closest?.('nav,aside')));
+  }
+  function PROJECTS_currentProjectIdForChat(chatId) {
+    const routeId = PROJECTS_projectIdFromChatHref(W.location?.href || '', chatId); if (routeId) return routeId;
+    for (const anchor of PROJECTS_findNativeChatAnchors(chatId)) { const id = PROJECTS_projectIdFromChatHref(anchor.getAttribute?.('href') || '', chatId); if (id) return id; }
+    try { const record = H2O.ChatRegistry?.getRecord?.(chatId); return String(record?.project?.projectId || record?.projectId || '').trim(); } catch { return ''; }
+  }
+  function PROJECTS_isChatInProject(chatId, project) { const id = PROJECTS_currentProjectIdForChat(chatId); return !!id && PROJECTS_projectAliases(project).has(id); }
+  function PROJECTS_waitForDom(predicate, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false, timer = 0, poll = 0, observer = null, removeObserver = null;
+      const finish = (value) => { if (done) return; done = true; if (timer) { W.clearTimeout(timer); CLEAN.timers.delete(timer); } if (poll) { W.clearInterval(poll); CLEAN.timers.delete(poll); } removeObserver?.(); CLEAN.observers.delete(removeObserver); resolve(value || null); };
+      const check = () => { let value = null; try { value = !done && predicate(); } catch {} if (value) finish(value); };
+      try { const Observer = W.MutationObserver || MutationObserver; observer = new Observer(check); removeObserver = () => { try { observer?.disconnect(); } catch {} }; observer.observe(D.body || D.documentElement, { childList: true, subtree: true, attributes: true }); CLEAN.observers.add(removeObserver); } catch {}
+      poll = W.setInterval(check, 80); timer = W.setTimeout(() => finish(null), Math.max(100, Number(timeoutMs || 0))); CLEAN.timers.add(poll); CLEAN.timers.add(timer); check();
+    });
+  }
+  function PROJECTS_dispatchHover(node) { ['pointerover', 'mouseover', 'mouseenter'].forEach((type) => { try { const Ctor = W.MouseEvent || MouseEvent; node?.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: W })); } catch {} }); }
+  function PROJECTS_findChatOptionsButton(anchor) {
+    const selector = 'button.__menu-item-trailing-btn,button[data-testid*="history-item"][data-testid$="options"],button[data-testid$="options"],button[aria-label*="conversation options" i]';
+    for (let node = anchor, depth = 0; depth < 6 && node; depth += 1, node = node.parentElement) {
+      PROJECTS_dispatchHover(node); const direct = node.querySelector?.(selector); if (direct) return direct;
+      const match = [...(node.querySelectorAll?.('button') || [])].find((button) => /conversation options|open conversation options/i.test(`${button.getAttribute?.('aria-label') || ''} ${button.title || ''}`)); if (match) return match;
+    }
+    return null;
+  }
+  function PROJECTS_nativeMoveAction(menu) { return !menu || DOM_isH2OOwnedNode(menu) ? null : ([...menu.querySelectorAll?.('[role="menuitem"],button') || []].find((item) => /^(move(?: chat)? to project|add to project)$/i.test(normText(item.textContent || item.getAttribute?.('aria-label') || ''))) || null); }
+  function PROJECTS_findNativeMoveMenu() { return [...D.querySelectorAll('[role="menu"]')].find((menu) => PROJECTS_nativeMoveAction(menu)) || null; }
+  function PROJECTS_nativeTargetIdentityMatches(node, project) {
+    const aliases = PROJECTS_projectAliases(project); const dataId = String(node?.getAttribute?.('data-project-id') || node?.getAttribute?.('data-gizmo-id') || '').trim(); if (dataId && aliases.has(dataId)) return true;
+    const href = String(node?.getAttribute?.('href') || '').trim(); if (!href) return false; let path = href.split(/[?#]/)[0]; try { path = new URL(href, W.location?.origin || 'https://chatgpt.com').pathname; } catch {}
+    return aliases.has(PROJECTS_idFromHref(path)) && path === String(project?.href || '').split(/[?#]/)[0];
+  }
+  function PROJECTS_findNativeMoveTarget(project, before) {
+    return [...D.querySelectorAll('a[href],[data-project-id],[data-gizmo-id]')].find((node) => !DOM_isH2OOwnedNode(node) && PROJECTS_nativeTargetIdentityMatches(node, project) && (!!node.closest?.('[role="dialog"],[role="menu"],[data-radix-popper-content-wrapper]') || (!node.closest?.('nav,aside') && !before.has(node)))) || null;
+  }
+  function PROJECTS_scrollNativeMovePanels() {
+    [...D.querySelectorAll('[role="dialog"],[role="menu"],[data-radix-popper-content-wrapper]')].forEach((root) => [root, ...(root.querySelectorAll?.('*') || [])].forEach((node) => {
+      if (!(node?.scrollHeight > node?.clientHeight + 8)) return; const before = Number(node.scrollTop || 0); node.scrollTop = Math.min(node.scrollHeight, before + Math.max(160, Number(node.clientHeight || 240) * 0.8));
+      if (node.scrollTop !== before) try { node.dispatchEvent(new Event('scroll', { bubbles: true })); } catch {}
+    }));
+  }
+  function PROJECTS_closeNativeMoveUi() { [D.activeElement, D.body, D].filter(Boolean).forEach((target) => { try { const Ctor = W.KeyboardEvent || KeyboardEvent; target.dispatchEvent(new Ctor('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); } catch {} }); }
+  async function PROJECTS_executeNativeMove({ chatId, project }) {
+    const failure = (status, error) => { PROJECTS_closeNativeMoveUi(); return { ok: false, status, error }; }; PROJECTS_closeNativeMoveUi();
+    const anchor = PROJECTS_findNativeChatAnchors(chatId)[0]; if (!anchor) return failure('native-chat-unavailable', 'Requested chat is not available in the native chat list.');
+    const options = PROJECTS_findChatOptionsButton(anchor); if (!options) return failure('native-menu-unavailable', 'Native chat options control is unavailable.');
+    try { options.click(); } catch (error) { return failure('native-menu-unavailable', String(error?.message || error)); }
+    const menu = await PROJECTS_waitForDom(PROJECTS_findNativeMoveMenu, CFG_PROJECTS_MOVE_UI_TIMEOUT_MS); const action = PROJECTS_nativeMoveAction(menu);
+    if (!action) return failure('native-move-action-unavailable', 'Native Move to project action is unavailable.');
+    const before = new Set([...D.querySelectorAll('a[href],[data-project-id],[data-gizmo-id]')].filter((node) => PROJECTS_nativeTargetIdentityMatches(node, project)));
+    try { action.click(); } catch (error) { return failure('native-move-action-failed', String(error?.message || error)); }
+    const target = await PROJECTS_waitForDom(() => { const found = PROJECTS_findNativeMoveTarget(project, before); if (!found) PROJECTS_scrollNativeMovePanels(); return found; }, CFG_PROJECTS_MOVE_UI_TIMEOUT_MS);
+    if (!target) return failure('native-project-target-unavailable', 'Native project chooser did not expose the canonical project identity.');
+    try { target.click(); } catch (error) { return failure('native-project-target-failed', String(error?.message || error)); }
+    const confirmed = await PROJECTS_waitForDom(() => PROJECTS_isChatInProject(chatId, project), CFG_PROJECTS_MOVE_CONFIRM_TIMEOUT_MS); PROJECTS_closeNativeMoveUi();
+    return confirmed ? { ok: true, status: 'moved' } : { ok: false, status: 'persistence-unconfirmed', error: 'Native move did not produce canonical project-assignment evidence.' };
+  }
+  function PROJECTS_moveChatToProjectWithDeps(input, deps) {
+    const args = input && typeof input === 'object' ? input : {}; const source = typeof args.source === 'string' ? args.source.trim().slice(0, 120) : '';
+    const fail = (status, chatId = '', projectId = '', error = '') => ({ ok: false, status, chatId, projectId, error: String(error || status) }); let chatId = ''; let resolution = null;
+    try { chatId = String(deps.normalizeChatId(args.chatId) || ''); } catch {} if (!chatId) return Promise.resolve(fail('invalid-chat-id'));
+    try { resolution = deps.resolveProject(args.projectId); } catch {} if (!resolution?.ok || !resolution.project) return Promise.resolve(fail(resolution?.status || 'invalid-project-id', chatId, String(args.projectId || '')));
+    const project = resolution.project; const projectId = String(project.id || project.projectId || ''); if (!projectId) return Promise.resolve(fail('invalid-project-id', chatId));
+    try { if (deps.isAlreadyInProject(chatId, project)) return Promise.resolve({ ok: true, status: 'already-in-project', chatId, projectId }); } catch {}
+    const inFlight = deps.inFlight; const active = inFlight.get(chatId); if (active) return active.projectId === projectId ? active.promise : Promise.resolve(fail('chat-move-in-progress', chatId, projectId));
+    let promise = null;
+    promise = (async () => {
+      let persisted = null; try { persisted = await deps.executePersistentMove({ chatId, project, source }); } catch (error) { return fail('move-failed', chatId, projectId, error?.message || error); }
+      if (!persisted?.ok) return fail(persisted?.status || 'move-failed', chatId, projectId, persisted?.error || persisted?.status);
+      try { await deps.refreshProjectState(`move-chat-to-project:${source || 'unspecified'}`); } catch (error) { return { ok: true, status: 'moved-refresh-failed', chatId, projectId, error: String(error?.message || error || 'project-refresh-failed') }; }
+      return { ok: true, status: persisted.status || 'moved', chatId, projectId };
+    })().finally(() => { if (inFlight.get(chatId)?.promise === promise) inFlight.delete(chatId); });
+    inFlight.set(chatId, { projectId, promise }); return promise;
+  }
+  function PROJECTS_moveChatToProject(input = {}) { return PROJECTS_moveChatToProjectWithDeps(input, { normalizeChatId: PROJECTS_normalizeMoveChatId, resolveProject: PROJECTS_resolveMoveProject, isAlreadyInProject: PROJECTS_isChatInProject, executePersistentMove: PROJECTS_executeNativeMove, refreshProjectState: PROJECTS_refreshFullStore, inFlight: PROJECTS_MOVE_INFLIGHT }); }
+
   function PROJECTS_schedulePageReconcile(projectsRaw = null) {
     if (STATE.projectsDeferredLoadTimer) return;
     STATE.projectsDeferredLoadTimer = W.setTimeout(() => {
@@ -2296,6 +2406,7 @@
     openViewer(projectsRaw = null, opts = {}) { return UI_openProjectsViewer(projectsRaw, opts); },
     loadRows(projectsRaw = null, opts = {}) { return PROJECTS_loadRows(projectsRaw, opts); },
     loadRowsFast(projectsRaw = null) { return PROJECTS_loadRowsFast(projectsRaw); },
+    moveChatToProject(input = {}) { return PROJECTS_moveChatToProject(input); },
     schedulePageReconcile(projectsRaw = null) { return PROJECTS_schedulePageReconcile(projectsRaw); },
     refreshFullStore(reason = 'refresh') { return PROJECTS_refreshFullStore(reason); },
     reconcileDropdownRows(reason = 'dropdown') { return PROJECTS_reconcileDropdownRows(reason); },
@@ -2334,6 +2445,7 @@
   MOD.refresh = (...args) => owner.refreshFullStore(...args);
   MOD.openViewer = (...args) => owner.openViewer(...args);
   MOD.readStore = PROJECTS_readStore;
+  MOD.moveChatToProject = (...args) => owner.moveChatToProject(...args);
   MOD.diagnose = (...args) => owner.diagnose(...args);
 
   try {
