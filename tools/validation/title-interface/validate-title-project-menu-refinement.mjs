@@ -58,7 +58,7 @@ const viewport = { left: 0, top: 0, right: 800, bottom: 600, width: 800, height:
     viewport,
     'below'
   ));
-  assert.deepEqual(point, { left: 120, top: 127, side: 'below' }, 'three-dot menu is right-aligned 7 px below its trigger');
+  assert.deepEqual(point, { left: 120, top: 127, side: 'below', maxHeight: 465 }, 'an upper trigger deterministically places a fitting menu 7 px below');
 }
 
 {
@@ -71,6 +71,7 @@ const viewport = { left: 0, top: 0, right: 800, bottom: 600, width: 800, height:
   assert.equal(point.side, 'above', 'menu flips above when below space is insufficient');
   assert.equal(point.top, 343, 'flipped menu retains a 7 px trigger gap');
   assert.equal(point.left, 530, 'flipped menu remains trigger-right-aligned');
+  assert.equal(point.maxHeight, 485, 'above placement exposes its stable available-height constraint');
 }
 
 {
@@ -84,11 +85,31 @@ const viewport = { left: 0, top: 0, right: 800, bottom: 600, width: 800, height:
   assert.equal(point.top, 27, 'menu stays below when room is available');
 }
 
+{
+  const anchor = { left: 380, right: 400, top: 330, bottom: 350 };
+  const natural = plain(position(anchor, { width: 220, height: 700 }, viewport, 'below'));
+  assert.equal(natural.side, 'above', 'when neither side fits, the side with more room is chosen once');
+  assert.equal(natural.maxHeight, 315, 'a too-tall popup is constrained to the chosen side');
+  assert.equal(natural.top, 8, 'the constrained popup remains inside the viewport top padding');
+  assert.ok(natural.top + natural.maxHeight <= viewport.bottom - 8, 'the constrained popup remains inside usable viewport bounds');
+
+  const consequence = plain(position(anchor, { width: 220, height: natural.maxHeight }, viewport, 'below'));
+  assert.equal(consequence.side, natural.side, 'the style-imposed height constraint cannot alternate placement on the next equivalent cycle');
+}
+
 assert.match(source, /positionMenu\(menu,\s*anchor\s*\|\|\s*labelEl\)/, 'title menu positions from the actual trigger');
 assert.match(source, /availableWidth = Math\.max\(40,[\s\S]*menu\.style\.maxWidth = `\$\{availableWidth\}px`/,
   'menus fit the actual visual viewport before their coordinates are clamped');
 assert.match(source, /menu\.getBoundingClientRect\(\)\.width > availableWidth[\s\S]*menu\.style\.minWidth = '0'/,
   'responsive fitting overrides CSS minimum widths on exceptionally narrow viewports');
+assert.match(source, /menu\.style\.maxHeight = 'none';[\s\S]*computeAnchoredMenuPosition\(ar, mr, viewport, placement\)[\s\S]*menu\.style\.maxHeight = `\$\{point\.maxHeight\}px`/,
+  'each reposition measures natural height before applying the chosen side constraint once');
+assert.match(source, /const injectedOwner = norm\(btn\.getAttribute\?\.\('data-cgxui'\)/,
+  'deduplication preserves externally injected actions whose cloned data-action matches their anchor');
+assert.match(source, /function markTitleOwnedMenu\(menu\)[\s\S]*menu\.setAttribute\('data-cgxui-owner',\s*'9C1a'\)/,
+  'Title popups identify themselves as H2O-owned so unrelated native-viewer positioners ignore them');
+assert.equal((source.match(/markTitleOwnedMenu\((?:menu|picker|popup)\);/g) || []).length, 4,
+  'every Title menu, picker, and confirmation popup uses the ownership marker');
 assert.match(source, /W\.addEventListener\('scroll',\s*onGeometry/, 'open menus track page/composer scrolling');
 assert.match(source, /W\.addEventListener\('resize',\s*onGeometry/, 'open menus track viewport resizing');
 assert.match(source, /scheduleOpenMenuPositions\(\)/, 'DOM/layout changes request anchored repositioning');

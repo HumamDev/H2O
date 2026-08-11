@@ -646,36 +646,46 @@
     const gap = 7;
     const pad = 8;
     const minLeft = viewport.left + pad;
-    const maxLeft = viewport.right - menuRect.width - pad;
+    const usableWidth = Math.max(0, viewport.width - pad * 2);
+    const renderedWidth = Math.min(menuRect.width, usableWidth);
+    const maxLeft = viewport.right - renderedWidth - pad;
     const minTop = viewport.top + pad;
-    const maxTop = viewport.bottom - menuRect.height - pad;
     let left;
     let top;
     let side = placement;
+    let maxHeight;
     if (placement === 'side') {
       const rightLeft = anchorRect.right + gap;
-      const leftLeft = anchorRect.left - gap - menuRect.width;
+      const leftLeft = anchorRect.left - gap - renderedWidth;
       const fitsRight = rightLeft <= maxLeft;
       const fitsLeft = leftLeft >= minLeft;
       left = fitsRight || (!fitsLeft && viewport.right - anchorRect.right >= anchorRect.left - viewport.left)
         ? rightLeft
         : leftLeft;
-      top = anchorRect.top;
+      maxHeight = Math.max(0, Math.floor(viewport.height - pad * 2));
+      const renderedHeight = Math.min(menuRect.height, maxHeight);
+      top = clamp(anchorRect.top, minTop, viewport.bottom - renderedHeight - pad);
       side = left < anchorRect.left ? 'left' : 'right';
     } else {
-      const belowTop = anchorRect.bottom + gap;
-      const aboveTop = anchorRect.top - gap - menuRect.height;
-      const belowRoom = viewport.bottom - pad - anchorRect.bottom - gap;
-      const aboveRoom = anchorRect.top - viewport.top - pad - gap;
-      const above = menuRect.height > belowRoom && aboveRoom > belowRoom;
-      left = anchorRect.right - menuRect.width;
-      top = above ? aboveTop : belowTop;
+      const belowRoom = Math.max(0, viewport.bottom - pad - anchorRect.bottom - gap);
+      const aboveRoom = Math.max(0, anchorRect.top - viewport.top - pad - gap);
+      const fitsBelow = menuRect.height <= belowRoom;
+      const fitsAbove = menuRect.height <= aboveRoom;
+      const preferAbove = placement === 'above';
+      const above = preferAbove
+        ? (fitsAbove || (!fitsBelow && aboveRoom >= belowRoom))
+        : (!fitsBelow && (fitsAbove || aboveRoom > belowRoom));
+      maxHeight = Math.max(0, Math.floor(above ? aboveRoom : belowRoom));
+      const renderedHeight = Math.min(menuRect.height, maxHeight);
+      left = anchorRect.right - renderedWidth;
+      top = above ? anchorRect.top - gap - renderedHeight : anchorRect.bottom + gap;
       side = above ? 'above' : 'below';
     }
     return {
       left: Math.round(clamp(left, minLeft, maxLeft)),
-      top: Math.round(clamp(top, minTop, maxTop)),
+      top: Math.round(top),
       side,
+      maxHeight,
     };
   }
 
@@ -761,18 +771,16 @@
     const pad = 8;
     const viewport = getViewportBox();
     const availableWidth = Math.max(40, Math.floor(viewport.width - pad * 2));
-    const availableHeight = Math.max(40, Math.floor(viewport.height - pad * 2));
     menu.style.minWidth = '';
     menu.style.width = '';
     menu.style.maxWidth = `${availableWidth}px`;
     menu.style.height = 'auto';
-    menu.style.maxHeight = `${availableHeight}px`;
-    menu.style.overflowY = 'auto';
+    menu.style.maxHeight = 'none';
+    menu.style.overflowY = 'hidden';
     if (menu.getBoundingClientRect().width > availableWidth) {
       menu.style.minWidth = '0';
       menu.style.width = `${availableWidth}px`;
     }
-    if (menu.scrollHeight > availableHeight) menu.style.height = `${availableHeight}px`;
     const ar = anchor?.getBoundingClientRect?.() || {
       left: viewport.left + viewport.width / 2,
       right: viewport.left + viewport.width / 2,
@@ -781,6 +789,8 @@
     };
     const mr = menu.getBoundingClientRect();
     const point = computeAnchoredMenuPosition(ar, mr, viewport, placement);
+    menu.style.maxHeight = `${point.maxHeight}px`;
+    menu.style.overflowY = 'auto';
     menu.dataset.hoMenuPlacement = point.side;
     menu.style.left = `${point.left}px`;
     menu.style.top = `${point.top}px`;
@@ -800,6 +810,13 @@
     });
   }
 
+  function markTitleOwnedMenu(menu) {
+    menu.dataset.hoTitleMenu = '1';
+    menu.dataset.hoTitleMenuOwner = '9C1a';
+    menu.setAttribute('data-cgxui-owner', '9C1a');
+    return menu;
+  }
+
   function makeMenuButton({ icon, label, action, disabled = false, trailing = '' }) {
     const btn = D.createElement('button');
     btn.type = 'button';
@@ -812,7 +829,10 @@
   function dedupeMenuButtons(menu) {
     const seen = new Set();
     [...menu.querySelectorAll('button')].forEach((btn) => {
-      const key = norm(btn.dataset.action || btn.querySelector?.('.ho-menu-label')?.textContent || btn.textContent || '').toLowerCase();
+      const injectedOwner = norm(btn.getAttribute?.('data-cgxui') || '').toLowerCase();
+      const action = norm(btn.dataset.action || '').toLowerCase();
+      const label = norm(btn.querySelector?.('.ho-menu-label')?.textContent || btn.textContent || '').toLowerCase();
+      const key = injectedOwner ? `injected:${injectedOwner}` : action ? `action:${action}` : `label:${label}`;
       if (!key) return;
       if (seen.has(key)) {
         btn.remove();
@@ -863,8 +883,7 @@
 
     const menu = D.createElement('div');
     menu.className = 'ho-title-action-menu';
-    menu.dataset.hoTitleMenu = '1';
-    menu.dataset.hoTitleMenuOwner = '9C1a';
+    markTitleOwnedMenu(menu);
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'Chat title actions');
 
@@ -938,8 +957,7 @@
 
     const menu = D.createElement('div');
     menu.className = 'ho-title-action-menu';
-    menu.dataset.hoTitleMenu = '1';
-    menu.dataset.hoTitleMenuOwner = '9C1a';
+    markTitleOwnedMenu(menu);
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'Add chat to folder');
 
@@ -1111,8 +1129,7 @@
 
     const picker = D.createElement('div');
     picker.className = 'ho-title-action-menu ho-title-project-picker';
-    picker.dataset.hoTitleMenu = '1';
-    picker.dataset.hoTitleMenuOwner = '9C1a';
+    markTitleOwnedMenu(picker);
     picker.setAttribute('role', 'menu');
     picker.setAttribute('aria-label', 'Move chat to project');
     const head = D.createElement('div');
@@ -1160,8 +1177,7 @@
     moveInteraction?.select?.(project);
     const popup = D.createElement('div');
     popup.className = 'ho-title-action-menu ho-title-project-confirm';
-    popup.dataset.hoTitleMenu = '1';
-    popup.dataset.hoTitleMenuOwner = '9C1a';
+    markTitleOwnedMenu(popup);
     popup.setAttribute('role', 'dialog');
     popup.setAttribute('aria-label', 'Confirm move to project');
 
