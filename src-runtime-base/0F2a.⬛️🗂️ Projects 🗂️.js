@@ -1947,16 +1947,25 @@
     });
   }
   function PROJECTS_dispatchHover(node) { ['pointerover', 'mouseover', 'mouseenter'].forEach((type) => { try { const Ctor = W.MouseEvent || MouseEvent; node?.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, view: W })); } catch {} }); }
+  function PROJECTS_isChatOptionsButton(button) {
+    if (!button) return false; const label = `${button.getAttribute?.('aria-label') || ''} ${button.title || ''}`.trim(); const testId = String(button.getAttribute?.('data-testid') || '').trim();
+    return /^(?:open )?conversation options(?: for\b|$)/i.test(label) || /^(?:history-item-.+|undefined)-options$/i.test(testId);
+  }
   function PROJECTS_findChatOptionsButton(anchor) {
-    const selector = 'button.__menu-item-trailing-btn,button[data-testid*="history-item"][data-testid$="options"],button[data-testid$="options"],button[aria-label*="conversation options" i]';
-    for (let node = anchor, depth = 0; depth < 6 && node; depth += 1, node = node.parentElement) {
-      PROJECTS_dispatchHover(node); const direct = node.querySelector?.(selector); if (direct) return direct;
-      const match = [...(node.querySelectorAll?.('button') || [])].find((button) => /conversation options|open conversation options/i.test(`${button.getAttribute?.('aria-label') || ''} ${button.title || ''}`)); if (match) return match;
+    if (!anchor) return null; const row = anchor.closest?.('li') || anchor.parentElement || anchor; [anchor, row].forEach(PROJECTS_dispatchHover);
+    const scopes = [...new Set([anchor, row].filter(Boolean))];
+    for (const scope of scopes) {
+      const matches = [...(scope.querySelectorAll?.('button') || [])].filter(PROJECTS_isChatOptionsButton);
+      if (matches.length === 1) return matches[0];
+      if (matches.length > 1) return null;
     }
     return null;
   }
-  function PROJECTS_nativeMoveAction(menu) { return !menu || DOM_isH2OOwnedNode(menu) ? null : ([...menu.querySelectorAll?.('[role="menuitem"],button') || []].find((item) => /^(move(?: chat)? to project|add to project)$/i.test(normText(item.textContent || item.getAttribute?.('aria-label') || ''))) || null); }
-  function PROJECTS_findNativeMoveMenu() { return [...D.querySelectorAll('[role="menu"]')].find((menu) => PROJECTS_nativeMoveAction(menu)) || null; }
+  function PROJECTS_nativeMoveAction(menu) {
+    if (!menu || DOM_isH2OOwnedNode(menu)) return null; const matches = [...menu.querySelectorAll?.('[role="menuitem"],button') || []].filter((item) => /^(move(?: chat)? to project|add to project)$/i.test(normText(item.textContent || item.getAttribute?.('aria-label') || '')));
+    return matches.length === 1 ? matches[0] : null;
+  }
+  function PROJECTS_findNativeMoveMenu() { return [...D.querySelectorAll('[role="menu"]')].find((menu) => { const rect = menu?.getBoundingClientRect?.(); return !!(rect?.width && rect?.height && PROJECTS_nativeMoveAction(menu)); }) || null; }
   function PROJECTS_nativeTargetIdentityMatches(node, project) {
     const aliases = PROJECTS_projectAliases(project); const dataId = String(node?.getAttribute?.('data-project-id') || node?.getAttribute?.('data-gizmo-id') || '').trim(); if (dataId && aliases.has(dataId)) return true;
     const href = String(node?.getAttribute?.('href') || '').trim(); if (!href) return false; let path = href.split(/[?#]/)[0]; try { path = new URL(href, W.location?.origin || 'https://chatgpt.com').pathname; } catch {}
@@ -1974,7 +1983,7 @@
   function PROJECTS_closeNativeMoveUi() { [D.activeElement, D.body, D].filter(Boolean).forEach((target) => { try { const Ctor = W.KeyboardEvent || KeyboardEvent; target.dispatchEvent(new Ctor('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); } catch {} }); }
   async function PROJECTS_executeNativeMove({ chatId, project }) {
     const failure = (status, error) => { PROJECTS_closeNativeMoveUi(); return { ok: false, status, error }; }; PROJECTS_closeNativeMoveUi();
-    const anchor = PROJECTS_findNativeChatAnchors(chatId)[0]; if (!anchor) return failure('native-chat-unavailable', 'Requested chat is not available in the native chat list.');
+    const anchor = PROJECTS_findNativeChatAnchors(chatId)[0]; if (!anchor) return failure('chat-not-found', 'Requested chat is not available in the native chat list.');
     const options = PROJECTS_findChatOptionsButton(anchor); if (!options) return failure('native-menu-unavailable', 'Native chat options control is unavailable.');
     try { options.click(); } catch (error) { return failure('native-menu-unavailable', String(error?.message || error)); }
     const menu = await PROJECTS_waitForDom(PROJECTS_findNativeMoveMenu, CFG_PROJECTS_MOVE_UI_TIMEOUT_MS); const action = PROJECTS_nativeMoveAction(menu);
