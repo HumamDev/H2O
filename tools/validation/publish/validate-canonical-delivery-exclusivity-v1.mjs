@@ -46,6 +46,7 @@ const ACTIVATOR_VALIDATOR_REL = "tools/validation/publish/validate-lean-activato
 const P23_BASE_HEAD = "51e21657f216da50e2183bb1e2d3512e946c1ea9";
 const P23_SUBJECT = "fix(publish): add final pre-promotion guardrails";
 const P23_PATHS = Object.freeze([ACTIVATOR_REL, LIB_REL, ACTIVATOR_VALIDATOR_REL, VALIDATOR_REL].sort());
+const CURRENT_BASE = "2e4805e116afc0cad3ccc70dacc059bcd02f56ec";
 const NEW_PATHS = Object.freeze([LIB_REL, CLI_REL, VALIDATOR_REL, ADR_REL]);
 const FINAL_PATHS = Object.freeze([GITIGNORE_REL, ...NEW_PATHS]);
 const UNCOMMITTED_MODIFIED = Object.freeze([GITIGNORE_REL]);
@@ -56,7 +57,7 @@ const HEAD_A = "a".repeat(40);
 const HEAD_B = "b".repeat(40);
 const HEAD_C = "c".repeat(40);
 const NOW = 1_785_280_000_000;
-const EXPECTED_RUNTIME_SCENARIOS = 88;
+const EXPECTED_RUNTIME_SCENARIOS = 89;
 const scenarioResults = [];
 const scopeResults = [];
 const temporaryRoots = new Set();
@@ -129,6 +130,7 @@ function scopeFailure(message, state) {
 }
 
 export function classifyStage1DE1Scope(state) {
+  const authoredUntracked = sorted(state.untracked ?? []);
   const normalized = {
     modifiedTracked: sorted(state.modifiedTracked ?? []),
     staged: sorted(state.staged ?? []),
@@ -151,6 +153,11 @@ export function classifyStage1DE1Scope(state) {
   if (state.parent === P23_BASE_HEAD || state.subject === P23_SUBJECT) {
     scopeFailure("Stage 1D-E1 P2.3 committed scope mismatch", normalized);
   }
+  const currentBaselineUncommitted = state.head === CURRENT_BASE &&
+    sameSet(normalized.modifiedTracked, [VALIDATOR_REL]) &&
+    authoredUntracked.length === 0 && normalized.missingFinal.length === 0 &&
+    sameSet(normalized.trackedFinal, FINAL_PATHS);
+  if (currentBaselineUncommitted) return "exclusivity-current-baseline-uncommitted";
   const uncommitted = sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
     sameSet(normalized.untracked, UNCOMMITTED_UNTRACKED) &&
     normalized.missingFinal.length === 0;
@@ -279,7 +286,38 @@ function runScopeSelfTests() {
       trackedFinal: [...FINAL_PATHS], committedPaths: [...P23_PATHS, "README.md"],
     })), /scope mismatch/u);
   });
-  assert.equal(scopeResults.length, 16, "scope scenario count drifted");
+  scopeTest("exact current-main exclusivity-validator repair scope is accepted", () => {
+    assert.equal(classifyStage1DE1Scope(baseScope({
+      head: CURRENT_BASE,
+      modifiedTracked: [VALIDATOR_REL],
+      untracked: [],
+      trackedFinal: [...FINAL_PATHS],
+    })), "exclusivity-current-baseline-uncommitted");
+  });
+  scopeTest("current-main exclusivity-validator repair rejects non-exact authority", () => {
+    const current = {
+      head: CURRENT_BASE,
+      modifiedTracked: [VALIDATOR_REL],
+      untracked: [],
+      trackedFinal: [...FINAL_PATHS],
+    };
+    for (const overrides of [
+      { head: "f".repeat(40) },
+      { modifiedTracked: [VALIDATOR_REL, LIB_REL] },
+      { modifiedTracked: [VALIDATOR_REL, ACTIVATOR_VALIDATOR_REL] },
+      { staged: [VALIDATOR_REL] },
+      { untracked: ["foreign.txt"] },
+      { untracked: ["chrome/protected"] },
+      { missingFinal: [ADR_REL] },
+      { trackedFinal: FINAL_PATHS.slice(1) },
+    ]) {
+      assert.throws(() => classifyStage1DE1Scope(baseScope({
+        ...current,
+        ...overrides,
+      })), /scope|staged/u);
+    }
+  });
+  assert.equal(scopeResults.length, 18, "scope scenario count drifted");
 }
 
 async function test(name, fn) {
@@ -296,6 +334,52 @@ function temporaryRoot(label) {
 
 function shaFile(target) {
   return crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
+}
+
+function snapshotAnchorIdentity(anchorRoot) {
+  const root = path.resolve(anchorRoot);
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(root);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { root, exists: false, rootIdentity: null, entries: [] };
+    }
+    throw error;
+  }
+
+  function identity(target, relativePath, stat) {
+    if (stat.isSymbolicLink()) {
+      return { path: relativePath, type: "symlink", target: fs.readlinkSync(target) };
+    }
+    if (stat.isDirectory()) return { path: relativePath, type: "directory" };
+    if (stat.isFile()) {
+      return {
+        path: relativePath,
+        type: "regular-file",
+        bytes: stat.size,
+        sha256: shaFile(target),
+      };
+    }
+    throw new Error(`anchor-identity-unsupported-entry-type: ${target}`);
+  }
+
+  const rootIdentity = identity(root, ".", rootStat);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    return { root, exists: true, rootIdentity, entries: [] };
+  }
+  const entries = [];
+  function visit(directory) {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const target = path.join(directory, name);
+      const stat = fs.lstatSync(target);
+      const relativePath = path.relative(root, target).split(path.sep).join("/");
+      entries.push(identity(target, relativePath, stat));
+      if (stat.isDirectory() && !stat.isSymbolicLink()) visit(target);
+    }
+  }
+  visit(root);
+  return { root, exists: true, rootIdentity, entries };
 }
 
 function makeWritable(target) {
@@ -1583,9 +1667,47 @@ async function runProductionScenarios() {
     cleanup(root);
   });
 
+  await test("anchor identity snapshot detects additions, byte changes, and symlink retargeting", () => {
+    const root = temporaryRoot("anchor-identity");
+    const anchor = path.join(root, "anchor");
+    const firstTarget = path.join(root, "first-target");
+    const secondTarget = path.join(root, "second-target");
+    try {
+      const absent = snapshotAnchorIdentity(anchor);
+      assert.deepEqual(snapshotAnchorIdentity(anchor), absent);
+      assert.equal(absent.exists, false);
+
+      fs.mkdirSync(anchor);
+      const untouched = snapshotAnchorIdentity(anchor);
+      assert.deepEqual(snapshotAnchorIdentity(anchor), untouched);
+
+      const payload = path.join(anchor, "payload.txt");
+      fs.writeFileSync(payload, "alpha");
+      const added = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(added, untouched);
+
+      fs.writeFileSync(payload, "bravo");
+      const changed = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(changed, added);
+
+      fs.writeFileSync(firstTarget, "first");
+      fs.writeFileSync(secondTarget, "second");
+      const link = path.join(anchor, "current");
+      fs.symlinkSync(firstTarget, link);
+      const firstLink = snapshotAnchorIdentity(anchor);
+      fs.unlinkSync(link);
+      fs.symlinkSync(secondTarget, link);
+      const secondLink = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(secondLink, firstLink);
+      assert.deepEqual(snapshotAnchorIdentity(anchor), secondLink);
+    } finally {
+      cleanup(root);
+    }
+  });
+
   await test("E1 default-anchor mutation guard blocks all mutating commands before writes", async () => {
     const anchor = deriveSharedAnchor({ cwd: ROOT, env: {} });
-    assert.equal(fs.existsSync(anchor.root), false);
+    const initialAnchorIdentity = snapshotAnchorIdentity(anchor.root);
     const commands = [
       ["acquire"],
       ["renew"],
@@ -1597,12 +1719,16 @@ async function runProductionScenarios() {
       const result = await cli(command, null, ROOT, { useOverride: false });
       assert.equal(result.status, EXIT_CODES.PATH_COUPLING_VIOLATION, result.stdout);
       assert.equal(parseCli(result).exitCode, EXIT_CODES.PATH_COUPLING_VIOLATION);
-      assert.equal(fs.existsSync(anchor.root), false);
+      assert.deepEqual(
+        snapshotAnchorIdentity(anchor.root),
+        initialAnchorIdentity,
+        `${command[0]} changed the real canonical delivery anchor`,
+      );
     }
     const readOnly = await cli(["status"], null, ROOT, { useOverride: false });
     assert.equal(readOnly.status, EXIT_CODES.ABSENT_OR_CONTENDED);
     assert.equal(parseCli(readOnly).state, "absent");
-    assert.equal(fs.existsSync(anchor.root), false);
+    assert.deepEqual(snapshotAnchorIdentity(anchor.root), initialAnchorIdentity);
   });
 
   const approvalRoot = temporaryRoot("eligibility");
