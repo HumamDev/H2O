@@ -42,6 +42,56 @@ assert.match(source, /PROJECTS_loadRowsFast\(\)\.filter/, 'project target must r
 assert.match(source, /data-project-id/, 'native project identity may use data-project-id');
 assert.match(source, /PROJECTS_idFromHref\(path\)/, 'native project identity must use the canonical project href ID');
 assert.match(source, /PROJECTS_waitForDom\(\s*\(\) => PROJECTS_isChatInProject/, 'native success must wait for canonical assignment evidence');
+assert.match(source, /const row = anchor\.closest\?\.\('li'\)[\s\S]*const scopes = \[\.\.\.new Set\(\[anchor, row\]/,
+  'native options discovery must remain scoped to the exact requested chat row');
+assert.match(source, /const failure = \(status, error\) => \{ PROJECTS_closeNativeMoveUi\(\); return \{ ok: false, status, error \}; \}/,
+  'every expected native-flow failure must clean up open native UI');
+for (const status of ['chat-not-found', 'project-not-found', 'native-menu-unavailable', 'native-move-action-unavailable', 'native-project-target-unavailable', 'persistence-unconfirmed']) {
+  assert.ok(source.includes(`'${status}'`), `structured ${status} status must remain available`);
+}
+
+const nativeSandbox = {
+  String,
+  Set,
+  DOM_isH2OOwnedNode: (node) => !!node?.owned,
+  normText: (value) => String(value || '').trim().replace(/\s+/g, ' '),
+};
+nativeSandbox.globalThis = nativeSandbox;
+vm.createContext(nativeSandbox);
+vm.runInContext(
+  `${extractFunction('PROJECTS_isChatOptionsButton')}\n${extractFunction('PROJECTS_nativeMoveAction')}\n` +
+  'globalThis.isOptions = PROJECTS_isChatOptionsButton; globalThis.moveAction = PROJECTS_nativeMoveAction;',
+  nativeSandbox,
+  { filename: ownerPath }
+);
+
+const fakeButton = ({ aria = '', title = '', testId = '', text = '' } = {}) => ({
+  title,
+  textContent: text,
+  getAttribute(name) {
+    if (name === 'aria-label') return aria;
+    if (name === 'data-testid') return testId;
+    return '';
+  },
+});
+
+{
+  const pin = fakeButton({ aria: 'Pin Example chat' });
+  const options = fakeButton({ aria: 'Open conversation options for Example chat', testId: 'history-item-27-options' });
+  assert.equal(nativeSandbox.isOptions(pin), false, 'generic trailing Pin control must never be mistaken for conversation options');
+  assert.equal(nativeSandbox.isOptions(options), true, 'current native conversation-options control is recognized');
+  assert.equal(nativeSandbox.isOptions(fakeButton({ testId: 'undefined-options' })), true, 'current pinned-row options test id is recognized');
+}
+
+{
+  const moveItem = fakeButton({ text: 'Move to project' });
+  const menu = { querySelectorAll: () => [fakeButton({ text: 'Rename' }), moveItem] };
+  assert.equal(nativeSandbox.moveAction(menu), moveItem, 'one current native Move action is discovered exactly');
+  assert.equal(nativeSandbox.moveAction({ querySelectorAll: () => [] }), null, 'missing native Move action fails closed');
+  assert.equal(nativeSandbox.moveAction({ querySelectorAll: () => [moveItem, fakeButton({ text: 'Move chat to project' })] }), null,
+    'ambiguous native Move actions fail closed');
+  assert.equal(nativeSandbox.moveAction({ owned: true, querySelectorAll: () => [moveItem] }), null, 'H2O custom menus cannot satisfy native Move discovery');
+}
 
 const sandbox = { Map, Promise, String };
 sandbox.globalThis = sandbox;
