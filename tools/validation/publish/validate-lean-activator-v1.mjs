@@ -17,6 +17,7 @@ const VALIDATOR_REL = "tools/validation/publish/validate-lean-activator-v1.mjs";
 const PUBLISHER_REL = "tools/publish/lean-publisher.mjs";
 const PACKAGE_REL = "package.json";
 const AUTHORIZED_PATHS = Object.freeze([PACKAGE_REL, ACTIVATOR_REL, VALIDATOR_REL].sort());
+const FINAL_PATHS = AUTHORIZED_PATHS;
 const BASE_HEAD = "86af342f1b1815e12c477673a4f2123b37bede40";
 const ACCEPTED_P1_HEAD = "fa0dac4552ce5a1189dee0b1d23975f95bffe751";
 const P2_BASE_HEAD = "d3ebe3c8b3c973ee11d15664b09398f388b0b373";
@@ -131,6 +132,8 @@ const ACCEPTED_CURRENT_MAIN_HEAD = "81ea28259c1399b92214f76f8ac43f44bfdaee4b";
 const CURRENT_BASELINE_AUTHORIZED_PATHS = Object.freeze([VALIDATOR_REL]);
 const CURRENT_BASELINE_SUBJECT =
   "test(publish): authorize current-main activator baseline after live-anchor repairs";
+const CLASSIFIER_DURABILITY_BASE = "83ea42f0cab1c0e2a6756f4b94f195a27657cbb2";
+const CLASSIFIER_DURABILITY_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
 // Batch 1.1 publisher authority at the IMMUTABLE BASE_HEAD. These never move.
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
@@ -146,7 +149,7 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 58;
+const EXPECTED_SCOPE = 59;
 const EXPECTED_RUNTIME = 222;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
@@ -294,6 +297,8 @@ function currentScopeState() {
   const staged = lines(["diff", "--cached", "--name-only"]);
   const untracked = lines(["ls-files", "--others", "--exclude-standard"]);
   const finalPaths = AUTHORIZED_PATHS.filter((relative) => fs.existsSync(path.join(ROOT, relative))).sort();
+  const trackedFinal = lines(["ls-files", "--", ...FINAL_PATHS]);
+  const missingFinal = FINAL_PATHS.filter((relative) => !fs.existsSync(path.join(ROOT, relative)));
   const committedPaths = lines(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]);
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
@@ -321,6 +326,8 @@ function currentScopeState() {
     staged,
     untracked,
     finalPaths,
+    trackedFinal,
+    missingFinal,
     committedPaths,
   };
 }
@@ -618,6 +625,18 @@ function classifyScope(state) {
       JSON.stringify([...CURRENT_BASELINE_AUTHORIZED_PATHS]) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
   if (currentBaselineClean) return "current-baseline-committed";
+  const durabilityRepair = value.head === CLASSIFIER_DURABILITY_BASE &&
+    value.modifiedTracked.length === CLASSIFIER_DURABILITY_PATHS.length &&
+    value.modifiedTracked.every((relative, index) => relative === CLASSIFIER_DURABILITY_PATHS[index]) &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (durabilityRepair) return "classifier-durability-uncommitted";
+  const durableCommittedClean = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (durableCommittedClean) return "committed-clean";
   scopeError("P0/P1 source scope mismatch", value);
 }
 
@@ -632,6 +651,8 @@ function baseDirtyScope(overrides = {}) {
     staged: [],
     untracked: [ACTIVATOR_REL, VALIDATOR_REL].sort(),
     finalPaths: [...AUTHORIZED_PATHS],
+    trackedFinal: [],
+    missingFinal: [],
     committedPaths: ["tools/publish/lean-publisher.mjs", "tools/validation/publish/validate-lean-publisher-v1.mjs"].sort(),
     ...overrides,
   };
@@ -1191,6 +1212,54 @@ function runScopeTests() {
       })), /scope mismatch/u);
     }
   });
+  scopeTest("durable committed-clean survives later commits and rejects adjacent states", () => {
+    const clean = {
+      head: CLASSIFIER_DURABILITY_BASE,
+      parent: "a102e219da8efa71d95f88b12f489cf63a0339de",
+      subject: "test(publish): preserve E2B writer anchor identity",
+      acceptedP1Ancestor: true,
+      modifiedTracked: [], staged: [], untracked: [],
+      finalPaths: [...FINAL_PATHS], trackedFinal: [...FINAL_PATHS], missingFinal: [],
+      committedPaths: ["tools/validation/publish/validate-e2b-writer-enforcement-v1.mjs"],
+    };
+    assert.equal(classifyScope(baseDirtyScope(clean)), "committed-clean");
+    assert.equal(classifyScope(baseDirtyScope({
+      ...clean,
+      head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
+      committedPaths: ["later/path.mjs"],
+    })), "committed-clean");
+    assert.equal(classifyScope(baseDirtyScope({
+      ...clean,
+      modifiedTracked: [...CLASSIFIER_DURABILITY_PATHS],
+    })), "classifier-durability-uncommitted");
+    for (const override of [
+      { modifiedTracked: [ACTIVATOR_REL] },
+      { modifiedTracked: [VALIDATOR_REL] },
+      { modifiedTracked: ["README.md"] },
+      { staged: [VALIDATOR_REL] },
+      { staged: ["README.md"] },
+      { untracked: ["foreign.txt"] },
+      {
+        trackedFinal: FINAL_PATHS.filter((relative) => relative !== ACTIVATOR_REL),
+        missingFinal: [ACTIVATOR_REL],
+      },
+      {
+        trackedFinal: FINAL_PATHS.filter((relative) => relative !== ACTIVATOR_REL),
+        untracked: [ACTIVATOR_REL],
+      },
+    ]) {
+      assert.throws(
+        () => classifyScope(baseDirtyScope({
+          ...clean,
+          head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
+          committedPaths: ["later/path.mjs"],
+          ...override,
+        })),
+        /scope mismatch|rejects staged/u,
+      );
+    }
+    assert.throws(() => classifyScope({}), /TypeError|scope mismatch/u);
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -1227,7 +1296,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-main-sync-uncommitted", "p3c-main-sync-committed",
     "p3c-final-sync-uncommitted", "p3c-final-sync-committed",
     "p3c-integration-uncommitted", "p3c-integration-committed",
-    "current-baseline-uncommitted", "current-baseline-committed"]
+    "current-baseline-uncommitted", "current-baseline-committed",
+    "classifier-durability-uncommitted"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
