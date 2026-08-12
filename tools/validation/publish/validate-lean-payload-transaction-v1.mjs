@@ -24,6 +24,7 @@ const PACKAGE_REL = "package.json";
 const P3A_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+const FINAL_PATHS = P3A_AUTHORIZED_PATHS;
 const ACCEPTED_P23_HEAD = "140076112bbdd48763fa5c11145f923ff93f13d1";
 const P23_SUBJECT = "fix(publish): add final pre-promotion guardrails";
 const P3A_SUBJECT = "feat(publish): add transaction journal and incoming payload preparation";
@@ -120,7 +121,9 @@ const ACCEPTED_CURRENT_MAIN_HEAD = "db49714cb9c3ce9f814056aa40160cc043cd2f5a";
 const CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
 const CURRENT_PAYLOAD_BASELINE_SUBJECT =
   "test(publish): authorize current-main payload baseline after activator repair";
-const EXPECTED_SCOPE = 21;
+const CLASSIFIER_DURABILITY_BASE = "83ea42f0cab1c0e2a6756f4b94f195a27657cbb2";
+const CLASSIFIER_DURABILITY_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+const EXPECTED_SCOPE = 22;
 const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -480,6 +483,18 @@ function classifyPayloadScope(state) {
         JSON.stringify([...CURRENT_PAYLOAD_BASELINE_AUTHORIZED_PATHS])) {
     return "payload-current-baseline-committed";
   }
+  const durabilityRepair = value.head === CLASSIFIER_DURABILITY_BASE &&
+    value.modifiedTracked.length === CLASSIFIER_DURABILITY_PATHS.length &&
+    value.modifiedTracked.every((relative, index) => relative === CLASSIFIER_DURABILITY_PATHS[index]) &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (durabilityRepair) return "classifier-durability-uncommitted";
+  const durableCommittedClean = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (durableCommittedClean) return "committed-clean";
   throw new Error("P3A source scope mismatch");
 }
 
@@ -488,6 +503,8 @@ function currentScopeState() {
     const value = git(ROOT, args);
     return value ? value.split("\n").filter(Boolean).sort() : [];
   };
+  const trackedFinal = lines(["ls-files", "--", ...FINAL_PATHS]);
+  const missingFinal = FINAL_PATHS.filter((relative) => !fs.existsSync(path.join(ROOT, relative)));
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
@@ -510,6 +527,8 @@ function currentScopeState() {
     modifiedTracked: lines(["diff", "--name-only"]),
     staged: lines(["diff", "--cached", "--name-only"]),
     untracked: lines(["ls-files", "--others", "--exclude-standard"]),
+    trackedFinal,
+    missingFinal,
     committedPaths: lines(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"]),
   };
 }
@@ -518,7 +537,7 @@ function baseScope(overrides = {}) {
   return {
     head: ACCEPTED_P23_HEAD, parent: "51e21657f216da50e2183bb1e2d3512e946c1ea9",
     subject: P23_SUBJECT, modifiedTracked: [], staged: [], untracked: [],
-    committedPaths: [], ...overrides,
+    trackedFinal: [], missingFinal: [], committedPaths: [], ...overrides,
   };
 }
 
@@ -773,6 +792,53 @@ function runScopeTests() {
       head: "future", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
       committedPaths: [...P3A_AUTHORIZED_PATHS, PACKAGE_REL].sort(),
     })), /scope mismatch/u);
+  });
+  scopeTest("durable committed-clean survives later commits and rejects adjacent states", () => {
+    const clean = {
+      head: CLASSIFIER_DURABILITY_BASE,
+      parent: "a102e219da8efa71d95f88b12f489cf63a0339de",
+      subject: "test(publish): preserve E2B writer anchor identity",
+      modifiedTracked: [], staged: [], untracked: [],
+      trackedFinal: [...FINAL_PATHS], missingFinal: [],
+      committedPaths: ["tools/validation/publish/validate-e2b-writer-enforcement-v1.mjs"],
+    };
+    assert.equal(classifyPayloadScope(baseScope(clean)), "committed-clean");
+    assert.equal(classifyPayloadScope(baseScope({
+      ...clean,
+      head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
+      committedPaths: ["later/path.mjs"],
+    })), "committed-clean");
+    assert.equal(classifyPayloadScope(baseScope({
+      ...clean,
+      modifiedTracked: [...CLASSIFIER_DURABILITY_PATHS],
+    })), "classifier-durability-uncommitted");
+    for (const override of [
+      { modifiedTracked: [PAYLOAD_MODULE_REL] },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL] },
+      { modifiedTracked: ["README.md"] },
+      { staged: [PAYLOAD_VALIDATOR_REL] },
+      { staged: ["README.md"] },
+      { untracked: ["foreign.txt"] },
+      {
+        trackedFinal: FINAL_PATHS.filter((relative) => relative !== PAYLOAD_MODULE_REL),
+        missingFinal: [PAYLOAD_MODULE_REL],
+      },
+      {
+        trackedFinal: FINAL_PATHS.filter((relative) => relative !== PAYLOAD_MODULE_REL),
+        untracked: [PAYLOAD_MODULE_REL],
+      },
+    ]) {
+      assert.throws(
+        () => classifyPayloadScope(baseScope({
+          ...clean,
+          head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
+          committedPaths: ["later/path.mjs"],
+          ...override,
+        })),
+        /scope mismatch|rejects staged/u,
+      );
+    }
+    assert.throws(() => classifyPayloadScope({}), /TypeError|scope mismatch/u);
   });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }

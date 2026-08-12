@@ -120,6 +120,26 @@
   const UI_PM_ED_DISCARD_NO = `${SkID}-ed-discard-no`;
   const UI_PM_NEW_BTN = `${SkID}-new-btn`;
 
+  /* [DEFINE][UI][2C] Portability controls.
+   *
+   * Export/Import sit in the Edit-pane management row beside "New prompt", and
+   * the import confirmation is an inline strip in that same row. No modal, no
+   * second overlay and no native dialog: Phase 2A retired the last alert() in
+   * this module and nothing here reintroduces one.
+   *
+   * UI_PM_EXPORT_BTN above is the unrelated per-chat transcript export button
+   * (owner `xpch`); the library export deliberately carries its own token so a
+   * selector can never bind the wrong control. */
+  const UI_PM_PORT_ROW = `${SkID}-port-row`;
+  const UI_PM_EXPORT_LIB = `${SkID}-export-lib`;
+  const UI_PM_IMPORT_BTN = `${SkID}-import-btn`;
+  const UI_PM_IMPORT_FILE = `${SkID}-import-file`;
+  const UI_PM_IMPORT_BOX = `${SkID}-import-box`;
+  const UI_PM_IMPORT_SUMMARY = `${SkID}-import-summary`;
+  const UI_PM_IMPORT_MERGE = `${SkID}-import-merge`;
+  const UI_PM_IMPORT_REPLACE = `${SkID}-import-replace`;
+  const UI_PM_IMPORT_CANCEL = `${SkID}-import-cancel`;
+
   const UI_PM_SETTINGS = `${SkID}-settings`;
   const UI_PM_BACK = `${SkID}-back`;
   const UI_PM_CLOSE_SIMPLE = `${SkID}-close-simple`;
@@ -232,6 +252,11 @@
   const KEY_PM_STATE_SEEDED_V1 = `${NS_DISK}:state:seeded:v1`;
   const KEY_PM_MIG_KEYS_V1 = `${NS_DISK}:migrate:pm_keys:v1`;
   const KEY_PM_MIG_DRAFTS_FROM_HISTORY_V1 = `${NS_DISK}:migrate:pm_drafts_from_history:v1`;
+  /* [2C] Pre-import backup of the two portable collections. Exactly ONE latest
+   * snapshot, never a log: an unbounded backup history would consume the very
+   * quota whose exhaustion produces the write failures this key exists to
+   * survive. It holds Prompts and Quick Replies only — never a capture store. */
+  const KEY_PM_STATE_IMPORT_BACKUP_V1 = `${NS_DISK}:state:import_backup:v1`;
 
   /* [DEFINE][MIG] legacy keys (read+remove once) */
   const KEY_LEG_PROMPTS = 'ho:pm:prompts';
@@ -444,6 +469,23 @@
       },
       editorDeleteTimer: 0,
       statusTimer: 0,
+      /* [2C] Import confirmation. `pending` holds a FULLY VALIDATED envelope and
+       * nothing else: a file that failed validation never reaches this slot, so
+       * the Merge/Replace controls can only ever act on accepted data. Memory
+       * only — a pending import is deliberately not persisted, so a reload
+       * cannot resurrect a confirmation the user never completed. */
+      /* [2C-closure] `recoveryRequired` latches when a failed rollback left
+       * storage in a state the module could not decode. While it is set, every
+       * further portability mutation fails closed rather than acting on an
+       * in-memory pair it cannot vouch for. Memory only, so a reload clears it
+       * — which is exactly the recovery the message asks for. */
+      /* [2C-closure-2] `readSeq` is the single read-generation authority for
+       * file selection. Every FileReader completion carries the token it was
+       * started with and must match the CURRENT value before it may touch
+       * pending, feedback or the preview. Without it, two selections in flight
+       * race: the slower read completes last and silently replaces the file the
+       * user actually chose. Memory only, never persisted. */
+      port: { pending: null, recoveryRequired: false, readSeq: 0 },
       /* [2B] One owned timer for the debounced search rerender. The canonical
        * query itself is never debounced — only the expensive re-render is. */
       searchRenderTimer: 0,
@@ -3013,6 +3055,677 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     setUiMode(m) { UTIL_storage.setStr(KEY_PM_UI_MODE_V1, (m === 'edit') ? 'edit' : 'simple'); },
   };
 
+  /* ───────────────────────────── 📦 PORTABILITY — export / import 📝🔓💥 ─────────────────────────────
+   * [2C] Moves a user's OWN Prompt and Quick Reply libraries between browsers.
+   *
+   * The portable surface is exactly those two collections. History, Drafts and
+   * Pasted are automatic captures of whatever happened to be in the composer;
+   * they are not authored content, they can hold anything the user ever typed,
+   * and shipping them inside a file the user hands to someone else would turn a
+   * convenience feature into a disclosure. The quarantine copies, the seed
+   * marker, the migration markers, Auto-send, the UI mode and every search or
+   * filter value are equally excluded: none of them are content, and several of
+   * them describe THIS browser rather than the library.
+   *
+   * Everything in this block is pure. It reads arrays and returns new arrays,
+   * never mutates an input record or array, never touches storage and never
+   * reads the DOM. The storage orchestration lives in PORT_PM below, so the
+   * shape validators exercise is byte-for-byte the shape the UI writes.
+   */
+
+  const PORT_PM_KIND = 'h2o-prompt-manager-portability';
+  const PORT_PM_VERSION = 1;
+  const PORT_PM_BACKUP_KIND = 'h2o-prompt-manager-import-backup';
+  const PORT_PM_BACKUP_VERSION = 1;
+
+  /* Resource bounds. 5 MiB is roughly two orders of magnitude above a large
+   * hand-authored library and still small enough that parsing it cannot lock
+   * the panel; the record cap stops a syntactically tiny file from expanding
+   * into a list no renderer can draw. Both are checked BEFORE JSON.parse. */
+  const PORT_PM_MAX_BYTES = 5 * 1024 * 1024;
+  const PORT_PM_MAX_RECORDS = 5000;
+
+  /* Object-URL revocation delay. The download is handed to the browser during
+   * click dispatch, but revoking in the same tick is documented as racy, so the
+   * revoke is deferred through the module's OWNED timer. A cleanup function is
+   * registered as well and both paths are idempotent, so disposal during that
+   * window still revokes exactly once. */
+  const PORT_PM_REVOKE_MS = 1000;
+
+  const PM_MSG_PORT_INVALID = 'Invalid Prompt Manager file';
+  const PM_MSG_PORT_VERSION = 'Unsupported import version';
+  const PM_MSG_PORT_DUP_PROMPT = 'Duplicate Prompt ID in import';
+  const PM_MSG_PORT_DUP_QUICK = 'Duplicate Quick Reply ID in import';
+  const PM_MSG_PORT_TOO_LARGE = 'Import file too large';
+  const PM_MSG_PORT_WRITE = 'Storage write failed';
+  const PM_MSG_PORT_BACKUP = 'Import backup failed';
+  const PM_MSG_PORT_ROLLBACK = 'Import rollback failed';
+  const PM_MSG_PORT_EXPORT = 'Export failed';
+  /* [2C-closure] Export is all-or-nothing, so a library that cannot be
+   * represented losslessly gets its own refusal messages. None of them names a
+   * title, a body, a reply or any other record content. */
+  const PM_MSG_PORT_EXPORT_PROMPTS = 'Cannot export invalid Prompt library';
+  const PM_MSG_PORT_EXPORT_QUICK = 'Cannot export invalid Quick Reply library';
+  const PM_MSG_PORT_EXPORT_DUP_PROMPT = 'Duplicate Prompt ID prevents export';
+  const PM_MSG_PORT_EXPORT_DUP_QUICK = 'Duplicate Quick Reply ID prevents export';
+  /* [2C-closure] A rollback that could not restore the exact pre-import bytes
+   * leaves storage in a state only the bytes themselves describe. */
+  const PM_MSG_PORT_RECOVERY = 'Prompt Manager data is out of sync — reload the page before importing again';
+  /* [2C-closure-3] The live primary store is not in a state portability may act
+   * on. Names the collection, never any record content. */
+  const PM_MSG_PORT_STORE_PROMPTS = 'Stored Prompt data is unreadable — portability is unavailable';
+  const PM_MSG_PORT_STORE_QUICK = 'Stored Quick Reply data is unreadable — portability is unavailable';
+  /* [2C-closure-4] A healthy primary can still be a DIFFERENT authority from
+   * the collection currently rendered in memory (for example, after another
+   * tab writes it). Portability never chooses between those authorities. */
+  const PM_MSG_PORT_CHANGED_PROMPTS = 'Prompt library changed — reload before portability';
+  const PM_MSG_PORT_CHANGED_QUICK = 'Quick Reply library changed — reload before portability';
+  /* [2C-closure-3] A file the module could write but could never import back. */
+  const PM_MSG_PORT_EXPORT_TOO_LARGE = 'Library too large to export';
+
+  /* The complete key set for each shape. Anything else is rejected on import
+   * rather than ignored: silently dropping an unknown key would accept a file
+   * carrying History rows or a capture store beside the two portable
+   * collections and report it as a clean import. A future schema addition
+   * travels with a version bump, which is exactly what the version gate is for. */
+  const PORT_PM_ENVELOPE_KEYS = Object.freeze(['kind', 'version', 'exportedAt', 'prompts', 'quickReplies']);
+  const PORT_PM_PROMPT_KEYS = Object.freeze(['id', 'title', 'body', 'type', 'favorite', 'createdAt', 'updatedAt', 'lastUsedAt', 'useCount']);
+  const PORT_PM_QUICK_KEYS = Object.freeze(['id', 'text', 'order', 'createdAt', 'updatedAt']);
+
+  const PORT_PM_isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+  const PORT_PM_onlyKnownKeys = (obj, allowed) => {
+    for (const k of Object.keys(obj)) { if (!allowed.includes(k)) return false; }
+    return true;
+  };
+
+  const PORT_PM_hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  /* [2C-closure-2] Canonical portability identity.
+   *
+   * The first implementation TRIMMED, which quietly broke the very rule this
+   * surface is built on: a stored id of " spaced " exported as "spaced", and
+   * the strict importer accepted " spaced " and adopted "spaced". That is a
+   * repair, not a validation, and it is not lossless — two records whose ids
+   * differ only by padding collapse into one identity.
+   *
+   * An id is canonical for portability ONLY when it is a non-empty string that
+   * already equals its own trimmed form. Anything else is refused; nothing is
+   * trimmed, rewritten or regenerated, and a valid id is returned EXACTLY as
+   * stored. Internal spaces are ordinary characters: "my prompt" is canonical.
+   *
+   * This strictness is scoped to Phase-2C portability. The Phase-1 tolerant
+   * storage readers keep their own contract untouched — they must still be able
+   * to load a library that portability would refuse to move. */
+  const PORT_PM_isCanonicalId = (v) => (
+    typeof v === 'string' && v.length > 0 && v === v.trim()
+  );
+
+  const PORT_PM_recordId = (rec) => (
+    (PORT_PM_isPlainObject(rec) && PORT_PM_isCanonicalId(rec.id)) ? rec.id : ''
+  );
+
+  const PORT_PM_finiteNumber = (v) => (typeof v === 'number' && Number.isFinite(v));
+
+  /* ── Export projection ──────────────────────────────────────────────────────
+   * [2C-closure] Export is ALL-OR-NOTHING.
+   *
+   * The first implementation skipped records with an unusable id and later
+   * repeats of an id already emitted, then reported "Exported" either way.
+   * Independent review proved that a five-record library could produce a
+   * one-record file with a success message — the portability feature quietly
+   * failing to be portable. Skipping is gone. A library that cannot be
+   * represented losslessly is refused, loudly, before any file exists.
+   *
+   * The projection therefore carries values through UNCHANGED and lets the
+   * module's own strict import validator decide whether the result is
+   * representable. Coercing here would only move the loss: a record stored with
+   * `favorite: 1` or `createdAt: "yesterday"` would silently become a different
+   * record in the file. Ids are not trimmed either: PORT_PM_recordId requires a
+   * canonical id and returns it exactly as stored, so identity is preserved
+   * rather than repaired (see the canonical-id authority above).
+   *
+   * Optional 2B usage fields are carried ONLY when the record actually has
+   * them. Absence is meaningful: the reader normalizes an absent
+   * lastUsedAt/useCount to 0, so materializing them would hand back a file that
+   * rewrites every legacy record on import for no behavioural gain. */
+  const PORT_PM_exportPrompt = (rec, id) => {
+    const out = {
+      id,
+      title: rec.title,
+      body: rec.body,
+      type: rec.type,
+      favorite: rec.favorite,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+    };
+    if (rec.lastUsedAt !== undefined) out.lastUsedAt = rec.lastUsedAt;
+    if (rec.useCount !== undefined) out.useCount = rec.useCount;
+    return out;
+  };
+
+  const PORT_PM_exportQuick = (rec, id) => ({
+    id,
+    text: rec.text,
+    order: rec.order,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt,
+  });
+
+  /* Project a live collection, or refuse.
+   *
+   * Returns { ok:true, list } only when EVERY source record produced exactly
+   * one export record that the strict importer accepts. The ORIGINAL source
+   * record is validated first. This is essential: validating only a selected
+   * projection would let an unknown own key disappear before the strict gate
+   * could see it, making both an export and a pre-import backup incomplete.
+   *
+   * The validated canonical record is the output authority. The historical
+   * projector is still exercised and must round-trip to that exact canonical
+   * value, which proves it carries every currently declared field; it is never
+   * allowed to sanitize the source. The first record that
+   * cannot be represented — and the first id collision — returns { ok:false }
+   * with the caller's collection-specific message. Nothing is skipped, nothing
+   * is renamed, nothing is deduplicated, and no id is ever generated.
+   *
+   * `list.length === out.length` on success is guaranteed by construction: the
+   * loop either pushes one record per source record or returns a failure. The
+   * cardinality is asserted again at the envelope level so the guarantee is
+   * checked rather than assumed. */
+  const PORT_PM_projectList = (list, project, validate, invalidError, duplicateError) => {
+    if (!Array.isArray(list)) return { ok: false, error: invalidError, list: [] };
+    const out = [];
+    const seen = new Set();
+    for (const rec of list) {
+      const canonical = validate(rec);
+      if (!canonical) return { ok: false, error: invalidError, list: [] };
+      const id = canonical.id;
+      if (seen.has(id)) return { ok: false, error: duplicateError, list: [] };
+      const projected = validate(project(canonical, id));
+      if (!projected || JSON.stringify(projected) !== JSON.stringify(canonical)) {
+        return { ok: false, error: invalidError, list: [] };
+      }
+      seen.add(id);
+      out.push(canonical);
+    }
+    return { ok: true, error: '', list: out };
+  };
+
+  /* Build the portability envelope, or refuse.
+   *
+   * Returns { ok:true, envelope } or { ok:false, error }. Callers must not
+   * assume an envelope exists: a refused export creates no Blob, no object URL
+   * and no download, and reports the error persistently. */
+  const PORT_PM_buildExportEnvelope = (prompts, quick, now) => {
+    const fail = (error) => ({ ok: false, error, envelope: null });
+
+    /* [2C-closure-2] A non-array collection is NOT an empty library.
+     *
+     * The previous line here was `Array.isArray(prompts) ? prompts : []`, which
+     * turned a corrupt or wrongly-typed collection into a successful export of
+     * zero records — the same class of silent loss this phase already removed
+     * from the record projection, one level up. The inputs are handed to the
+     * projection untouched and it refuses anything that is not an array; the
+     * legitimately empty library `[]` still exports successfully. */
+    const p = PORT_PM_projectList(prompts, PORT_PM_exportPrompt, PORT_PM_validateImportPrompt,
+      PM_MSG_PORT_EXPORT_PROMPTS, PM_MSG_PORT_EXPORT_DUP_PROMPT);
+    if (!p.ok) return fail(p.error);
+
+    const q = PORT_PM_projectList(quick, PORT_PM_exportQuick, PORT_PM_validateImportQuick,
+      PM_MSG_PORT_EXPORT_QUICK, PM_MSG_PORT_EXPORT_DUP_QUICK);
+    if (!q.ok) return fail(q.error);
+
+    /* Cardinality is the whole point of this closure: one exported record per
+     * source record, in both collections, or no file at all. Both sides are
+     * proven arrays by this point, so the comparison is meaningful. */
+    if (p.list.length !== prompts.length) return fail(PM_MSG_PORT_EXPORT_PROMPTS);
+    if (q.list.length !== quick.length) return fail(PM_MSG_PORT_EXPORT_QUICK);
+
+    const envelope = {
+      kind: PORT_PM_KIND,
+      version: PORT_PM_VERSION,
+      exportedAt: ENGINE_PM_normDraftTs(now),
+      prompts: p.list,
+      quickReplies: q.list,
+    };
+
+    /* Final self-check through the REAL importer. Anything this module exports
+     * must be something this module can import, and the cheapest way to keep
+     * that true is to run the shipped gate rather than to reason about it. */
+    const selfCheck = PORT_PM_validateImportEnvelope(envelope);
+    if (!selfCheck.ok) return fail(selfCheck.error || PM_MSG_PORT_EXPORT);
+
+    return { ok: true, error: '', envelope };
+  };
+
+  const PORT_PM_serializeExport = (envelope) => JSON.stringify(envelope);
+
+  /* Deterministic filename from the envelope's own timestamp. */
+  const PORT_PM_exportFilename = (now) => {
+    const t = ENGINE_PM_normDraftTs(now);
+    const d = new Date(t);
+    let stamp = '0000-00-00';
+    if (Number.isFinite(d.getTime())) {
+      const p2 = (n) => String(n).padStart(2, '0');
+      stamp = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
+    }
+    return `h2o-prompt-manager-${stamp}.json`;
+  };
+
+  /* ── Strict import validation ───────────────────────────────────────────────
+   * Deliberately stricter than the tolerant runtime readers. Those repair a
+   * store the user cannot otherwise reach; this one inspects a file that
+   * arrived from outside and has no claim to be repaired into validity. A
+   * required field must be present with the right type, an optional field must
+   * be absent or valid, and an unknown field rejects the record.
+   *
+   * Returns a FRESH normalized record, so an accepted import never adopts the
+   * parsed object the caller handed in. */
+  const PORT_PM_validateImportPrompt = (rec) => {
+    if (!PORT_PM_isPlainObject(rec)) return null;
+    if (!PORT_PM_onlyKnownKeys(rec, PORT_PM_PROMPT_KEYS)) return null;
+    const id = PORT_PM_recordId(rec);
+    if (!id) return null;
+    if (typeof rec.title !== 'string') return null;
+    if (typeof rec.body !== 'string') return null;
+    if (rec.type !== 'prompt' && rec.type !== 'append') return null;
+    if (typeof rec.favorite !== 'boolean') return null;
+    if (!PORT_PM_finiteNumber(rec.createdAt)) return null;
+    if (!PORT_PM_finiteNumber(rec.updatedAt)) return null;
+
+    const out = {
+      id,
+      title: rec.title,
+      body: rec.body,
+      type: rec.type,
+      favorite: rec.favorite,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+    };
+    /* Optional 2B usage metadata. Present means it must already satisfy the 2B
+     * normalizers exactly — a value that would be repaired is a malformed
+     * value, and import does not repair. Absent stays absent. */
+    if (PORT_PM_hasOwn(rec, 'lastUsedAt')) {
+      if (!PORT_PM_finiteNumber(rec.lastUsedAt)) return null;
+      if (ENGINE_PM_normUsageTs(rec.lastUsedAt) !== rec.lastUsedAt) return null;
+      out.lastUsedAt = rec.lastUsedAt;
+    }
+    if (PORT_PM_hasOwn(rec, 'useCount')) {
+      if (!PORT_PM_finiteNumber(rec.useCount)) return null;
+      if (ENGINE_PM_normUseCount(rec.useCount) !== rec.useCount) return null;
+      out.useCount = rec.useCount;
+    }
+    return out;
+  };
+
+  const PORT_PM_validateImportQuick = (rec) => {
+    if (!PORT_PM_isPlainObject(rec)) return null;
+    if (!PORT_PM_onlyKnownKeys(rec, PORT_PM_QUICK_KEYS)) return null;
+    const id = PORT_PM_recordId(rec);
+    if (!id) return null;
+    if (typeof rec.text !== 'string') return null;
+    if (!PORT_PM_finiteNumber(rec.order)) return null;
+    if (!PORT_PM_finiteNumber(rec.createdAt)) return null;
+    if (!PORT_PM_finiteNumber(rec.updatedAt)) return null;
+    return {
+      id,
+      text: rec.text,
+      order: rec.order,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+    };
+  };
+
+  /* Whole-file validation. All-or-nothing by construction: the first failure
+   * returns an error and no candidate is ever produced, so a caller cannot
+   * write a partially accepted file. */
+  const PORT_PM_validateImportEnvelope = (parsed) => {
+    const fail = (error) => ({ ok: false, error, envelope: null });
+
+    if (!PORT_PM_isPlainObject(parsed)) return fail(PM_MSG_PORT_INVALID);
+    if (!PORT_PM_onlyKnownKeys(parsed, PORT_PM_ENVELOPE_KEYS)) return fail(PM_MSG_PORT_INVALID);
+    if (parsed.kind !== PORT_PM_KIND) return fail(PM_MSG_PORT_INVALID);
+    if (parsed.version !== PORT_PM_VERSION) return fail(PM_MSG_PORT_VERSION);
+    if (!PORT_PM_finiteNumber(parsed.exportedAt)) return fail(PM_MSG_PORT_INVALID);
+    if (!Array.isArray(parsed.prompts)) return fail(PM_MSG_PORT_INVALID);
+    if (!Array.isArray(parsed.quickReplies)) return fail(PM_MSG_PORT_INVALID);
+    if (parsed.prompts.length > PORT_PM_MAX_RECORDS) return fail(PM_MSG_PORT_TOO_LARGE);
+    if (parsed.quickReplies.length > PORT_PM_MAX_RECORDS) return fail(PM_MSG_PORT_TOO_LARGE);
+
+    const prompts = [];
+    const seenPrompt = new Set();
+    for (const raw of parsed.prompts) {
+      const rec = PORT_PM_validateImportPrompt(raw);
+      if (!rec) return fail(PM_MSG_PORT_INVALID);
+      if (seenPrompt.has(rec.id)) return fail(PM_MSG_PORT_DUP_PROMPT);
+      seenPrompt.add(rec.id);
+      prompts.push(rec);
+    }
+
+    const quickReplies = [];
+    const seenQuick = new Set();
+    for (const raw of parsed.quickReplies) {
+      const rec = PORT_PM_validateImportQuick(raw);
+      if (!rec) return fail(PM_MSG_PORT_INVALID);
+      if (seenQuick.has(rec.id)) return fail(PM_MSG_PORT_DUP_QUICK);
+      seenQuick.add(rec.id);
+      quickReplies.push(rec);
+    }
+
+    return {
+      ok: true,
+      error: '',
+      envelope: {
+        kind: parsed.kind,
+        version: parsed.version,
+        exportedAt: parsed.exportedAt,
+        prompts,
+        quickReplies,
+      },
+    };
+  };
+
+  /* Byte bound on the raw text. The authoritative pre-parse gate is the file's
+   * own reported size; this is the second, parser-side guard so the bound holds
+   * on every path into validation. A JS string never has FEWER UTF-8 bytes than
+   * it has code units, so a length over the cap is proof of an oversized
+   * payload without walking the string. */
+  const PORT_PM_overSizeLimit = (bytes) => {
+    const n = Number(bytes);
+    if (!Number.isFinite(n)) return true; // unknown size fails closed
+    return n > PORT_PM_MAX_BYTES;
+  };
+
+  const PORT_PM_parseImportText = (text) => {
+    const s = String(text == null ? '' : text);
+    /* [2C-closure-3] Real UTF-8 bytes, not String.length. The previous code-unit
+     * check let a payload of multi-byte characters pass a bound it actually
+     * exceeded, and it could not agree with the export-side gate. An
+     * undeterminable size fails closed. */
+    const bytes = PORT_PM_utf8Bytes(s);
+    if (bytes === null || bytes > PORT_PM_MAX_BYTES) {
+      return { ok: false, error: PM_MSG_PORT_TOO_LARGE, envelope: null };
+    }
+    if (!s.trim()) return { ok: false, error: PM_MSG_PORT_INVALID, envelope: null };
+    let parsed;
+    try { parsed = JSON.parse(s); }
+    catch { return { ok: false, error: PM_MSG_PORT_INVALID, envelope: null }; }
+    return PORT_PM_validateImportEnvelope(parsed);
+  };
+
+  /* ── Merge ──────────────────────────────────────────────────────────────────
+   * The record id is the identity authority, so an imported record whose id is
+   * already present UPDATES that record IN PLACE, at the position the local
+   * array already gives it. Manual order is a Phase-1 contract and a user's
+   * arrangement of their own library survives a re-import unchanged; imported
+   * records that are genuinely new append in the order the file lists them.
+   *
+   * Neither input array nor any input record is mutated: the result is a new
+   * array holding the untouched local records plus the fresh, already-validated
+   * imported records. */
+  const PORT_PM_mergeById = (localList, importedList) => {
+    const out = Array.isArray(localList) ? localList.slice() : [];
+    const imported = Array.isArray(importedList) ? importedList : [];
+
+    const indexById = new Map();
+    for (let i = 0; i < out.length; i += 1) {
+      const id = PORT_PM_recordId(out[i]);
+      if (id && !indexById.has(id)) indexById.set(id, i);
+    }
+
+    let added = 0;
+    let updated = 0;
+    for (const rec of imported) {
+      const id = PORT_PM_recordId(rec);
+      if (!id) continue; // unreachable for validated input; never guessed at
+      const at = indexById.get(id);
+      if (at === undefined) {
+        indexById.set(id, out.length);
+        out.push(rec);
+        added += 1;
+      } else {
+        out[at] = rec;
+        updated += 1;
+      }
+    }
+    return { list: out, added, updated };
+  };
+
+  /* Prompts and Quick Replies both carry stable ids (Quick has done so since
+   * its seed shape), so one identity rule serves both. The two names exist so
+   * the contract is explicit at each call site rather than implied. */
+  const PORT_PM_mergePromptRecords = (localList, importedList) => PORT_PM_mergeById(localList, importedList);
+  const PORT_PM_mergeQuickRecords = (localList, importedList) => PORT_PM_mergeById(localList, importedList);
+
+  /* [2C-closure-3] Quick Replies carry `order`, and it is a REAL runtime
+   * authority: ENGINE_PM.loadQuick() sorts by it and every Quick renderer draws
+   * that sorted list. Importing a record wholesale therefore imports its
+   * foreign `order` too, which silently undid the sequence the merge had just
+   * computed — local [A:0, B:1, C:2] with an imported B:99 produced the correct
+   * candidate array [A, B, C] and then rendered [A, C, B] after the very first
+   * reload.
+   *
+   * The final candidate SEQUENCE is the portability ordering contract, and
+   * `order` is merely how that sequence is persisted. Re-derive it from the
+   * chosen sequence so the two can never disagree.
+   *
+   * Returns NEW records: no local or imported input object is mutated, and
+   * nothing but `order` differs from the record the merge policy selected.
+   * Scoped to Phase-2C candidate construction — loadQuick and the renderers are
+   * untouched. */
+  const PORT_PM_sequenceQuick = (list) => {
+    const src = Array.isArray(list) ? list : [];
+    const out = [];
+    for (let i = 0; i < src.length; i += 1) {
+      const rec = src[i];
+      out.push(PORT_PM_isPlainObject(rec) ? { ...rec, order: i } : rec);
+    }
+    return out;
+  };
+
+  /* Candidate builder. Produces the complete replacement arrays for BOTH live
+   * stores plus the summary the preview renders. Pure: nothing here adopts
+   * state, writes storage or touches a capture store. */
+  const PORT_PM_buildImportCandidates = (mode, local, envelope) => {
+    const env = PORT_PM_isPlainObject(envelope) ? envelope : { prompts: [], quickReplies: [] };
+    const impPrompts = Array.isArray(env.prompts) ? env.prompts : [];
+    const impQuick = Array.isArray(env.quickReplies) ? env.quickReplies : [];
+    const localPrompts = Array.isArray(local && local.prompts) ? local.prompts : [];
+    const localQuick = Array.isArray(local && local.quick) ? local.quick : [];
+
+    if (mode === 'replace') {
+      return {
+        mode: 'replace',
+        prompts: impPrompts.slice(),
+        quick: PORT_PM_sequenceQuick(impQuick),
+        summary: {
+          prompts: impPrompts.length,
+          quickReplies: impQuick.length,
+          promptsAdded: 0, promptsUpdated: 0,
+          quickAdded: 0, quickUpdated: 0,
+        },
+      };
+    }
+
+    const mp = PORT_PM_mergePromptRecords(localPrompts, impPrompts);
+    const mq = PORT_PM_mergeQuickRecords(localQuick, impQuick);
+    return {
+      mode: 'merge',
+      prompts: mp.list,
+      quick: PORT_PM_sequenceQuick(mq.list),
+      summary: {
+        prompts: impPrompts.length,
+        quickReplies: impQuick.length,
+        promptsAdded: mp.added, promptsUpdated: mp.updated,
+        quickAdded: mq.added, quickUpdated: mq.updated,
+      },
+    };
+  };
+
+  /* Pre-import backup envelope — the same two collections, its own kind and
+   * version so it can never be mistaken for a portability file.
+   *
+   * [2C-closure] It uses the SAME all-or-nothing projection as export and
+   * returns the same { ok, envelope | error } shape. A backup that quietly
+   * omitted records would be exactly the defect this closure removes from
+   * export, hiding in the one artefact whose whole job is to be complete. If a
+   * faithful backup cannot be built, the caller must abort BEFORE writing
+   * anything: the module promised a pre-import snapshot, and overwriting a
+   * library it cannot snapshot is not a trade it is allowed to make. */
+  const PORT_PM_buildBackupEnvelope = (prompts, quick, now) => {
+    const p = PORT_PM_projectList(prompts, PORT_PM_exportPrompt, PORT_PM_validateImportPrompt,
+      PM_MSG_PORT_EXPORT_PROMPTS, PM_MSG_PORT_EXPORT_DUP_PROMPT);
+    if (!p.ok) return { ok: false, error: p.error, envelope: null };
+
+    const q = PORT_PM_projectList(quick, PORT_PM_exportQuick, PORT_PM_validateImportQuick,
+      PM_MSG_PORT_EXPORT_QUICK, PM_MSG_PORT_EXPORT_DUP_QUICK);
+    if (!q.ok) return { ok: false, error: q.error, envelope: null };
+
+    return {
+      ok: true,
+      error: '',
+      envelope: {
+        kind: PORT_PM_BACKUP_KIND,
+        version: PORT_PM_BACKUP_VERSION,
+        savedAt: ENGINE_PM_normDraftTs(now),
+        prompts: p.list,
+        quickReplies: q.list,
+      },
+    };
+  };
+
+  /* [2C-closure] Exact raw equality between a captured snapshot and a freshly
+   * read state. Raw bytes and absence only — never a normalized parse, because
+   * two different byte strings can parse to equal-looking arrays and a rollback
+   * that "looks right" is not a rollback. */
+  const PORT_PM_rawEquals = (snap, cur) => {
+    if (!snap || !snap.ok || !cur || !cur.ok) return false;
+    if (!snap.present && !cur.present) return true;
+    if (snap.present && cur.present) return cur.raw === snap.raw;
+    return false;
+  };
+
+  /* [2C-closure] Read-only decode of whatever actually survived in a live key.
+   *
+   * Used ONLY on the degraded path, where the module must resynchronize itself
+   * to the bytes that really remain. Deliberately NOT ENGINE_PM.loadPrompts /
+   * loadQuick: those are recovery readers that may seed, migrate, normalize and
+   * write back, or quarantine — every one of which would mutate storage while
+   * the module is trying to find out what storage contains.
+   *
+   * Absence resolves to an empty list because that is already this module's
+   * in-memory contract for an absent key (ENGINE_PM_readArray returns [] for
+   * PM_READ_ABSENT); the key itself is NOT created. Anything undecodable fails
+   * closed: no list is invented. */
+  /* [2C-closure-3/4] Read-only authority check on the two LIVE primary stores.
+   *
+   * Phase 1 deliberately preserves malformed primary bytes and hands the UI an
+   * empty list, so `STATE_PM.data` alone cannot tell a genuinely empty library
+   * apart from a corrupt store the tolerant reader represented as []. Trusting
+   * it produced two real failures: a corrupt Prompt primary exported as a
+   * successful empty file, and an import overwrote that same corrupt primary
+   * while recording an empty "backup".
+   *
+   * Uses ENGINE_PM_readArray, the classified reader, and NOTHING else: no
+   * quarantine, no seeding, no migration, no normalization, no write, no
+   * delete. Portability must never rely on a quarantine copy as its backup.
+   *
+   * Unsafe when either primary is unreadable, malformed, present-but-not-an-
+   * array, or not strictly representable by the Phase-2C schema. Health alone
+   * is not authority: a valid primary is canonicalized and compared with the
+   * strict canonical collection represented by memory. An absent key is the
+   * canonical empty collection and is safe only when memory is the same.
+   *
+   * Prompt sequence is compared exactly because its manual array order is the
+   * authority. Quick records are sorted on COPIES by the same `order` rule used
+   * by ENGINE_PM.loadQuick before comparison; physical JSON array order is not
+   * a second Quick authority. No source array or record is mutated.
+   *
+   * Deliberately NOT gated on STATE_PM.dataError: that flag can be set by a
+   * History, Drafts or Pasted problem which says nothing about these two. */
+  const PORT_PM_checkLiveStoreAuthority = (memPrompts, memQuick) => {
+    const inspect = (key, mem, project, validate, invalidError, duplicateError,
+      storeError, changedError, logicalSequence) => {
+      const rd = ENGINE_PM_readArray(key);
+      if (rd.kind === PM_READ_CORRUPT) return { ok: false, error: storeError };
+      const persisted = (rd.kind === PM_READ_ABSENT) ? [] : rd.value;
+      const live = PORT_PM_projectList(persisted, project, validate, invalidError, duplicateError);
+      const memory = PORT_PM_projectList(mem, project, validate, invalidError, duplicateError);
+      if (!live.ok || !memory.ok) return { ok: false, error: storeError };
+      const liveLogical = logicalSequence(live.list);
+      const memoryLogical = logicalSequence(memory.list);
+      if (JSON.stringify(liveLogical) !== JSON.stringify(memoryLogical)) {
+        return { ok: false, error: changedError };
+      }
+      return { ok: true, error: '' };
+    };
+
+    const promptSequence = (list) => list.slice();
+    const quickSequence = (list) => list.slice()
+      .sort((a, b) => (a?.order || 0) - (b?.order || 0));
+
+    const p = inspect(KEY_PM_STATE_PROMPTS_V1, memPrompts,
+      PORT_PM_exportPrompt, PORT_PM_validateImportPrompt,
+      PM_MSG_PORT_EXPORT_PROMPTS, PM_MSG_PORT_EXPORT_DUP_PROMPT,
+      PM_MSG_PORT_STORE_PROMPTS, PM_MSG_PORT_CHANGED_PROMPTS, promptSequence);
+    if (!p.ok) return p;
+    const q = inspect(KEY_PM_STATE_QUICK_V1, memQuick,
+      PORT_PM_exportQuick, PORT_PM_validateImportQuick,
+      PM_MSG_PORT_EXPORT_QUICK, PM_MSG_PORT_EXPORT_DUP_QUICK,
+      PM_MSG_PORT_STORE_QUICK, PM_MSG_PORT_CHANGED_QUICK, quickSequence);
+    if (!q.ok) return q;
+    return { ok: true, error: '' };
+  };
+
+  /* [2C-closure-3] Byte-exact UTF-8 length.
+   *
+   * `String.length` counts UTF-16 code units, so a library of emoji or CJK text
+   * can be well under the cap by length and far over it in bytes — and the
+   * module could therefore write a file its own importer rejects as too large.
+   * Returns null when the size cannot be determined, and every caller treats
+   * null as over-limit. */
+  const PORT_PM_utf8Bytes = (text) => {
+    try {
+      if (typeof TextEncoder !== 'function') return null;
+      return new TextEncoder().encode(String(text == null ? '' : text)).length;
+    } catch { return null; }
+  };
+
+  const PORT_PM_decodeRawList = (snap) => {
+    if (!snap || !snap.ok) return { ok: false, list: [] };
+    if (!snap.present) return { ok: true, list: [] };
+    let parsed;
+    try { parsed = JSON.parse(snap.raw); }
+    catch { return { ok: false, list: [] }; }
+    if (!Array.isArray(parsed)) return { ok: false, list: [] };
+    return { ok: true, list: parsed };
+  };
+
+  /* Restore one live key to the EXACT bytes it held before the import.
+   *
+   * Raw bytes, not a re-serialized parse: the tolerant loaders normalize legacy
+   * records in memory, so writing `JSON.stringify(parsedOldValue)` back would
+   * quietly rewrite records the failed import never touched. Absence is
+   * restored as absence — removing the key, never writing "[]" — because an
+   * absent Prompts key with the seed marker unset means something different
+   * from an empty array. */
+  const PORT_PM_restoreRaw = (key, snap) => {
+    if (!snap || !snap.ok) return false;
+
+    /* A key whose write FAILED still holds its original bytes, so restoring it
+     * would be a pointless rewrite — and one that must fail for exactly the
+     * reason the import did, turning a clean abort into a false "rollback
+     * failed". Compare first and treat an already-correct key as restored. */
+    const cur = UTIL_storage.readRaw(key);
+    if (cur.ok) {
+      if (!snap.present && !cur.present) return true;
+      if (snap.present && cur.present && cur.raw === snap.raw) return true;
+    }
+
+    if (!snap.present) return UTIL_storage.del(key);
+    return UTIL_storage.setStr(key, snap.raw);
+  };
+
   /* ───────────────────────────── 🧪 TEST HOOK (flag-gated, off in production) ─────────────────────────────
    * Exposes the real storage engine and the real ordering helper so validators
    * exercise production code instead of a copy. The flag must be set on the
@@ -3277,6 +3990,9 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         save: g(UI_PM_ED_SAVE), cancel: g(UI_PM_ED_CANCEL), del: g(UI_PM_ED_DELETE),
         discard: g(UI_PM_ED_DISCARD),
         list: g(UI_PM_LIST_EDIT), filters: g(UI_PM_EDIT_FILTER_ROW), newBtn: g(UI_PM_NEW_BTN),
+        /* [2C] The portability row follows the same rule as `newBtn`: it is a
+         * management control, so it is hidden while the editor owns the pane. */
+        portRow: g(UI_PM_PORT_ROW), portBox: g(UI_PM_IMPORT_BOX),
       };
     },
 
@@ -3313,7 +4029,13 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         if (e.list) e.list.style.display = st.open ? 'none' : '';
         if (e.filters) e.filters.style.display = st.open ? 'none' : '';
         if (e.newBtn) e.newBtn.style.display = st.open ? 'none' : '';
-        if (!st.open) return true;
+        /* [2C] Export/Import and any staged import confirmation are hidden with
+         * the rest of the management row while the editor is open, so the pane
+         * has exactly one active surface. The pending import itself is untouched
+         * — closing the editor brings the confirmation back unchanged. */
+        if (e.portRow) e.portRow.style.display = st.open ? 'none' : '';
+        if (e.portBox && st.open) e.portBox.style.display = 'none';
+        if (!st.open) { PORT_PM.sync(root); return true; }
 
         if (e.heading) {
           e.heading.textContent = isQuick
@@ -3584,6 +4306,425 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     },
   };
 
+  /* ───────────────────────────── 📦 PORTABILITY — controller 📝🔓💥 ─────────────────────────────
+   * [2C] The storage side of portability. Everything shape-related lives in the
+   * pure block above; this object owns the DOM controls, the file handling and
+   * the one write sequence that must be all-or-nothing across TWO live stores.
+   */
+  const PORT_PM = {
+    st() { return STATE_PM.ui.port; },
+    isPending() { return !!STATE_PM.ui.port.pending; },
+
+    els(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      if (!root) return null;
+      const g = (t) => DOM_q(UI_PM.selOwned(t), root);
+      return {
+        row: g(UI_PM_PORT_ROW),
+        exportBtn: g(UI_PM_EXPORT_LIB),
+        importBtn: g(UI_PM_IMPORT_BTN),
+        file: g(UI_PM_IMPORT_FILE),
+        box: g(UI_PM_IMPORT_BOX),
+        summary: g(UI_PM_IMPORT_SUMMARY),
+        merge: g(UI_PM_IMPORT_MERGE),
+        replace: g(UI_PM_IMPORT_REPLACE),
+        cancel: g(UI_PM_IMPORT_CANCEL),
+      };
+    },
+
+    /* Preview text. Built with textContent by the caller, never innerHTML: an
+     * imported title containing markup is data and must render as the
+     * characters the user typed. */
+    summaryLines(envelope) {
+      const merged = PORT_PM_buildImportCandidates('merge', STATE_PM.data, envelope);
+      const s = merged.summary;
+      return [
+        `Prompts: ${s.prompts}`,
+        `Quick Replies: ${s.quickReplies}`,
+        `Merge — new: ${s.promptsAdded + s.quickAdded}, updated by ID: ${s.promptsUpdated + s.quickUpdated}`,
+        'Replace — replaces the current Prompt and Quick libraries with this file.',
+      ].join('\n');
+    },
+
+    sync(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('PORT_PM.sync', () => {
+        const e = PORT_PM.els(root);
+        if (!e) return false;
+        const st = PORT_PM.st();
+        const pending = st.pending;
+        if (e.box) e.box.style.display = pending ? '' : 'none';
+        if (e.summary) e.summary.textContent = pending ? PORT_PM.summaryLines(pending.envelope) : '';
+        /* [2C-closure-2] Once storage is known to be out of sync, the two
+         * portability mutations are impossible, so the controls stop inviting
+         * them. Cancel stays live so a stale confirmation can still be
+         * dismissed, and nothing else in the panel is disabled. */
+        const blocked = !!st.recoveryRequired;
+        if (e.importBtn) {
+          e.importBtn.disabled = blocked;
+          e.importBtn.setAttribute('aria-disabled', blocked ? 'true' : 'false');
+        }
+        if (e.exportBtn) {
+          e.exportBtn.disabled = blocked;
+          e.exportBtn.setAttribute('aria-disabled', blocked ? 'true' : 'false');
+        }
+        if (e.merge) e.merge.disabled = blocked;
+        if (e.replace) e.replace.disabled = blocked;
+        return true;
+      }, false);
+    },
+
+    clearPending(root) {
+      /* [2C-closure-2] Clearing also RETIRES the current read generation, so an
+       * older reader that completes afterwards — after a Cancel, or after a
+       * successful import — cannot recreate a pending confirmation behind the
+       * user's back. */
+      PORT_PM.nextRead();
+      PORT_PM.st().pending = null;
+      const e = PORT_PM.els(root);
+      // Clearing the input lets the SAME file be chosen again; without it a
+      // second pick of an unchanged path fires no `change` event at all.
+      if (e && e.file) { try { e.file.value = ''; } catch { /* non-fatal */ } }
+      PORT_PM.sync(root);
+      return true;
+    },
+
+    /* Export. Reads the authoritative in-memory collections, builds the
+     * canonical envelope and hands the browser a file. No storage key is read
+     * for it and none is written: exporting can never change the library.
+     *
+     * [2C-closure] All-or-nothing. The envelope is built FIRST and the build
+     * can refuse; a refusal returns before any Blob, object URL, anchor or
+     * click exists, so a rejected export has no download side effect at all
+     * and never reports "Exported". */
+    exportLibrary(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      return SAFE_try('PORT_PM.exportLibrary', () => {
+        /* [2C-closure-2] Fail closed while storage is known to be out of sync.
+         *
+         * The undecodable degraded path deliberately leaves in-memory authority
+         * untouched precisely BECAUSE its relationship to the surviving bytes
+         * cannot be proven. Writing that state to a file and calling it
+         * "Exported" would hand the user a portability artefact the module
+         * itself cannot vouch for. Portability only: browsing, editing and
+         * every other Prompt Manager function stay available. */
+        if (PORT_PM.st().recoveryRequired) {
+          FEEDBACK_PM.say(PM_MSG_PORT_RECOVERY, 'error', root);
+          return false;
+        }
+        /* [2C-closure-3] The in-memory library is only as trustworthy as the
+         * bytes behind it. A corrupt primary that the tolerant reader showed as
+         * [] must not be written out as a successful empty portability file. */
+        const live = PORT_PM_checkLiveStoreAuthority(STATE_PM.data.prompts, STATE_PM.data.quick);
+        if (!live.ok) {
+          FEEDBACK_PM.say(live.error, 'error', root);
+          return false;
+        }
+        const built = PORT_PM_buildExportEnvelope(STATE_PM.data.prompts, STATE_PM.data.quick, UTIL_now());
+        if (!built.ok) {
+          FEEDBACK_PM.say(built.error || PM_MSG_PORT_EXPORT, 'error', root);
+          return false;
+        }
+        const envelope = built.envelope;
+        const text = PORT_PM_serializeExport(envelope);
+        /* [2C-closure-3] A file this module cannot import back is not a
+         * successful export. Measured in real UTF-8 bytes, against the same cap
+         * the importer enforces, BEFORE any Blob or object URL exists. */
+        const bytes = PORT_PM_utf8Bytes(text);
+        if (bytes === null || bytes > PORT_PM_MAX_BYTES) {
+          FEEDBACK_PM.say(PM_MSG_PORT_EXPORT_TOO_LARGE, 'error', root);
+          return false;
+        }
+        if (!PORT_PM_download(PORT_PM_exportFilename(envelope.exportedAt), text)) {
+          FEEDBACK_PM.say(PM_MSG_PORT_EXPORT, 'error', root);
+          return false;
+        }
+        FEEDBACK_PM.say('Exported', 'info', root);
+        return true;
+      }, false);
+    },
+
+    /* Stage a file. Reaching `pending` requires the WHOLE file to validate, so
+     * selecting a file can never mutate storage and a rejected file leaves the
+     * confirmation strip closed with a persistent error on the status line. */
+    /* [2C-closure-2] Every selection takes the next read generation, and every
+     * asynchronous completion must still hold it. A reader whose token is stale
+     * returns having changed nothing at all: not pending, not the feedback
+     * line, not the preview, and certainly not storage. Aborting the older
+     * reader would be an optimization; the token is the correctness. */
+    nextRead() {
+      const st = PORT_PM.st();
+      st.readSeq = (Number(st.readSeq) || 0) + 1;
+      return st.readSeq;
+    },
+    isCurrentRead(token) { return PORT_PM.st().readSeq === token; },
+
+    beginImport(root, file) {
+      return SAFE_try('PORT_PM.beginImport', () => {
+        /* A new selection supersedes everything in flight FIRST: the old
+         * confirmation must not keep looking active while the new file is still
+         * being read, and a Merge/Replace click in that window must find no
+         * pending import to act on. */
+        const token = PORT_PM.nextRead();
+        PORT_PM.st().pending = null;
+        PORT_PM.sync(root);
+
+        // [2C-closure] Fail closed while storage is known to be out of sync.
+        if (PORT_PM.st().recoveryRequired) {
+          FEEDBACK_PM.say(PM_MSG_PORT_RECOVERY, 'error', root);
+          return false;
+        }
+        /* [2C-closure-3] Refuse before any FileReader work when the live
+         * Prompt/Quick authority is already known to be unusable. Re-checked at
+         * Apply, because storage can change while a file is pending. */
+        const liveNow = PORT_PM_checkLiveStoreAuthority(STATE_PM.data.prompts, STATE_PM.data.quick);
+        if (!liveNow.ok) {
+          FEEDBACK_PM.say(liveNow.error, 'error', root);
+          return false;
+        }
+        if (!file) return false;
+
+        if (PORT_PM_overSizeLimit(file.size)) {
+          FEEDBACK_PM.say(PM_MSG_PORT_TOO_LARGE, 'error', root);
+          return false;
+        }
+
+        const reader = new FileReader();
+        reader.onerror = () => {
+          SAFE_try('PORT_PM.beginImport.readError', () => {
+            if (!PORT_PM.isCurrentRead(token)) return false; // superseded: silent
+            FEEDBACK_PM.say(PM_MSG_PORT_INVALID, 'error', root);
+            PORT_PM.sync(root);
+            return true;
+          }, false);
+        };
+        reader.onload = () => {
+          SAFE_try('PORT_PM.beginImport.parsed', () => {
+            if (!PORT_PM.isCurrentRead(token)) return false; // superseded: silent
+            /* Re-checked here as well as at selection time: the latch can be set
+             * by a failed import that ran while this read was outstanding. */
+            if (PORT_PM.st().recoveryRequired) return false;
+            const res = PORT_PM_parseImportText(reader.result);
+            if (!PORT_PM.isCurrentRead(token)) return false; // superseded during parse
+            if (!res.ok) {
+              FEEDBACK_PM.say(res.error, 'error', root);
+              PORT_PM.sync(root);
+              return false;
+            }
+            PORT_PM.st().pending = { envelope: res.envelope };
+            FEEDBACK_PM.hide(root);
+            PORT_PM.sync(root);
+            return true;
+          }, false);
+        };
+        reader.readAsText(file);
+        return true;
+      }, false);
+    },
+
+    /* Cancel: no storage change of any kind, pending state cleared, file input
+     * released, Edit view restored. */
+    cancelImport(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
+      /* [2C-closure-2] Cancel ALWAYS retires the current read generation, even
+       * when no confirmation is showing. A file selected a moment ago may still
+       * be reading, and a cancel that only cleared the visible state would let
+       * that read arrive afterwards and stage an import the user just declined.
+       * The return value still reports whether a confirmation was dismissed,
+       * and the message is only shown when one actually was. */
+      const wasPending = PORT_PM.isPending();
+      PORT_PM.clearPending(root);
+      if (!wasPending) return false;
+      FEEDBACK_PM.say('Import cancelled', 'info', root);
+      return true;
+    },
+
+    /* Apply an accepted import.
+     *
+     * Two live stores mean a naive "write Prompts, then write Quick" can leave
+     * the library half-imported when the second write fails. The visible
+     * contract here is that after this returns, the pair is EITHER the exact
+     * old state OR the complete new state — never one of each:
+     *
+     *   1. capture the exact raw bytes (or proven absence) of both live keys
+     *   2. persist the pre-import backup; a failure here aborts before any
+     *      live byte is written
+     *   3. write both live stores as BYTES ONLY (persist*, not commit*), so
+     *      nothing is adopted and no `changed` event is published yet
+     *   4. on any write failure, restore BOTH keys to their captured raw bytes
+     *      and report truthfully — in-memory authority was never touched, so it
+     *      already holds the pre-import state
+     *   5. only when both byte writes succeeded, adopt the candidates and emit
+     *
+     * A rollback that itself fails is reported with its own distinct message:
+     * at that point storage is genuinely inconsistent and saying "Storage write
+     * failed" would understate it. */
+    applyImport(root = (STATE_PM.ui.root || UI_PM.getRoot()), mode = 'merge') {
+      return SAFE_try('PORT_PM.applyImport', () => {
+        const pending = PORT_PM.st().pending;
+        if (!pending) return false;
+        /* [2C-closure] A previous failed rollback left storage in a state this
+         * module could not read. Mutating it again would build candidates from
+         * an in-memory pair with no proven relationship to the bytes. */
+        if (PORT_PM.st().recoveryRequired) {
+          FEEDBACK_PM.say(PM_MSG_PORT_RECOVERY, 'error', root);
+          return false;
+        }
+        const wantMode = (mode === 'replace') ? 'replace' : 'merge';
+
+        /* [2C-closure-3] MANDATORY re-check. The file was validated some time
+         * ago and storage can have changed since: another tab, a quota event or
+         * a corrupt write can leave a primary the module must not overwrite.
+         * This runs BEFORE candidates, before the backup and before any live
+         * write, so an unsafe store costs nothing. */
+        const liveAtApply = PORT_PM_checkLiveStoreAuthority(STATE_PM.data.prompts, STATE_PM.data.quick);
+        if (!liveAtApply.ok) {
+          FEEDBACK_PM.say(liveAtApply.error, 'error', root);
+          return false;
+        }
+
+        const candidates = PORT_PM_buildImportCandidates(wantMode, STATE_PM.data, pending.envelope);
+
+        // 1. exact pre-import raw state for both live keys.
+        const beforePrompts = UTIL_storage.readRaw(KEY_PM_STATE_PROMPTS_V1);
+        const beforeQuick = UTIL_storage.readRaw(KEY_PM_STATE_QUICK_V1);
+        if (!beforePrompts.ok || !beforeQuick.ok) {
+          // Without a provable pre-state there is no rollback to offer, so the
+          // safe move is to write nothing at all.
+          ENGINE_PM_noteWriteFailure('PORT_PM.applyImport.readPreState');
+          FEEDBACK_PM.say(PM_MSG_PORT_WRITE, 'error', root);
+          return false;
+        }
+
+        /* 2. backup before any live write.
+         *
+         * [2C-closure] The backup uses the same all-or-nothing projection as
+         * export, so it can refuse. A library that cannot be snapshotted
+         * faithfully aborts the import here — before a single live byte —
+         * rather than being overwritten with no complete record of what it was. */
+        const backupBuilt = PORT_PM_buildBackupEnvelope(STATE_PM.data.prompts, STATE_PM.data.quick, UTIL_now());
+        if (!backupBuilt.ok) {
+          FEEDBACK_PM.say(backupBuilt.error || PM_MSG_PORT_BACKUP, 'error', root);
+          return false;
+        }
+        if (!UTIL_storage.setJSON(KEY_PM_STATE_IMPORT_BACKUP_V1, backupBuilt.envelope)) {
+          ENGINE_PM_noteWriteFailure('PORT_PM.applyImport.backup');
+          FEEDBACK_PM.say(PM_MSG_PORT_BACKUP, 'error', root);
+          return false;
+        }
+
+        /* [2C-closure] Rollback is judged by the BYTES, not by what the setters
+         * returned. A storage layer can write and still throw, and the first
+         * implementation believed the return value: it reported "Import
+         * rollback failed" for a store whose bytes were in fact correct.
+         *
+         * Both keys are restored best-effort, then both are RE-READ and
+         * compared against their original raw snapshots. Success means the
+         * persisted state is exactly the pre-import state — whatever any
+         * intermediate setter claimed along the way. */
+        const rollback = () => {
+          PORT_PM_restoreRaw(KEY_PM_STATE_PROMPTS_V1, beforePrompts);
+          PORT_PM_restoreRaw(KEY_PM_STATE_QUICK_V1, beforeQuick);
+          const nowPrompts = UTIL_storage.readRaw(KEY_PM_STATE_PROMPTS_V1);
+          const nowQuick = UTIL_storage.readRaw(KEY_PM_STATE_QUICK_V1);
+          const ok = PORT_PM_rawEquals(beforePrompts, nowPrompts)
+            && PORT_PM_rawEquals(beforeQuick, nowQuick);
+          if (!ok) ENGINE_PM_noteWriteFailure('PORT_PM.applyImport.rollback');
+          return { ok, nowPrompts, nowQuick };
+        };
+
+        /* [2C-closure] A rollback that did not restore both keys leaves storage
+         * describing itself. In-memory authority must not keep pretending the
+         * old pair survived, so it is resynchronized to whatever ACTUALLY
+         * persists — read through the pure decoder, never through a recovery
+         * loader that could seed, migrate, rewrite or quarantine.
+         *
+         * Nothing is written on this path. If either surviving value cannot be
+         * decoded safely, no list is invented: the module marks itself
+         * recovery-required, keeps the persistent error, and refuses further
+         * portability mutations until the page is reloaded. */
+        const reconcileDegraded = (rb) => {
+          const dp = PORT_PM_decodeRawList(rb.nowPrompts);
+          const dq = PORT_PM_decodeRawList(rb.nowQuick);
+          if (!dp.ok || !dq.ok) {
+            PORT_PM.st().recoveryRequired = true;
+            UTIL_diagErr('PORT_PM.applyImport.degradedUndecodable',
+              'surviving Prompt/Quick bytes could not be decoded; in-memory authority left untouched');
+            FEEDBACK_PM.say(PM_MSG_PORT_RECOVERY, 'error', root);
+            return false;
+          }
+          STATE_PM.data.prompts = dp.list;
+          STATE_PM.data.quick = dq.list;
+          /* The in-memory pair genuinely changed, so consumers are told through
+           * the established changed-event authority. This is NOT an import
+           * success signal — no 'Imported' message is shown, no usage metadata
+           * moves and no updatedAt is touched. */
+          UTIL_emitPmChanged({ what: 'prompts' });
+          UTIL_emitPmChanged({ what: 'quick' });
+          UI_PM_renderBoth(root);
+          if (root) RENDER_PM.renderQuickTray(root);
+          FEEDBACK_PM.say(PM_MSG_PORT_ROLLBACK, 'error', root);
+          return false;
+        };
+
+        // 3+4. bytes only, with a byte-verified paired rollback on either failure.
+        if (!ENGINE_PM.persistPrompts(candidates.prompts)) {
+          const rb = rollback();
+          if (rb.ok) { FEEDBACK_PM.say(PM_MSG_PORT_WRITE, 'error', root); return false; }
+          return reconcileDegraded(rb);
+        }
+        if (!ENGINE_PM.persistQuick(candidates.quick)) {
+          const rb = rollback();
+          if (rb.ok) { FEEDBACK_PM.say(PM_MSG_PORT_WRITE, 'error', root); return false; }
+          return reconcileDegraded(rb);
+        }
+
+        // 5. both stores are on disk — adopt, then publish.
+        STATE_PM.data.prompts = candidates.prompts;
+        STATE_PM.data.quick = candidates.quick;
+        UTIL_emitPmChanged({ what: 'prompts' });
+        UTIL_emitPmChanged({ what: 'quick' });
+
+        PORT_PM.clearPending(root);
+        UI_PM_renderBoth(root);
+        if (root) RENDER_PM.renderQuickTray(root);
+        FEEDBACK_PM.say(wantMode === 'replace' ? 'Imported — replaced' : 'Imported — merged', 'info', root);
+        return true;
+      }, false);
+    },
+  };
+
+  /* Hand a serialized envelope to the browser as a download.
+   *
+   * The object URL is revoked on a short OWNED timer rather than in the same
+   * tick, and a cleanup function is registered so disposal inside that window
+   * revokes it too. Both routes run through the same idempotent closure, so the
+   * URL is released exactly once on every path. */
+  function PORT_PM_download(filename, text) {
+    return SAFE_try('PORT_PM.download', () => {
+      const blob = new Blob([text], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      let revoked = false;
+      const revoke = () => {
+        if (revoked) return;
+        revoked = true;
+        try { URL.revokeObjectURL(url); } catch { /* already gone */ }
+      };
+      CLEAN_addFn(revoke);
+      try {
+        const a = D.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.rel = 'noopener';
+        a.style.display = 'none';
+        (D.body || D.documentElement).appendChild(a);
+        a.click();
+        a.remove();
+      } catch (e) {
+        revoke();
+        throw e;
+      }
+      CLEAN_setTimeout(revoke, PORT_PM_REVOKE_MS);
+      return true;
+    }, false);
+  }
+
   if (W.__H2O_PM_TEST__ === true) {
     MOD_OBJ.__test = Object.freeze({
       version: MOD_VERSION,
@@ -3645,6 +4786,74 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       }),
       editor: EDITOR_PM,
       feedback: FEEDBACK_PM,
+      /* [2C] Portability. The pure shape helpers plus the live controller, so
+       * validators drive the shipped export/import rather than a copy of it.
+       * Deliberately NOT a widening of the six-method public API, and no raw
+       * localStorage contents are exposed here — the storage engine already
+       * reachable through `engine`/`storage` remains the only such surface. */
+      portability: Object.freeze({
+        kind: PORT_PM_KIND,
+        version: PORT_PM_VERSION,
+        backupKind: PORT_PM_BACKUP_KIND,
+        backupVersion: PORT_PM_BACKUP_VERSION,
+        maxBytes: PORT_PM_MAX_BYTES,
+        maxRecords: PORT_PM_MAX_RECORDS,
+        envelopeKeys: PORT_PM_ENVELOPE_KEYS,
+        promptKeys: PORT_PM_PROMPT_KEYS,
+        quickKeys: PORT_PM_QUICK_KEYS,
+        buildExportEnvelope: PORT_PM_buildExportEnvelope,
+        serializeExport: PORT_PM_serializeExport,
+        exportFilename: PORT_PM_exportFilename,
+        validateImportEnvelope: PORT_PM_validateImportEnvelope,
+        validateImportPrompt: PORT_PM_validateImportPrompt,
+        validateImportQuick: PORT_PM_validateImportQuick,
+        parseImportText: PORT_PM_parseImportText,
+        overSizeLimit: PORT_PM_overSizeLimit,
+        mergePromptRecords: PORT_PM_mergePromptRecords,
+        mergeQuickRecords: PORT_PM_mergeQuickRecords,
+        buildImportCandidates: PORT_PM_buildImportCandidates,
+        buildBackupEnvelope: PORT_PM_buildBackupEnvelope,
+        restoreRaw: PORT_PM_restoreRaw,
+        /* [2C-closure] Lossless-export and degraded-rollback primitives. */
+        projectList: PORT_PM_projectList,
+        exportPrompt: PORT_PM_exportPrompt,
+        exportQuick: PORT_PM_exportQuick,
+        /* [2C-closure-3] Quick sequencing, live-store preflight, UTF-8 bytes. */
+        sequenceQuick: PORT_PM_sequenceQuick,
+        checkLiveStoreAuthority: PORT_PM_checkLiveStoreAuthority,
+        utf8Bytes: PORT_PM_utf8Bytes,
+        /* [2C-closure-2] Canonical identity + read-generation authorities. */
+        isCanonicalId: PORT_PM_isCanonicalId,
+        recordId: PORT_PM_recordId,
+        rawEquals: PORT_PM_rawEquals,
+        decodeRawList: PORT_PM_decodeRawList,
+        controller: PORT_PM,
+        messages: Object.freeze({
+          invalid: PM_MSG_PORT_INVALID,
+          version: PM_MSG_PORT_VERSION,
+          duplicatePrompt: PM_MSG_PORT_DUP_PROMPT,
+          duplicateQuick: PM_MSG_PORT_DUP_QUICK,
+          tooLarge: PM_MSG_PORT_TOO_LARGE,
+          write: PM_MSG_PORT_WRITE,
+          backup: PM_MSG_PORT_BACKUP,
+          rollback: PM_MSG_PORT_ROLLBACK,
+          exportFailed: PM_MSG_PORT_EXPORT,
+          /* Spelled `exportInvalid*` on purpose: `exportPrompts` /
+           * `importPrompts` are prohibited identifiers (a pre-2C invariant
+           * guards against a second, divergent export implementation), and a
+           * message key must not be what trips that guard. */
+          exportInvalidPrompts: PM_MSG_PORT_EXPORT_PROMPTS,
+          exportInvalidQuick: PM_MSG_PORT_EXPORT_QUICK,
+          exportDupPrompt: PM_MSG_PORT_EXPORT_DUP_PROMPT,
+          exportDupQuick: PM_MSG_PORT_EXPORT_DUP_QUICK,
+          recovery: PM_MSG_PORT_RECOVERY,
+          storePrompts: PM_MSG_PORT_STORE_PROMPTS,
+          storeQuick: PM_MSG_PORT_STORE_QUICK,
+          changedPrompts: PM_MSG_PORT_CHANGED_PROMPTS,
+          changedQuick: PM_MSG_PORT_CHANGED_QUICK,
+          exportTooLarge: PM_MSG_PORT_EXPORT_TOO_LARGE,
+        }),
+      }),
       promptCard: RENDER_PM_promptCard,
       convTitleMax: PM_CONV_TITLE_MAX,
       deleteArmMs: PM_DELETE_ARM_MS,
@@ -3653,6 +4862,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       keys: Object.freeze({
         prompts: KEY_PM_STATE_PROMPTS_V1,
         quick: KEY_PM_STATE_QUICK_V1,
+        importBackup: KEY_PM_STATE_IMPORT_BACKUP_V1,
         seeded: KEY_PM_STATE_SEEDED_V1,
         history: KEY_PM_STATE_HISTORY_V1,
         drafts: KEY_PM_STATE_DRAFTS_V1,
@@ -3807,6 +5017,14 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         if (EDITOR_PM.isOpen()) {
           e.stopPropagation();
           EDITOR_PM.cancel(STATE_PM.ui.root || UI_PM.getRoot());
+          return;
+        }
+        /* [2C] A staged import is a confirmation the user has not answered yet.
+         * Escape answers it with "no" — it cancels the import and writes
+         * nothing — rather than closing the panel out from under it. */
+        if (PORT_PM.isPending()) {
+          e.stopPropagation();
+          PORT_PM.cancelImport(STATE_PM.ui.root || UI_PM.getRoot());
           return;
         }
         closePanel();
@@ -3983,6 +5201,21 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
               <div style="border-top:1px solid var(--cgxui-${SkID}-border); margin-top:10px; padding-top:10px; display:grid; gap:6px;">
                 <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_NEW_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}">New prompt</button>
+
+                <div ${ATTR_CGXUI}="${UI_PM_PORT_ROW}" ${ATTR_CGXUI_OWNER}="${SkID}" style="display:flex; gap:6px;">
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_EXPORT_LIB}" ${ATTR_CGXUI_OWNER}="${SkID}" title="Download Prompts and Quick Replies as a JSON file">Export library</button>
+                  <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_IMPORT_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}" title="Load Prompts and Quick Replies from a JSON file">Import library</button>
+                  <input type="file" accept="application/json,.json" ${ATTR_CGXUI}="${UI_PM_IMPORT_FILE}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true" tabindex="-1" style="display:none" />
+                </div>
+
+                <div ${ATTR_CGXUI}="${UI_PM_IMPORT_BOX}" ${ATTR_CGXUI_OWNER}="${SkID}" style="display:none">
+                  <div ${ATTR_CGXUI}="${UI_PM_IMPORT_SUMMARY}" ${ATTR_CGXUI_OWNER}="${SkID}" style="font-size:11px; white-space:pre-line; margin-bottom:6px;"></div>
+                  <div style="display:flex; gap:6px;">
+                    <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_IMPORT_MERGE}" ${ATTR_CGXUI_OWNER}="${SkID}">Merge</button>
+                    <button type="button" class="cgxui-${SkID}--btn cgxui-${SkID}--ed-danger" ${ATTR_CGXUI}="${UI_PM_IMPORT_REPLACE}" ${ATTR_CGXUI_OWNER}="${SkID}">Replace</button>
+                    <button type="button" class="cgxui-${SkID}--btn" ${ATTR_CGXUI}="${UI_PM_IMPORT_CANCEL}" ${ATTR_CGXUI_OWNER}="${SkID}">Cancel</button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -5545,6 +6778,46 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         };
         newBtn.addEventListener('click', on);
         CLEAN_addFn(() => newBtn.removeEventListener('click', on));
+      }
+
+      /* [2C] Portability controls. Every listener is registered through
+       * CLEAN_addFn, exactly like the Phase 1 and Phase 2A listeners, so
+       * dispose() tears them down with the rest. */
+      {
+        const p = PORT_PM.els(root);
+        const bindPort = (el, ev, fn) => {
+          if (!el) return;
+          el.addEventListener(ev, fn);
+          CLEAN_addFn(() => el.removeEventListener(ev, fn));
+        };
+
+        bindPort(p && p.exportBtn, 'click', () => { PORT_PM.exportLibrary(root); });
+
+        /* The visually hidden file input is the picker; the visible button only
+         * opens it. Clearing the value first means re-picking the same file
+         * still fires `change`. */
+        bindPort(p && p.importBtn, 'click', () => {
+          // [2C-closure-2] Never open a picker for an operation already known
+          // to be impossible; report why instead.
+          if (PORT_PM.st().recoveryRequired) {
+            FEEDBACK_PM.say(PM_MSG_PORT_RECOVERY, 'error', root);
+            return;
+          }
+          if (!p.file) return;
+          try { p.file.value = ''; } catch { /* non-fatal */ }
+          p.file.click();
+        });
+        bindPort(p && p.file, 'change', () => {
+          const f = (p.file && p.file.files) ? p.file.files[0] : null;
+          if (f) PORT_PM.beginImport(root, f);
+        });
+
+        bindPort(p && p.merge, 'click', () => { PORT_PM.applyImport(root, 'merge'); });
+        bindPort(p && p.replace, 'click', () => { PORT_PM.applyImport(root, 'replace'); });
+        bindPort(p && p.cancel, 'click', () => { PORT_PM.cancelImport(root); });
+
+        // Reflect any state left over from a previous mount.
+        PORT_PM.sync(root);
       }
 
       /* [2A] Editor controls. Every listener is registered through CLEAN_addFn so

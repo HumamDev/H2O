@@ -43,6 +43,7 @@ const IDENTITY_PROVIDER_WRITER = path.join(
 );
 const IDENTITY_RELEASE_GATE = path.join(ROOT, IDENTITY_RELEASE_GATE_REL);
 const F17_RELEASE_VALIDATOR = path.join(ROOT, F17_RELEASE_VALIDATOR_REL);
+const CURRENT_BASE = "a102e219da8efa71d95f88b12f489cf63a0339de";
 const FINAL_PATHS = Object.freeze([
   PROXY_WRITER_REL,
   EXTENSION_WRITER_REL,
@@ -66,8 +67,8 @@ const GUARDED_WRITER_SET = Object.freeze([
   DESK_WRITER_REL,
   IDENTITY_PROVIDER_WRITER_REL,
 ]);
-const EXPECTED_RUNTIME_SCENARIOS = 111;
-const EXPECTED_SCOPE_SCENARIOS = 14;
+const EXPECTED_RUNTIME_SCENARIOS = 112;
+const EXPECTED_SCOPE_SCENARIOS = 15;
 const CANONICAL_PRESERVATION_CHECKS = 40;
 const AUTHORITY_ENV_NAMES = Object.freeze([
   "H2O_CANONICAL_DELIVERY_ROOT",
@@ -224,6 +225,7 @@ function assertSandboxPath(candidate) {
 function scopeFailure(message, state) {
   throw new assert.AssertionError({
     message: `${message}: ${JSON.stringify({
+      head: state.head,
       modifiedTracked: sorted(state.modifiedTracked),
       staged: sorted(state.staged),
       untracked: sorted(state.untracked),
@@ -235,6 +237,7 @@ function scopeFailure(message, state) {
 
 export function classifyStage1DE2BBatch1Scope(state) {
   const normalized = {
+    head: String(state.head ?? ""),
     modifiedTracked: sorted(state.modifiedTracked ?? []),
     staged: sorted(state.staged ?? []),
     untracked: sorted(state.untracked ?? []),
@@ -243,6 +246,15 @@ export function classifyStage1DE2BBatch1Scope(state) {
   };
   if (normalized.staged.length) {
     scopeFailure("Stage 1D-E2B final lean guard forbids staged paths", normalized);
+  }
+  const currentValidatorOnlyUncommitted =
+    normalized.head === CURRENT_BASE &&
+    sameSet(normalized.modifiedTracked, [VALIDATOR_REL]) &&
+    normalized.untracked.length === 0 &&
+    sameSet(normalized.trackedFinal, FINAL_PATHS) &&
+    normalized.missingFinal.length === 0;
+  if (currentValidatorOnlyUncommitted) {
+    return "writer-enforcement-current-baseline-uncommitted";
   }
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
@@ -261,6 +273,7 @@ export function classifyStage1DE2BBatch1Scope(state) {
 
 function currentScopeState() {
   return {
+    head: run("git", ["rev-parse", "HEAD"]).trim(),
     modifiedTracked: lines(run("git", ["diff", "--name-only", "HEAD", "--"])),
     staged: lines(run("git", ["diff", "--cached", "--name-only", "--"])),
     untracked: lines(
@@ -275,6 +288,7 @@ function currentScopeState() {
 
 function baseScope(overrides = {}) {
   return {
+    head: "0".repeat(40),
     modifiedTracked: [...UNCOMMITTED_MODIFIED],
     staged: [],
     untracked: [...UNCOMMITTED_UNTRACKED],
@@ -433,6 +447,52 @@ function runScopeSelfTests() {
         ),
       /scope mismatch/u,
     );
+  });
+  scopeTest("current-main validator-only repair scope is exact and survives commit", () => {
+    const repair = {
+      head: CURRENT_BASE,
+      modifiedTracked: [VALIDATOR_REL],
+      staged: [],
+      untracked: [],
+      trackedFinal: [...FINAL_PATHS],
+      missingFinal: [],
+    };
+    assert.equal(
+      classifyStage1DE2BBatch1Scope(repair),
+      "writer-enforcement-current-baseline-uncommitted",
+    );
+    assert.equal(
+      classifyStage1DE2BBatch1Scope({
+        ...repair,
+        head: "f".repeat(40),
+        modifiedTracked: [],
+      }),
+      "committed-clean",
+    );
+    for (const overrides of [
+      { head: "f".repeat(40) },
+      { modifiedTracked: [VALIDATOR_REL, PROXY_WRITER_REL] },
+      { modifiedTracked: [IDENTITY_PROVIDER_WRITER_REL] },
+      { staged: [VALIDATOR_REL] },
+      { untracked: ["tools/validation/publish/foreign.mjs"] },
+      {
+        trackedFinal: FINAL_PATHS.filter(
+          (relative) => relative !== IDENTITY_RELEASE_GATE_REL,
+        ),
+        missingFinal: [IDENTITY_RELEASE_GATE_REL],
+      },
+      {
+        trackedFinal: FINAL_PATHS.filter(
+          (relative) => relative !== IDENTITY_RELEASE_GATE_REL,
+        ),
+        untracked: [IDENTITY_RELEASE_GATE_REL],
+      },
+    ]) {
+      assert.throws(
+        () => classifyStage1DE2BBatch1Scope({ ...repair, ...overrides }),
+        /scope mismatch|forbids staged/u,
+      );
+    }
   });
   assert.equal(scopeResults.length, EXPECTED_SCOPE_SCENARIOS);
 }
@@ -808,6 +868,52 @@ async function runImportedIdentityProviderWriter(fixture, options = {}) {
       timeoutMs: options.timeoutMs ?? 30_000,
     },
   );
+}
+
+function snapshotAnchorIdentity(anchorRoot) {
+  const root = path.resolve(anchorRoot);
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(root);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { root, exists: false, rootIdentity: null, entries: [] };
+    }
+    throw error;
+  }
+
+  function identity(target, relativePath, stat) {
+    if (stat.isSymbolicLink()) {
+      return { path: relativePath, type: "symlink", target: fs.readlinkSync(target) };
+    }
+    if (stat.isDirectory()) return { path: relativePath, type: "directory" };
+    if (stat.isFile()) {
+      return {
+        path: relativePath,
+        type: "regular-file",
+        bytes: stat.size,
+        sha256: sha256File(target),
+      };
+    }
+    throw new Error(`anchor-identity-unsupported-entry-type: ${target}`);
+  }
+
+  const rootIdentity = identity(root, ".", rootStat);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    return { root, exists: true, rootIdentity, entries: [] };
+  }
+  const entries = [];
+  function visit(directory) {
+    for (const name of fs.readdirSync(directory).sort()) {
+      const target = path.join(directory, name);
+      const stat = fs.lstatSync(target);
+      const relativePath = path.relative(root, target).split(path.sep).join("/");
+      entries.push(identity(target, relativePath, stat));
+      if (stat.isDirectory() && !stat.isSymbolicLink()) visit(target);
+    }
+  }
+  visit(root);
+  return { root, exists: true, rootIdentity, entries };
 }
 
 function snapshotPath(target) {
@@ -2403,7 +2509,92 @@ async function runRuntimeScenarios() {
     env: {},
     allowOverride: false,
   }).root;
-  const writerAnchorAbsent = !fs.existsSync(writerAnchor);
+  const writerAnchorIdentity = snapshotAnchorIdentity(writerAnchor);
+
+  await test("anchor identity detects lifecycle, bytes, links, markers, and failures", () => {
+    const root = temporaryRoot("anchor-identity");
+    const anchor = path.join(root, "anchor");
+    const firstTarget = path.join(root, "first-target");
+    const secondTarget = path.join(root, "second-target");
+    try {
+      const absent = snapshotAnchorIdentity(anchor);
+      assert.equal(absent.exists, false);
+      assert.deepEqual(snapshotAnchorIdentity(anchor), absent);
+
+      fs.mkdirSync(anchor);
+      const present = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(present, absent);
+      assert.deepEqual(snapshotAnchorIdentity(anchor), present);
+
+      const payload = path.join(anchor, "payload.txt");
+      fs.writeFileSync(payload, "alpha");
+      const added = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(added, present);
+
+      fs.writeFileSync(payload, "bravo");
+      const changed = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(changed, added);
+
+      fs.unlinkSync(payload);
+      const removed = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(removed, changed);
+      assert.deepEqual(removed, present);
+
+      fs.writeFileSync(firstTarget, "first");
+      fs.writeFileSync(secondTarget, "second");
+      const link = path.join(anchor, "current");
+      fs.symlinkSync(firstTarget, link);
+      const firstLink = snapshotAnchorIdentity(anchor);
+      fs.unlinkSync(link);
+      fs.symlinkSync(secondTarget, link);
+      const secondLink = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(secondLink, firstLink);
+
+      const activeLease = path.join(anchor, "active-lease");
+      fs.mkdirSync(activeLease);
+      fs.writeFileSync(path.join(activeLease, "lease.json"), "{}\n");
+      const markerAdded = snapshotAnchorIdentity(anchor);
+      assert.notDeepEqual(markerAdded, secondLink);
+
+      const unreadable = path.join(anchor, "unreadable.txt");
+      fs.writeFileSync(unreadable, "opaque");
+      const originalReadFileSync = fs.readFileSync;
+      fs.readFileSync = function injectedReadFailure(target, ...args) {
+        if (path.resolve(String(target)) === path.resolve(unreadable)) {
+          const error = new Error("synthetic anchor read failure");
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalReadFileSync.call(fs, target, ...args);
+      };
+      try {
+        assert.throws(
+          () => snapshotAnchorIdentity(anchor),
+          (error) => error?.code === "EACCES",
+        );
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+
+      if (process.platform !== "win32") {
+        const unsupported = path.join(anchor, "unsupported-fifo");
+        execFileSync("mkfifo", [unsupported], {
+          cwd: root,
+          encoding: "utf8",
+          timeout: 5_000,
+          killSignal: "SIGTERM",
+        });
+        assert.throws(
+          () => snapshotAnchorIdentity(anchor),
+          /anchor-identity-unsupported-entry-type/u,
+        );
+      }
+    } finally {
+      assertSandboxPath(root);
+      fs.rmSync(root, { recursive: true, force: true });
+      temporaryRoots.delete(root);
+    }
+  });
 
   await test("outside-repository LOCAL proxy output succeeds without a token", async () => {
     const fixture = createFixture("outside-local");
@@ -2458,8 +2649,11 @@ async function runRuntimeScenarios() {
       }).root;
       assert.equal(fs.existsSync(fixtureAnchor), false);
     }
-    assert.equal(writerAnchorAbsent, true);
-    assert.equal(fs.existsSync(writerAnchor), false);
+    assert.deepEqual(
+      snapshotAnchorIdentity(writerAnchor),
+      writerAnchorIdentity,
+      "LOCAL proxy scenarios changed the real canonical delivery anchor",
+    );
   });
 
   await test("canonical proxy destination without a lease rejects before mutation", async () => {
@@ -2901,7 +3095,11 @@ async function runRuntimeScenarios() {
       }).root;
       assert.equal(fs.existsSync(fixtureAnchor), false);
     }
-    assert.equal(fs.existsSync(writerAnchor), false);
+    assert.deepEqual(
+      snapshotAnchorIdentity(writerAnchor),
+      writerAnchorIdentity,
+      "LOCAL extension scenarios changed the real canonical delivery anchor",
+    );
   });
 
   await test("canonical extension destination without a lease rejects before mutation", async () => {
@@ -3347,7 +3545,11 @@ async function runRuntimeScenarios() {
       f17Summary.sourceSafeValidation.canonicalAnchorCreated,
       false,
     );
-    assert.equal(fs.existsSync(writerAnchor), false);
+    assert.deepEqual(
+      snapshotAnchorIdentity(writerAnchor),
+      writerAnchorIdentity,
+      "release validation changed the real canonical delivery anchor",
+    );
     for (const [filename, kind] of [
       [IDENTITY_RELEASE_GATE, "identity"],
       [F17_RELEASE_VALIDATOR, "f17"],
@@ -3392,7 +3594,11 @@ async function runRuntimeScenarios() {
   });
 
   assert.equal(runtimeResults.length, EXPECTED_RUNTIME_SCENARIOS);
-  assert.equal(fs.existsSync(writerAnchor), false);
+  assert.deepEqual(
+    snapshotAnchorIdentity(writerAnchor),
+    writerAnchorIdentity,
+    "E2B runtime scenarios changed the real canonical delivery anchor",
+  );
 }
 
 function printScope() {
