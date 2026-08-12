@@ -134,6 +134,8 @@ const CURRENT_BASELINE_SUBJECT =
   "test(publish): authorize current-main activator baseline after live-anchor repairs";
 const CLASSIFIER_DURABILITY_BASE = "83ea42f0cab1c0e2a6756f4b94f195a27657cbb2";
 const CLASSIFIER_DURABILITY_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+const HISTORICAL_INTENT_FIX_BASE = "a7817c9b99cb403f800c7f0405e0f1ec799e4384";
+const HISTORICAL_INTENT_FIX_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
 // Batch 1.1 publisher authority at the IMMUTABLE BASE_HEAD. These never move.
 const BATCH11_PUBLISHER_SHA256 = "ef4575bc6855b81a8c16ff874cd679f14e79733163a23d76b4a758a30f513ba4";
 const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988803cd41e21c55fda92";
@@ -149,8 +151,8 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 59;
-const EXPECTED_RUNTIME = 222;
+const EXPECTED_SCOPE = 61;
+const EXPECTED_RUNTIME = 225;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
@@ -632,6 +634,13 @@ function classifyScope(state) {
     value.missingFinal.length === 0 &&
     JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
   if (durabilityRepair) return "classifier-durability-uncommitted";
+  const historicalIntentFix = value.head === HISTORICAL_INTENT_FIX_BASE &&
+    value.modifiedTracked.length === HISTORICAL_INTENT_FIX_PATHS.length &&
+    value.modifiedTracked.every((relative, index) => relative === HISTORICAL_INTENT_FIX_PATHS[index]) &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (historicalIntentFix) return "historical-intent-fix-uncommitted";
   const durableCommittedClean = value.modifiedTracked.length === 0 &&
     value.staged.length === 0 && value.untracked.length === 0 &&
     value.missingFinal.length === 0 &&
@@ -1185,6 +1194,30 @@ function runScopeTests() {
       })), /scope mismatch/u);
     }
   });
+  scopeTest("historical intent fix authorizes exactly activator plus its focused validator", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: HISTORICAL_INTENT_FIX_BASE,
+      modifiedTracked: [...HISTORICAL_INTENT_FIX_PATHS], staged: [], untracked: [],
+      finalPaths: [...FINAL_PATHS], trackedFinal: [...FINAL_PATHS], missingFinal: [],
+    })), "historical-intent-fix-uncommitted");
+  });
+  scopeTest("historical intent fix rejects missing, extra, staged or untracked paths", () => {
+    for (const override of [
+      { modifiedTracked: [ACTIVATOR_REL] },
+      { modifiedTracked: [VALIDATOR_REL] },
+      { modifiedTracked: [...HISTORICAL_INTENT_FIX_PATHS, PAYLOAD_MODULE_REL].sort() },
+      { staged: [VALIDATOR_REL] },
+      { untracked: ["stray.mjs"] },
+      { head: "0".repeat(40) },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({
+        head: HISTORICAL_INTENT_FIX_BASE,
+        modifiedTracked: [...HISTORICAL_INTENT_FIX_PATHS], staged: [], untracked: [],
+        finalPaths: [...FINAL_PATHS], trackedFinal: [...FINAL_PATHS], missingFinal: [],
+        ...override,
+      })), /scope mismatch|rejects staged/u);
+    }
+  });
   scopeTest("exact committed four-path P3A state is accepted", () => {
     assert.equal(classifyScope(baseDirtyScope({
       head: "future-p3a", parent: ACCEPTED_P23_HEAD, subject: P3A_SUBJECT,
@@ -1297,7 +1330,7 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-final-sync-uncommitted", "p3c-final-sync-committed",
     "p3c-integration-uncommitted", "p3c-integration-committed",
     "current-baseline-uncommitted", "current-baseline-committed",
-    "classifier-durability-uncommitted"]
+    "classifier-durability-uncommitted", "historical-intent-fix-uncommitted"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -4855,6 +4888,19 @@ const classify = (context, overrides = {}) =>
   context.api.classifyExistingIntent(context.intent.intentPath, context.foundation,
     { ...context.source, ...overrides }, { environment: cleanEnvironment() });
 
+const advanceFixtureMain = (context, label) => {
+  const relative = `fixture-source/generation-${label}.js`;
+  fs.writeFileSync(path.join(context.fixture.repository, relative),
+    `export const generation = ${JSON.stringify(label)};\n`);
+  git(context.fixture.repository, ["add", "--sparse", relative]);
+  git(context.fixture.repository, ["commit", "-q", "-m", `fixture: advance to ${label}`]);
+  return {
+    ...context.source,
+    approvedHead: git(context.fixture.repository, ["rev-parse", "HEAD"]),
+    sourceTree: git(context.fixture.repository, ["rev-parse", "HEAD^{tree}"]),
+  };
+};
+
 const rewriteJson = (target, mutate) => {
   const value = JSON.parse(fs.readFileSync(target, "utf8"));
   mutate(value);
@@ -4887,6 +4933,8 @@ async function runP3cA3bTests() {
         rewriteJson(c.activation.activationReceiptPath, (r) => { r.mode = "stage-receipt"; })],
       ["receipt intent digest drift", "receipt-intent-binding-mismatch", (c) =>
         rewriteJson(c.activation.activationReceiptPath, (r) => { r.intentSha256 = "0".repeat(64); })],
+      ["receipt historical HEAD drift", "receipt-source-mismatch", (c) =>
+        rewriteJson(c.activation.activationReceiptPath, (r) => { r.approvedHead = "c".repeat(40); })],
       ["receipt stage drift", "receipt-source-mismatch", (c) =>
         rewriteJson(c.activation.activationReceiptPath, (r) => { r.stageReceiptSha256 = "0".repeat(64); })],
       ["receipt build-marker drift", "receipt-source-mismatch", (c) =>
@@ -4904,6 +4952,10 @@ async function runP3cA3bTests() {
       ["foreign transaction repository", "transaction-foreign", (c) => {
         const files = chainFilesOf(c);
         rewriteJson(files[files.length - 1], (r) => { r.repositoryRealpath = "/tmp/other-repository"; });
+      }],
+      ["terminal historical HEAD drift", "transaction-foreign", (c) => {
+        const files = chainFilesOf(c);
+        rewriteJson(files[files.length - 1], (r) => { r.approvedHead = "c".repeat(40); });
       }],
       ["transaction removed", "transaction-absent", (c) =>
         fs.rmSync(path.join(c.anchor, "transactions", c.intent.activationId), { recursive: true })],
@@ -4925,21 +4977,95 @@ async function runP3cA3bTests() {
     }
   });
 
-  await test("intent source-authority drift is never treated as resolved", async () => {
+  await test("intent resolution separates canonical repository authority from current generation", async () => {
     const context = await resolvedActivationFixture("source-drift");
     assert.equal(classify(context).resolved, true);
     for (const [label, override] of [
       ["repository", { repository: "/tmp/another-repository" }],
       ["branch", { branch: "release" }],
-      ["approved HEAD", { approvedHead: "0".repeat(40) }],
-      ["source tree", { sourceTree: "0".repeat(40) }],
-      ["stable Git identity", { gitExecutable: { path: "/usr/bin/git", realpath: "/usr/bin/git",
-        version: "git version 0.0.0", sha256: "0".repeat(64) } }],
     ]) {
       const outcome = classify(context, override);
       assert.equal(outcome.resolved, false, label);
       assert.equal(outcome.code, "intent-foreign-source", label);
     }
+    // Current-generation drift is irrelevant to already-accepted historical
+    // evidence; its generation identity is checked internally below.
+    for (const [label, override] of [
+      ["approved HEAD", { approvedHead: "0".repeat(40) }],
+      ["source tree", { sourceTree: "0".repeat(40) }],
+      ["stable Git identity", { gitExecutable: { path: "/usr/bin/git", realpath: "/usr/bin/git",
+        version: "git version 0.0.0", sha256: "0".repeat(64) } }],
+    ]) {
+      assert.equal(classify(context, override).resolved, true, label);
+    }
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("accepted historical generations resolve after main advances", async () => {
+    const context = await resolvedActivationFixture("generation-aware");
+    const firstIntentBytes = fs.readFileSync(context.intent.intentPath);
+    const firstReceiptBytes = fs.readFileSync(context.activation.activationReceiptPath);
+    const staleStage = createStageFixture(context.fixture.repository, "generation-a-stale");
+    const sourceA = { approvedHead: context.source.approvedHead, sourceTree: context.source.sourceTree };
+    const sourceB = advanceFixtureMain(context, "b");
+    assert.notEqual(sourceB.approvedHead, sourceA.approvedHead);
+    assert.notEqual(sourceB.sourceTree, sourceA.sourceTree);
+    const historical = context.api.classifyExistingIntent(context.intent.intentPath,
+      context.foundation, sourceB, { environment: cleanEnvironment() });
+    assert.equal(historical.resolved, true, historical.code);
+    assert.equal(fs.readFileSync(context.intent.intentPath).equals(firstIntentBytes), true);
+    assert.equal(fs.readFileSync(context.activation.activationReceiptPath).equals(firstReceiptBytes), true);
+
+    // A stage created for generation A is still rejected at generation B.
+    expectActivatorError(() => context.api.prepareActivationIntent(staleStage.receiptPath,
+      { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE,
+        randomBytes: SECOND_RANDOM_BYTES }), "receipt-head-mismatch");
+
+    // A new generation-B intent may be prepared because generation A is
+    // independently accepted, then activated exactly through current authority.
+    const second = secondActivation(context, "generation-b");
+    assert.equal(second.intent.resolvedIntentsObserved, 1);
+    assert.equal(second.intent.journal.approvedHead, sourceB.approvedHead);
+    const secondIntentBytes = fs.readFileSync(second.intent.intentPath);
+    const secondResult = second.activate();
+    assert.equal(secondResult.ok, true, secondResult.code);
+
+    // A third generation proves sequential accepted histories remain usable.
+    const sourceC = advanceFixtureMain(context, "c");
+    const thirdStage = createStageFixture(context.fixture.repository, "generation-c");
+    const third = context.api.prepareActivationIntent(thirdStage.receiptPath, {
+      environment: cleanEnvironment(), now: new Date("2026-08-04T09:30:00.000Z"),
+      randomBytes: () => Buffer.from("c3d4e5f6a1b2", "hex"),
+    });
+    assert.equal(third.resolvedIntentsObserved, 2);
+    assert.equal(third.journal.approvedHead, sourceC.approvedHead);
+    assert.equal(fs.readFileSync(context.intent.intentPath).equals(firstIntentBytes), true);
+    assert.equal(fs.readFileSync(second.intent.intentPath).equals(secondIntentBytes), true);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("current activation authority stays strict after source advancement", async () => {
+    const context = await createActivationFixture("generation-current-activation");
+    advanceFixtureMain(context, "activation-b");
+    expectActivatorError(() => context.activate(), "receipt-head-mismatch");
+    assert.equal(chainRecords(context).length, 0);
+    assert.equal(fs.existsSync(context.lock), false);
+    assert.equal(fs.existsSync(leaseDirectory(context.anchor)), false);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("interrupted recovery gains no cross-generation mutation authority", async () => {
+    const context = await createInterruptedActivation("generation-recovery",
+      { beforeReceipt: () => { throw new Error("injected pre-receipt interrupt"); } });
+    assert.ok(context.activationError);
+    const recordsBefore = chainFilesOf(context)
+      .map((filename) => [path.basename(filename), sha256(fs.readFileSync(filename))]);
+    advanceFixtureMain(context, "recovery-b");
+    expectActivatorError(() => recover(context), "recovery-source-mismatch");
+    assert.deepEqual(chainFilesOf(context)
+      .map((filename) => [path.basename(filename), sha256(fs.readFileSync(filename))]), recordsBefore);
+    assert.equal(fs.existsSync(context.lock), false);
+    assert.equal(fs.existsSync(leaseDirectory(context.anchor)), false);
     disposeTemporaryRoot(context.fixture.top);
   });
 
@@ -5550,6 +5676,14 @@ function runStructuralTests() {
     assert.match(region, /transactionState !== "accepted"/u);
     assert.match(region, /accepted-receipt-binding-mismatch/u);
     assert.match(region, /receipt-intent-binding-mismatch/u);
+    // Historical generation identity is compared across immutable evidence,
+    // never against the current checkout's HEAD/tree.
+    assert.match(region, /receipt\.approvedHead !== journal\.approvedHead/u);
+    assert.match(region, /terminal\.approvedHead !== journal\.approvedHead/u);
+    assert.match(region, /receipt\.sourceTree !== journal\.sourceTree/u);
+    assert.match(region, /terminal\.sourceTree !== journal\.sourceTree/u);
+    assert.doesNotMatch(region, /journal\.approvedHead !== source\.approvedHead/u);
+    assert.doesNotMatch(region, /journal\.sourceTree !== source\.sourceTree/u);
     // No environment or CLI override can declare an intent resolved.
     assert.doesNotMatch(region, /process\.env\.[A-Z_]+/u);
     assert.doesNotMatch(region, /H2O_[A-Z_]*RESOLV|--resolve|--force/u);
