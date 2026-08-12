@@ -27,6 +27,7 @@
   });
 
   let labelEl = null;
+  let titleHostEl = null;
   let shownTitle = '';
   let shownProjectKey = '';
   let baseTitle = '';
@@ -64,20 +65,25 @@
 
     .ho-tab-title-under-input {
       font-size: 12px;
+      line-height: 16px;
       opacity: 0.85;
       margin-top: 0;
       text-align: center;
       display: inline-flex;
-      align-self: center;
       justify-content: center;
       align-items: center;
       gap: 7px;
       min-width: 0;
+      min-height: 22px;
+      height: 22px;
+      position: absolute;
+      left: 50%;
+      top: calc(100% + 1px);
       width: min(100%, max(var(--ho-internal-title-width, 87.5%), min(320px, 100%)));
       max-width: 100%;
-      margin-inline: auto;
+      margin-inline: 0;
       box-sizing: border-box;
-      padding: 4px 7px;
+      padding: 1px 6px;
       border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.08);
       background: linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025));
@@ -86,7 +92,14 @@
         0 4px 12px rgba(0,0,0,0.16);
       color: rgba(255,255,255,0.88);
       font-weight: 600;
+      transform: translateX(-50%);
+      z-index: 2;
       transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    }
+
+    [data-ho-internal-title-host="1"] {
+      position: relative;
+      overflow: visible;
     }
 
     .ho-tab-title-under-input:hover {
@@ -101,6 +114,7 @@
       gap: 5px;
       min-width: 0;
       max-width: min(72vw, 620px);
+      line-height: 16px;
     }
 
     .ho-title-project {
@@ -117,6 +131,7 @@
       font-size: 11px;
       font-weight: 600;
       font-family: inherit;
+      line-height: 16px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -364,21 +379,6 @@
       line-height: 1.3;
     }
 
-    main div.text-token-text-secondary[class*="vt-disclaimer"] {
-      position: relative;
-    }
-
-    main div.text-token-text-secondary[class*="vt-disclaimer"] > .ho-tab-title-under-input {
-      position: absolute;
-      left: 50%;
-      right: auto;
-      top: 50%;
-      width: min(100%, max(var(--ho-internal-title-width, 87.5%), min(320px, 100%)));
-      max-width: 100%;
-      margin-inline: 0;
-      box-sizing: border-box;
-      transform: translate(-50%, -50%);
-    }
   `;
 
   function norm(value) {
@@ -520,6 +520,8 @@
     cleanups.clear();
     try { labelEl?.remove?.(); } catch {}
     labelEl = null;
+    try { titleHostEl?.removeAttribute?.('data-ho-internal-title-host'); } catch {}
+    titleHostEl = null;
   }
 
   function ensureStyle() {
@@ -1294,8 +1296,14 @@
       return false;
     }
 
-    let parent = getDisclaimerContainer() || getComposerContainer();
+    let parent = getComposerContainer() || getDisclaimerContainer();
     if (!parent) return false;
+
+    if (titleHostEl !== parent) {
+      try { titleHostEl?.removeAttribute?.('data-ho-internal-title-host'); } catch {}
+      titleHostEl = parent;
+      titleHostEl.setAttribute('data-ho-internal-title-host', '1');
+    }
 
     if (!labelEl) labelEl = parent.querySelector('.ho-tab-title-under-input');
     if (!labelEl) {

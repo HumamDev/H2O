@@ -48,9 +48,19 @@ assert.doesNotMatch(source.title, /localStorage.*internal-chat-title|internal-ch
   '9C1a does not own persistence');
 
 const visibleRule = source.title.match(/\.ho-tab-title-under-input\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
-assert.match(visibleRule, /margin-inline:\s*auto/, 'the internal title width remains centered');
+assert.match(visibleRule, /position:\s*absolute/, 'the internal title is removed from composer-stack layout flow');
+assert.match(visibleRule, /left:\s*50%[\s\S]*top:\s*calc\(100% \+ 1px\)[\s\S]*transform:\s*translateX\(-50%\)/,
+  'the internal title is centered in the native space immediately below its composer host');
 assert.match(visibleRule, /width:\s*min\(100%,\s*max\(var\(--ho-internal-title-width,\s*87\.5%\),\s*min\(320px,\s*100%\)\)\)/,
   'the internal title derives proportional width from its actual container with a safe floor');
+assert.match(visibleRule, /min-height:\s*22px[\s\S]*height:\s*22px[\s\S]*padding:\s*1px 6px/,
+  'the title uses a compact 22 px native-footer presentation');
+assert.match(source.title, /\[data-ho-internal-title-host="1"\][\s\S]*position:\s*relative[\s\S]*overflow:\s*visible/,
+  'the Title-owned host marker establishes stable composer-relative positioning');
+assert.match(source.title, /let parent = getComposerContainer\(\) \|\| getDisclaimerContainer\(\)/,
+  'the actual composer container is the primary native-space host');
+assert.match(source.title, /titleHostEl\.setAttribute\('data-ho-internal-title-host',\s*'1'\)/,
+  '9C1a marks only its current composer host for positioning');
 assert.doesNotMatch(source.title, /(?:9B1a|9B2a|document\.title).*--ho-internal-title-width/,
   'the presentation preference does not target tab or sidebar title consumers');
 assert.match(source.title, /openTitleMenu\(/, 'existing Rename/menu flow remains wired');

@@ -33,11 +33,14 @@ function plain(value) {
 // Container-derived proportional width with a safe narrow-layout floor. The
 // setting defaults to the accepted 87.5% geometry and never exceeds its owner.
 const visibleTitleRule = source.match(/\.ho-tab-title-under-input\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
-assert.match(visibleTitleRule, /align-self:\s*center;/, 'the visible title surface must remain centered in the composer container');
+assert.match(visibleTitleRule, /position:\s*absolute;/, 'the visible title surface must not consume a composer flex row');
+assert.match(visibleTitleRule, /left:\s*50%;[\s\S]*top:\s*calc\(100% \+ 1px\);/,
+  'the visible title surface anchors beneath its composer host rather than the viewport');
 assert.match(visibleTitleRule, /width:\s*min\(100%,\s*max\(var\(--ho-internal-title-width,\s*87\.5%\),\s*min\(320px,\s*100%\)\)\);/,
   'the visible title surface uses the canonical percentage with a bounded narrow-layout floor');
 assert.match(visibleTitleRule, /max-width:\s*100%/, 'the title surface must never overflow its composer container');
-assert.match(visibleTitleRule, /margin-inline:\s*auto;/, 'the proportional title surface remains centered');
+assert.match(visibleTitleRule, /transform:\s*translateX\(-50%\);/, 'the proportional title surface remains centered on its composer host');
+assert.match(visibleTitleRule, /height:\s*22px;/, 'the title surface fits the native footer strip');
 assert.doesNotMatch(visibleTitleRule, /(?:^|\s)(?:left|right):\s*\d+vw/, 'viewport offsets must not drive title width');
 
 const geometrySandbox = { Math };
