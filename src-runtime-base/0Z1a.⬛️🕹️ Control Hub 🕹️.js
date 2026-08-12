@@ -5049,7 +5049,7 @@ ${P} .${CLS}-detail::-webkit-scrollbar{
 
         inp.addEventListener('input', () => {
           val.textContent = fmt(inp.value);
-          const out = (Number(def.max) <= 1) ? parseFloat(inp.value) : parseInt(inp.value, 10);
+          const out = parseFloat(inp.value);
           applyValue(def, out);
         }, true);
 

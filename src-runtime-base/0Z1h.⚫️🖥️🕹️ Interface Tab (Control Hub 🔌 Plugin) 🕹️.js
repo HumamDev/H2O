@@ -36,8 +36,15 @@
   const FEATURE_KEY_CHAT_LIST = 'interfaceEnhancer';
   const FEATURE_KEY_CHAT_META = 'chatMeta';
   const FEATURE_KEY_CHAT_TITLE = 'chatTitle';
+  const FEATURE_KEY_INTERNAL_CHAT_TITLE = 'internalChatTitle';
   const FEATURE_KEY_TIMESTAMPS = 'interfaceTimestamps';
   const KEY_CHUB_INTERFACE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:interface:subtab:v1';
+  const KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1 = 'h2o:prm:cgx:interface:internal-chat-title:v1';
+  const EV_INTERNAL_CHAT_TITLE_SETTINGS = 'evt:h2o:interface:internal-chat-title-settings-changed';
+  const INTERNAL_CHAT_TITLE_WIDTH_DEFAULT = 87.5;
+  const INTERNAL_CHAT_TITLE_WIDTH_MIN = 60;
+  const INTERNAL_CHAT_TITLE_WIDTH_MAX = 100;
+  const INTERNAL_CHAT_TITLE_WIDTH_STEP = 0.5;
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
   const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
   const KEY_QN_CFG_UI_V1 = 'h2o:prm:cgx:qbig:cfg:ui:v1';
@@ -122,6 +129,18 @@
         focus: 'Check the current chat title, emoji, and storage backend.',
         review: 'Keep page title state separate from sidebar metadata and list decoration.',
         performance: 'Refresh title state without rebuilding unrelated interface helpers.',
+      }),
+    }),
+    Object.freeze({
+      key: FEATURE_KEY_INTERNAL_CHAT_TITLE,
+      label: 'Internal Chat Title',
+      icon: '📌',
+      subtitle: 'Internal title bar underneath the ChatGPT input.',
+      description: Object.freeze({
+        default: 'Control the internal chat title bar shown underneath the ChatGPT input.',
+        focus: 'Tune the under-input title presentation without changing canonical title state.',
+        review: 'Keep internal title presentation separate from browser and sidebar title surfaces.',
+        performance: 'Apply presentation preferences directly through the under-input title renderer.',
       }),
     }),
     Object.freeze({
@@ -244,6 +263,67 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     return undefined;
   }
 
+  // ----- Canonical internal-title presentation settings ------------------
+  const internalChatTitleSubscribers = new Set();
+
+  function normalizeInternalChatTitleWidth(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < INTERNAL_CHAT_TITLE_WIDTH_MIN || number > INTERNAL_CHAT_TITLE_WIDTH_MAX) {
+      return INTERNAL_CHAT_TITLE_WIDTH_DEFAULT;
+    }
+    return Math.round(number / INTERNAL_CHAT_TITLE_WIDTH_STEP) * INTERNAL_CHAT_TITLE_WIDTH_STEP;
+  }
+
+  function normalizeInternalChatTitleSettings(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    return Object.freeze({
+      widthPct: normalizeInternalChatTitleWidth(source.widthPct),
+    });
+  }
+
+  function readInternalChatTitleSettings() {
+    try {
+      const raw = W.localStorage?.getItem(KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1);
+      return normalizeInternalChatTitleSettings(raw ? JSON.parse(raw) : null);
+    } catch {
+      return normalizeInternalChatTitleSettings(null);
+    }
+  }
+
+  function publishInternalChatTitleSettings(settings, source = 'interface-settings') {
+    const detail = Object.freeze({
+      settings,
+      source: String(source || 'interface-settings'),
+    });
+    internalChatTitleSubscribers.forEach((listener) => {
+      try { listener(settings, detail); } catch {}
+    });
+    try { W.dispatchEvent(new CustomEvent(EV_INTERNAL_CHAT_TITLE_SETTINGS, { detail })); } catch {}
+    return settings;
+  }
+
+  function writeInternalChatTitleSetting(key, value, source = 'control-hub') {
+    if (key !== 'widthPct') return readInternalChatTitleSettings();
+    const settings = normalizeInternalChatTitleSettings({
+      ...readInternalChatTitleSettings(),
+      widthPct: value,
+    });
+    try { W.localStorage?.setItem(KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1, JSON.stringify(settings)); } catch {}
+    return publishInternalChatTitleSettings(settings, source);
+  }
+
+  function subscribeInternalChatTitleSettings(listener) {
+    if (typeof listener !== 'function') return () => {};
+    internalChatTitleSubscribers.add(listener);
+    try { listener(readInternalChatTitleSettings(), { source: 'subscribe' }); } catch {}
+    return () => internalChatTitleSubscribers.delete(listener);
+  }
+
+  function onInternalChatTitleStorage(event) {
+    if (event?.key !== KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1) return;
+    publishInternalChatTitleSettings(readInternalChatTitleSettings(), 'storage');
+  }
+
   // ----- Owner helpers -----------------------------------------------------
   function invalidate(api = LAST_API) {
     if (!api || typeof api.invalidate !== 'function') return;
@@ -319,6 +399,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       [FEATURE_KEY_CHAT_LIST]: Object.freeze([]),
       [FEATURE_KEY_CHAT_META]: Object.freeze([]),
       [FEATURE_KEY_CHAT_TITLE]: Object.freeze([]),
+      [FEATURE_KEY_INTERNAL_CHAT_TITLE]: Object.freeze([]),
       [FEATURE_KEY_TIMESTAMPS]: Object.freeze([]),
       titles: Object.freeze([]),
       numbers: Object.freeze([]),
@@ -369,6 +450,19 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       getMeta: () => INTERFACE_META,
       getSubtabs: () => INTERFACE_SUBTABS,
       getSubtabStorageKey: () => KEY_CHUB_INTERFACE_SUBTAB_V1,
+      getInternalChatTitleSettings: readInternalChatTitleSettings,
+      setInternalChatTitleSetting: writeInternalChatTitleSetting,
+      subscribeInternalChatTitleSettings,
+      internalChatTitleSettingSpec: Object.freeze({
+        storageKey: KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1,
+        event: EV_INTERNAL_CHAT_TITLE_SETTINGS,
+        widthPct: Object.freeze({
+          default: INTERNAL_CHAT_TITLE_WIDTH_DEFAULT,
+          min: INTERNAL_CHAT_TITLE_WIDTH_MIN,
+          max: INTERNAL_CHAT_TITLE_WIDTH_MAX,
+          step: INTERNAL_CHAT_TITLE_WIDTH_STEP,
+        }),
+      }),
       getVisibilitySpec: () => INTERFACE_VISIBILITY,
       getControlsBundle: getInterfaceControlsBundle,
     });
@@ -408,6 +502,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
       key: FEATURE_KEY_CHAT_TITLE,
       getControls() {
         return getInterfaceControlsBundle().controlsByKey[FEATURE_KEY_CHAT_TITLE] || [];
+      },
+    });
+    api.registerPlugin({
+      key: FEATURE_KEY_INTERNAL_CHAT_TITLE,
+      getControls() {
+        return getInterfaceControlsBundle().controlsByKey[FEATURE_KEY_INTERNAL_CHAT_TITLE] || [];
       },
     });
     api.registerPlugin({
@@ -455,6 +555,7 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   register();
   W.addEventListener(EV_CHUB_READY_V1, register, true);
+  W.addEventListener('storage', onInternalChatTitleStorage);
 
   if (!LAST_API) {
     let tries = 0;

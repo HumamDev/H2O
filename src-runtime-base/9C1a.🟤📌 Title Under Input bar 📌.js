@@ -39,7 +39,9 @@
   let menuPositionRaf = 0;
   const menuPositions = new Map();
   let unsubscribe = null;
+  let unsubscribeInternalTitleSettings = null;
   let attachTimer = 0;
+  let settingsAttachTimer = 0;
   let refreshTimer = 0;
   let bodyObserver = null;
   let editorSessionSeq = 0;
@@ -50,6 +52,7 @@
 
   const STYLE_ID = 'ho-title-under-input-style-v3';
   const RUNTIME_MARK = 'v6-hide-new-chat';
+  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 87.5;
   const CSS = `
     .ho-sidebar-ring {
       border-radius: 8px;
@@ -65,14 +68,14 @@
       margin-top: 0;
       text-align: center;
       display: inline-flex;
-      align-self: stretch;
+      align-self: center;
       justify-content: center;
       align-items: center;
       gap: 7px;
       min-width: 0;
-      width: auto;
-      max-width: none;
-      margin-inline: min(48px, 8%);
+      width: min(100%, max(var(--ho-internal-title-width, 87.5%), min(320px, 100%)));
+      max-width: 100%;
+      margin-inline: auto;
       box-sizing: border-box;
       padding: 4px 7px;
       border-radius: 8px;
@@ -367,14 +370,14 @@
 
     main div.text-token-text-secondary[class*="vt-disclaimer"] > .ho-tab-title-under-input {
       position: absolute;
-      left: min(48px, 8%);
-      right: min(48px, 8%);
+      left: 50%;
+      right: auto;
       top: 50%;
-      width: auto;
-      max-width: none;
+      width: min(100%, max(var(--ho-internal-title-width, 87.5%), min(320px, 100%)));
+      max-width: 100%;
       margin-inline: 0;
       box-sizing: border-box;
-      transform: translateY(-50%);
+      transform: translate(-50%, -50%);
     }
   `;
 
@@ -502,10 +505,13 @@
     cancelEditorSession('runtime-destroyed');
     renameError = null;
     clearTimeout(attachTimer);
+    clearTimeout(settingsAttachTimer);
     clearTimeout(refreshTimer);
     closeTitleMenu(true);
     try { unsubscribe?.(); } catch {}
     unsubscribe = null;
+    try { unsubscribeInternalTitleSettings?.(); } catch {}
+    unsubscribeInternalTitleSettings = null;
     try { bodyObserver?.disconnect?.(); } catch {}
     bodyObserver = null;
     cleanups.forEach((fn) => {
@@ -1249,6 +1255,38 @@
     return form ? form.parentElement : null;
   }
 
+  function normalizeInternalChatTitleWidth(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number >= 60 && number <= 100
+      ? Math.round(number * 2) / 2
+      : DEFAULT_INTERNAL_CHAT_TITLE_WIDTH;
+  }
+
+  function applyInternalChatTitleSettings(settings) {
+    const widthPct = normalizeInternalChatTitleWidth(settings?.widthPct);
+    labelEl?.style?.setProperty?.('--ho-internal-title-width', `${widthPct}%`);
+    scheduleOpenMenuPositions();
+    return widthPct;
+  }
+
+  function attachInternalChatTitleSettings() {
+    const api = W.H2O?.Surface?.Interface;
+    if (!api || typeof api.getInternalChatTitleSettings !== 'function') return false;
+    applyInternalChatTitleSettings(api.getInternalChatTitleSettings());
+    if (!unsubscribeInternalTitleSettings && typeof api.subscribeInternalChatTitleSettings === 'function') {
+      unsubscribeInternalTitleSettings = api.subscribeInternalChatTitleSettings(applyInternalChatTitleSettings);
+    }
+    return true;
+  }
+
+  function scheduleSettingsAttach() {
+    if (destroyed) return;
+    clearTimeout(settingsAttachTimer);
+    settingsAttachTimer = setTimeout(() => {
+      if (!attachInternalChatTitleSettings()) scheduleSettingsAttach();
+    }, 150);
+  }
+
   function ensureLabel() {
     ensureStyle();
     if (isProjectView() || !getCurrentChatId()) {
@@ -1279,6 +1317,7 @@
       labelEl.dataset.hoTitlePlaceholder = '0';
     }
     labelEl.style.display = '';
+    attachInternalChatTitleSettings();
     return true;
   }
 
@@ -1723,6 +1762,7 @@
   function init() {
     if (destroyed) return;
     ensureLabel();
+    if (!attachInternalChatTitleSettings()) scheduleSettingsAttach();
     if (!attachChatTitle()) scheduleAttach();
     refreshSoon('under-input-init');
 

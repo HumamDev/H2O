@@ -32,6 +32,7 @@
   const FEATURE_KEY_CHAT_LIST = 'interfaceEnhancer';
   const FEATURE_KEY_CHAT_META = 'chatMeta';
   const FEATURE_KEY_CHAT_TITLE = 'chatTitle';
+  const FEATURE_KEY_INTERNAL_CHAT_TITLE = 'internalChatTitle';
   const KEY_DEV_SIMULATE_UNAVAILABLE_V1 = 'h2o:dev:surface:interface-controls:simulate-unavailable:v1';
   const KEY_DEV_SIMULATE_DELAYED_MS_V1 = 'h2o:dev:surface:interface-controls:simulate-delayed-ms:v1';
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
@@ -48,6 +49,7 @@
   const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
   const DEFAULT_AE_EMPTY_BADGE_ICON = 'chat-bubble-stack';
   const DEFAULT_AE_PICKER_GROUPING = 'os';
+  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 87.5;
 
   const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
     Object.freeze(['edge-strip', 'Thin Edge Strip']),
@@ -837,6 +839,27 @@
     },
   ]);
 
+  const INTERNAL_CHAT_TITLE_CONTROLS = Object.freeze([
+    {
+      type: 'range',
+      key: 'internalChatTitleWidthPct',
+      label: 'Internal chat title width',
+      group: 'Layout',
+      help: 'Adjust the width of the internal title bar underneath the input.',
+      def: DEFAULT_INTERNAL_CHAT_TITLE_WIDTH,
+      min: 60,
+      max: 100,
+      step: 0.5,
+      unit: '%',
+      getLive() {
+        return Number(getOwner()?.getInternalChatTitleSettings?.()?.widthPct ?? DEFAULT_INTERNAL_CHAT_TITLE_WIDTH);
+      },
+      setLive(value) {
+        getOwner()?.setInternalChatTitleSetting?.('widthPct', value, 'control-hub');
+      },
+    },
+  ]);
+
   const TITLES_CONTROLS = Object.freeze([
     {
       type: 'custom',
@@ -1148,6 +1171,7 @@
     [FEATURE_KEY_CHAT_LIST]: CHAT_LIST_CONTROLS,
     [FEATURE_KEY_CHAT_META]: CHAT_META_CONTROLS,
     [FEATURE_KEY_CHAT_TITLE]: CHAT_TITLE_CONTROLS,
+    [FEATURE_KEY_INTERNAL_CHAT_TITLE]: INTERNAL_CHAT_TITLE_CONTROLS,
     interfaceTimestamps: TIMESTAMPS_CONTROLS,
     titles: TITLES_CONTROLS,
     numbers: NUMBERS_CONTROLS,

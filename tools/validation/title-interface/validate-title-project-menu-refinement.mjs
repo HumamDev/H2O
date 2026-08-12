@@ -30,14 +30,15 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-// Container-derived width: 48 px per side at normal widths, reduced to 8%
-// per side on narrow composer containers. No viewport calculation drives it.
+// Container-derived proportional width with a safe narrow-layout floor. The
+// setting defaults to the accepted 87.5% geometry and never exceeds its owner.
 const visibleTitleRule = source.match(/\.ho-tab-title-under-input\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
-assert.match(visibleTitleRule, /align-self:\s*stretch;/, 'the visible title surface must stretch within the composer container');
-assert.match(visibleTitleRule, /margin-inline:\s*min\(48px,\s*8%\);/, 'the visible title surface needs responsive inline insets');
-assert.match(visibleTitleRule, /width:\s*auto;/, 'the visible title surface width must derive from its container');
-assert.match(visibleTitleRule, /max-width:\s*none;/, 'a legacy viewport cap must not defeat container-derived sizing');
-assert.doesNotMatch(visibleTitleRule, /width:\s*100%/, 'the visible title surface must not combine full width with inline margins');
+assert.match(visibleTitleRule, /align-self:\s*center;/, 'the visible title surface must remain centered in the composer container');
+assert.match(visibleTitleRule, /width:\s*min\(100%,\s*max\(var\(--ho-internal-title-width,\s*87\.5%\),\s*min\(320px,\s*100%\)\)\);/,
+  'the visible title surface uses the canonical percentage with a bounded narrow-layout floor');
+assert.match(visibleTitleRule, /max-width:\s*100%/, 'the title surface must never overflow its composer container');
+assert.match(visibleTitleRule, /margin-inline:\s*auto;/, 'the proportional title surface remains centered');
+assert.doesNotMatch(visibleTitleRule, /(?:^|\s)(?:left|right):\s*\d+vw/, 'viewport offsets must not drive title width');
 
 const geometrySandbox = { Math };
 geometrySandbox.globalThis = geometrySandbox;
