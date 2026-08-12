@@ -263,7 +263,10 @@ function buildOverflowPayload() {
   };
 }
 
-function instrumentCore(source = coreSource) {
+// The eight load-bearing implementations must each exist exactly once across the
+// owners, whichever file each now lives in. This runs against the aggregate
+// corpus, so a duplicate introduced in ANY owner still fails it.
+function assertCoreAnchors(source = coreSource) {
   const required = [
     'chatAtlasApplyEvidence',
     'chatAtlasRetainIdentityGraph',
@@ -279,12 +282,28 @@ function instrumentCore(source = coreSource) {
       throw new Error(`core-instrumentation-anchor-invalid:${name}`);
     }
   }
+}
+
+// 0A1a is still loaded first and as its own program — it publishes the host
+// surface 0A3a reads — but it no longer carries the fixture surface, because
+// every implementation that surface drives has moved to 0A3a.
+function instrumentH2OCore(source) {
   const marker = '  /* ───────────────────────────── 🟨 7) TIME / OBSERVERS ───────────────────────────── */';
   const close = '\n})();';
   const markerIndex = source.indexOf(marker);
   const closeIndex = source.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('core-bootstrap-boundary-invalid');
-  const exportBlock = `
+  return `${source.slice(0, markerIndex)}
+  globalThis.__CV35_CORE_BOOTSTRAP_SUPPRESSED__ = true;
+${close}\n`;
+}
+
+// Evaluated inside 0A3a, which is where every implementation this surface drives
+// now lives. Nothing in it reaches a 0A1a internal: Chat Atlas Core still reads
+// generic H2O only through H2O_CHAT_ATLAS_HOST_V1, and the Ledger only through
+// 0A3a's service registry.
+function coreExportBlock() {
+  return `
   globalThis.__CV35_CORE__ = Object.freeze({
     configure(rawIndex, identityGraph, options = {}) {
       chatAtlasClearSelectedPathAcquisition('fixture-reset');
@@ -443,9 +462,7 @@ function instrumentCore(source = coreSource) {
       chatAtlasClearSelectedPathAcquisition('feature-disabled');
     },
   });
-  globalThis.__CV35_CORE_BOOTSTRAP_SUPPRESSED__ = true;
 `;
-  return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
 }
 
 
@@ -475,16 +492,40 @@ function instrumentLedger() {
   return `${src.slice(0, closeIndex)}${exportBlock}${close}\n`;
 }
 const ledgerProgram = instrumentLedger();
-const coreProgram = instrumentCore();
+
+// 0A3a is evaluated whole — it is already loaded whole today, so this adds no
+// boot side effects — with the fixture surface appended inside its outer IIFE.
+function instrumentAtlasCore(src) {
+  const close = '\n})();';
+  const closeIndex = src.lastIndexOf(close);
+  if (closeIndex < 0) throw new Error('atlas-bootstrap-boundary-invalid');
+  return `${src.slice(0, closeIndex)}${coreExportBlock()}${close}\n`;
+}
+
+const H2O_CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+assertCoreAnchors(coreSource);
+// Production's own loader order, each owner its own scope: 0A1a, then 0A3a,
+// then 0A3b.
+const coreProgram = Object.freeze({
+  h2o: instrumentH2OCore(H2O_CORE_SOURCE),
+  atlas: instrumentAtlasCore(brokerProgram),
+});
+
 const AGE_PROTECTION_NEEDLE = '      && !requestOwnedRefetch\n';
-if (countOccurrences(coreSource, AGE_PROTECTION_NEEDLE) !== 1) {
+// Both age-protection guards are 0A3a-owned now, so the mutant is built from
+// that owner's source and only that owner's program is rebuilt. Applying it to
+// the aggregate corpus would be silently discarded — the corpus is never run.
+if (countOccurrences(brokerProgram, AGE_PROTECTION_NEEDLE) !== 1) {
   throw new Error('age-protection-mutation-anchor-invalid');
 }
-const ageProtectionRemovedProgram = instrumentCore(
-  coreSource
-    .replace(AGE_PROTECTION_NEEDLE, '')
-    .replace('      && !transactionOwned\n', ''),
-);
+const ageProtectionRemovedProgram = Object.freeze({
+  ...coreProgram,
+  atlas: instrumentAtlasCore(
+    brokerProgram
+      .replace(AGE_PROTECTION_NEEDLE, '')
+      .replace('      && !transactionOwned\n', ''),
+  ),
+});
 
 function sideEffects() {
   return {
@@ -590,8 +631,8 @@ function createCoreRuntime(program = coreProgram) {
   sandbox.top = sandbox;
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
-  vm.runInContext(program, context, { filename: CORE_PATH, timeout: 8_000 });
-  vm.runInContext(brokerProgram, context, { filename: BROKER_REL, timeout: 8_000 });
+  vm.runInContext(program.h2o, context, { filename: CORE_PATH, timeout: 8_000 });
+  vm.runInContext(program.atlas, context, { filename: BROKER_REL, timeout: 8_000 });
   vm.runInContext(ledgerProgram, context, { filename: LEDGER_REL, timeout: 8_000 });
   equal(context.__CV35_CORE_BOOTSTRAP_SUPPRESSED__, true, 'Core boot side effects are suppressed');
   for (const key of Object.keys(counters)) counters[key] = 0;
@@ -1142,6 +1183,291 @@ await expectFailure(
   { includeAnchor: false },
 );
 
+await fixture('question-edit anchor identity swap resolves only the unique current sibling', async () => {
+  const P = 'P';
+  const QA = 'Qa';
+  const QOLD = 'Qold';
+  const QNEW = 'Qnew';
+  const AOLD = 'Aold';
+  const ANEW = 'Anew';
+  const QNEW_18 = 'Qnew-18';
+  const ANEW_18 = 'Anew-18';
+  const QFOREIGN = 'Qforeign';
+  const P2 = 'P2';
+
+  const graph = mutableGraph(flagOn.identityGraph);
+  const rename = new Map([
+    ['canonical-a-16', P],
+    ['canonical-q-17', QOLD],
+    ['canonical-a-17', AOLD],
+  ]);
+  for (const node of graph.nodes) {
+    node.nodeId = rename.get(node.nodeId) || node.nodeId;
+    node.messageId = rename.get(node.messageId) || node.messageId;
+    node.parentId = rename.get(node.parentId) || node.parentId;
+    node.childIds = node.childIds.map((id) => rename.get(id) || id);
+  }
+  const nodes = graphById(graph);
+  const questionTemplate = nodes.get(QOLD);
+  const answerTemplate = nodes.get(AOLD);
+  const q18Template = nodes.get('canonical-q-18');
+  const a18Template = nodes.get('canonical-a-18');
+  nodes.get(P).childIds = [QA, QOLD, QNEW];
+  graph.nodes.push(
+    {
+      ...questionTemplate,
+      nodeId: QA,
+      messageId: QA,
+      parentId: P,
+      childIds: ['Aa'],
+    },
+    {
+      ...answerTemplate,
+      nodeId: 'Aa',
+      messageId: 'Aa',
+      parentId: QA,
+      childIds: [],
+    },
+    {
+      ...questionTemplate,
+      nodeId: QNEW,
+      messageId: QNEW,
+      parentId: P,
+      childIds: [ANEW],
+    },
+    {
+      ...answerTemplate,
+      nodeId: ANEW,
+      messageId: ANEW,
+      parentId: QNEW,
+      childIds: [QNEW_18],
+    },
+    {
+      ...q18Template,
+      nodeId: QNEW_18,
+      messageId: QNEW_18,
+      parentId: ANEW,
+      childIds: [ANEW_18],
+    },
+    {
+      ...a18Template,
+      nodeId: ANEW_18,
+      messageId: ANEW_18,
+      parentId: QNEW_18,
+      childIds: [],
+    },
+    {
+      ...answerTemplate,
+      nodeId: P2,
+      messageId: P2,
+      parentId: null,
+      childIds: [QFOREIGN],
+    },
+    {
+      ...questionTemplate,
+      nodeId: QFOREIGN,
+      messageId: QFOREIGN,
+      parentId: P2,
+      childIds: ['Aforeign'],
+    },
+    {
+      ...answerTemplate,
+      nodeId: 'Aforeign',
+      messageId: 'Aforeign',
+      parentId: QFOREIGN,
+      childIds: [],
+    },
+  );
+  graph.nodeCount = graph.nodes.length;
+  const variantNodes = graphById(graph);
+  equal(variantNodes.get(QOLD)?.productUser, true, 'Qold is a retained-graph productUser question');
+  equal(variantNodes.get(QNEW)?.productUser, true, 'Qnew is a retained-graph productUser question');
+  equal(variantNodes.get(QA)?.productUser, true, 'Qa is a retained-graph productUser question');
+  equal(variantNodes.get(QOLD)?.parentId, P, 'Qold has stable parent P');
+  equal(variantNodes.get(QNEW)?.parentId, P, 'Qnew has the same stable parent P');
+  equal(variantNodes.get(QA)?.parentId, P, 'Qa belongs to the exact sibling group under P');
+  equal(
+    JSON.stringify(variantNodes.get(P)?.childIds),
+    JSON.stringify([QA, QOLD, QNEW]),
+    'P explicitly owns only the question-edit sibling set',
+  );
+
+  const canonicalTurns = flagOn.index.turns.map((turn) => {
+    if (turn.order !== 17) return turn;
+    return Object.freeze({
+      ...turn,
+      qId: QOLD,
+      turnId: `turn:${QOLD}`,
+      primaryAId: AOLD,
+      answerVariants: Object.freeze([AOLD]),
+    });
+  });
+  const canonicalIndex = Object.freeze({
+    ...flagOn.index,
+    turns: Object.freeze(canonicalTurns),
+    sourceFingerprint: projectionFingerprint(canonicalTurns),
+  });
+  const currentQuestionEditRead = () => {
+    const flowRef = { id: 'cv35-question-edit-flow' };
+    const rows = [];
+    let shellIndex = 0;
+    for (let order = 1; order <= 16; order += 1) {
+      rows.push(evidence({ role: 'user', qId: `canonical-q-${order}`, shellIndex: shellIndex++, flowRef }));
+      rows.push(evidence({ role: 'assistant', aId: `canonical-a-${order}`, shellIndex: shellIndex++, flowRef }));
+    }
+    rows.push(evidence({ role: 'user', qId: QNEW, shellIndex: shellIndex++, flowRef }));
+    rows.push(evidence({ role: 'assistant', aId: ANEW, shellIndex: shellIndex++, flowRef }));
+    rows.push(evidence({ role: 'user', qId: QNEW_18, shellIndex: shellIndex++, flowRef }));
+    rows.push(evidence({ role: 'assistant', aId: ANEW_18, shellIndex: shellIndex++, flowRef }));
+    return {
+      shells: rows.map((row) => row.shell),
+      root: null,
+      evidence: rows,
+      unbound: [],
+      questionShellCount: 18,
+      answerShellCount: 18,
+      canonicalRecords: [],
+      canonicalShellBindings: new Map(),
+      canonicalVersion: 1,
+      completeShellMap: true,
+      readMs: 0,
+    };
+  };
+  const nativeMember = (qId, aId) => ({
+    question: { currentQId: qId },
+    answer: { currentProjectionSource: 'native-evidence', currentAnswerIds: [aId] },
+  });
+  const configureQuestionEdit = (runtime, timeStamp) => {
+    runtime.api.configure(canonicalIndex, graph, {
+      intent: false,
+      stale: false,
+      qId: QOLD,
+    });
+    equal(runtime.api.capture(branchEvent({
+      qId: QOLD,
+      answerIds: [AOLD],
+      direction: 'previous',
+      timeStamp,
+    })), true, 'question-edit capture opens trusted ownership');
+    runtime.api.setIntent({ kind: 'question-edit' });
+    equal(runtime.api.completeStatus().branchTransactionStateCode, 'pending', 'matching transaction is pending/capture');
+  };
+
+  const primary = createCoreRuntime();
+  configureQuestionEdit(primary, 1700);
+  const switchedRead = currentQuestionEditRead();
+  const switchedQuestionIds = switchedRead.evidence
+    .filter((row) => row.role === 'user')
+    .map((row) => row.currentId);
+  equal(switchedQuestionIds.filter((qId) => qId === QOLD).length, 0, 'new native route contains no obsolete Qold evidence');
+  equal(switchedQuestionIds.filter((qId) => qId === QNEW).length, 1, 'new native route contains exactly one Qnew sibling member');
+  primary.api.apply(switchedRead, 'question-edit-new-sibling-mounted');
+  const primaryState = primary.api.privateSnapshot();
+  ok(
+    primaryState.status === 'proven'
+      && primaryState.proof?.anchorQId === QNEW
+      && primaryState.path?.[16]?.qId === QNEW
+      && primaryState.overlay.overlayActive === true
+      && primaryState.overlay.source === 'selected-path-overlay'
+      && primaryState.effective.turns[16]?.qId === QNEW
+      && primaryState.effective.turns[17]?.qId === QNEW_18
+      && primaryState.effective.turns.every((turn, index) => (
+        index === 16 || turn.qId !== QOLD
+      )),
+    'QUESTION_EDIT_ANCHOR_IDENTITY_SWAP_MUST_RESOLVE_SELECTED_SIBLING',
+  );
+  equal(
+    primary.api.refreshStatus().selectedPathRequestLeaseActive,
+    false,
+    'Qnew publication precedes the delayed trusted-click request lease',
+  );
+  // The native sibling path has already published. Now allow only T1's
+  // capture-owned production callback to continue, exactly as the live trace
+  // did roughly 1.2 seconds after Qnew became authoritative.
+  while (primary.activeTimers().some((timer) => timer.delay === 0)) {
+    await primary.fireDelay(0);
+  }
+  equal(
+    primary.api.refreshStatus().selectedPathRequestLeaseActive,
+    false,
+    'SUPERSEDED_TRUSTED_QID_MUST_NOT_CREATE_REQUEST_LEASE',
+  );
+  const zeroSibling = createCoreRuntime();
+  configureQuestionEdit(zeroSibling, 1701);
+  const zeroResult = zeroSibling.api.evaluate([]);
+  equal(zeroResult.reason, 'anchor-member-missing', 'zero sibling evidence retains the exact missing-anchor verdict');
+
+  const directOld = createCoreRuntime();
+  configureQuestionEdit(directOld, 1702);
+  const directOldResult = directOld.api.evaluate([nativeMember(QOLD, AOLD)]);
+  equal(directOldResult.reason === 'anchor-member-missing', false, 'direct Qold evidence remains authoritative before fallback');
+
+  // Two members from the proven sibling group are ambiguous. This guard is
+  // deliberately excludes Qold so it exercises the fallback intersection,
+  // not the preferred direct lookup.
+  const ambiguousSibling = createCoreRuntime();
+  configureQuestionEdit(ambiguousSibling, 1703);
+  const ambiguousResult = ambiguousSibling.api.evaluate([
+    nativeMember(QA, 'Aa'),
+    nativeMember(QNEW, ANEW),
+  ]);
+  equal(ambiguousResult.status === 'proven', false, 'two sibling candidates fail closed');
+  equal(ambiguousResult.reason, 'anchor-member-ambiguous', 'two sibling candidates use the precise ambiguity verdict');
+  equal(ambiguousSibling.api.privateSnapshot().overlay.overlayActive, false, 'ambiguous siblings publish nothing');
+
+  const duplicateMember = createCoreRuntime();
+  configureQuestionEdit(duplicateMember, 1704);
+  const duplicateResult = duplicateMember.api.evaluate([
+    nativeMember(QNEW, ANEW),
+    nativeMember(QNEW, ANEW),
+  ]);
+  equal(duplicateResult.status === 'proven', false, 'matching sibling memberCount other than one fails closed');
+  equal(duplicateResult.reason, 'anchor-member-ambiguous', 'duplicate matching member uses the ambiguity verdict');
+  equal(duplicateMember.api.privateSnapshot().overlay.overlayActive, false, 'duplicate matching member publishes nothing');
+
+  const foreignParent = createCoreRuntime();
+  configureQuestionEdit(foreignParent, 1705);
+  const foreignResult = foreignParent.api.evaluate([nativeMember(QFOREIGN, 'Aforeign')]);
+  equal(foreignResult.status === 'proven', false, 'productUser under a different parent cannot replace Qold');
+  equal(foreignResult.reason, 'anchor-member-missing', 'different-parent evidence is ineligible and remains missing');
+  equal(foreignParent.api.privateSnapshot().overlay.overlayActive, false, 'different-parent evidence publishes nothing');
+
+  // Ordinary answer regeneration retains the existing direct-qId path.
+  const answerBranch = createCoreRuntime();
+  answerBranch.api.configure(flagOn.index, flagOn.identityGraph);
+  answerBranch.api.setIntent({ kind: 'assistant-regeneration' });
+  answerBranch.api.apply(selectedPathRead(), 'answer-regeneration-direct-anchor');
+  const direct = answerBranch.api.privateSnapshot();
+  equal(direct.status, 'proven', 'unchanged qId still uses authoritative direct lookup');
+  equal(direct.proof.anchorQId, 'canonical-q-17', 'answer branch keeps the original qId anchor');
+  equal(direct.path[16].primaryAId, BRANCH_2_A17, 'answer branch keeps its directly observed answer variant');
+
+  const assertCapturedQuestionEditSafety = (runtime, expectedUiPublications = 3) => {
+    equal(runtime.counters.storageWrites, 0, 'question-edit capture writes no storage');
+    equal(runtime.counters.preferenceWrites, 0, 'question-edit capture writes no preferences');
+    equal(runtime.counters.canonicalWrites, 0, 'question-edit capture writes no canonical state');
+    equal(runtime.counters.aliasWrites, 0, 'question-edit capture writes no aliases');
+    equal(runtime.counters.selectedPathReconciliationCalls, 0, 'question-edit capture does not call a test reconcile seam');
+    equal(runtime.counters.networkCalls, 0, 'question-edit capture performs no network read');
+    equal(runtime.counters.cacheWrites, 0, 'question-edit capture writes no cache');
+    equal(
+      runtime.counters.uiPublications,
+      expectedUiPublications,
+      'question-edit path emits only its exact atomic lifecycles',
+    );
+    equal(runtime.counters.timerCalls, 2, 'question-edit capture keeps only its two bounded timers');
+    equal(runtime.counters.rafCalls, 1, 'question-edit capture keeps only its immediate RAF reconcile');
+  };
+  assertCapturedQuestionEditSafety(primary, 6);
+  assertCapturedQuestionEditSafety(zeroSibling);
+  assertCapturedQuestionEditSafety(directOld);
+  assertCapturedQuestionEditSafety(ambiguousSibling);
+  assertCapturedQuestionEditSafety(duplicateMember);
+  assertCapturedQuestionEditSafety(foreignParent);
+  assertSafety(answerBranch);
+
+});
+
 await expectFailure(
   'selected answer equals canonical primary',
   async () => {},
@@ -1346,6 +1672,16 @@ await fixture('real slow contracting acquisition retains its intent through the 
   const acquired = runtime.api.privateSnapshot();
   equal(acquired.status, 'proven', 'slow refetch proves the selected path');
   equal(acquired.overlay.overlayActive, true, 'slow refetch publishes the selected overlay');
+  equal(
+    runtime.api.refreshStatus().selectedPathRequestLeaseActive,
+    false,
+    'SUCCESSFUL_SELECTED_PATH_PUBLICATION_MUST_CLEAR_MATCHING_REQUEST_LEASE',
+  );
+  equal(
+    runtime.api.completeStatus().branchTransactionPending,
+    false,
+    'successful publication leaves no active matching branch transaction',
+  );
   equal(acquired.effective.turns.length, 18, 'effective presentation becomes the selected 18-turn path');
   equal(acquired.canonical.turns.length, 39, 'canonical authority remains separately 39 turns');
   equal(acquired.stale, true, 'selected overlay remains branch-stale owned');
