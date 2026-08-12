@@ -858,6 +858,34 @@
         getOwner()?.setInternalChatTitleSetting?.('widthPct', value, 'control-hub');
       },
     },
+    {
+      type: 'toggle',
+      key: 'internalChatTitleShowProject',
+      label: 'Show project',
+      group: 'Content',
+      help: 'Show the current project in the internal chat title bar.',
+      def: true,
+      getLive() {
+        return getOwner()?.getInternalChatTitleSettings?.()?.showProject !== false;
+      },
+      setLive(value) {
+        getOwner()?.setInternalChatTitleSetting?.('showProject', !!value, 'control-hub');
+      },
+    },
+    {
+      type: 'toggle',
+      key: 'internalChatTitleHideNativeDisclaimer',
+      label: 'Hide ChatGPT disclaimer',
+      group: 'Native ChatGPT',
+      help: 'Hide the native “ChatGPT can make mistakes. Check important info.” message above the composer.',
+      def: true,
+      getLive() {
+        return getOwner()?.getInternalChatTitleSettings?.()?.hideNativeDisclaimer !== false;
+      },
+      setLive(value) {
+        getOwner()?.setInternalChatTitleSetting?.('hideNativeDisclaimer', !!value, 'control-hub');
+      },
+    },
   ]);
 
   const TITLES_CONTROLS = Object.freeze([

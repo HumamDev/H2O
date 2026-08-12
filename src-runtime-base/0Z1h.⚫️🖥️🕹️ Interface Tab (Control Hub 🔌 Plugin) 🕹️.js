@@ -45,6 +45,8 @@
   const INTERNAL_CHAT_TITLE_WIDTH_MIN = 60;
   const INTERNAL_CHAT_TITLE_WIDTH_MAX = 100;
   const INTERNAL_CHAT_TITLE_WIDTH_STEP = 0.5;
+  const INTERNAL_CHAT_TITLE_SHOW_PROJECT_DEFAULT = true;
+  const INTERNAL_CHAT_TITLE_HIDE_NATIVE_DISCLAIMER_DEFAULT = true;
   const KEY_CHUB_TAB_VIS_V1 = 'h2o:prm:cgx:cntrlhb:state:tab-visibility:v1';
   const KEY_ANSN_CFG_UI_V1 = 'h2o:prm:cgx:ansn:cfg:ui:v1';
   const KEY_QN_CFG_UI_V1 = 'h2o:prm:cgx:qbig:cfg:ui:v1';
@@ -278,6 +280,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
     const source = raw && typeof raw === 'object' ? raw : {};
     return Object.freeze({
       widthPct: normalizeInternalChatTitleWidth(source.widthPct),
+      showProject: typeof source.showProject === 'boolean'
+        ? source.showProject
+        : INTERNAL_CHAT_TITLE_SHOW_PROJECT_DEFAULT,
+      hideNativeDisclaimer: typeof source.hideNativeDisclaimer === 'boolean'
+        ? source.hideNativeDisclaimer
+        : INTERNAL_CHAT_TITLE_HIDE_NATIVE_DISCLAIMER_DEFAULT,
     });
   }
 
@@ -303,10 +311,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
   }
 
   function writeInternalChatTitleSetting(key, value, source = 'control-hub') {
-    if (key !== 'widthPct') return readInternalChatTitleSettings();
+    if (!['widthPct', 'showProject', 'hideNativeDisclaimer'].includes(key)) {
+      return readInternalChatTitleSettings();
+    }
     const settings = normalizeInternalChatTitleSettings({
       ...readInternalChatTitleSettings(),
-      widthPct: value,
+      [key]: value,
     });
     try { W.localStorage?.setItem(KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1, JSON.stringify(settings)); } catch {}
     return publishInternalChatTitleSettings(settings, source);
@@ -461,6 +471,12 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
           min: INTERNAL_CHAT_TITLE_WIDTH_MIN,
           max: INTERNAL_CHAT_TITLE_WIDTH_MAX,
           step: INTERNAL_CHAT_TITLE_WIDTH_STEP,
+        }),
+        showProject: Object.freeze({
+          default: INTERNAL_CHAT_TITLE_SHOW_PROJECT_DEFAULT,
+        }),
+        hideNativeDisclaimer: Object.freeze({
+          default: INTERNAL_CHAT_TITLE_HIDE_NATIVE_DISCLAIMER_DEFAULT,
         }),
       }),
       getVisibilitySpec: () => INTERFACE_VISIBILITY,

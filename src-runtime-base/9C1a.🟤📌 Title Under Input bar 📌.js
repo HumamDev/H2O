@@ -44,7 +44,11 @@
   let attachTimer = 0;
   let settingsAttachTimer = 0;
   let refreshTimer = 0;
+  let nativeDisclaimerRaf = 0;
   let bodyObserver = null;
+  let nativeDisclaimerEl = null;
+  let showProject = true;
+  let hideNativeDisclaimer = true;
   let editorSessionSeq = 0;
   let activeEditorSession = null;
   let renameError = null;
@@ -54,6 +58,7 @@
   const STYLE_ID = 'ho-title-under-input-style-v3';
   const RUNTIME_MARK = 'v6-hide-new-chat';
   const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 87.5;
+  const NATIVE_DISCLAIMER_TEXT = 'ChatGPT can make mistakes. Check important info.';
   const CSS = `
     .ho-sidebar-ring {
       border-radius: 8px;
@@ -137,6 +142,14 @@
       text-overflow: ellipsis;
       cursor: pointer;
       user-select: text;
+    }
+
+    .ho-tab-title-under-input[data-ho-show-project="0"] .ho-title-project {
+      display: none;
+    }
+
+    [data-ho-native-disclaimer-hidden="1"] {
+      display: none !important;
     }
 
     .ho-title-text {
@@ -507,6 +520,8 @@
     clearTimeout(attachTimer);
     clearTimeout(settingsAttachTimer);
     clearTimeout(refreshTimer);
+    cancelAnimationFrame(nativeDisclaimerRaf);
+    nativeDisclaimerRaf = 0;
     closeTitleMenu(true);
     try { unsubscribe?.(); } catch {}
     unsubscribe = null;
@@ -522,6 +537,8 @@
     labelEl = null;
     try { titleHostEl?.removeAttribute?.('data-ho-internal-title-host'); } catch {}
     titleHostEl = null;
+    try { nativeDisclaimerEl?.removeAttribute?.('data-ho-native-disclaimer-hidden'); } catch {}
+    nativeDisclaimerEl = null;
   }
 
   function ensureStyle() {
@@ -1248,8 +1265,36 @@
     setTimeout(() => moveButton.focus?.(), 0);
   }
 
+  function getComposerRoot() {
+    return D.querySelector('#thread-bottom-container')?.closest?.('.composer-parent') || null;
+  }
+
   function getDisclaimerContainer() {
-    return D.querySelector('main div.text-token-text-secondary[class*="vt-disclaimer"]');
+    const candidate = getComposerRoot()?.querySelector?.('[data-testid="thread-disclaimer"]') || null;
+    return candidate && norm(candidate.textContent) === NATIVE_DISCLAIMER_TEXT ? candidate : null;
+  }
+
+  function applyNativeDisclaimerVisibility() {
+    const candidate = getDisclaimerContainer();
+    if (nativeDisclaimerEl && nativeDisclaimerEl !== candidate) {
+      try { nativeDisclaimerEl.removeAttribute('data-ho-native-disclaimer-hidden'); } catch {}
+    }
+    nativeDisclaimerEl = candidate;
+    if (!nativeDisclaimerEl) return false;
+    if (hideNativeDisclaimer) {
+      nativeDisclaimerEl.setAttribute('data-ho-native-disclaimer-hidden', '1');
+    } else {
+      nativeDisclaimerEl.removeAttribute('data-ho-native-disclaimer-hidden');
+    }
+    return true;
+  }
+
+  function scheduleNativeDisclaimerVisibility() {
+    if (destroyed || nativeDisclaimerRaf) return;
+    nativeDisclaimerRaf = requestAnimationFrame(() => {
+      nativeDisclaimerRaf = 0;
+      applyNativeDisclaimerVisibility();
+    });
   }
 
   function getComposerContainer() {
@@ -1266,9 +1311,13 @@
 
   function applyInternalChatTitleSettings(settings) {
     const widthPct = normalizeInternalChatTitleWidth(settings?.widthPct);
+    showProject = settings?.showProject !== false;
+    hideNativeDisclaimer = settings?.hideNativeDisclaimer !== false;
     labelEl?.style?.setProperty?.('--ho-internal-title-width', `${widthPct}%`);
+    labelEl?.setAttribute?.('data-ho-show-project', showProject ? '1' : '0');
+    scheduleNativeDisclaimerVisibility();
     scheduleOpenMenuPositions();
-    return widthPct;
+    return Object.freeze({ widthPct, showProject, hideNativeDisclaimer });
   }
 
   function attachInternalChatTitleSettings() {
@@ -1798,6 +1847,7 @@
 
     bodyObserver = new MutationObserver(() => {
       refreshSoon('composer-dom-mutation');
+      scheduleNativeDisclaimerVisibility();
       scheduleOpenMenuPositions();
     });
     if (D.body) bodyObserver.observe(D.body, { childList: true, subtree: true });

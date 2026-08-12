@@ -33,6 +33,14 @@ assert.match(controlsBlock, /def:\s*DEFAULT_INTERNAL_CHAT_TITLE_WIDTH[\s\S]*min:
 assert.match(controlsBlock, /getOwner\(\)\?\.getInternalChatTitleSettings/, 'Control Hub reads through the Interface settings authority');
 assert.match(controlsBlock, /getOwner\(\)\?\.setInternalChatTitleSetting\?\.\('widthPct',\s*value,\s*'control-hub'\)/,
   'Control Hub writes through the Interface settings authority');
+assert.match(controlsBlock, /type:\s*'toggle'[\s\S]*label:\s*'Show project'[\s\S]*group:\s*'Content'[\s\S]*help:\s*'Show the current project in the internal chat title bar\.'[\s\S]*def:\s*true/,
+  'Content exposes the requested default-on Show project toggle');
+assert.match(controlsBlock, /setInternalChatTitleSetting\?\.\('showProject',\s*!!value,\s*'control-hub'\)/,
+  'Show project writes through the canonical Internal Chat Title settings authority');
+assert.match(controlsBlock, /type:\s*'toggle'[\s\S]*label:\s*'Hide ChatGPT disclaimer'[\s\S]*group:\s*'Native ChatGPT'[\s\S]*help:\s*'Hide the native “ChatGPT can make mistakes\. Check important info\.” message above the composer\.'[\s\S]*def:\s*true/,
+  'Native ChatGPT exposes the requested default-on disclaimer toggle');
+assert.match(controlsBlock, /setInternalChatTitleSetting\?\.\('hideNativeDisclaimer',\s*!!value,\s*'control-hub'\)/,
+  'Hide disclaimer writes through the canonical Internal Chat Title settings authority');
 assert.match(source.hub, /const out = parseFloat\(inp\.value\);/, 'the shared range renderer preserves fractional steps');
 
 assert.match(source.interfaceTab, /const KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1 = 'h2o:prm:cgx:interface:internal-chat-title:v1'/,
@@ -44,6 +52,30 @@ assert.match(source.title, /api\.subscribeInternalChatTitleSettings\(applyIntern
   '9C1a subscribes to live presentation changes');
 assert.match(source.title, /labelEl\?\.style\?\.setProperty\?\.\('--ho-internal-title-width',\s*`\$\{widthPct\}%`\)/,
   '9C1a applies width only to its owned under-input title element');
+assert.match(source.title, /labelEl\?\.setAttribute\?\.\('data-ho-show-project',\s*showProject \? '1' : '0'\)/,
+  '9C1a applies Show project as presentation state on its owned title element');
+assert.match(source.title, /\.ho-tab-title-under-input\[data-ho-show-project="0"\]\s+\.ho-title-project\s*\{[\s\S]*?display:\s*none/,
+  'Show project off hides only the project presentation segment');
+assert.match(source.title, /'ho-title-text ho-title-placeholder-title'\s*:\s*'ho-title-text'/,
+  'chat title presentation remains present');
+assert.match(source.title, /className = 'ho-title-edit-dot'/, 'three-dot control remains present');
+assert.match(source.title, /querySelector\('#thread-bottom-container'\)\?\.closest\?\.\('\.composer-parent'\)/,
+  'native disclaimer discovery is scoped to the active composer/footer root');
+assert.match(source.title, /querySelector\?\.\('\[data-testid="thread-disclaimer"\]'\)/,
+  'native disclaimer discovery uses ChatGPT’s narrow structural owner marker');
+assert.match(source.title, /norm\(candidate\.textContent\) === NATIVE_DISCLAIMER_TEXT/,
+  'the structural disclaimer candidate must also match the exact expected semantics');
+assert.match(source.title, /nativeDisclaimerEl\.setAttribute\('data-ho-native-disclaimer-hidden',\s*'1'\)/,
+  'the default-on preference hides only the scoped native disclaimer element');
+assert.match(source.title, /nativeDisclaimerEl\.removeAttribute\('data-ho-native-disclaimer-hidden'\)/,
+  'turning the preference off restores the native disclaimer immediately');
+assert.match(source.title, /bodyObserver = new MutationObserver\(\(\) => \{[\s\S]*scheduleNativeDisclaimerVisibility\(\)/,
+  'the existing 9C1a lifecycle reapplies disclaimer visibility after native rerenders');
+const settingsConsumerBlock = source.title.match(/function applyInternalChatTitleSettings\(settings\)\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
+assert.doesNotMatch(settingsConsumerBlock, /H2O\.Projects|moveChatToProject|projectId\s*=/,
+  'content preferences cannot mutate canonical Project state');
+assert.doesNotMatch(source.title, /document\.body\.textContent|D\.body\.textContent/,
+  'disclaimer discovery never performs a broad document text scan');
 assert.doesNotMatch(source.title, /localStorage.*internal-chat-title|internal-chat-title.*localStorage/,
   '9C1a does not own persistence');
 
@@ -110,8 +142,14 @@ vm.createContext(sandbox);
 vm.runInContext(source.interfaceTab, sandbox, { filename: rel.interfaceTab });
 const api = window.H2O.Surface.Interface;
 assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'missing state defaults to 87.5%');
+assert.equal(api.getInternalChatTitleSettings().showProject, true, 'missing state defaults Show project on');
+assert.equal(api.getInternalChatTitleSettings().hideNativeDisclaimer, true, 'missing state defaults Hide disclaimer on');
 assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.widthPct)), { default: 87.5, min: 60, max: 100, step: 0.5 },
   'the public setting contract exposes its exact bounds');
+assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.showProject)), { default: true },
+  'the public setting contract exposes the Show project default');
+assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.hideNativeDisclaimer)), { default: true },
+  'the public setting contract exposes the Hide disclaimer default');
 const observed = [];
 const unsubscribe = api.subscribeInternalChatTitleSettings((settings) => observed.push(settings.widthPct));
 api.setInternalChatTitleSetting('widthPct', 72.5, 'validator');
@@ -120,9 +158,30 @@ assert.equal(JSON.parse(storage.get(api.internalChatTitleSettingSpec.storageKey)
   'the canonical owner persists the selected percentage');
 assert.deepEqual(observed, [87.5, 72.5], 'subscribers receive initial and live states');
 unsubscribe();
+api.setInternalChatTitleSetting('showProject', false, 'validator');
+api.setInternalChatTitleSetting('hideNativeDisclaimer', false, 'validator');
+assert.equal(api.getInternalChatTitleSettings().showProject, false, 'Show project survives persisted-state roundtrip');
+assert.equal(api.getInternalChatTitleSettings().hideNativeDisclaimer, false, 'Hide disclaimer survives persisted-state roundtrip');
+assert.deepEqual(JSON.parse(storage.get(api.internalChatTitleSettingSpec.storageKey)), {
+  widthPct: 72.5,
+  showProject: false,
+  hideNativeDisclaimer: false,
+}, 'one canonical record persists width and both content preferences');
+storage.set(api.internalChatTitleSettingSpec.storageKey, JSON.stringify({ widthPct: 75 }));
+assert.deepEqual(JSON.parse(JSON.stringify(api.getInternalChatTitleSettings())), {
+  widthPct: 75,
+  showProject: true,
+  hideNativeDisclaimer: true,
+}, 'legacy width-only v1 state additively hydrates both new defaults without losing width');
 api.setInternalChatTitleSetting('widthPct', 100.5, 'validator');
 assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'out-of-range writes fail closed to the accepted default');
-storage.set(api.internalChatTitleSettingSpec.storageKey, JSON.stringify({ widthPct: 'invalid' }));
+storage.set(api.internalChatTitleSettingSpec.storageKey, JSON.stringify({
+  widthPct: 'invalid',
+  showProject: 'invalid',
+  hideNativeDisclaimer: null,
+}));
 assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'invalid stored values fail closed to the accepted default');
+assert.equal(api.getInternalChatTitleSettings().showProject, true, 'invalid Show project state fails closed to on');
+assert.equal(api.getInternalChatTitleSettings().hideNativeDisclaimer, true, 'invalid Hide disclaimer state fails closed to on');
 
 console.log('validate-internal-chat-title-controls: ok');
