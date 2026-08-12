@@ -45,8 +45,14 @@
   let settingsAttachTimer = 0;
   let refreshTimer = 0;
   let nativeDisclaimerRaf = 0;
+  let internalTitleWidthRaf = 0;
+  let internalTitleResizeObserver = null;
+  let observedInternalTitleHost = null;
+  let appliedInternalTitleWidthPx = NaN;
+  let appliedInternalProjectWidthPx = NaN;
   let bodyObserver = null;
   let nativeDisclaimerEl = null;
+  let internalTitleBaseWidthPct = 60;
   let showProject = true;
   let hideNativeDisclaimer = true;
   let editorSessionSeq = 0;
@@ -57,7 +63,7 @@
 
   const STYLE_ID = 'ho-title-under-input-style-v3';
   const RUNTIME_MARK = 'v6-hide-new-chat';
-  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 87.5;
+  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 60;
   const NATIVE_DISCLAIMER_TEXT = 'ChatGPT can make mistakes. Check important info.';
   const CSS = `
     .ho-sidebar-ring {
@@ -69,26 +75,26 @@
     }
 
     .ho-tab-title-under-input {
-      font-size: 12px;
-      line-height: 16px;
+      font-size: 11px;
+      line-height: 14px;
       opacity: 0.85;
       margin-top: 0;
       text-align: center;
       display: inline-flex;
-      justify-content: center;
+      justify-content: flex-start;
       align-items: center;
       gap: 7px;
       min-width: 0;
-      min-height: 22px;
-      height: 22px;
+      min-height: 18px;
+      height: 18px;
       position: absolute;
       left: 50%;
-      top: calc(100% + 1px);
-      width: min(100%, max(var(--ho-internal-title-width, 87.5%), min(320px, 100%)));
-      max-width: 100%;
+      top: calc(100% + 3px);
+      width: min(90%, var(--ho-internal-title-rendered-width, var(--ho-internal-title-base-width, 60%)));
+      max-width: 90%;
       margin-inline: 0;
       box-sizing: border-box;
-      padding: 1px 6px;
+      padding: 0 6px;
       border-radius: 8px;
       border: 1px solid rgba(255,255,255,0.08);
       background: linear-gradient(90deg, rgba(255,255,255,0.08), rgba(255,255,255,0.025));
@@ -114,19 +120,23 @@
     }
 
     .ho-title-main {
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: 5px;
       min-width: 0;
-      max-width: min(72vw, 620px);
-      line-height: 16px;
+      max-width: none;
+      line-height: 14px;
+      flex: 1 1 auto;
+      overflow: hidden;
     }
 
     .ho-title-project {
       display: inline-flex;
       align-items: center;
-      max-width: min(28vw, 180px);
+      width: var(--ho-internal-title-project-width, auto);
+      max-width: var(--ho-internal-title-project-width, 180px);
       min-width: 0;
+      flex: 0 0 var(--ho-internal-title-project-width, auto);
       border: 0;
       background: transparent;
       margin: 0;
@@ -136,7 +146,7 @@
       font-size: 11px;
       font-weight: 600;
       font-family: inherit;
-      line-height: 16px;
+      line-height: 14px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -155,23 +165,24 @@
     .ho-title-text {
       cursor: pointer;
       white-space: nowrap;
-      max-width: min(62vw, 560px);
+      max-width: none;
       overflow: hidden;
-      text-overflow: ellipsis;
+      text-overflow: clip;
       min-width: 0;
+      flex: 1 1 auto;
     }
 
     .ho-title-edit-dot {
       border: none;
       background: transparent;
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       padding: 0;
       border-radius: 999px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 16px;
+      font-size: 14px;
       line-height: 1;
       cursor: pointer;
       opacity: 0;
@@ -522,6 +533,11 @@
     clearTimeout(refreshTimer);
     cancelAnimationFrame(nativeDisclaimerRaf);
     nativeDisclaimerRaf = 0;
+    cancelAnimationFrame(internalTitleWidthRaf);
+    internalTitleWidthRaf = 0;
+    try { internalTitleResizeObserver?.disconnect?.(); } catch {}
+    internalTitleResizeObserver = null;
+    observedInternalTitleHost = null;
     closeTitleMenu(true);
     try { unsubscribe?.(); } catch {}
     unsubscribe = null;
@@ -571,6 +587,8 @@
       try { labelEl.remove(); } catch {}
       labelEl = null;
     }
+    appliedInternalTitleWidthPx = NaN;
+    appliedInternalProjectWidthPx = NaN;
   }
 
   function getCurrentProjectId() {
@@ -1304,17 +1322,126 @@
 
   function normalizeInternalChatTitleWidth(value) {
     const number = Number(value);
-    return Number.isFinite(number) && number >= 60 && number <= 100
-      ? Math.round(number * 2) / 2
-      : DEFAULT_INTERNAL_CHAT_TITLE_WIDTH;
+    if (!Number.isFinite(number)) return DEFAULT_INTERNAL_CHAT_TITLE_WIDTH;
+    return Math.round(Math.min(90, Math.max(60, number)) * 2) / 2;
+  }
+
+  function computeAdaptiveInternalTitleWidth({ composerWidth, basePct, titleIntrinsicWidth, fixedWidth }) {
+    const composer = Math.max(0, Number(composerWidth) || 0);
+    const base = composer * normalizeInternalChatTitleWidth(basePct) / 100;
+    const maximum = composer * 0.9;
+    const required = Math.max(0, Number(fixedWidth) || 0) + Math.max(0, Number(titleIntrinsicWidth) || 0);
+    return Math.min(maximum, Math.max(base, required));
+  }
+
+  function cssPixels(style, property) {
+    const value = Number.parseFloat(style?.getPropertyValue?.(property) || '0');
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function measureIntrinsicTitleWidth(element) {
+    if (!element) return 0;
+    if (element.matches?.('input, textarea')) return Math.max(element.scrollWidth || 0, element.clientWidth || 0);
+    let rangeWidth = 0;
+    try {
+      const range = D.createRange();
+      range.selectNodeContents(element);
+      rangeWidth = range.getBoundingClientRect().width;
+      range.detach?.();
+    } catch {}
+    return rangeWidth > 0 ? rangeWidth : (element.scrollWidth || 0);
+  }
+
+  function measureProjectPresentationWidth(project, baseOuterWidth) {
+    if (!project || !showProject) return 0;
+    const style = W.getComputedStyle(project);
+    let textWidth = 0;
+    try {
+      const range = D.createRange();
+      range.selectNodeContents(project);
+      textWidth = range.getBoundingClientRect().width;
+      range.detach?.();
+    } catch {}
+    const naturalWidth = textWidth +
+      cssPixels(style, 'padding-left') + cssPixels(style, 'padding-right') +
+      cssPixels(style, 'border-left-width') + cssPixels(style, 'border-right-width');
+    return Math.min(180, Math.max(0, Number(baseOuterWidth) || 0) * 0.4, naturalWidth);
+  }
+
+  function measureInternalTitleFixedWidth(projectWidth) {
+    if (!labelEl) return 0;
+    const outerStyle = W.getComputedStyle(labelEl);
+    const main = labelEl.querySelector('.ho-title-main');
+    const mainStyle = main ? W.getComputedStyle(main) : null;
+    const project = showProject ? labelEl.querySelector('.ho-title-project') : null;
+    const dot = main?.querySelector?.('.ho-title-edit-dot');
+    const outerGap = project && main ? cssPixels(outerStyle, 'column-gap') : 0;
+    const mainGap = dot ? cssPixels(mainStyle, 'column-gap') : 0;
+    return (
+      cssPixels(outerStyle, 'padding-left') +
+      cssPixels(outerStyle, 'padding-right') +
+      cssPixels(outerStyle, 'border-left-width') +
+      cssPixels(outerStyle, 'border-right-width') +
+      (project ? Math.max(0, Number(projectWidth) || 0) : 0) +
+      outerGap +
+      (dot?.getBoundingClientRect?.().width || 0) +
+      mainGap
+    );
+  }
+
+  function updateAdaptiveInternalTitleWidth() {
+    if (destroyed || !labelEl || !titleHostEl || labelEl.style.display === 'none') return;
+    const composerWidth = titleHostEl.getBoundingClientRect().width;
+    if (!(composerWidth > 0)) return;
+    const titleContent = labelEl.querySelector('.ho-title-text, .ho-title-edit-input');
+    const baseOuterWidth = composerWidth * internalTitleBaseWidthPct / 100;
+    const projectWidth = measureProjectPresentationWidth(labelEl.querySelector('.ho-title-project'), baseOuterWidth);
+    const width = computeAdaptiveInternalTitleWidth({
+      composerWidth,
+      basePct: internalTitleBaseWidthPct,
+      titleIntrinsicWidth: measureIntrinsicTitleWidth(titleContent),
+      fixedWidth: measureInternalTitleFixedWidth(projectWidth),
+    });
+    if (!(width > 0)) return;
+    if (!Number.isFinite(appliedInternalProjectWidthPx) || Math.abs(appliedInternalProjectWidthPx - projectWidth) > 0.25) {
+      appliedInternalProjectWidthPx = projectWidth;
+      labelEl.style.setProperty('--ho-internal-title-project-width', `${projectWidth}px`);
+    }
+    if (!Number.isFinite(appliedInternalTitleWidthPx) || Math.abs(appliedInternalTitleWidthPx - width) > 0.25) {
+      appliedInternalTitleWidthPx = width;
+      labelEl.style.setProperty('--ho-internal-title-rendered-width', `${width}px`);
+      labelEl.dataset.hoInternalTitleActualPct = String(Math.round(width / composerWidth * 1000) / 10);
+    }
+  }
+
+  function scheduleAdaptiveInternalTitleWidth() {
+    if (destroyed || internalTitleWidthRaf) return;
+    internalTitleWidthRaf = requestAnimationFrame(() => {
+      internalTitleWidthRaf = 0;
+      updateAdaptiveInternalTitleWidth();
+    });
+  }
+
+  function observeInternalTitleHost(host) {
+    if (observedInternalTitleHost === host) return;
+    try { internalTitleResizeObserver?.disconnect?.(); } catch {}
+    internalTitleResizeObserver = null;
+    observedInternalTitleHost = host || null;
+    appliedInternalTitleWidthPx = NaN;
+    appliedInternalProjectWidthPx = NaN;
+    if (!host || typeof W.ResizeObserver !== 'function') return;
+    internalTitleResizeObserver = new W.ResizeObserver(() => scheduleAdaptiveInternalTitleWidth());
+    internalTitleResizeObserver.observe(host);
   }
 
   function applyInternalChatTitleSettings(settings) {
     const widthPct = normalizeInternalChatTitleWidth(settings?.widthPct);
+    internalTitleBaseWidthPct = widthPct;
     showProject = settings?.showProject !== false;
     hideNativeDisclaimer = settings?.hideNativeDisclaimer !== false;
-    labelEl?.style?.setProperty?.('--ho-internal-title-width', `${widthPct}%`);
+    labelEl?.style?.setProperty?.('--ho-internal-title-base-width', `${widthPct}%`);
     labelEl?.setAttribute?.('data-ho-show-project', showProject ? '1' : '0');
+    scheduleAdaptiveInternalTitleWidth();
     scheduleNativeDisclaimerVisibility();
     scheduleOpenMenuPositions();
     return Object.freeze({ widthPct, showProject, hideNativeDisclaimer });
@@ -1352,6 +1479,7 @@
       try { titleHostEl?.removeAttribute?.('data-ho-internal-title-host'); } catch {}
       titleHostEl = parent;
       titleHostEl.setAttribute('data-ho-internal-title-host', '1');
+      observeInternalTitleHost(titleHostEl);
     }
 
     if (!labelEl) labelEl = parent.querySelector('.ho-tab-title-under-input');
@@ -1375,6 +1503,7 @@
     }
     labelEl.style.display = '';
     attachInternalChatTitleSettings();
+    scheduleAdaptiveInternalTitleWidth();
     return true;
   }
 
@@ -1442,6 +1571,7 @@
     main.appendChild(span);
     main.appendChild(dot);
     labelEl.appendChild(main);
+    scheduleAdaptiveInternalTitleWidth();
   }
 
   function updateLabelText(text, options = {}) {
@@ -1458,6 +1588,7 @@
     } else if (span.textContent !== next) {
       span.textContent = next;
       span.title = next;
+      scheduleAdaptiveInternalTitleWidth();
     }
   }
 
@@ -1621,6 +1752,7 @@
     session.input = input;
     main.appendChild(input);
     labelEl.appendChild(main);
+    scheduleAdaptiveInternalTitleWidth();
     input.focus();
     input.select();
 

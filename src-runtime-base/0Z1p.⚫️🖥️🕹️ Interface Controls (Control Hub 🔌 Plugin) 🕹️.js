@@ -49,7 +49,7 @@
   const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
   const DEFAULT_AE_EMPTY_BADGE_ICON = 'chat-bubble-stack';
   const DEFAULT_AE_PICKER_GROUPING = 'os';
-  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 87.5;
+  const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 60;
 
   const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
     Object.freeze(['edge-strip', 'Thin Edge Strip']),
@@ -845,10 +845,10 @@
       key: 'internalChatTitleWidthPct',
       label: 'Internal chat title width',
       group: 'Layout',
-      help: 'Adjust the width of the internal title bar underneath the input.',
+      help: 'Set the minimum width of the internal title bar. Long titles can expand it automatically up to 90%.',
       def: DEFAULT_INTERNAL_CHAT_TITLE_WIDTH,
       min: 60,
-      max: 100,
+      max: 90,
       step: 0.5,
       unit: '%',
       getLive() {

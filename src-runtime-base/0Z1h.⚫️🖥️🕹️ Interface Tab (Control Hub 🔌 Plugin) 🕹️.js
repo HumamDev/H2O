@@ -41,9 +41,9 @@
   const KEY_CHUB_INTERFACE_SUBTAB_V1 = 'h2o:prm:cgx:cntrlhb:state:interface:subtab:v1';
   const KEY_INTERNAL_CHAT_TITLE_SETTINGS_V1 = 'h2o:prm:cgx:interface:internal-chat-title:v1';
   const EV_INTERNAL_CHAT_TITLE_SETTINGS = 'evt:h2o:interface:internal-chat-title-settings-changed';
-  const INTERNAL_CHAT_TITLE_WIDTH_DEFAULT = 87.5;
+  const INTERNAL_CHAT_TITLE_WIDTH_DEFAULT = 60;
   const INTERNAL_CHAT_TITLE_WIDTH_MIN = 60;
-  const INTERNAL_CHAT_TITLE_WIDTH_MAX = 100;
+  const INTERNAL_CHAT_TITLE_WIDTH_MAX = 90;
   const INTERNAL_CHAT_TITLE_WIDTH_STEP = 0.5;
   const INTERNAL_CHAT_TITLE_SHOW_PROJECT_DEFAULT = true;
   const INTERNAL_CHAT_TITLE_HIDE_NATIVE_DISCLAIMER_DEFAULT = true;
@@ -270,10 +270,9 @@ __ROOT__ :where(nav, aside) .ho-seeall::after{
 
   function normalizeInternalChatTitleWidth(value) {
     const number = Number(value);
-    if (!Number.isFinite(number) || number < INTERNAL_CHAT_TITLE_WIDTH_MIN || number > INTERNAL_CHAT_TITLE_WIDTH_MAX) {
-      return INTERNAL_CHAT_TITLE_WIDTH_DEFAULT;
-    }
-    return Math.round(number / INTERNAL_CHAT_TITLE_WIDTH_STEP) * INTERNAL_CHAT_TITLE_WIDTH_STEP;
+    if (!Number.isFinite(number)) return INTERNAL_CHAT_TITLE_WIDTH_DEFAULT;
+    const bounded = Math.min(INTERNAL_CHAT_TITLE_WIDTH_MAX, Math.max(INTERNAL_CHAT_TITLE_WIDTH_MIN, number));
+    return Math.round(bounded / INTERNAL_CHAT_TITLE_WIDTH_STEP) * INTERNAL_CHAT_TITLE_WIDTH_STEP;
   }
 
   function normalizeInternalChatTitleSettings(raw) {
