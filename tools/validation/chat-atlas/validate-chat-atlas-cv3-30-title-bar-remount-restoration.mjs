@@ -70,12 +70,23 @@ class El {
     this.children = []; this.parentElement = null; this.attrs = new Map();
     this.isConnected = true; this.textContent = '';
     this.style = {};
+    this.listeners = new Map();
   }
   setAttribute(n, v) { this.attrs.set(String(n), String(v)); }
   getAttribute(n) { return this.attrs.has(String(n)) ? this.attrs.get(String(n)) : null; }
   hasAttribute(n) { return this.attrs.has(String(n)); }
   removeAttribute(n) { this.attrs.delete(String(n)); }
   get firstElementChild() { return this.children[0] || null; }
+  get previousElementSibling() {
+    if (!this.parentElement) return null;
+    const i = this.parentElement.children.indexOf(this);
+    return i > 0 ? this.parentElement.children[i - 1] : null;
+  }
+  get nextElementSibling() {
+    if (!this.parentElement) return null;
+    const i = this.parentElement.children.indexOf(this);
+    return i >= 0 ? (this.parentElement.children[i + 1] || null) : null;
+  }
   appendChild(c) { if (c.parentElement) c.parentElement.removeChild(c); c.parentElement = this; this.children.push(c); return c; }
   insertBefore(c, ref) {
     if (c.parentElement) c.parentElement.removeChild(c);
@@ -86,18 +97,33 @@ class El {
   }
   removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); c.parentElement = null; return c; }
   remove() { if (this.parentElement) this.parentElement.removeChild(this); }
+  addEventListener(type, listener) { this.listeners.set(String(type), listener); }
   matches(sel) { return matchSel(this, sel); }
   closest(sel) { let n = this; while (n) { if (matchSel(n, sel)) return n; n = n.parentElement; } return null; }
-  querySelectorAll(sel) { const out = []; const w = (n) => { for (const c of n.children) { if (matchSel(c, sel)) out.push(c); w(c); } }; w(this); return out; }
+  querySelectorAll(sel) {
+    const direct = String(sel || '').match(/^:scope\s*>\s*(.+)$/);
+    if (direct) return this.children.filter((c) => matchSel(c, direct[1]));
+    const out = [];
+    const w = (n) => { for (const c of n.children) { if (matchSel(c, sel)) out.push(c); w(c); } };
+    w(this);
+    return out;
+  }
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
 }
 function matchSel(node, sel) {
-  for (const m of String(sel || '').matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)) {
-    const actual = node.getAttribute(m[1].trim());
-    if (actual == null) return false;
-    if (m[2] != null && actual !== m[2]) return false;
-  }
-  return true;
+  return String(sel || '').split(',').some((part) => {
+    const one = part.trim().replace(/^:scope\s*>\s*/, '');
+    for (const m of one.matchAll(/\.([A-Za-z0-9_-]+)/g)) {
+      const classes = String(node.getAttribute('class') || '').split(/\s+/).filter(Boolean);
+      if (!classes.includes(m[1])) return false;
+    }
+    for (const m of one.matchAll(/\[([^\]=~^$*]+)(?:="([^"]*)")?\]/g)) {
+      const actual = node.getAttribute(m[1].trim());
+      if (actual == null) return false;
+      if (m[2] != null && actual !== m[2]) return false;
+    }
+    return true;
+  });
 }
 
 const SkID = 'atns';
@@ -581,6 +607,172 @@ await fixture('17 an unresolvable row refuses the mounted-position fallback unde
 await fixture('18 legacy record shapes still resolve', () => {
   equal(createDisplayNumberHarness({ record: { turnNo: 19 } }).call(), 19, 'turnNo still honoured');
   equal(createDisplayNumberHarness({ record: { idx: 19 } }).call(), 19, 'idx still honoured');
+});
+
+// ── 0C3a NO ANSWER lookup/idempotence contract ────────────────────────────
+// The Structure Engine creates these bars with data-cgxui/data-cgxui-owner,
+// so its production lookup selectors must use the same contract. Running the
+// real ensure/lookup/removal functions here makes the fixture fail if the old
+// abandoned class selectors return.
+function constDeclaration(source, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = source.match(new RegExp(`^  const ${escaped} = [^\\n]+;$`, 'm'));
+  if (!match) throw new Error(`production-const-missing:${name}`);
+  return match[0];
+}
+
+function structureFunctionDeclaration(source, name) {
+  const token = `  function ${name}(`;
+  const start = source.indexOf(token);
+  if (start < 0 || source.indexOf(token, start + token.length) >= 0) {
+    throw new Error(`production-function-anchor-invalid:${name}`);
+  }
+  const next = source.indexOf('\n  function ', start + token.length);
+  if (next < 0) throw new Error(`production-function-boundary-invalid:${name}`);
+  return source.slice(start, next).trimEnd();
+}
+
+function createNoAnswerStructureHarness() {
+  const root = new El('BODY');
+  const host = new El('ARTICLE');
+  host.setAttribute('data-testid', 'conversation-turn-19');
+  const question = new El('DIV');
+  question.setAttribute('data-message-author-role', 'user');
+  question.setAttribute('data-message-id', '7e60a524-96df-462c-a6c0-647ed1a9973c');
+  host.appendChild(question);
+  root.appendChild(host);
+
+  const state = { titleListActive: false };
+  const document = {
+    body: root,
+    createElement: (tag) => new El(tag),
+    querySelector: (sel) => root.querySelector(sel),
+    querySelectorAll: (sel) => root.querySelectorAll(sel),
+  };
+  const sandbox = {
+    console, Object, String, Number, Math, Map, Set, Array, RegExp, JSON,
+    document, window: { CSS: { escape: (v) => String(v) } },
+    CSS: { escape: (v) => String(v) },
+    pickAssistantMessageEl: () => null,
+    getPairedAssistantHostForQuestionHost: () => null,
+    getSharedTurnRecordByAnyId: () => ({ order: 19 }),
+    getCompleteIndexProjectionStatus: () => ({ enabled: true }),
+    listLiveChatTurnSections: () => [host],
+    getChatPageTurnRole: () => 'user',
+    getLiveChatTurnSectionForNode: (node) => node,
+    isChatPageTitleListActive: () => state.titleListActive,
+    resolveChatId: () => 'fixture-chat',
+    isTitleBarCollapsed: () => false,
+    applyNoAnswerTitleCollapsedDom: () => {},
+    renderChatPageDividers: () => {},
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+
+  const constants = [
+    'ANSWER_TITLE_SEL',
+    'ANSWER_TITLE_ICON_SEL',
+    'ANSWER_TITLE_NO_ANSWER_ATTR',
+    'ANSWER_TITLE_LABEL_SEL',
+    'ANSWER_TITLE_TEXT_SEL',
+    'ATTR_CHAT_PAGE_NO_ANSWER',
+    'ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN',
+  ];
+  const functions = [
+    'getQuestionMessageEl',
+    'getNoAnswerTitleBarEl',
+    'getStackedNoAnswerTitleBarEl',
+    'getNoAnswerTitleId',
+    'getChatPageTurnDisplayNumber',
+    'removeNoAnswerTitleBar',
+    'ensureNoAnswerTitleBar',
+  ];
+  const code = constants.map((name) => constDeclaration(MM_STRUCTURE_SOURCE, name)).join('\n')
+    + '\n' + functions.map((name) => structureFunctionDeclaration(MM_STRUCTURE_SOURCE, name)).join('\n')
+    + `\nglobalThis.__noAnswer = {
+      ensureNoAnswerTitleBar,
+      getNoAnswerTitleBarEl,
+      getStackedNoAnswerTitleBarEl,
+      removeNoAnswerTitleBar,
+      getIconEl: (bar) => bar?.querySelector?.(ANSWER_TITLE_ICON_SEL) || null,
+      titleSelector: ANSWER_TITLE_SEL,
+      iconSelector: ANSWER_TITLE_ICON_SEL,
+    };`;
+  new vm.Script(code, { filename: MM_STRUCTURE_PATH }).runInContext(sandbox);
+
+  const stampedBars = (scope = root) => scope.querySelectorAll(
+    '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]',
+  );
+  return {
+    api: sandbox.__noAnswer,
+    root,
+    host,
+    question,
+    state,
+    stampedBars,
+  };
+}
+
+await fixture('19 flow NO ANSWER ensure is idempotent and uses the production selectors', () => {
+  const h = createNoAnswerStructureHarness();
+  equal(
+    h.api.titleSelector,
+    '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]',
+    'title lookup matches the creator attribute contract',
+  );
+  equal(
+    h.api.iconSelector,
+    '[data-cgxui="atns-answer-title-icon"][data-cgxui-owner="atns"]',
+    'icon lookup matches the creator attribute contract',
+  );
+  const first = h.api.ensureNoAnswerTitleBar(h.host);
+  ok(first, 'first ensure creates the NO ANSWER bar');
+  for (let i = 0; i < 8; i += 1) {
+    equal(h.api.ensureNoAnswerTitleBar(h.host), first, `ensure ${i + 2} reuses the same node`);
+  }
+  equal(h.stampedBars(h.host).length, 1, 'repeated ensure leaves exactly one title bar');
+  equal(h.api.getNoAnswerTitleBarEl(h.host), first, 'production lookup finds the created bar');
+  equal(first.getAttribute('data-h2o-turn-num'), '19', 'bar carries the authoritative turn number');
+  equal(first.querySelector('[data-cgxui="atns-answer-title-label"]').textContent, 'TITLE 19', 'rendered label carries the turn number');
+  equal(first.querySelector('[data-cgxui="atns-answer-title-text"]').textContent, 'NO ANSWER', 'rendered title carries the NO ANSWER state');
+  equal(first.getAttribute('data-answer-id'), 'no-answer:7e60a524-96df-462c-a6c0-647ed1a9973c', 'bar carries the synthetic answer identity');
+  equal(first.getAttribute('data-message-id'), 'no-answer:7e60a524-96df-462c-a6c0-647ed1a9973c', 'message identity matches the answer identity');
+  const icon = h.api.getIconEl(first);
+  ok(icon, 'production icon lookup finds the created icon');
+  equal(icon.textContent, '⌄', 'fresh NO ANSWER bar receives its chevron');
+  equal(first.getAttribute('data-cgxui-state'), 'editable', 'fresh bar keeps the expected state decoration');
+  equal(icon.getAttribute('aria-hidden'), 'true', 'chevron keeps its accessibility decoration');
+});
+
+await fixture('20 normal removal clears the bar and remount creates exactly one replacement', () => {
+  const h = createNoAnswerStructureHarness();
+  const first = h.api.ensureNoAnswerTitleBar(h.host);
+  h.host.setAttribute('data-cgxui-chat-page-no-answer-question-hidden', '1');
+  equal(h.api.removeNoAnswerTitleBar(h.host), true, 'normal removal path completes');
+  equal(first.parentElement, null, 'the looked-up bar is removed');
+  equal(h.api.getNoAnswerTitleBarEl(h.host), null, 'lookup returns null after removal');
+  equal(h.host.getAttribute('data-cgxui-chat-page-no-answer'), null, 'NO ANSWER host stamp is cleared');
+  equal(h.host.getAttribute('data-cgxui-chat-page-no-answer-question-hidden'), null, 'hidden-question host stamp is cleared');
+  const remounted = h.api.ensureNoAnswerTitleBar(h.host);
+  ok(remounted && remounted !== first, 'remount creates one replacement node');
+  equal(h.stampedBars(h.host).length, 1, 'remount contains exactly one bar');
+  equal(remounted.getAttribute('data-answer-id'), 'no-answer:7e60a524-96df-462c-a6c0-647ed1a9973c', 'remount preserves logical identity');
+});
+
+await fixture('21 a stacked NO ANSWER bar is reused without a competing flow bar', () => {
+  const h = createNoAnswerStructureHarness();
+  const stacked = h.api.ensureNoAnswerTitleBar(h.host);
+  stacked.setAttribute('data-h2o-in-title-stack', '1');
+  stacked.setAttribute('data-h2o-stack-turn-no', '19');
+  h.root.appendChild(stacked);
+  h.state.titleListActive = true;
+  equal(h.api.getNoAnswerTitleBarEl(h.host), null, 'no flow bar remains after stack relocation');
+  equal(h.api.getStackedNoAnswerTitleBarEl(h.host), stacked, 'production stacked lookup finds the existing row');
+  for (let i = 0; i < 5; i += 1) {
+    equal(h.api.ensureNoAnswerTitleBar(h.host), stacked, `stacked ensure ${i + 1} reuses the same row`);
+  }
+  equal(h.stampedBars().length, 1, 'stacked and flow ownership leave one logical title bar');
+  equal(h.stampedBars(h.host).length, 0, 'no competing flow bar is created');
 });
 
 const failed = fixtures.filter((f) => !f.ok);

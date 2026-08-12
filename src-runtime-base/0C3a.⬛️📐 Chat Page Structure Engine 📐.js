@@ -65,8 +65,8 @@
   // in MiniMap, Thread Pages and the validators match on it. Changing either of
   // these is a DOM contract break, not a refactor.
   const UI_TOK = Object.freeze({ OWNER: 'mnmp' });
-  const ANSWER_TITLE_SEL = '.cgxui-answer-title';
-  const ANSWER_TITLE_ICON_SEL = '.cgxui-answer-title-icon';
+  const ANSWER_TITLE_SEL = '[data-cgxui="atns-answer-title"][data-cgxui-owner="atns"]';
+  const ANSWER_TITLE_ICON_SEL = '[data-cgxui="atns-answer-title-icon"][data-cgxui-owner="atns"]';
   const ANSWER_TITLE_NO_ANSWER_ATTR = 'data-cgxui-answer-title-no-answer';
   const ATTR_CHAT_PAGE_DIVIDERS = 'data-cgxui-chat-page-dividers';
   const ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
@@ -1703,12 +1703,17 @@
         pendingDividers: new Map(),
         reconcileInFlight: false,
         hydrationRequested: new Set(),
+        modelUnavailableRetry: null,
+        modelUnavailableRetryGeneration: 0,
         last: null,
       };
     }
     if (!(S.chatPageUnitState.sentinels instanceof Map)) S.chatPageUnitState.sentinels = new Map();
     if (!(S.chatPageUnitState.pendingDividers instanceof Map)) S.chatPageUnitState.pendingDividers = new Map();
     if (!(S.chatPageUnitState.hydrationRequested instanceof Set)) S.chatPageUnitState.hydrationRequested = new Set();
+    if (!Number.isFinite(Number(S.chatPageUnitState.modelUnavailableRetryGeneration))) {
+      S.chatPageUnitState.modelUnavailableRetryGeneration = 0;
+    }
     return S.chatPageUnitState;
   }
 
@@ -2526,6 +2531,21 @@
     const modelCount = Math.max(0, Number(model?.count || 0) || 0);
     const authorityCount = Math.max(0, Number(status.effectiveCount || 0) || 0);
     const effectiveFingerprint = String(status.effectiveFingerprint || '');
+    // An empty structural projection is retryable when effective authority is
+    // still positively non-empty. This is the virtualized/native-host loss
+    // observed live: it proves that the structural model is unavailable, not
+    // that the selected route has become empty. Non-empty count mismatches
+    // remain genuine incoherence below and continue to fail closed.
+    if (modelCount === 0 && authorityCount > 0) {
+      return {
+        coherent: false,
+        reason: 'structural-model-unavailable',
+        modelUnavailable: true,
+        retryable: true,
+        modelCount,
+        authorityCount,
+      };
+    }
     // Authority that cannot be read proves nothing. Incoherence has to be
     // positively demonstrated, otherwise a runtime without the effective index
     // would withdraw page units permanently.
@@ -2533,7 +2553,14 @@
       return { coherent: true, reason: 'authority-unavailable', modelCount, authorityCount };
     }
     if (modelCount !== authorityCount) {
-      return { coherent: false, reason: 'effective-count-mismatch', modelCount, authorityCount };
+      return {
+        coherent: false,
+        reason: 'effective-count-mismatch',
+        modelUnavailable: false,
+        retryable: false,
+        modelCount,
+        authorityCount,
+      };
     }
     const expansionActive = projection.branchExpansionPending === true
       || projection.branchExpansionFailClosed === true;
@@ -2611,6 +2638,72 @@
 
   function reconcileChatPageUnits(reason = 'reconcile') {
     const state = getChatPageUnitState();
+    const cancelModelUnavailableRetry = (cancelReason = 'superseded') => {
+      const retry = state.modelUnavailableRetry;
+      if (!retry) return false;
+      if (retry.timer) {
+        try { W.clearTimeout(retry.timer); } catch {}
+      }
+      retry.timer = 0;
+      retry.armed = false;
+      retry.cancelReason = String(cancelReason || 'superseded');
+      state.modelUnavailableRetry = null;
+      return true;
+    };
+    const armModelUnavailableRetry = (model = null, coherence = null) => {
+      const key = [
+        String(model?.identity || ''),
+        String(coherence?.authorityCount || 0),
+      ].join('|');
+      let retry = state.modelUnavailableRetry;
+      if (retry && retry.key !== key) {
+        cancelModelUnavailableRetry('identity-superseded');
+        retry = null;
+      }
+      if (!retry) {
+        const token = Math.max(0, Number(state.modelUnavailableRetryGeneration || 0) || 0) + 1;
+        state.modelUnavailableRetryGeneration = token;
+        retry = {
+          token,
+          key,
+          timer: 0,
+          armed: false,
+          attempts: 0,
+          maxAttempts: 40,
+          delayMs: 250,
+          exhausted: false,
+          cancelReason: null,
+        };
+        state.modelUnavailableRetry = retry;
+      }
+      if (retry.timer || retry.exhausted) return retry;
+      if (retry.attempts >= retry.maxAttempts) {
+        retry.exhausted = true;
+        retry.armed = false;
+        return retry;
+      }
+      const token = retry.token;
+      let timerId = 0;
+      try {
+        timerId = W.setTimeout(() => {
+          const liveState = getChatPageUnitState();
+          const liveRetry = liveState.modelUnavailableRetry;
+          if (!liveRetry || liveRetry.token !== token || liveRetry.timer !== timerId) return;
+          liveRetry.timer = 0;
+          liveRetry.armed = false;
+          liveRetry.attempts += 1;
+          try {
+            const renderPublicPageStructure = renderChatPageDividers;
+            if (typeof renderPublicPageStructure === 'function') {
+              renderPublicPageStructure(resolveChatId());
+            }
+          } catch {}
+        }, retry.delayMs);
+      } catch { timerId = 0; }
+      retry.timer = timerId;
+      retry.armed = !!timerId;
+      return retry;
+    };
     if (state.reconcileInFlight) {
       return state.last || {
         reason: String(reason || 'reconcile'),
@@ -2629,6 +2722,72 @@
       const transitionActive = chatPageUnitBranchTransitionActive();
       const coherence = chatPageUnitPresentationCoherence(model);
       if (transitionActive || coherence.coherent !== true) {
+        const modelUnavailable = transitionActive !== true
+          && coherence.modelUnavailable === true
+          && coherence.modelCount === 0
+          && coherence.authorityCount > 0;
+        if (modelUnavailable) {
+          const retry = armModelUnavailableRetry(model, coherence);
+          const stats = {
+            reason: String(reason || 'reconcile'),
+            identity: '',
+            source: String(model?.source || 'canonical'),
+            count: 0,
+            pageCount: 0,
+            created: 0,
+            moved: 0,
+            removed: 0,
+            deferred: 0,
+            hydrationRequests: 0,
+            pages: [],
+            order: [],
+            ascending: true,
+            placementRepairPending: 0,
+            status: 'branch-transition-withdrawn',
+            withdrawn: true,
+            recoverable: true,
+            modelUnavailable: true,
+            recoveryPending: retry?.armed === true,
+            recoveryExhausted: retry?.exhausted === true,
+            recoveryAttempt: Number(retry?.attempts || 0),
+            recoveryMaxAttempts: Number(retry?.maxAttempts || 0),
+            recoveryDelayMs: Number(retry?.delayMs || 0),
+            withdrawalReason: coherence.reason,
+            branchTransition: false,
+            presentationCoherent: false,
+            authorityCount: coherence.authorityCount,
+          };
+          // Keep the last valid divider DOM untouched. The unavailable model
+          // cannot create or settle anything, but it also cannot prove that a
+          // previously valid Page 2 ceased to exist. Diagnostics truthfully
+          // replace the settled snapshot until the bounded public retry wins.
+          state.last = Object.freeze({
+            ...stats,
+            pages: Object.freeze([]),
+            order: Object.freeze([]),
+          });
+          if (typeof setChatPageUnitAttributeIfChanged === 'function') {
+            setChatPageUnitAttributeIfChanged(
+              document.documentElement,
+              'data-h2o-page-unit-ordering-status',
+              stats.status,
+            );
+            setChatPageUnitAttributeIfChanged(
+              document.documentElement,
+              'data-h2o-page-unit-ordering-count',
+              '0',
+            );
+          } else {
+            try {
+              document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', stats.status);
+              document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', '0');
+            } catch {}
+          }
+          return state.last;
+        }
+        cancelModelUnavailableRetry(
+          transitionActive ? 'branch-transition-active' : 'genuine-incoherence',
+        );
         const projection = getCompleteIndexProjectionStatus();
         const transitionReason = projection.branchExpansionFailClosed === true
           ? 'branch-expansion-fail-closed'
@@ -2683,6 +2842,7 @@
         }
         return stats;
       }
+      cancelModelUnavailableRetry('settled');
       const candidatesByPage = new Map();
       for (const divider of getActualThreadPageDividers()) {
         const pageNum = pageNumberOfThreadDivider(divider);
@@ -2831,6 +2991,21 @@
       const keepCoreDividers = new Set();
       const { sections } = buildChatPageSections();
       if (!sections.size && !(Array.isArray(S.turnList) && S.turnList.length)) {
+        const emptyModel = buildChatPageUnitModel();
+        const emptyCoherence = chatPageUnitPresentationCoherence(emptyModel);
+        if (
+          chatPageUnitBranchTransitionActive() !== true
+          && emptyCoherence.modelUnavailable === true
+          && emptyCoherence.modelCount === 0
+          && emptyCoherence.authorityCount > 0
+        ) {
+          // Public render is also a valid first observer of temporary model
+          // loss. Re-enter the canonical coordinator to publish truthful
+          // withdrawn diagnostics and arm its single bounded retry; preserve
+          // existing dividers until a coherent model can adjudicate them.
+          reconcileChatPageUnits('renderChatPageDividers:model-unavailable');
+          return false;
+        }
         for (const divider of existingCoreDividers) {
           try { divider.remove(); } catch {}
         }

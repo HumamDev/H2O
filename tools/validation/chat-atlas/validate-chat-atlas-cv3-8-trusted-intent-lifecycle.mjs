@@ -2555,6 +2555,109 @@ await fixture('bounded intent lifetime survives remount budget then expires', ()
   assertSafe(runtime);
 });
 
+await fixture('transient missing anchor retains exact trusted ownership until remount or the transaction ceiling', () => {
+  // Live Turn-26 shape: the native click is trusted and opens the keyed branch
+  // transaction, then React temporarily unmounts the anchor together with the
+  // downstream branch. Empty native membership is not weaker proof — it still
+  // fails acquisition — but it must remain retryable while the exact pending
+  // transaction owns the same token and scope.
+  const recovering = createRuntime();
+  equal(recovering.api.capture(branchEvent({
+    direction: 'next',
+    timeStamp: 750,
+    answerIds: [A17_CANONICAL],
+  })), true, 'trusted native selection is captured');
+  const token = recovering.api.snapshot().intent.token;
+  const missing = recovering.api.evaluate([]);
+  equal(missing.status, 'failed', 'missing native anchor still fails acquisition');
+  equal(missing.reason, 'anchor-member-missing', 'missing anchor reason remains exact');
+  equal(recovering.api.snapshot().complete.branchTransactionStateCode, 'pending', 'matching branch transaction stays pending');
+
+  recovering.advance(5_001);
+  equal(
+    recovering.api.currentIntent(Q17)?.token,
+    token,
+    'TRANSIENT_ANCHOR_MISSING_INTENT_EXPIRED_TOO_EARLY: exact pending transaction must retain the trusted intent past 5s',
+  );
+  const held = recovering.api.snapshot();
+  equal(held.acquisition.status, 'failed', 'anchor proof is not weakened during the unavailable window');
+  equal(held.acquisition.reason, 'anchor-member-missing', 'failed acquisition remains classified as missing anchor');
+  equal(held.complete.branchTransactionStateCode, 'pending', 'the same transaction still owns retryability');
+  equal(held.intent.token, token, 'no newer token supersedes the held intent');
+
+  // This is the normal Ledger/native-evidence path. The fixture does not call
+  // overlay publication or mutate acquisition state directly.
+  recovering.api.apply(selectedPathRead(), 'native-anchor-remounted');
+  const recovered = recovering.api.snapshot();
+  equal(recovered.acquisition.status, 'proven', 'remounted exact anchor proves acquisition');
+  equal(recovered.acquisition.reason, 'selected-path-proven', 'proof uses the canonical acquisition result');
+  equal(recovered.overlay.overlayActive, true, 'selected-path overlay publishes atomically');
+  equal(recovered.effective.turns.length, 18, 'effective route switches wholly to the selected branch');
+  equal(recovered.coreTurns.length, 18, 'Core publishes the same complete selected route');
+  equal(recovered.complete.branchTransactionStateCode, 'published', 'transaction closes only on publication');
+  equal(recovering.api.suppressesLiveAppend(), false, 'branch-transition gate becomes inactive after publication');
+  equal(
+    recovered.effective.turns.map((turn) => turn.qId).join('|'),
+    recovered.coreTurns.map((turn) => turn.qId).join('|'),
+    'effective and Core routes contain no hybrid identity sequence',
+  );
+  assertSafe(recovering);
+
+  // The hold is bounded by the existing 90-second transaction authority. If
+  // the anchor never returns, the transaction becomes fail-closed and the
+  // intent/acquisition/lease cannot remain live forever.
+  const absentForever = createRuntime();
+  absentForever.api.capture(branchEvent({ timeStamp: 751 }));
+  absentForever.api.evaluate([]);
+  absentForever.advance(90_001);
+  equal(absentForever.api.currentIntent(Q17), null, 'missing anchor cannot survive the bounded transaction ceiling');
+  const capped = absentForever.api.snapshot();
+  equal(capped.acquisition.reason, 'trusted-intent-expired', 'ceiling retires the unavailable acquisition safely');
+  equal(capped.complete.branchTransactionStateCode, 'fail-closed', 'ceiling fails the transaction closed');
+  equal(capped.complete.selectedPathRequestLeaseActive, false, 'no selected-path request lease remains after the ceiling');
+  assertSafe(absentForever);
+
+  // Ambiguity is not temporary absence: two native members retain the exact
+  // fail-closed classification and publish nothing.
+  const ambiguous = createRuntime();
+  ambiguous.api.capture(branchEvent({ timeStamp: 752 }));
+  const ambiguousResult = ambiguous.api.evaluate([
+    { question: { currentQId: Q17 }, answer: { currentProjectionSource: 'native-evidence', currentAnswerIds: [A17_SELECTED] } },
+    { question: { currentQId: Q17 }, answer: { currentProjectionSource: 'native-evidence', currentAnswerIds: [A17_SELECTED] } },
+  ]);
+  equal(ambiguousResult.status, 'failed', 'ambiguous native membership fails acquisition');
+  equal(ambiguousResult.reason, 'anchor-member-ambiguous', 'ambiguity never receives missing-anchor classification');
+  equal(ambiguous.api.snapshot().overlay.overlayActive, false, 'ambiguous anchor publishes no overlay');
+  assertSafe(ambiguous);
+
+  // A genuinely newer trusted click replaces the held token immediately; a
+  // stale missing-anchor evaluation can never recover under the old owner.
+  const superseded = createRuntime();
+  superseded.api.capture(branchEvent({ timeStamp: 753 }));
+  superseded.api.evaluate([]);
+  const oldToken = superseded.api.snapshot().intent.token;
+  superseded.advance(5_001);
+  superseded.api.capture(branchEvent({
+    direction: 'previous',
+    timeStamp: 754,
+    answerIds: [A17_SELECTED],
+  }));
+  const newer = superseded.api.snapshot();
+  ok(newer.intent.token !== oldToken, 'newer native capture supersedes the held missing-anchor token');
+  equal(newer.complete.branchTransactionStateCode, 'pending', 'new token owns a fresh pending transaction');
+  assertSafe(superseded);
+
+  // Route/generation scope remain hard fail-closed guards even when the last
+  // acquisition failure was the otherwise-transient missing-anchor case.
+  const wrongGeneration = createRuntime();
+  wrongGeneration.api.capture(branchEvent({ timeStamp: 755 }));
+  wrongGeneration.api.evaluate([]);
+  wrongGeneration.api.setGeneration(2);
+  equal(wrongGeneration.api.currentIntent(Q17), null, 'generation drift clears missing-anchor ownership');
+  equal(wrongGeneration.api.snapshot().overlay.overlayActive, false, 'generation-drifted evidence publishes nothing');
+  assertSafe(wrongGeneration);
+});
+
 await fixture('route and generation drift clear ownership and reject late evidence', () => {
   const routeRuntime = createRuntime();
   routeRuntime.api.capture(branchEvent({ timeStamp: 800 }));

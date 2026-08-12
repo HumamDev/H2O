@@ -105,6 +105,26 @@ function extractFunction(source, name) {
   throw new Error(`function-boundary-invalid:${name}`);
 }
 
+function extractNestedFunction(source, name) {
+  const anchor = `function ${name}(`;
+  const start = source.indexOf(anchor);
+  if (start < 0 || source.indexOf(anchor, start + anchor.length) >= 0) throw new Error(`nested-function-anchor-invalid:${name}`);
+  const bodyStart = source.indexOf('{', source.indexOf(')', start));
+  let d = 0, q = '', esc = false, lc = false, bc = false;
+  for (let i = bodyStart; i < source.length; i += 1) {
+    const c = source[i], n = source[i + 1];
+    if (lc) { if (c === '\n') lc = false; continue; }
+    if (bc) { if (c === '*' && n === '/') { bc = false; i += 1; } continue; }
+    if (q) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === q) q = ''; continue; }
+    if (c === '/' && n === '/') { lc = true; i += 1; continue; }
+    if (c === '/' && n === '*') { bc = true; i += 1; continue; }
+    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
+    if (c === '{') d += 1;
+    else if (c === '}' && --d === 0) return source.slice(start, i + 1);
+  }
+  throw new Error(`nested-function-boundary-invalid:${name}`);
+}
+
 // 0A3a declares its Ledger-service forwards as `const x = (...) => ...` rather
 // than function declarations, precisely so they cannot collide with the real
 // implementations under a `  function <name>(` scan. Extracting them needs its
@@ -183,7 +203,12 @@ const BOUNDARY_ATTR = 'data-h2o-chat-page-boundary';
 //   effectiveCount — authoritative effective count (mismatch => incoherent)
 //   effectiveFp    — authoritative effective fingerprint
 //   transition     — projection transition flags
+//   transitionStatus — optional live projection transition reader
+//   overlayActive  — effective presentation is a settled selected-path overlay
 //   units          — which page units to pre-mount (default from turns)
+//   realStructuralModel — execute production buildChatPageUnitModel through the
+//                         mmHost().getTurnList() dependency instead of the
+//                         narrow count-only model used by the gate fixtures
 function makeHarness(options = {}) {
   const turns = Number(options.turns ?? 39);
   const effectiveCount = Number(options.effectiveCount ?? turns);
@@ -213,8 +238,27 @@ function makeHarness(options = {}) {
   };
   document.documentElement.isConnected = true;
 
-  const S = { turnList: new Array(turns).fill(null).map((_, i) => ({ order: i + 1 })), chatPageUnitState: null };
+  const makeStructuralTurns = (count) => new Array(count).fill(null).map((_, i) => ({
+    order: i + 1,
+    turnNo: i + 1,
+    qId: `q-${i + 1}`,
+    questionId: `q-${i + 1}`,
+    primaryAId: `a-${i + 1}`,
+    answerId: `a-${i + 1}`,
+    turnId: `turn:q-${i + 1}`,
+  }));
+  const structuralHost = {
+    turns: makeStructuralTurns(turns),
+    getTurnList() { return this.turns; },
+  };
+  const mmHostBridge = () => structuralHost;
+  const S = { chatPageUnitState: null };
+  Object.defineProperty(S, 'turnList', {
+    enumerable: true,
+    get() { return mmHostBridge()?.getTurnList?.() || []; },
+  });
   const W = { location: { pathname: ROUTE_KEY } };
+  const overlayActive = options.overlayActive === true;
 
   const enforceCalls = [];
   const sandbox = {
@@ -228,7 +272,7 @@ function makeHarness(options = {}) {
     callEffectiveTurnRuntime: (verb) => {
       if (verb === 'STATUS') {
         return {
-          source: 'canonical', overlayActive: false, count: effectiveCount,
+          source: overlayActive ? 'selected-path-overlay' : 'canonical', overlayActive, count: effectiveCount,
           canonicalFingerprint: CANONICAL_FP, anchorQId: null, pathLength: 0, generation: 7,
         };
       }
@@ -241,7 +285,7 @@ function makeHarness(options = {}) {
       getCompleteTurnIndexProjectionStatus: () => Object.assign({
         enabled: true, authoritative: true, status: 'authoritative', chatId: CHAT_ID,
         count: effectiveCount, source: 'complete-index', fingerprint: effectiveFp, routeGeneration: 7,
-      }, transition),
+      }, typeof options.transitionStatus === 'function' ? options.transitionStatus() : transition),
     }),
     // Instrumented ordering enforcer: any call proves the gate did NOT hold.
     enforceChatPageUnitOrder: (model, candidatesByPage, reason) => {
@@ -256,6 +300,10 @@ function makeHarness(options = {}) {
         state: String(options.pageHeadState || 'match'),
       }),
     }),
+    mmHost: mmHostBridge,
+    resolveChatPageExactArtifact: () => null,
+    getPageStartTurnWrapper: () => null,
+    getChatPageTitleListRoot: () => null,
     setChatPageUnitAttributeIfChanged: (node, name, value) => {
       if (!node || !name) return false;
       if (value == null) { if (!node.hasAttribute(name)) return false; node.removeAttribute(name); return true; }
@@ -272,9 +320,12 @@ function makeHarness(options = {}) {
     'createChatPageBoundarySentinel', 'chatPageUnitBranchTransitionActive',
     'chatPageUnitPresentationCoherence', 'withdrawChatPageUnits', 'reconcileChatPageUnits',
   ];
-  const src = names.map((n) => extractFunction(CORE_SOURCE, n)).join('\n')
-    + `\nconst CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = ${String(CORE_SOURCE.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = (.+);/)[1])};`
-    + `\nfunction buildChatPageUnitModel(){
+  const buildModelSource = options.realStructuralModel === true
+    ? [
+      extractFunction(STRUCTURE_SOURCE, 'chatPageRecordOrder'),
+      extractFunction(STRUCTURE_SOURCE, 'buildChatPageUnitModel'),
+    ].join('\n')
+    : `function buildChatPageUnitModel(){
         const count = S.turnList.length;
         const pageCount = count > 0 ? Math.ceil(count / 25) : 0;
         const pages = [];
@@ -282,7 +333,10 @@ function makeHarness(options = {}) {
           pages.push({ pageNum: p, startOrder: ((p - 1) * 25) + 1, endOrder: Math.min(count, p * 25) });
         }
         return Object.freeze({ identity: chatPageUnitIdentity(), chatId: '${CHAT_ID}', source: 'canonical', count, pageCount, pages });
-      }`
+      }`;
+  const src = names.map((n) => extractFunction(CORE_SOURCE, n)).join('\n')
+    + `\nconst CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = ${String(CORE_SOURCE.match(/const CHAT_PAGE_BOUNDARY_SENTINEL_VALUE = (.+);/)[1])};`
+    + `\n${buildModelSource}`
     + `\nglobalThis.__api = { ${names.join(', ')}, buildChatPageUnitModel };`;
   new vm.Script(src, { filename: CORE_PATH }).runInContext(sandbox);
 
@@ -312,7 +366,134 @@ function makeHarness(options = {}) {
     sentinels: () => root.querySelectorAll(`[${BOUNDARY_ATTR}]`),
     unit: (page, kind) => root.querySelectorAll(`[${BOUNDARY_ATTR}="page-${page}-${kind}"]`)[0] || null,
     divider: (page) => root.querySelectorAll(`.cgxui-chat-page-divider[data-page-num="${page}"]`)[0] || null,
-    setTurns: (n) => { S.turnList = new Array(n).fill(null).map((_, i) => ({ order: i + 1 })); },
+    setTurns: (n) => { structuralHost.turns = makeStructuralTurns(Math.max(0, Number(n || 0) || 0)); },
+    structuralHost,
+  };
+}
+
+// Public 0C3a recovery world for the live empty-turn-list failure. Unlike the
+// narrow gate fixtures above, this world executes production
+// buildChatPageUnitModel(), presentation coherence, reconciliation and
+// renderChatPageDividers(). The mutable structural source is the same
+// mmHost().getTurnList() seam used by 0C3a; effective authority remains fixed.
+// Timers are deterministic and recorded so recovery can only occur through a
+// callback production itself scheduled.
+function makeTemporaryStructuralModelRecoveryWorld() {
+  const page = makeHarness({
+    turns: 37,
+    effectiveCount: 37,
+    effectiveFp: FP_39,
+    realStructuralModel: true,
+  });
+  let now = 0;
+  let nextTimerId = 1;
+  const timers = new Map();
+  const timerTrace = [];
+  const scheduleTimer = (callback, delay = 0) => {
+    const boundedDelay = Math.max(0, Number(delay || 0) || 0);
+    const id = nextTimerId++;
+    timers.set(id, { id, callback, delay: boundedDelay, due: now + boundedDelay });
+    timerTrace.push({ event: 'scheduled', id, delay: boundedDelay, at: now });
+    return id;
+  };
+  const clearTimer = (id) => {
+    if (!timers.has(id)) return;
+    timers.delete(id);
+    timerTrace.push({ event: 'cleared', id, at: now });
+  };
+  const runNextTimer = () => {
+    const task = Array.from(timers.values()).sort((a, b) => a.due - b.due || a.id - b.id)[0] || null;
+    if (!task) return false;
+    timers.delete(task.id);
+    now = Math.max(now, task.due);
+    timerTrace.push({ event: 'fired', id: task.id, delay: task.delay, at: now });
+    task.callback();
+    return true;
+  };
+  const flushImmediateTimers = () => {
+    let fired = 0;
+    while (fired < 50) {
+      const task = Array.from(timers.values())
+        .filter((entry) => entry.due <= now)
+        .sort((a, b) => a.id - b.id)[0] || null;
+      if (!task) break;
+      timers.delete(task.id);
+      timerTrace.push({ event: 'fired', id: task.id, delay: task.delay, at: now });
+      task.callback();
+      fired += 1;
+    }
+    return fired;
+  };
+  const pendingRecoveryTimers = () => Array.from(timers.values())
+    .filter((entry) => entry.delay > 0)
+    .sort((a, b) => a.due - b.due || a.id - b.id);
+
+  page.sandbox.W.setTimeout = scheduleTimer;
+  page.sandbox.W.clearTimeout = clearTimer;
+  page.sandbox.setTimeout = scheduleTimer;
+  page.sandbox.clearTimeout = clearTimer;
+  Object.assign(page.sandbox, {
+    qq: (selector, root = page.document) => Array.from(root.querySelectorAll(selector)),
+    escAttr: (value) => String(value || ''),
+    bindDividerScrollRepairOnce: () => {},
+    bindDividerOrderObserverOnce: () => {},
+    enterPerfOwner: () => false,
+    exitPerfOwner: () => {},
+    perfNow: () => now,
+    getPaginationState: () => null,
+    buildChatPageSections: () => ({ sections: new Map(), allHosts: [] }),
+    syncNoAnswerTitleBars: () => {},
+    getChatPageSectionCollapsedState: () => false,
+    getTurnPageBand: () => 'normal',
+    createChatPageDivider: (pageNum) => {
+      const divider = new El('DIV', 'cgxui-chat-page-divider');
+      divider.setAttribute('data-cgxui-owner', OWNER);
+      divider.setAttribute('data-cgxui-chat-page-divider', '1');
+      divider.setAttribute('data-page-num', String(pageNum));
+      return divider;
+    },
+    setChatPageDividerDomState: (divider, _collapsed, pageNum) => {
+      divider.setAttribute('data-page-num', String(pageNum));
+      divider.setAttribute('data-cgxui-chat-page-num', String(pageNum));
+    },
+    noteNodeLifecycle: () => {},
+    noteRenderUnit: () => {},
+    recordDuration: () => {},
+    noteSummaryBucket: () => {},
+    getChatPageDividersEnabled: () => true,
+    getPreviousChatPageAnchorHost: () => null,
+    applyChatPageDividerGeometry: () => {},
+    applyChatPageDividerVisuals: () => {},
+    requestAnimationFrame: (callback) => scheduleTimer(callback, 16),
+  });
+  new vm.Script(`
+    const ATTR_CHAT_PAGE_DIVIDERS = 'data-cgxui-chat-page-dividers';
+    const PERF = { paths: { renderChatPageDividers: {} }, dividerUi: {} };
+    let dividerRenderInFlight = false;
+    ${extractFunction(STRUCTURE_SOURCE, 'renderChatPageDividers')}
+    globalThis.__publicPageRecoveryApi = Object.freeze({
+      renderDividers: renderChatPageDividers,
+    });
+  `, { filename: `${STRUCTURE_PATH}:temporary-model-public-render` }).runInContext(page.sandbox);
+
+  const runPublicPageStructurePass = (reason) => {
+    const reconciliation = page.api.reconcileChatPageUnits(reason);
+    const rendered = page.sandbox.__publicPageRecoveryApi.renderDividers(CHAT_ID);
+    return { reconciliation, rendered };
+  };
+  const runProductionCallbacks = (limit = 50) => {
+    let fired = 0;
+    while (fired < limit && runNextTimer()) fired += 1;
+    return fired;
+  };
+  return {
+    page,
+    runPublicPageStructurePass,
+    flushImmediateTimers,
+    runProductionCallbacks,
+    pendingRecoveryTimers,
+    timerTrace,
+    pendingTimers: () => Array.from(timers.values()),
   };
 }
 
@@ -1267,6 +1448,707 @@ await fixture('stage-2c E: route reset still clears acquisition normally', () =>
   const clear = extractFunction(CORE0_SOURCE, 'chatAtlasClearSelectedPathAcquisition');
   ok(!clear.includes('chatAtlasSelectedPathPublishedForToken'),
     'the clear primitive itself is unguarded, so resets still work');
+});
+
+// ── Expired trusted-intent request-lease ownership ────────────────────────
+// The page-unit gate remains fail-closed on a live lease. The repair belongs
+// in 0A3a's lifecycle owner: retire only a matching lease after its work no
+// longer owns the expiring intent, and never touch a newer token.
+function requestLeaseWorld({ leaseToken = 'token-old', ownsIntent = false } = {}) {
+  const clears = [];
+  const state = {
+    selectedPathRequestLease: {
+      evidence: { selectionToken: leaseToken, qId: 'q-branch' },
+    },
+  };
+  const sandbox = {
+    state,
+    String,
+    selectedPathRequestOwnsIntent: () => ownsIntent,
+    clearSelectedPathRequestLease: (reason) => {
+      const lease = state.selectedPathRequestLease;
+      if (!lease) return;
+      clears.push({ reason, token: lease.evidence.selectionToken });
+      state.selectedPathRequestLease = null;
+    },
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(
+    extractNestedFunction(ATLAS_CORE_SOURCE, 'clearExpiredSelectedPathRequestLeaseForIntent')
+      + '\nglobalThis.__release = clearExpiredSelectedPathRequestLeaseForIntent;',
+    { filename: `${CORE0_PATH}:expired-request-lease` },
+  ).runInContext(sandbox);
+  return {
+    release: sandbox.__release,
+    active: () => !!state.selectedPathRequestLease,
+    clears,
+  };
+}
+
+function trustedIntentExpiryWorld({
+  leaseToken = 'token-old',
+  ownsIntent = false,
+  refetchOwned = false,
+  published = false,
+} = {}) {
+  const lease = requestLeaseWorld({ leaseToken, ownsIntent });
+  const intent = Object.freeze({
+    token: 'token-old', observedAt: 0, qId: 'q-branch', chatId: 'chat',
+    routeKey: '/c/chat', generation: 3, staleRevision: 7,
+  });
+  const traces = [];
+  let acquisitionClears = 0;
+  class FixtureDate extends Date { static now() { return 6001; } }
+  const sandbox = {
+    completeTurnIndexAuthorityState: {
+      trustedSelectedPathIntent: intent,
+      branchExpansionState: 'idle', branchExpansionLease: null,
+      enabled: true, chatId: 'chat', routeKey: '/c/chat', generation: 3,
+    },
+    selectedPathAcquisitionState: {
+      token: 'token-old', anchorQId: 'q-branch', chatId: 'chat', routeKey: '/c/chat',
+      generation: 3, staleRevision: 7,
+      refetchAttemptedForToken: refetchOwned ? 'token-old' : null,
+      refetchActiveForToken: refetchOwned ? 'token-old' : null,
+    },
+    completeIndexRefreshCoordinator: {
+      selectedPathRequestOwnsIntent: () => ownsIntent,
+      clearExpiredSelectedPathRequestLeaseForIntent: (...args) => lease.release(...args),
+    },
+    COMPLETE_TURN_INDEX_REFRESH_LIMITS: { trustedSelectionWindowMs: 5000 },
+    CHAT_ATLAS_BRANCH_EXPANSION_MAX_MS: 12000,
+    chatAtlasCompleteIndexIdentity: (value) => String(value || '').trim(),
+    chatAtlasPreExpansionCanonicalReturnWindow: () => Object.freeze({ active: false }),
+    chatAtlasBranchTransactionCurrent: () => published
+      ? Object.freeze({ state: 'published', token: 'token-old' })
+      : null,
+    chatAtlasSelectedPathPublishedForToken: () => published,
+    chatAtlasClearSelectedPathAcquisition: () => { acquisitionClears += 1; },
+    chatAtlasTraceTrustedLifecycle: (event, detail) => traces.push({ event, detail }),
+    chatAtlasFailClosedPreExpansionReturn: () => { throw new Error('unexpected-pre-expansion-return'); },
+    Date: FixtureDate, Math, String, Number, Object, Array,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(
+    extractFunction(ATLAS_CORE_SOURCE, 'chatAtlasCurrentTrustedNativeBranchSelection')
+      + '\nglobalThis.__expire = chatAtlasCurrentTrustedNativeBranchSelection;',
+    { filename: `${CORE0_PATH}:trusted-intent-expiry` },
+  ).runInContext(sandbox);
+  return {
+    expire: sandbox.__expire,
+    state: sandbox.completeTurnIndexAuthorityState,
+    lease,
+    traces,
+    acquisitionClearCount: () => acquisitionClears,
+  };
+}
+
+await fixture('lease-expiry A: live pending work retains its request lease and page-unit withdrawal', () => {
+  const world = trustedIntentExpiryWorld({ ownsIntent: true, refetchOwned: true });
+  equal(world.expire('q-branch')?.token, 'token-old', 'owned work keeps the intent authoritative beyond capture age');
+  equal(world.lease.active(), true, 'live request lease remains active');
+  equal(world.lease.clears.length, 0, 'live request lease is not cleared');
+  const h = makeHarness({ turns: 26, effectiveCount: 26, transition: { selectedPathRequestLeaseActive: world.lease.active() } });
+  h.mountUnits(2);
+  const result = h.api.reconcileChatPageUnits('pending-request-lease');
+  equal(result.status, 'branch-transition-withdrawn', 'pending lease still withholds page-unit settlement');
+  equal(h.enforceCalls.length, 0, 'pending lease still blocks placement');
+});
+
+await fixture('lease-expiry B: matching stale lease clears and coherent page units can settle', () => {
+  const world = trustedIntentExpiryWorld();
+  equal(world.expire('q-branch'), null, 'expired intent retires');
+  equal(world.lease.active(), false, 'matching stale request lease clears');
+  equal(world.lease.clears.at(-1)?.reason, 'trusted-intent-expired', 'existing clear primitive receives the expiry reason');
+  equal(world.acquisitionClearCount(), 1, 'unpublished acquisition follows its existing expiry cleanup');
+  const h = makeHarness({ turns: 26, effectiveCount: 26, transition: { selectedPathRequestLeaseActive: world.lease.active() } });
+  h.mountUnits(2);
+  const result = h.api.reconcileChatPageUnits('expired-request-lease');
+  equal(result.status === 'branch-transition-withdrawn', false, 'the transition gate can settle');
+  equal(h.enforceCalls.at(-1)?.pageCount, 2, 'the coherent 26-turn route can rebuild two page units');
+});
+
+await fixture('lease-expiry C: expiry of an old intent cannot clear a newer request lease', () => {
+  const world = trustedIntentExpiryWorld({ leaseToken: 'token-new' });
+  equal(world.expire('q-branch'), null, 'old intent still expires');
+  equal(world.lease.active(), true, 'newer request lease remains active');
+  equal(world.lease.clears.length, 0, 'no clear primitive is called for a token mismatch');
+});
+
+await fixture('lease-expiry D: published overlay survives expiry without a stale matching lease', () => {
+  const world = trustedIntentExpiryWorld({ published: true });
+  equal(world.expire('q-branch'), null, 'published selection intent expires normally');
+  equal(world.state.trustedSelectedPathIntent, null, 'published selection retires only the intent');
+  equal(world.lease.active(), false, 'matching stale request lease no longer survives publication expiry');
+  equal(world.acquisitionClearCount(), 0, 'published acquisition remains owned and untouched');
+  equal(world.traces.at(-1)?.event, 'trusted-intent-expired', 'expiry lifecycle trace remains exact');
+  equal(world.traces.at(-1)?.detail?.reason, 'age-window-exceeded', 'expiry reason remains exact');
+});
+
+// ── Production scheduling of trusted-intent expiry ───────────────────────
+// The predicate fixtures above intentionally call the reader at t+6001. This
+// world instead drives the real capture -> t+0 reconcile -> transaction path
+// and then fires only timers that those production bodies actually schedule.
+// Its coordinator seam models the live terminal shape: the trusted request was
+// accepted (and therefore legitimately leased), publication work quiesced, but
+// the matching lease remained. It never manufactures an expiry callback.
+function productionSchedulingExpiryWorld(options = {}) {
+  const startAt = 1000;
+  let now = startAt;
+  let nextTimerId = 1;
+  const timers = new Map();
+  const timerTrace = [];
+  const scheduleTimer = (callback, delayRaw = 0) => {
+    const delay = Math.max(0, Number(delayRaw || 0));
+    const id = nextTimerId;
+    nextTimerId += 1;
+    timers.set(id, { id, callback, delay, dueAt: now + delay, cleared: false });
+    timerTrace.push({ event: 'scheduled', id, at: now, delay, dueAt: now + delay });
+    return id;
+  };
+  const clearTimer = (id) => {
+    const timer = timers.get(id);
+    if (!timer || timer.cleared) return;
+    timer.cleared = true;
+    timerTrace.push({ event: 'cleared', id, at: now, delay: timer.delay, dueAt: timer.dueAt });
+  };
+  const pendingTimers = () => Array.from(timers.values())
+    .filter((timer) => !timer.cleared)
+    .sort((a, b) => a.dueAt - b.dueAt || a.id - b.id);
+  const runDue = () => {
+    let ran = 0;
+    while (true) {
+      const timer = pendingTimers().find((candidate) => candidate.dueAt <= now);
+      if (!timer) break;
+      timer.cleared = true;
+      timerTrace.push({ event: 'fired', id: timer.id, at: now, delay: timer.delay, dueAt: timer.dueAt });
+      timer.callback();
+      ran += 1;
+    }
+    return ran;
+  };
+  const advanceTo = (value) => { now = Math.max(now, Number(value || 0)); };
+
+  class FixtureDate extends Date { static now() { return now; } }
+  const qId = 'q-branch';
+  const oldAnswerId = 'a-old';
+  const route = { chatId: 'chat', routeKey: '/c/chat' };
+  const state = {
+    enabled: true,
+    chatId: route.chatId,
+    routeKey: route.routeKey,
+    generation: 3,
+    index: {
+      sourceFingerprint: 'djb2:production-scheduling-baseline',
+      turns: [{
+        order: 26,
+        qId,
+        primaryAId: oldAnswerId,
+        answerVariants: [oldAnswerId, 'a-new'],
+      }],
+    },
+    nativeConvergenceActivating: false,
+    nativeConvergenceState: null,
+    trustedSelectionSequence: 0,
+    trustedSelectionCaptureCount: 0,
+    trustedSelectedPathIntent: null,
+    trustedNativeReconcileTask: null,
+    branchExpansionState: 'idle',
+    branchExpansionLease: null,
+    branchSelectionStale: false,
+    branchSelectionStaleRevision: 0,
+    branchSelectionStaleQId: '',
+    branchSelectionStaleChatId: '',
+    branchSelectionStaleRouteKey: '',
+    branchSelectionStaleGeneration: 0,
+    branchTransactionState: null,
+    branchTransactionSeq: 0,
+    branchTransactionTrace: [],
+  };
+  const lifecycleTrace = [];
+  const coordinatorTrace = [];
+  const notificationTrace = [];
+  const coordinatorState = {
+    selectedPathRequestLease: null,
+    matchingWork: false,
+  };
+  const selectedPathAcquisitionState = {
+    token: null,
+    anchorQId: null,
+    chatId: route.chatId,
+    routeKey: route.routeKey,
+    generation: 3,
+    staleRevision: 0,
+    refetchAttemptedForToken: null,
+    refetchActiveForToken: null,
+    graph: null,
+  };
+
+  const messageNode = (id, role) => ({
+    getAttribute: (name) => (name === 'data-message-id'
+      ? id
+      : (name === 'data-message-author-role' ? role : null)),
+  });
+  const scope = {
+    getAttribute: (name) => (name === 'data-testid' ? 'conversation-turn-26' : null),
+    querySelectorAll: (selector) => selector === '[data-message-id]'
+      ? [messageNode(qId, 'user'), messageNode(oldAnswerId, 'assistant')]
+      : [],
+  };
+  const button = {
+    tagName: 'BUTTON',
+    getAttribute: (name) => (name === 'aria-label' ? 'Previous response' : null),
+    closest: (selector) => selector === '[data-testid^="conversation-turn-"]' ? scope : null,
+  };
+  const event = {
+    isTrusted: true,
+    target: button,
+    composedPath: () => [button],
+    timeStamp: 77,
+    type: 'click',
+    detail: 1,
+    button: 0,
+    pointerId: 4,
+  };
+
+  const sandbox = {
+    completeTurnIndexAuthorityState: state,
+    selectedPathAcquisitionState,
+    COMPLETE_TURN_INDEX_REFRESH_LIMITS: { trustedSelectionWindowMs: 5000 },
+    CHAT_ATLAS_BRANCH_EXPANSION_MAX_MS: 12000,
+    CHAT_ATLAS_BRANCH_TRANSACTION_CAP_MS: 90000,
+    W: {
+      setTimeout: scheduleTimer,
+      clearTimeout: clearTimer,
+      H2O_CHAT_PAGE_STRUCTURE_API: options.chatPageStructureApi || null,
+    },
+    setTimeout: scheduleTimer,
+    clearTimeout: clearTimer,
+    Date: FixtureDate,
+    Math, String, Number, Object, Array, Set, Map, JSON, Promise,
+    chatAtlasFullIndexRoute: () => route,
+    getEffectivePresentationIndex: () => state.index,
+    getEffectivePresentationStatus: () => ({ source: 'canonical', overlayActive: false }),
+    chatAtlasCaptureBranchReturnCandidate: () => null,
+    chatAtlasResetBranchExpansionLifecycle: () => {},
+    chatAtlasClearSelectedPathOverlay: () => {},
+    chatAtlasClearSelectedPathAcquisition: () => {},
+    chatAtlasMarkManualBranchOverride: () => {},
+    chatAtlasNotifyCompleteIndexState: () => {
+      notificationTrace.push({
+        at: now,
+        intentActive: !!state.trustedSelectedPathIntent,
+        leaseActive: !!coordinatorState.selectedPathRequestLease,
+        transactionState: state.branchTransactionState?.state || null,
+      });
+      if (typeof options.onCompleteIndexState === 'function') options.onCompleteIndexState();
+    },
+    scheduleChatAtlasLedgerFlush: () => {},
+    chatAtlasTraceTrustedLifecycle: (name, detail) => lifecycleTrace.push({ name, detail, at: now }),
+    chatAtlasPreExpansionCanonicalReturnWindow: () => Object.freeze({ active: false }),
+    chatAtlasFailClosedPreExpansionReturn: () => { throw new Error('unexpected-pre-expansion-return'); },
+    chatAtlasSelectedPathPublishedForToken: () => false,
+    chatAtlasTryPublishRetainedBranchTransaction: () => ({ handled: false, published: false }),
+    getCompleteTurnIndexProjectionStatus: () => ({}),
+  };
+
+  const requestScopeFor = (evidence) => Object.freeze({
+    requestIdentity: evidence.signature,
+    token: evidence.selectionToken,
+    chatId: route.chatId,
+    routeKey: route.routeKey,
+    generation: state.generation,
+    staleRevision: state.branchSelectionStaleRevision,
+    qId: evidence.qId,
+  });
+  const requestOwnsIntent = (intent) => {
+    const lease = coordinatorState.selectedPathRequestLease;
+    return coordinatorState.matchingWork === true
+      && !!lease
+      && lease.evidence.selectionToken === intent?.token
+      && lease.scope.token === intent?.token
+      && lease.scope.qId === intent?.qId;
+  };
+  const clearRequestLease = (reason) => {
+    const lease = coordinatorState.selectedPathRequestLease;
+    if (!lease) return;
+    coordinatorTrace.push({ event: 'trusted-request-lease-cancelled', reason, token: lease.evidence.selectionToken, at: now });
+    coordinatorState.selectedPathRequestLease = null;
+  };
+  sandbox.state = coordinatorState;
+  sandbox.selectedPathRequestOwnsIntent = requestOwnsIntent;
+  sandbox.clearSelectedPathRequestLease = clearRequestLease;
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  new vm.Script(
+    extractNestedFunction(ATLAS_CORE_SOURCE, 'clearExpiredSelectedPathRequestLeaseForIntent')
+      + '\nglobalThis.__clearExpiredLease = clearExpiredSelectedPathRequestLeaseForIntent;',
+    { filename: `${CORE0_PATH}:production-expiry-lease-helper` },
+  ).runInContext(sandbox);
+
+  const coordinator = {
+    schedule: (cause, opts = {}) => {
+      const evidence = Object.freeze({ ...opts.selectedPathEvidence });
+      coordinatorState.matchingWork = true;
+      coordinatorState.selectedPathRequestLease = Object.freeze({
+        evidence,
+        scope: requestScopeFor(evidence),
+        routeKey: route.routeKey,
+        generation: state.generation,
+        acceptedAt: now,
+      });
+      coordinatorTrace.push({
+        event: 'trusted-request-lease-created',
+        cause,
+        token: evidence.selectionToken,
+        ownedAtAcceptance: requestOwnsIntent(state.trustedSelectedPathIntent),
+        at: now,
+      });
+      // Model the published/quiescent live state. The request work is over;
+      // only the lease object and still-pending branch transaction survive.
+      coordinatorState.matchingWork = false;
+      coordinatorTrace.push({ event: 'selected-path-work-quiescent', token: evidence.selectionToken, at: now });
+      // Production's coordinator publishes state changes through its onState
+      // adapter, which delegates to chatAtlasNotifyCompleteIndexState.
+      if (options.coordinatorStateNotifications === true) {
+        sandbox.chatAtlasNotifyCompleteIndexState();
+      }
+      return Promise.resolve({ selectedPathRequestLeaseActive: true });
+    },
+    selectedPathRequestOwnsIntent: requestOwnsIntent,
+    clearExpiredSelectedPathRequestLeaseForIntent: sandbox.__clearExpiredLease,
+    getStatus: () => ({
+      selectedPathRequestLeaseActive: !!coordinatorState.selectedPathRequestLease,
+      requestActive: coordinatorState.matchingWork,
+      timerPending: pendingTimers().length > 0,
+    }),
+  };
+  sandbox.completeIndexRefreshCoordinator = coordinator;
+  sandbox.chatAtlasCompleteIndexSelectedPathEvidence = (cause) => {
+    const intent = state.trustedSelectedPathIntent;
+    return intent ? Object.freeze({
+      signature: `trusted.${intent.token}`,
+      cause,
+      qId: intent.qId,
+      observedAnswerId: '',
+      trusted: true,
+      selectionToken: intent.token,
+      confirmationAttempt: false,
+      baselineAnswerId: oldAnswerId,
+      expectChange: true,
+    }) : null;
+  };
+
+  const productionFunctions = [
+    'chatAtlasCompleteIndexIdentity',
+    'chatAtlasCompleteIndexStableHash',
+    'chatAtlasCompleteIndexNativeBranchButton',
+    'chatAtlasCompleteIndexNativeBranchDirection',
+    'chatAtlasTrustedNativeBranchOwnership',
+    'chatAtlasBranchTransactionTrace',
+    'chatAtlasBranchTransactionCurrent',
+    'chatAtlasOpenBranchTransaction',
+    'chatAtlasCancelTrustedNativeBranchReconcile',
+    'chatAtlasScheduleTrustedNativeBranchReconcile',
+    'chatAtlasRunTrustedNativeBranchReconcile',
+    'chatAtlasCurrentTrustedNativeBranchSelection',
+    'chatAtlasScheduleCompleteIndexRefresh',
+    'chatAtlasRecordTrustedNativeBranchSelection',
+  ];
+  new vm.Script(
+    extractFunction(ATLAS_CORE_SOURCE, 'chatAtlasCompleteIndexCode')
+      + '\n' + productionFunctions.map((name) => extractFunction(ATLAS_CORE_SOURCE, name)).join('\n')
+      + `\nglobalThis.__productionSchedulingApi = {
+          capture: chatAtlasRecordTrustedNativeBranchSelection,
+          transactionCurrent: chatAtlasBranchTransactionCurrent,
+        };`,
+    { filename: `${CORE0_PATH}:production-expiry-scheduling` },
+  ).runInContext(sandbox);
+
+  return {
+    capture: () => sandbox.__productionSchedulingApi.capture(event),
+    transactionCurrent: () => sandbox.__productionSchedulingApi.transactionCurrent(),
+    advanceTo,
+    runDue,
+    now: () => now,
+    startAt,
+    pendingTimers,
+    timerTrace,
+    lifecycleTrace,
+    coordinatorTrace,
+    notificationTrace,
+    state,
+    coordinator,
+    coordinatorState,
+    intentActive: () => !!state.trustedSelectedPathIntent,
+    leaseActive: () => !!coordinatorState.selectedPathRequestLease,
+  };
+}
+
+let productionSchedulingRedOutcome = null;
+await fixture('lease-expiry E: production scheduling eventually retires a quiescent stale lease after transaction ownership ends', () => {
+  const world = productionSchedulingExpiryWorld();
+
+  const baseline = makeHarness({
+    turns: 26,
+    effectiveCount: 26,
+    transition: { selectedPathRequestLeaseActive: world.leaseActive() },
+  });
+  baseline.mountUnits(2);
+  const baselineResult = baseline.api.reconcileChatPageUnits('pre-selection-baseline');
+  equal(baselineResult.status === 'branch-transition-withdrawn', false, 'baseline page units may settle');
+  equal(world.intentActive(), false, 'baseline trusted intent is absent');
+  equal(world.leaseActive(), false, 'baseline request lease is absent');
+
+  equal(world.capture(), true, 'real trusted-native capture path accepts the native click');
+  ok(world.state.trustedSelectedPathIntent?.token, 'capture creates a trusted intent');
+  equal(world.state.branchTransactionState?.state, 'pending', 'capture opens a matching pending branch transaction');
+  equal(world.pendingTimers().length, 1, 'capture schedules exactly one production callback');
+  equal(world.pendingTimers()[0]?.delay, 0, 'the production callback is the immediate trusted-native reconcile');
+
+  equal(world.runDue(), 1, 'only the production-scheduled t+0 callback runs');
+  equal(world.intentActive(), true, 'the young transaction-owned intent remains active at t+0');
+  equal(world.leaseActive(), true, 'the accepted trusted request creates a matching lease');
+  equal(world.coordinatorTrace[0]?.ownedAtAcceptance, true, 'the request lease was legitimate when accepted');
+  equal(world.coordinator.selectedPathRequestOwnsIntent(world.state.trustedSelectedPathIntent), false,
+    'published/quiescent work no longer owns the retained lease');
+
+  world.advanceTo(world.startAt + 5001);
+  equal(world.runDue(), 0, 'no production callback is scheduled at the nominal intent deadline');
+  equal(world.state.branchTransactionState?.state, 'pending', 'transaction ownership remains pending past 5000 ms');
+  equal(world.intentActive(), true, 'cleanup correctly does not occur while the transaction still owns the intent');
+  equal(world.leaseActive(), true, 'matching lease remains while transaction ownership is pending');
+
+  world.advanceTo(world.startAt + 90001);
+  const terminal = world.transactionCurrent();
+  equal(terminal?.state, 'fail-closed', 'the production transaction reader applies the bounded cap');
+  equal(terminal?.reason, 'transaction-cap', 'terminal ownership reason matches the live failure');
+  world.advanceTo(world.startAt + 120000);
+  equal(world.runDue(), 0, 'zero further production activity yields no expiry callback');
+  equal(world.pendingTimers().length, 0, 'nothing is armed after transaction ownership becomes terminal');
+
+  const transition = makeHarness({
+    turns: 26,
+    effectiveCount: 26,
+    transition: { selectedPathRequestLeaseActive: world.leaseActive() },
+  });
+  transition.mountUnits(2);
+  const transitionResult = transition.api.reconcileChatPageUnits('post-transaction-quiescence');
+  productionSchedulingRedOutcome = {
+    timerTrace: world.timerTrace.map((entry) => ({ ...entry })),
+    transactionState: terminal?.state || null,
+    transactionReason: terminal?.reason || null,
+    intentActive: world.intentActive(),
+    leaseActive: world.leaseActive(),
+    pageUnitTransitionActive: transitionResult.status === 'branch-transition-withdrawn',
+  };
+
+  equal(world.intentActive(), false,
+    'NO_PRODUCTION_EXPIRY_WAKEUP: terminal ownership must schedule eventual trusted-intent retirement');
+  equal(world.leaseActive(), false,
+    'NO_PRODUCTION_EXPIRY_WAKEUP: eventual expiry must clear the matching stale request lease');
+  equal(transitionResult.status === 'branch-transition-withdrawn', false,
+    'NO_PRODUCTION_EXPIRY_WAKEUP: page-unit settlement must become eligible without further activity');
+});
+
+let postLeaseReconcileRedOutcome = null;
+await fixture('lease-expiry F: expiry-driven lease clear re-signals page-unit reconciliation without further activity', () => {
+  let world = null;
+  const pageReconcileTrace = [];
+  const page = makeHarness({
+    turns: 26,
+    effectiveCount: 26,
+    overlayActive: true,
+    transitionStatus: () => ({
+      trustedSelectionIntentActive: world?.intentActive() === true,
+      branchSelectionStale: world?.state?.branchSelectionStale === true,
+      branchTransactionPending: world?.state?.branchTransactionState?.state === 'pending',
+      selectedPathRequestLeaseActive: world?.leaseActive() === true,
+    }),
+  });
+  page.mountUnits(2);
+  const initialPageState = page.api.getChatPageUnitState();
+  initialPageState.last = Object.freeze({
+    status: 'settled', count: 26, pageCount: 2, withdrawn: false,
+  });
+  page.document.documentElement.setAttribute('data-h2o-page-unit-ordering-status', 'settled');
+  page.document.documentElement.setAttribute('data-h2o-page-unit-ordering-count', '2');
+
+  // This is the page-structure consumer of a production Core state signal.
+  // The fixture itself never invokes page reconciliation: capture, coordinator
+  // onState, and any future expiry-clear signal are the only callers.
+  const onProductionPageStateSignal = () => {
+    const result = page.api.reconcileChatPageUnits('complete-index-state-event');
+    pageReconcileTrace.push({
+      status: result?.status || null,
+      count: Number(page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-count') || 0),
+      dividerCount: page.dividers().length,
+    });
+    return result;
+  };
+  world = productionSchedulingExpiryWorld({
+    coordinatorStateNotifications: true,
+    onCompleteIndexState: onProductionPageStateSignal,
+    chatPageStructureApi: {
+      reconcilePageUnits: onProductionPageStateSignal,
+      renderDividers: onProductionPageStateSignal,
+    },
+  });
+
+  const initialModel = page.api.buildChatPageUnitModel();
+  equal(initialModel.pageCount, 2, 'baseline 26-turn route canonically requires Page 2');
+  equal(page.dividers().length, 2, 'baseline begins with two settled page dividers');
+  equal(page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-status'), 'settled',
+    'baseline page-unit ordering is settled');
+
+  equal(world.capture(), true, 'production trusted-native capture accepts the branch selection');
+  equal(world.runDue(), 1, 'production t+0 trusted-native reconciliation runs');
+  equal(world.intentActive(), true, 'trusted intent remains active during legitimate pending ownership');
+  equal(world.leaseActive(), true, 'matching request lease is active during legitimate work');
+  ok(pageReconcileTrace.some((entry) => entry.status === 'branch-transition-withdrawn'),
+    'production state signaling withdraws page units during the live transition');
+  equal(page.dividers().length, 0, 'transition withdrawal removes the in-chat Page 2 divider');
+
+  world.advanceTo(world.startAt + 90001);
+  const terminal = world.transactionCurrent();
+  equal(terminal?.state, 'fail-closed', 'transaction ownership becomes terminal at its production cap');
+  equal(terminal?.reason, 'transaction-cap', 'terminal ownership reason matches the live lifecycle');
+  world.advanceTo(world.startAt + 120000);
+  world.runDue();
+
+  const branchTransitionActive = page.api.chatPageUnitBranchTransitionActive();
+  const finalModel = page.api.buildChatPageUnitModel();
+  const finalStatus = page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-status');
+  const finalCount = Number(page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-count') || 0);
+  const page2DividerEligible = branchTransitionActive === false && finalModel.pageCount >= 2;
+  postLeaseReconcileRedOutcome = {
+    expiryWakeupStillPassing: world.intentActive() === false && world.leaseActive() === false,
+    leaseCleared: world.leaseActive() === false,
+    branchTransitionActive,
+    pageUnitStatus: finalStatus,
+    pageUnitCount: finalCount,
+    canonicalPage2: finalModel.pageCount >= 2,
+    page2DividerEligible,
+    page2DividerCount: page.divider(2) ? 1 : 0,
+    notificationTrace: world.notificationTrace.map((entry) => ({ ...entry })),
+    pageReconcileTrace: pageReconcileTrace.map((entry) => ({ ...entry })),
+  };
+
+  equal(world.intentActive(), false, 'production expiry wakeup still retires the stale trusted intent');
+  equal(world.leaseActive(), false, 'production expiry wakeup still clears the matching stale lease');
+  equal(branchTransitionActive, false, 'no branch-transition ownership remains after expiry cleanup');
+  equal(finalModel.pageCount, 2, 'canonical Page 2 remains present after expiry cleanup');
+  equal(page2DividerEligible, true, 'Page 2 is eligible to settle after transition ownership ends');
+  equal(finalStatus, 'settled',
+    'NO_POST_LEASE_CLEAR_PAGE_UNIT_RECONCILE: expiry-driven lease clear must re-run page-unit reconciliation');
+  equal(finalCount, 2,
+    'NO_POST_LEASE_CLEAR_PAGE_UNIT_RECONCILE: the coherent 26-turn route must restore two page units');
+});
+
+let temporaryStructuralModelRecoveryRedOutcome = null;
+await fixture('page-structure recovery: a temporarily unavailable structural turn model re-arms public settlement', () => {
+  const world = makeTemporaryStructuralModelRecoveryWorld();
+  const { page } = world;
+
+  page.mountUnits(2);
+  const initialModel = page.api.buildChatPageUnitModel();
+  const initialResult = page.api.reconcileChatPageUnits('temporary-model:baseline');
+  const initialStatus = page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-status');
+  const initialCount = Number(page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-count') || 0);
+  equal(initialModel.count, 37, 'baseline structural model contains all 37 turns');
+  equal(initialModel.pageCount, 2, 'baseline structural model canonically includes Page 2');
+  equal(initialResult.status, 'settled', 'baseline page-unit ordering settles');
+  equal(initialStatus, 'settled', 'baseline publishes settled ordering status');
+  equal(initialCount, 2, 'baseline publishes two page units');
+  equal(page.divider(2) ? 1 : 0, 1, 'baseline Page 2 divider is present exactly once');
+
+  // Reproduce the live loss at the real structural seam only. Effective
+  // authority remains truthful at 37 and every transition owner is inactive.
+  page.setTurns(0);
+  const unavailableModel = page.api.buildChatPageUnitModel();
+  const unavailableCoherence = page.api.chatPageUnitPresentationCoherence(unavailableModel);
+  const branchTransitionActive = page.api.chatPageUnitBranchTransitionActive();
+  const leaseActive = page.api.getCompleteIndexProjectionStatus().selectedPathRequestLeaseActive === true;
+  const unavailablePass = world.runPublicPageStructurePass('temporary-model:unavailable');
+  world.flushImmediateTimers();
+
+  // A repeated ordinary public pass must reuse one recovery authority rather
+  // than accumulating another retry. No recovery callback is fired yet.
+  world.runPublicPageStructurePass('temporary-model:unavailable-repeat');
+  world.flushImmediateTimers();
+  const recoveryTimers = world.pendingRecoveryTimers();
+  const retryArmed = recoveryTimers.length > 0;
+  const page2DividerSurvived = !!page.divider(2);
+
+  // A partial non-empty structural model remains genuine incoherence. It must
+  // continue to fail closed and must not be reclassified as unavailable.
+  const genuine = makeHarness({ turns: 26, effectiveCount: 37, effectiveFp: FP_39, realStructuralModel: true });
+  genuine.mountUnits(2);
+  const genuineModel = genuine.api.buildChatPageUnitModel();
+  const genuineCoherence = genuine.api.chatPageUnitPresentationCoherence(genuineModel);
+  const genuineResult = genuine.api.reconcileChatPageUnits('temporary-model:genuine-incoherence');
+  const genuineIncoherenceStillFailsClosed = genuineModel.count === 26
+    && genuineCoherence.coherent === false
+    && genuineResult.status === 'branch-transition-withdrawn'
+    && Number(genuine.document.documentElement.getAttribute('data-h2o-page-unit-ordering-count') || 0) === 0;
+
+  // Restore only mmHost().getTurnList(). Recovery must now come solely from a
+  // callback production armed during the unavailable public pass.
+  page.setTurns(37);
+  const restoredModel = page.api.buildChatPageUnitModel();
+  world.runProductionCallbacks();
+  world.flushImmediateTimers();
+  const finalModel = page.api.buildChatPageUnitModel();
+  const finalStatus = page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-status');
+  const finalCount = Number(page.document.documentElement.getAttribute('data-h2o-page-unit-ordering-count') || 0);
+  const finalPage2DividerCount = page.divider(2) ? 1 : 0;
+  const retryDisarmed = world.pendingRecoveryTimers().length === 0;
+  const recoveryOccurred = finalStatus === 'settled'
+    && finalCount === 2
+    && finalModel.pageCount === 2
+    && finalPage2DividerCount === 1
+    && retryDisarmed;
+
+  temporaryStructuralModelRecoveryRedOutcome = {
+    initialPageUnitStatus: initialStatus,
+    initialPageUnitCount: initialCount,
+    unavailableModelCount: unavailableModel.count,
+    authorityCount: unavailableCoherence.authorityCount,
+    branchTransitionActive,
+    leaseActive,
+    unavailableStatus: unavailablePass.reconciliation?.status || null,
+    retryArmed,
+    retryCount: recoveryTimers.length,
+    page2DividerSurvived,
+    restoredModelCount: restoredModel.count,
+    recoveryOccurred,
+    genuineIncoherenceStillFailsClosed,
+    finalPageUnitStatus: finalStatus,
+    finalPageUnitCount: finalCount,
+    finalPage2DividerCount,
+    retryDisarmed,
+    timerTrace: world.timerTrace.map((entry) => ({ ...entry })),
+  };
+
+  equal(unavailableModel.count, 0, 'temporary structural model is empty at the live failure seam');
+  equal(unavailableCoherence.authorityCount, 37, 'effective authority remains truthful at 37 turns');
+  equal(unavailableCoherence.coherent, false, 'empty structural model cannot be published as coherent');
+  equal(branchTransitionActive, false, 'no selected-path branch transition owns the unavailable window');
+  equal(leaseActive, false, 'no selected-path request lease owns the unavailable window');
+  equal(unavailablePass.reconciliation?.status, 'branch-transition-withdrawn', 'current fail-closed withdrawal is observable');
+  equal(genuineIncoherenceStillFailsClosed, true, 'genuine non-empty model mismatch remains fail-closed');
+  equal(restoredModel.count, 37, 'structural model becomes available again without a DOM mutation');
+  equal(retryArmed, true,
+    'NO_PAGE_STRUCTURE_RETRY_WHEN_MODEL_UNAVAILABLE: empty structural model with live authority must arm recovery');
+  equal(recoveryTimers.length, 1,
+    'temporary model loss must use one coalesced recovery authority without duplicate retries');
+  equal(page2DividerSurvived, true,
+    'DIVIDER_DESTRUCTIVELY_REMOVED_DURING_MODEL_UNAVAILABLE: settled Page 2 must survive the retryable window');
+  equal(recoveryOccurred, true,
+    'NO_PAGE_STRUCTURE_RETRY_WHEN_MODEL_UNAVAILABLE: production retry must restore settled Page 2 after model return');
+  equal(retryDisarmed, true, 'successful settlement cancels the bounded recovery task');
 });
 
 

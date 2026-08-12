@@ -1380,6 +1380,16 @@
         token: lease.evidence.selectionToken,
       });
     };
+    function clearExpiredSelectedPathRequestLeaseForIntent(intent, reason = 'trusted-intent-expired') {
+      const token = String(intent?.token || '');
+      if (
+        !token
+        || state.selectedPathRequestLease?.evidence?.selectionToken !== token
+        || selectedPathRequestOwnsIntent(intent)
+      ) return false;
+      clearSelectedPathRequestLease(reason);
+      return true;
+    }
     const resolveSelectedPath = (evidence, reason) => {
       if (
         state.selectedPathRequestLease
@@ -1865,6 +1875,18 @@
           }
           state.selectedPathActiveEvidence = null;
           state.selectedPathActiveRevoked = false;
+          const requestLease = state.selectedPathRequestLease;
+          const requestScope = requestLease?.scope;
+          if (requestLease && requestScope && !selectedPathRequestOwnsIntent({
+            token: requestScope.token,
+            chatId: requestScope.chatId,
+            routeKey: requestScope.routeKey,
+            generation: requestScope.generation,
+            staleRevision: requestScope.staleRevision,
+            qId: requestScope.qId,
+          })) {
+            try { adapters?.onSelectedPathRequestLeaseQuiescent?.(requestLease.evidence); } catch {}
+          }
           const shouldTrail = state.trailingRequired
             && state.causes.size > 0
             && enabled()
@@ -2032,6 +2054,7 @@
       markPending,
       getStatus: snapshot,
       selectedPathRequestOwnsIntent,
+      clearExpiredSelectedPathRequestLeaseForIntent,
       limits,
     });
   }
@@ -2543,6 +2566,13 @@
   }
 
   function chatAtlasSelectedPathOverlayCurrent() {
+    const staleQId = String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '');
+    const anchorCurrent = selectedPathOverlayState.anchorQId === staleQId
+      || chatAtlasQuestionEditSiblingProof(
+        selectedPathAcquisitionState.graph?.identityGraph,
+        staleQId,
+        selectedPathOverlayState.anchorQId,
+      );
     if (
       selectedPathOverlayState.status !== 'active'
       || !selectedPathOverlayState.index
@@ -2553,8 +2583,7 @@
       || completeTurnIndexAuthorityState.branchSelectionStale !== true
       || selectedPathOverlayState.staleRevision
         !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
-      || selectedPathOverlayState.anchorQId
-        !== String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '')
+      || !anchorCurrent
       || selectedPathOverlayState.chatId
         !== String(completeTurnIndexAuthorityState.chatId || '')
       || selectedPathOverlayState.routeKey
@@ -2801,8 +2830,16 @@
         return fail('generation-mismatch');
       }
       if (ownership.stale !== true) return fail('stale-inactive');
+      const questionEditAnchorSwap = chatAtlasQuestionEditSiblingProof(
+        selectedPathAcquisitionState.graph?.identityGraph,
+        ownership.staleQId,
+        proof.anchorQId,
+      );
       if (
-        String(proof.anchorQId || '') !== String(ownership.staleQId || '')
+        (
+          String(proof.anchorQId || '') !== String(ownership.staleQId || '')
+          && !questionEditAnchorSwap
+        )
         || String(intent.qId || '') !== String(ownership.staleQId || '')
       ) return fail('stale-qid-mismatch');
       if (
@@ -2847,6 +2884,12 @@
     const proofAnchorQId = chatAtlasCompleteIndexIdentity(proof.anchorQId);
     const proofAnchorAId = chatAtlasCompleteIndexIdentity(proof.anchorSelectedAId);
     if (!proofAnchorQId || !proofAnchorAId) return fail('anchor-answer-mismatch');
+    const manualQuestionEditAnchorSwap = origin === 'manual-native-selection'
+      && chatAtlasQuestionEditSiblingProof(
+        selectedPathAcquisitionState.graph?.identityGraph,
+        ownership.staleQId,
+        proofAnchorQId,
+      );
 
     const answerOwners = new Map();
     const byQId = new Map();
@@ -2937,10 +2980,10 @@
       anchorSource.provenance !== 'anchor'
       || anchorSource.confirmedByNativeEvidence !== true
       || anchorRow.qId !== proofAnchorQId
-      || canonicalAnchor?.qId !== proofAnchorQId
+      || (canonicalAnchor?.qId !== proofAnchorQId && !manualQuestionEditAnchorSwap)
     ) return fail('anchor-qid-mismatch');
     if (anchorRow.primaryAId !== proofAnchorAId) return fail('anchor-answer-mismatch');
-    if (!canonicalAnchor.answerVariants.includes(proofAnchorAId)) {
+    if (!manualQuestionEditAnchorSwap && !canonicalAnchor.answerVariants.includes(proofAnchorAId)) {
       return fail('anchor-answer-not-variant');
     }
     // Divergence proof, by origin. A manual selection switches the ANSWER at
@@ -2949,7 +2992,11 @@
     // answer variant, or a different length. Both must genuinely differ from
     // the canonical path; neither may publish a copy of it.
     if (origin === 'manual-native-selection') {
-      if (canonicalAnchor.primaryAId === proofAnchorAId) return fail('anchor-does-not-diverge');
+      if (manualQuestionEditAnchorSwap) {
+        if (canonicalAnchor.qId === proofAnchorQId) return fail('anchor-does-not-diverge');
+      } else if (canonicalAnchor.primaryAId === proofAnchorAId) {
+        return fail('anchor-does-not-diverge');
+      }
     } else {
       // An ANSWER divergence is anchored ON the turn whose answer differs:
       // same question, different selected answer — the same shape a manual
@@ -3212,7 +3259,18 @@
       }
       return getEffectivePresentationStatus();
     }
-    const intent = chatAtlasCurrentTrustedNativeBranchSelection(acquisition.anchorQId);
+    const capturedIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    const intent = capturedIntent
+      && (
+        acquisition.anchorQId === capturedIntent.qId
+        || chatAtlasQuestionEditSiblingProof(
+          selectedPathAcquisitionState.graph?.identityGraph,
+          capturedIntent.qId,
+          acquisition.anchorQId,
+        )
+      )
+      ? chatAtlasCurrentTrustedNativeBranchSelection(capturedIntent.qId)
+      : null;
     const route = chatAtlasFullIndexRoute();
     const candidate = chatAtlasBuildSelectedPathOverlay(acquisition, canonical, {
       intent,
@@ -4034,15 +4092,23 @@
     const canonical = completeTurnIndexAuthorityState.index;
     const turns = Array.isArray(canonical?.turns) ? canonical.turns : [];
     const qId = chatAtlasCompleteIndexIdentity(intent?.qId);
-    const canonicalMatches = turns.filter((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === qId);
+    const capturedAnchorQId = chatAtlasCompleteIndexIdentity(intent?.capturedAnchorQId) || qId;
+    const questionEditAnchorSwap = capturedAnchorQId !== qId
+      && chatAtlasQuestionEditSiblingProof(graph, capturedAnchorQId, qId);
+    if (capturedAnchorQId !== qId && !questionEditAnchorSwap) return fail('anchor-linkage-invalid');
+    const canonicalMatches = turns.filter(
+      (turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === capturedAnchorQId,
+    );
     if (canonicalMatches.length !== 1) return fail('anchor-canonical-invalid');
     const anchorCanonical = canonicalMatches[0];
     const anchorOrder = Number(anchorCanonical.order || 0);
     if (
       anchorOrder < 1
       || !selectedAnswerId
-      || !Array.isArray(anchorCanonical.answerVariants)
-      || !anchorCanonical.answerVariants.includes(selectedAnswerId)
+      || (!questionEditAnchorSwap && (
+        !Array.isArray(anchorCanonical.answerVariants)
+        || !anchorCanonical.answerVariants.includes(selectedAnswerId)
+      ))
     ) return fail('anchor-answer-not-canonical-variant');
 
     const nodeById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
@@ -4092,7 +4158,11 @@
     const canonicalPrefix = turns.slice(0, anchorOrder).map((turn) => turn.qId);
     if (
       prefixQIds.length !== canonicalPrefix.length
-      || prefixQIds.some((prefixQId, index) => prefixQId !== canonicalPrefix[index])
+      || prefixQIds.some((prefixQId, index) => (
+        index === anchorOrder - 1 && questionEditAnchorSwap
+          ? prefixQId !== qId
+          : prefixQId !== canonicalPrefix[index]
+      ))
     ) return fail('prefix-mismatch');
 
     const copyCanonical = (turn, provenance, primaryAId = turn.primaryAId) => {
@@ -4115,7 +4185,30 @@
     };
     const path = turns.slice(0, anchorOrder - 1)
       .map((turn) => copyCanonical(turn, 'canonical-prefix'));
-    path.push(copyCanonical(anchorCanonical, 'anchor', selectedAnswerId));
+    if (questionEditAnchorSwap) {
+      const answerVariants = chatAtlasConvergenceAnswerVariantRoots(anchorQuestionNode, nodeById)
+        .map((root) => chatAtlasAnswerIdentityForRoot(root, nodeById))
+        .map(chatAtlasCompleteIndexIdentity)
+        .filter(Boolean);
+      if (!answerVariants.includes(selectedAnswerId)) return fail('anchor-linkage-invalid');
+      if (answerVariants[answerVariants.length - 1] !== selectedAnswerId) {
+        answerVariants.splice(answerVariants.indexOf(selectedAnswerId), 1);
+        answerVariants.push(selectedAnswerId);
+      }
+      path.push(chatAtlasFreeze({
+        order: anchorOrder,
+        qId,
+        turnId: `turn:${qId}`,
+        primaryAId: selectedAnswerId,
+        answerVariants,
+        noAnswer: false,
+        stopped: anchorQuestionNode.stopped === true,
+        provenance: 'anchor',
+        confirmedByNativeEvidence: true,
+      }));
+    } else {
+      path.push(copyCanonical(anchorCanonical, 'anchor', selectedAnswerId));
+    }
     const pathQIds = new Set(path.map((turn) => turn.qId));
     const canonicalQIds = new Set(turns.map((turn) => turn.qId));
     const mountedEvidence = intent?.mountedEvidence instanceof Map
@@ -4695,6 +4788,13 @@
     const path = candidate?.path;
     const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     const index = completeTurnIndexAuthorityState.index;
+    const staleQId = String(completeTurnIndexAuthorityState.branchSelectionStaleQId || '');
+    const proofAnchorCurrent = proof?.anchorQId === staleQId
+      || chatAtlasQuestionEditSiblingProof(
+        selectedPathAcquisitionState.graph?.identityGraph,
+        staleQId,
+        proof?.anchorQId,
+      );
     if (
       !proof
       || !Array.isArray(path)
@@ -4705,7 +4805,7 @@
       || proof.routeKey !== completeTurnIndexAuthorityState.routeKey
       || proof.generation !== Number(completeTurnIndexAuthorityState.generation || 0)
       || proof.staleRevision !== Number(completeTurnIndexAuthorityState.branchSelectionStaleRevision || 0)
-      || proof.anchorQId !== completeTurnIndexAuthorityState.branchSelectionStaleQId
+      || !proofAnchorCurrent
       || proof.canonicalFingerprint !== String(index?.sourceFingerprint || '')
       || proof.pathLength !== path.length
       || path.some((turn, indexValue) => Number(turn?.order) !== indexValue + 1)
@@ -4872,8 +4972,22 @@
       }
       return getSelectedPathAcquisitionStatus();
     }
+    const retained = selectedPathAcquisitionState.graph;
+    const graphCurrent = retained
+      && retained.chatId === intent.chatId
+      && retained.routeKey === intent.routeKey
+      && retained.generation === intent.generation;
     const evidence = chatAtlasSelectedPathNativeEvidence(members);
-    const anchorEvidence = evidence.get(intent.qId);
+    let resolvedAnchorQId = intent.qId;
+    let anchorEvidence = evidence.get(intent.qId);
+    if (!anchorEvidence) {
+      const resolved = graphCurrent
+        ? chatAtlasResolveQuestionEditAnchorEvidence(retained.identityGraph, evidence, intent.qId)
+        : Object.freeze({ ok: false, reason: 'anchor-member-missing' });
+      if (resolved.ok !== true) return chatAtlasSelectedPathFail(resolved.reason, intent);
+      resolvedAnchorQId = resolved.qId;
+      anchorEvidence = resolved.anchorEvidence;
+    }
     if (!anchorEvidence || anchorEvidence.memberCount !== 1) {
       return chatAtlasSelectedPathFail(
         anchorEvidence ? 'anchor-member-ambiguous' : 'anchor-member-missing',
@@ -4889,13 +5003,16 @@
       return chatAtlasSelectedPathFail('anchor-canonical-invalid', intent, selectedAnswerId);
     }
     const canonical = canonicalMatches[0];
+    const questionEditAnchorSwap = resolvedAnchorQId !== intent.qId;
     if (intent.priorAnswerId && selectedAnswerId === intent.priorAnswerId) {
       return chatAtlasSelectedPathFail('selected-answer-not-changed', intent, selectedAnswerId);
     }
     if (
       !selectedAnswerId
-      || selectedAnswerId === canonical.primaryAId
-      || !canonical.answerVariants.includes(selectedAnswerId)
+      || (!questionEditAnchorSwap && (
+        selectedAnswerId === canonical.primaryAId
+        || !canonical.answerVariants.includes(selectedAnswerId)
+      ))
     ) {
       return chatAtlasSelectedPathFail(
         selectedAnswerId === canonical.primaryAId
@@ -4905,13 +5022,9 @@
         selectedAnswerId,
       );
     }
-    const retained = selectedPathAcquisitionState.graph;
-    const graphCurrent = retained
-      && retained.chatId === intent.chatId
-      && retained.routeKey === intent.routeKey
-      && retained.generation === intent.generation;
     const evaluationKey = JSON.stringify([
       intent.token,
+      resolvedAnchorQId,
       index.sourceFingerprint,
       Number(chatAtlasCoreLedgerVersion() || 0),
       graphCurrent ? retained.captureIdentity : '',
@@ -4922,7 +5035,7 @@
     ) return getSelectedPathAcquisitionStatus();
     selectedPathAcquisitionState.origin = 'manual-native-selection';
     selectedPathAcquisitionState.token = intent.token;
-    selectedPathAcquisitionState.anchorQId = intent.qId;
+    selectedPathAcquisitionState.anchorQId = resolvedAnchorQId;
     selectedPathAcquisitionState.anchorSelectedAId = selectedAnswerId;
     selectedPathAcquisitionState.priorAnswerId = intent.priorAnswerId || null;
     selectedPathAcquisitionState.chatId = intent.chatId;
@@ -4961,6 +5074,8 @@
       retained.identityGraph,
       Object.freeze({
         ...intent,
+        qId: resolvedAnchorQId,
+        capturedAnchorQId: intent.qId,
         mountedEvidence: evidence,
         clientSelectedChainClosure: clientProves ? clientChain.closure : null,
         clientSelectedChain: clientProves ? clientChain : null,
@@ -5456,6 +5571,7 @@
     const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     if (!intent || (token && intent.token !== token)) return false;
     completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+    chatAtlasCancelTrustedNativeBranchReconcile();
     if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
       chatAtlasClearSelectedPathAcquisition(reason, { preserveGraph: true });
     }
@@ -5945,13 +6061,25 @@
     if (trace.length > 24) trace.splice(0, trace.length - 24);
   }
 
-  function chatAtlasBranchTransactionCurrent() {
+  function chatAtlasBranchTransactionCurrent(options = {}) {
     const tx = completeTurnIndexAuthorityState.branchTransactionState;
     if (!tx) return null;
     if (tx.state === 'pending' && (Date.now() - Number(tx.openedAt || 0)) > CHAT_ATLAS_BRANCH_TRANSACTION_CAP_MS) {
       tx.state = 'fail-closed';
       tx.reason = 'transaction-cap';
       chatAtlasBranchTransactionTrace('tx-fail-closed', { reason: 'transaction-cap' });
+      // Transaction ownership was the last reason an old trusted intent could
+      // remain authoritative past its age window. Re-enter the canonical
+      // evaluator at the exact terminal transition; it alone decides whether
+      // live request work still owns the token and whether the matching lease
+      // may be released. The suppress flag prevents recursive re-entry when
+      // this transition was discovered by that evaluator itself.
+      const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      if (
+        options?.suppressTrustedExpiryReentry !== true
+        && intent?.token
+        && intent.token === tx.token
+      ) chatAtlasCurrentTrustedNativeBranchSelection(intent.qId);
     }
     return tx;
   }
@@ -5993,6 +6121,42 @@
     tx.state = nextState;
     tx.reason = chatAtlasCompleteIndexCode(reason, 'closed', 64);
     chatAtlasBranchTransactionTrace(`tx-${tx.state}`, { reason: tx.reason });
+    // A publication/failure can end transaction ownership before the bounded
+    // cap wakeup. Move the one existing trusted-native task to the intent's
+    // age deadline (or immediately when already old); the token guard in that
+    // task makes a superseded close harmless. Route reset owns its own cancel.
+    const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+    if (
+      nextState !== 'reset'
+      && intent?.token
+      && intent.token === tx.token
+    ) {
+      // Publication may synchronously settle the coordinator lease immediately
+      // after closing the transaction. Check on the next microtask so a lease
+      // that is already being resolved never creates a timer just to cancel it.
+      Promise.resolve().then(() => {
+        const currentIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+        if (!currentIntent || currentIntent.token !== intent.token) return;
+        let staleLease = false;
+        try {
+          const refresh = completeIndexRefreshCoordinator?.getStatus?.();
+          staleLease = refresh?.selectedPathRequestLeaseActive === true
+            && refresh?.requestActive !== true
+            && refresh?.timerPending !== true
+            && refresh?.selectedPathConfirmationPending !== true
+            && completeIndexRefreshCoordinator?.selectedPathRequestOwnsIntent?.(currentIntent) !== true;
+        } catch {}
+        if (!staleLease) return;
+        const windowMs = Math.max(
+          0,
+          Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000),
+        );
+        chatAtlasScheduleTrustedNativeBranchReconcile(currentIntent.token, {
+          expiryWakeup: true,
+          delayMs: Math.max(0, (Number(currentIntent.observedAt || 0) + windowMs + 1) - Date.now()),
+        });
+      });
+    }
     return true;
   }
 
@@ -6107,6 +6271,48 @@
     return (parent.childIds || [])
       .map((childId) => byId.get(childId))
       .filter((node) => node?.productUser === true);
+  }
+
+  // A native question-edit pager replaces the question identity. When the
+  // captured qId is absent, the retained graph supplies the only stable
+  // equivalence relation: productUser children of the exact same parent.
+  function chatAtlasQuestionEditSiblingProof(graph, capturedQIdRaw, currentQIdRaw) {
+    const capturedQId = chatAtlasCompleteIndexIdentity(capturedQIdRaw);
+    const currentQId = chatAtlasCompleteIndexIdentity(currentQIdRaw);
+    if (!capturedQId || !currentQId || capturedQId === currentQId) return false;
+    if (!Array.isArray(graph?.nodes) || !graph.nodes.length) return false;
+    const captured = chatAtlasConvergenceUniqueNode(graph, capturedQId, 'productUser');
+    const current = chatAtlasConvergenceUniqueNode(graph, currentQId, 'productUser');
+    if (!captured || !current || !captured.parentId || captured.parentId !== current.parentId) {
+      return false;
+    }
+    const byId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    return chatAtlasConvergenceQuestionVariants(captured, byId)
+      .filter((node) => node?.nodeId === current.nodeId).length === 1;
+  }
+
+  function chatAtlasResolveQuestionEditAnchorEvidence(graph, evidence, capturedQIdRaw) {
+    const missing = Object.freeze({ ok: false, reason: 'anchor-member-missing' });
+    const capturedQId = chatAtlasCompleteIndexIdentity(capturedQIdRaw);
+    if (!capturedQId || !(evidence instanceof Map) || !Array.isArray(graph?.nodes)) return missing;
+    const captured = chatAtlasConvergenceUniqueNode(graph, capturedQId, 'productUser');
+    if (!captured) return missing;
+    const byId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+    const candidates = Array.from(new Set(
+      chatAtlasConvergenceQuestionVariants(captured, byId)
+        .map((node) => chatAtlasCompleteIndexIdentity(node?.messageId))
+        .filter((qId) => qId && evidence.has(qId)),
+    ));
+    if (!candidates.length) return missing;
+    if (candidates.length !== 1) {
+      return Object.freeze({ ok: false, reason: 'anchor-member-ambiguous' });
+    }
+    const qId = candidates[0];
+    const anchorEvidence = evidence.get(qId);
+    if (!anchorEvidence || anchorEvidence.memberCount !== 1) {
+      return Object.freeze({ ok: false, reason: 'anchor-member-ambiguous' });
+    }
+    return Object.freeze({ ok: true, qId, anchorEvidence });
   }
 
   // Native pager sibling order for one question's answer variants. Raw graph
@@ -8641,7 +8847,7 @@
     }
   }
 
-  function chatAtlasScheduleTrustedNativeBranchReconcile(token) {
+  function chatAtlasScheduleTrustedNativeBranchReconcile(token, options = {}) {
     // A real native branch click is user-driven work, not automatic
     // reconciliation: it always schedules its single bounded post-event task,
     // memory canary or not. The Round 1 canary continues to gate only the
@@ -8650,13 +8856,81 @@
     // false) left every branch click with a bound intent that nothing ever
     // consumed: zero fetches, hundreds of rejected signals, and authority
     // stuck on the outgoing branch.
-    // One post-event task per trusted token. A newer click cancels the prior
-    // task (and the run guard re-checks the live token anyway).
+    // The same single task also owns the later expiry wakeup. A newer click,
+    // terminal clear, or re-arm cancels the prior task, and every callback
+    // re-checks the live token before doing work.
+    const expiryWakeup = options?.expiryWakeup === true;
+    const delayMs = expiryWakeup
+      ? Math.max(0, Number(options?.delayMs || 0))
+      : 0;
     chatAtlasCancelTrustedNativeBranchReconcile();
     completeTurnIndexAuthorityState.trustedNativeReconcileTask = (W.setTimeout || setTimeout)(() => {
       completeTurnIndexAuthorityState.trustedNativeReconcileTask = null;
+      const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      if (!intent || intent.token !== token) return;
+      if (expiryWakeup) {
+        // Never duplicate the age/route/transaction/request-ownership
+        // predicate here. This read is the existing canonical expiry path.
+        const current = chatAtlasCurrentTrustedNativeBranchSelection(intent.qId);
+        if (!current || current.token !== token) return;
+
+        // Legitimate live work may survive the first legal deadline. Give its
+        // existing bounded refresh/confirmation/expansion windows further
+        // opportunities, but never create permanent polling: all re-arms end
+        // at one cap derived only from existing lifecycle limits.
+        const now = Date.now();
+        const trustedWindowMs = Math.max(
+          1,
+          Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000),
+        );
+        const hardStopAt = Number(intent.observedAt || now)
+          + CHAT_ATLAS_BRANCH_TRANSACTION_CAP_MS
+          + CHAT_ATLAS_BRANCH_EXPANSION_MAX_MS
+          + Math.max(100, Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.timeoutMs || 4500))
+          + Math.max(100, Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.selectedPathConfirmationDelayMs || 1250))
+          + trustedWindowMs
+          + 1;
+        if (now >= hardStopAt) return;
+        chatAtlasScheduleTrustedNativeBranchReconcile(token, {
+          expiryWakeup: true,
+          delayMs: Math.max(1, Math.min(trustedWindowMs + 1, hardStopAt - now)),
+        });
+        return;
+      }
+
       chatAtlasRunTrustedNativeBranchReconcile(token);
-    }, 0);
+      const currentIntent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      if (!currentIntent || currentIntent.token !== token) return;
+      let staleLease = false;
+      try {
+        const refresh = completeIndexRefreshCoordinator?.getStatus?.();
+        staleLease = refresh?.selectedPathRequestLeaseActive === true
+          && refresh?.requestActive !== true
+          && refresh?.timerPending !== true
+          && refresh?.selectedPathConfirmationPending !== true
+          && completeIndexRefreshCoordinator?.selectedPathRequestOwnsIntent?.(currentIntent) !== true;
+      } catch {}
+      // Normal accepted work owns its request lease and already has bounded
+      // debounce/request/confirmation callbacks. Arm no extra timer there.
+      // The expiry task exists only for the diagnosed quiescent stale lease.
+      if (!staleLease) return;
+      const returnWindow = typeof chatAtlasPreExpansionCanonicalReturnWindow === 'function'
+        ? chatAtlasPreExpansionCanonicalReturnWindow(currentIntent)
+        : Object.freeze({ active: false });
+      const allowedAgeMs = returnWindow.active === true
+        ? CHAT_ATLAS_BRANCH_EXPANSION_MAX_MS
+        : Math.max(0, Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000));
+      const ageDeadlineAt = Number(currentIntent.observedAt || Date.now()) + allowedAgeMs + 1;
+      const transaction = completeTurnIndexAuthorityState.branchTransactionState;
+      const transactionDeadlineAt = transaction?.state === 'pending'
+        && transaction.token === token
+        ? Number(transaction.openedAt || Date.now()) + CHAT_ATLAS_BRANCH_TRANSACTION_CAP_MS + 1
+        : ageDeadlineAt;
+      chatAtlasScheduleTrustedNativeBranchReconcile(token, {
+        expiryWakeup: true,
+        delayMs: Math.max(0, Math.max(ageDeadlineAt, transactionDeadlineAt) - Date.now()),
+      });
+    }, delayMs);
   }
 
   function chatAtlasRunTrustedNativeBranchReconcile(token) {
@@ -8666,6 +8940,33 @@
     // safe no-op, so the post-event task is fully token/route/gate scoped.
     const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
     if (!intent || intent.token !== token) return;
+
+    const publishedAnchorQId = typeof selectedPathOverlayState !== 'undefined'
+      ? chatAtlasCompleteIndexIdentity(selectedPathOverlayState.anchorQId)
+      : '';
+    const publishedQuestionSiblingSupersedesIntent = !!(
+      typeof chatAtlasSelectedPathOverlayCurrent === 'function'
+      && typeof chatAtlasQuestionEditSiblingProof === 'function'
+      && typeof selectedPathAcquisitionState !== 'undefined'
+      && chatAtlasSelectedPathOverlayCurrent()
+      && publishedAnchorQId
+      && publishedAnchorQId !== intent.qId
+      && chatAtlasQuestionEditSiblingProof(
+        selectedPathAcquisitionState.graph?.identityGraph,
+        intent.qId,
+        publishedAnchorQId,
+      )
+    );
+    if (publishedQuestionSiblingSupersedesIntent) {
+      chatAtlasTraceTrustedLifecycle('trusted-reconcile-skipped', {
+        reason: 'trusted-qid-superseded-by-published-sibling',
+        qId: publishedAnchorQId,
+        boundQId: intent.qId,
+        token,
+      });
+      return;
+    }
+
     const current = chatAtlasCurrentTrustedNativeBranchSelection(intent.qId);
     if (!current || current.token !== token) return;
     const evidence = chatAtlasCompleteIndexSelectedPathEvidence('trusted-native-branch-click', {
@@ -8733,7 +9034,9 @@
     const allowedAgeMs = returnExpansionWindow.active === true
       ? CHAT_ATLAS_BRANCH_EXPANSION_MAX_MS
       : Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000);
-    const activeTransaction = chatAtlasBranchTransactionCurrent();
+    const activeTransaction = chatAtlasBranchTransactionCurrent({
+      suppressTrustedExpiryReentry: true,
+    });
     const transactionOwned = activeTransaction?.state === 'pending'
       && activeTransaction.token === intent.token;
     const ageExpired = !expansionPending
@@ -8746,11 +9049,21 @@
       && intent.generation === Number(completeTurnIndexAuthorityState.generation || 0)
       && !ageExpired;
     if (!authoritative) {
+      let expiredRequestLeaseCleared = false;
       if (ageExpired && returnExpansionWindow.active === true) {
         chatAtlasFailClosedPreExpansionReturn(intent, returnExpansionWindow);
         return null;
       }
+      if (ageExpired) {
+        try {
+          expiredRequestLeaseCleared = completeIndexRefreshCoordinator
+            ?.clearExpiredSelectedPathRequestLeaseForIntent?.(intent, 'trusted-intent-expired') === true;
+        } catch {}
+      }
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      if (typeof chatAtlasCancelTrustedNativeBranchReconcile === 'function') {
+        chatAtlasCancelTrustedNativeBranchReconcile();
+      }
       // Expiry retires the INTENT, not the outcome. A selection whose branch
       // transaction already published owns the acquisition record until the
       // normal route/generation reset clears it; clearing here rewrote a
@@ -8778,6 +9091,14 @@
         token: intent.token,
         age,
       });
+      // Expiry clears this lease outside the coordinator's ordinary onState
+      // publication path. Publish once after the intent/acquisition mutations
+      // are final; the existing complete-index consumer coalesces its rebuild
+      // and reaches 0C3a through the public page-structure seam.
+      if (
+        expiredRequestLeaseCleared
+        && typeof chatAtlasNotifyCompleteIndexState === 'function'
+      ) chatAtlasNotifyCompleteIndexState();
       return null;
     }
     if (!qId || intent.qId !== qId) {
@@ -8871,6 +9192,7 @@
     }
     if (intent && evidence?.selectionToken === intent.token && !expansionOwnsIntent) {
       completeTurnIndexAuthorityState.trustedSelectedPathIntent = null;
+      chatAtlasCancelTrustedNativeBranchReconcile();
       if (typeof chatAtlasClearSelectedPathAcquisition === 'function') {
         chatAtlasClearSelectedPathAcquisition(`trusted-intent-resolved-${resolution}`, { preserveGraph: true });
       }
@@ -10722,6 +11044,43 @@
     routeGeneration: () => Number(completeTurnIndexAuthorityState.generation || 0),
     reconciliationActive: () => completeTurnIndexAuthorityState.autoBranchReconciliationEnabled === true,
     onSelectedPathResolved: chatAtlasResolveTrustedNativeBranchSelection,
+    onSelectedPathRequestLeaseQuiescent: (evidence) => {
+      const intent = completeTurnIndexAuthorityState.trustedSelectedPathIntent;
+      if (
+        !intent?.token
+        || intent.token !== String(evidence?.selectionToken || '')
+        || intent.qId !== String(evidence?.qId || '')
+      ) return;
+      // The bounded graph-only refetch is a separate live owner whose result
+      // may publish the route and settle this lease. Its own terminal path will
+      // close/re-evaluate the transaction; do not arm a competing timer while
+      // that exact token is still active.
+      if (selectedPathAcquisitionState.refetchActiveForToken === intent.token) return;
+      let staleLease = false;
+      try {
+        const refresh = completeIndexRefreshCoordinator?.getStatus?.();
+        staleLease = refresh?.selectedPathRequestLeaseActive === true
+          && refresh?.requestActive !== true
+          && refresh?.timerPending !== true
+          && refresh?.selectedPathConfirmationPending !== true
+          && completeIndexRefreshCoordinator?.selectedPathRequestOwnsIntent?.(intent) !== true;
+      } catch {}
+      if (!staleLease) return;
+      const trustedWindowMs = Math.max(
+        0,
+        Number(COMPLETE_TURN_INDEX_REFRESH_LIMITS.trustedSelectionWindowMs || 5000),
+      );
+      const transaction = completeTurnIndexAuthorityState.branchTransactionState;
+      const ageDeadlineAt = Number(intent.observedAt || Date.now()) + trustedWindowMs + 1;
+      const transactionDeadlineAt = transaction?.state === 'pending'
+        && transaction.token === intent.token
+        ? Number(transaction.openedAt || Date.now()) + CHAT_ATLAS_BRANCH_TRANSACTION_CAP_MS + 1
+        : ageDeadlineAt;
+      chatAtlasScheduleTrustedNativeBranchReconcile(intent.token, {
+        expiryWakeup: true,
+        delayMs: Math.max(0, Math.max(ageDeadlineAt, transactionDeadlineAt) - Date.now()),
+      });
+    },
     trace: chatAtlasTraceTrustedLifecycle,
     writeCache: (envelope) => {
       const transaction = chatAtlasBranchTransactionCurrent();

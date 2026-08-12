@@ -3569,10 +3569,26 @@ ${titleContractBridgePrelude}
 
   function yieldToBrowser() {
     return new Promise((resolve) => {
+      let settled = false;
+      let fallbackTimer = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (fallbackTimer !== null) {
+          clearTimeout(fallbackTimer);
+          fallbackTimer = null;
+        }
+        resolve();
+      };
       if (typeof window.requestAnimationFrame === "function") {
-        window.requestAnimationFrame(() => resolve());
+        fallbackTimer = setTimeout(finish, 48);
+        try {
+          window.requestAnimationFrame(finish);
+        } catch (_) {
+          finish();
+        }
       } else {
-        setTimeout(resolve, 0);
+        fallbackTimer = setTimeout(finish, 0);
       }
     });
   }
