@@ -42,6 +42,9 @@
   const KEY_AT_CFG_UI_V1 = 'h2o:prm:cgx:tnswrttl:cfg:ui:v1';
   const KEY_AE_EMPTY_BADGE_ICON_V1 = 'h2o:prm:cgx:tmjttl:state:empty-badge-icon:v1';
   const KEY_AE_PICKER_GROUPING_V1 = 'h2o:prm:cgx:tmjttl:state:picker-grouping:v1';
+  const KEY_AE_AUTO_ASSIGN_V1 = 'h2o:prm:cgx:tmjttl:state:auto-assign:v1';
+  const KEY_AE_SHOW_EMPTY_BADGE_V1 = 'h2o:prm:cgx:tmjttl:state:show-empty-badge:v1';
+  const KEY_AE_SHOW_HEAT_PILL_V1 = 'h2o:prm:cgx:tmjttl:state:show-heat-pill:v1';
   const KEY_CHAT_LIST_ACTIVITY_STYLE_V1 = 'ho:chat-list-activity-style';
   const EV_AE_SETTINGS_CANON = 'evt:h2o:autoemoji:settings-changed';
   const EV_AE_SETTINGS_LEG = 'h2o:autoemoji:settings-changed';
@@ -49,6 +52,9 @@
   const DEFAULT_CHAT_LIST_ACTIVITY_STYLE = 'edge-strip';
   const DEFAULT_AE_EMPTY_BADGE_ICON = 'chat-bubble-stack';
   const DEFAULT_AE_PICKER_GROUPING = 'os';
+  const DEFAULT_AE_AUTO_ASSIGN = true;
+  const DEFAULT_AE_SHOW_EMPTY_BADGE = true;
+  const DEFAULT_AE_SHOW_HEAT_PILL = true;
   const DEFAULT_INTERNAL_CHAT_TITLE_WIDTH = 60;
 
   const CHAT_LIST_ACTIVITY_STYLE_OPTIONS = Object.freeze([
@@ -518,6 +524,37 @@
     } catch {}
   }
 
+  function CHUB_AE_getBooleanField(field, storageKey, fallback = true) {
+    const api = CHUB_AE_api();
+    try {
+      const config = api?.getConfig?.();
+      if (typeof config?.[field] === 'boolean') return config[field];
+    } catch {}
+    const raw = storage.getStr(storageKey, null);
+    if (raw == null) return !!fallback;
+    if (/^(?:1|true|on|yes)$/i.test(raw)) return true;
+    if (/^(?:0|false|off|no)$/i.test(raw)) return false;
+    return !!fallback;
+  }
+
+  function CHUB_AE_setBooleanField(field, storageKey, value) {
+    const next = value !== false;
+    const api = CHUB_AE_api();
+    try {
+      if (typeof api?.applySetting === 'function') {
+        api.applySetting(field, next);
+        invalidate();
+        return;
+      }
+    } catch {}
+    try { (TOPW.localStorage || W.localStorage).setItem(storageKey, String(next)); } catch {}
+    try {
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail: { key: field, [field]: next, reason: 'control-hub' } }));
+      TOPW.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail: { key: field, [field]: next, reason: 'control-hub' } }));
+    } catch {}
+    invalidate();
+  }
+
   function CHUB_CHAT_TITLE_selfCheck() {
     const api = CHUB_CHAT_TITLE_api();
     if (!api) return null;
@@ -799,7 +836,10 @@
           { label: 'State', value: check ? 'Available' : 'Unavailable' },
           { label: 'Title', value: check?.displayTitle || check?.currentTitle || check?.baseTitle || 'None' },
           { label: 'Emoji', value: check?.currentEmoji || check?.emoji || 'None' },
+          { label: 'Automatic Emoji', value: CHUB_AE_getBooleanField('automaticallyAssignEmoji', KEY_AE_AUTO_ASSIGN_V1, DEFAULT_AE_AUTO_ASSIGN) ? 'On' : 'Off' },
+          { label: 'Pre-emoji Placeholder', value: CHUB_AE_getBooleanField('showPreEmojiChatIcon', KEY_AE_SHOW_EMPTY_BADGE_V1, DEFAULT_AE_SHOW_EMPTY_BADGE) ? 'On' : 'Off' },
           { label: 'Pre-emoji Icon', value: CHUB_AE_emptyBadgeIconLabel(CHUB_AE_getEmptyBadgeIcon()) },
+          { label: 'Heat Pill', value: CHUB_AE_getBooleanField('showHeatPill', KEY_AE_SHOW_HEAT_PILL_V1, DEFAULT_AE_SHOW_HEAT_PILL) ? 'On' : 'Off' },
           { label: 'Palette', value: CHUB_AE_getPickerGrouping() === 'internal' ? 'H2O Internal Groups' : 'OS Emoji Categories' },
           { label: 'Route', value: check?.routeKind || 'Unknown' },
           { label: 'Storage', value: check?.storageBackend || check?.durability?.backend || 'Unknown' },
@@ -807,11 +847,31 @@
       },
     },
     {
+      type: 'toggle',
+      key: 'chatTitleAutomaticallyAssignEmoji',
+      label: 'Automatically assign emoji',
+      group: 'Automation',
+      help: 'Automatically assign a suggested emoji when a new chat becomes eligible for title metadata.',
+      def: DEFAULT_AE_AUTO_ASSIGN,
+      getLive() { return CHUB_AE_getBooleanField('automaticallyAssignEmoji', KEY_AE_AUTO_ASSIGN_V1, DEFAULT_AE_AUTO_ASSIGN); },
+      setLive(value) { CHUB_AE_setBooleanField('automaticallyAssignEmoji', KEY_AE_AUTO_ASSIGN_V1, !!value); },
+    },
+    {
+      type: 'toggle',
+      key: 'chatTitleShowPreEmojiChatIcon',
+      label: 'Show Pre-emoji Chat Icon',
+      group: 'Sidebar Emoji',
+      help: 'Show a clickable placeholder icon for sidebar chats that do not have an assigned emoji.',
+      def: DEFAULT_AE_SHOW_EMPTY_BADGE,
+      getLive() { return CHUB_AE_getBooleanField('showPreEmojiChatIcon', KEY_AE_SHOW_EMPTY_BADGE_V1, DEFAULT_AE_SHOW_EMPTY_BADGE); },
+      setLive(value) { CHUB_AE_setBooleanField('showPreEmojiChatIcon', KEY_AE_SHOW_EMPTY_BADGE_V1, !!value); },
+    },
+    {
       type: 'custom',
       key: 'chatTitleEmptyBadgeIcon',
       label: 'Pre-emoji Chat Icon',
-      group: 'Badge',
-      help: 'Icon shown in the chat emoji slot before a chat has an emoji. Clicking it still assigns a suggested emoji.',
+      group: 'Sidebar Emoji',
+      help: 'Choose the clickable icon shown in the sidebar emoji slot before a chat has an emoji.',
       stackBelowLabel: true,
       render() {
         return CHUB_AE_renderEmptyBadgeIconPicker();
@@ -827,6 +887,16 @@
       opts: CHUB_AE_pickerGroupingOpts,
       getLive() { return CHUB_AE_getPickerGrouping(); },
       setLive(v) { CHUB_AE_setPickerGrouping(v); },
+    },
+    {
+      type: 'toggle',
+      key: 'chatTitleShowHeatPill',
+      label: 'Show Heat Pill',
+      group: 'Sidebar Status',
+      help: 'Show the chat heat/status pill on the right side of applicable sidebar chat rows.',
+      def: DEFAULT_AE_SHOW_HEAT_PILL,
+      getLive() { return CHUB_AE_getBooleanField('showHeatPill', KEY_AE_SHOW_HEAT_PILL_V1, DEFAULT_AE_SHOW_HEAT_PILL); },
+      setLive(value) { CHUB_AE_setBooleanField('showHeatPill', KEY_AE_SHOW_HEAT_PILL_V1, !!value); },
     },
     {
       type: 'action',

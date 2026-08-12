@@ -25,6 +25,9 @@
     EMOJI: (chatId) => `${NS_DISK}:state:emoji_${UTIL_AE_safeId(chatId)}:v1`,
     EMPTY_ICON: `${NS_DISK}:state:empty-badge-icon:v1`,
     PICKER_GROUPING: `${NS_DISK}:state:picker-grouping:v1`,
+    AUTO_ASSIGN: `${NS_DISK}:state:auto-assign:v1`,
+    SHOW_EMPTY_BADGE: `${NS_DISK}:state:show-empty-badge:v1`,
+    SHOW_HEAT_PILL: `${NS_DISK}:state:show-heat-pill:v1`,
     DONE_LEG:  (chatId) => `ho:autoemoji:done:${chatId}`,
     EMOJI_LEG: (chatId) => `ho:autoemoji:emoji:${chatId}`,
   });
@@ -40,6 +43,10 @@
   const MAX_NATIVE_RENAME_ATTEMPTS = 3;
   const DEFAULT_EMPTY_BADGE_ICON = 'chat-bubble-stack';
   const DEFAULT_PICKER_GROUPING = 'os';
+  const DEFAULT_AUTO_ASSIGN = true;
+  const DEFAULT_SHOW_EMPTY_BADGE = true;
+  const DEFAULT_SHOW_HEAT_PILL = true;
+  const SET_EMOJI_MENU_MARK = 'autoemoji-set-emoji';
   const EMPTY_BADGE_ICON_OPTIONS = Object.freeze([
     Object.freeze(['message-circle', 'Message Circle']),
     Object.freeze(['message-square', 'Message Square']),
@@ -116,6 +123,31 @@
     catch { return DEFAULT_PICKER_GROUPING; }
   }
 
+  function getBooleanSetting(key, fallback = true){
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return !!fallback;
+      if (/^(?:1|true|on|yes)$/i.test(raw)) return true;
+      if (/^(?:0|false|off|no)$/i.test(raw)) return false;
+    } catch {}
+    return !!fallback;
+  }
+
+  function setBooleanSetting(key, value, field, reason){
+    const next = value !== false;
+    try { localStorage.setItem(key, String(next)); } catch {}
+    applySidebarPresentationSettings();
+    const detail = { key: field, [field]: next, reason: reason || field };
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail })); } catch {}
+    schedule();
+    return getAutoEmojiConfig();
+  }
+
+  const getAutomaticallyAssignEmoji = () => getBooleanSetting(KEY_AE_.AUTO_ASSIGN, DEFAULT_AUTO_ASSIGN);
+  const getShowPreEmojiChatIcon = () => getBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, DEFAULT_SHOW_EMPTY_BADGE);
+  const getShowHeatPill = () => getBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, DEFAULT_SHOW_HEAT_PILL);
+
   function setEmptyBadgeIcon(value, options = {}){
     const next = normalizeEmptyBadgeIcon(value);
     try { localStorage.setItem(KEY_AE_.EMPTY_ICON, next); } catch {}
@@ -145,6 +177,9 @@
 
   function getAutoEmojiConfig(){
     return {
+      automaticallyAssignEmoji: getAutomaticallyAssignEmoji(),
+      showPreEmojiChatIcon: getShowPreEmojiChatIcon(),
+      showHeatPill: getShowHeatPill(),
       emptyBadgeIcon: getEmptyBadgeIcon(),
       emptyBadgeIconOptions: getEmptyBadgeIconOptions(),
       pickerGrouping: getPickerGrouping(),
@@ -153,6 +188,9 @@
   }
 
   function applyAutoEmojiSetting(key, value){
+    if (String(key || '') === 'automaticallyAssignEmoji') return setBooleanSetting(KEY_AE_.AUTO_ASSIGN, !!value, 'automaticallyAssignEmoji', 'api-setting');
+    if (String(key || '') === 'showPreEmojiChatIcon') return setBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, !!value, 'showPreEmojiChatIcon', 'api-setting');
+    if (String(key || '') === 'showHeatPill') return setBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, !!value, 'showHeatPill', 'api-setting');
     if (String(key || '') === 'emptyBadgeIcon') return setEmptyBadgeIcon(value, { reason: 'api-setting' });
     if (String(key || '') === 'pickerGrouping') return setPickerGrouping(value, { reason: 'api-setting' });
     return getAutoEmojiConfig();
@@ -167,6 +205,15 @@
         if (mask) badge.style.setProperty('--ho-empty-badge-mask', `url("${mask}")`);
       });
     } catch {}
+  }
+
+  function applySidebarPresentationSettings(){
+    const root = document.documentElement;
+    if (!root) return;
+    root.setAttribute('data-ho-auto-emoji-assignment', getAutomaticallyAssignEmoji() ? '1' : '0');
+    root.setAttribute('data-ho-show-pre-emoji-icon', getShowPreEmojiChatIcon() ? '1' : '0');
+    root.setAttribute('data-ho-show-heat-pill', getShowHeatPill() ? '1' : '0');
+    try { ensureVisibleSidebarBadges(); } catch {}
   }
 
   function chatTitleApi(){
@@ -239,11 +286,15 @@
     MIG_AE_keys(chatId);
     const state = chatTitleApi()?.getState?.(chatId);
     const emojiSource = String(state?.emojiSource || '');
-    return !!(runtimeDone[chatId] || (state?.emoji && emojiSource && emojiSource !== 'auto'));
+    let persisted = false;
+    try { persisted = localStorage.getItem(KEY_AE_.DONE(chatId)) === '1'; } catch {}
+    return !!(runtimeDone[chatId] || persisted || (state?.emoji && emojiSource));
   };
 
   const setDone = (chatId) => {
-    if (chatId) runtimeDone[chatId] = 1;
+    if (!chatId) return;
+    runtimeDone[chatId] = 1;
+    try { localStorage.setItem(KEY_AE_.DONE(chatId), '1'); } catch {}
   };
 
   const getSavedEmoji = (chatId) => {
@@ -257,6 +308,11 @@
   };
 
   const EMPTY_BADGE_TEXT = '';
+
+  function isAutomaticEmojiEligible({ autoEnabled, chatId, plainTitle, hasEmoji, done, pending, stableRuns }){
+    return autoEnabled === true && !!chatId && norm(plainTitle).length >= MIN_TITLE_LENGTH &&
+      !hasEmoji && !done && !pending && Number(stableRuns || 0) >= STABLE_RUNS_REQUIRED;
+  }
 
   function stopEmojiEvent(ev){
     ev?.preventDefault?.();
@@ -797,6 +853,17 @@ const CSS = `
 .ho-emoji-lane{
   user-select: none !important;
   cursor: pointer !important;
+}
+
+/* Presentation-only Heat Pill visibility. 9A1b retains all heat state and
+   rendering authority; this setting only hides its existing sidebar surface. */
+html[data-ho-show-heat-pill="0"] nav .ho-colorbtn-side,
+html[data-ho-show-heat-pill="0"] aside .ho-colorbtn-side{
+  display: none !important;
+}
+html[data-ho-show-heat-pill="0"] nav a.ho-has-colorbtn-side,
+html[data-ho-show-heat-pill="0"] aside a.ho-has-colorbtn-side{
+  padding-right: 8px !important;
 }
 
 .ho-emoji-badge{
@@ -1630,6 +1697,8 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
 
     pickerEl = document.createElement('div');
     pickerEl.className = 'ho-emoji-picker';
+    pickerEl.dataset.chatId = chatId;
+    pickerEl.dataset.hoEmojiPickerAuthority = '9D1a';
     pickerEl.setAttribute('data-cgxui-owner', 'auto-title-palette');
     pickerEl.setAttribute('data-h2o-glass', 'panel');
     pickerEl.setAttribute('data-h2o-skin-surface', 'sand-glass');
@@ -1900,17 +1969,15 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     if (!chatId) return false;
 
     const plainTitle = plainTitleFromAnchor(anchor, chatId);
-    const savedEmoji = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-    const visibleEmoji = badge.classList.contains('ho-emoji-empty') ? '' : norm(badge.textContent || '');
-
-    if (!savedEmoji && !visibleEmoji) {
-      addSuggestedEmojiFromBadge(chatId, plainTitle, badge);
-      return true;
-    }
-
-    // The unified Title Palette belongs to the chat pill. Once an emoji exists,
-    // the emoji badge only consumes the event so the chat row does not navigate.
-    return true;
+    const r = badge.getBoundingClientRect();
+    return openUnifiedTitlePanel({
+      chatId,
+      anchor,
+      sourceEl: badge,
+      plainTitle,
+      x: r.left,
+      y: r.bottom + 6,
+    });
   }
 
   function openUnifiedTitlePanel(options = {}){
@@ -1948,6 +2015,86 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     return true;
   }
 
+  let lastNativeMenuChatId = '';
+  let nativeMenuAugmentRaf = 0;
+
+  function captureSidebarChatMenuIdentity(event){
+    const trigger = event?.target?.closest?.(
+      'nav button[aria-label*="Open conversation options"], aside button[aria-label*="Open conversation options"]'
+    );
+    if (!trigger) return;
+    const anchor = trigger.closest('a[href*="/c/"]');
+    const chatId = extractChatIdFromHref(anchor?.getAttribute?.('href') || '');
+    lastNativeMenuChatId = chatId || '';
+  }
+
+  function isNativeSidebarChatMenu(menu){
+    if (!(menu instanceof HTMLElement) || !lastNativeMenuChatId) return false;
+    if (menu.matches?.('.ho-title-action-menu,[data-ho-title-menu="1"]') || menu.closest?.('.ho-emoji-picker')) return false;
+    const labels = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((item) => norm(item.textContent || ''));
+    return labels.includes('Rename') && labels.includes('Share') &&
+      labels.some((label) => /^(?:Archive|Delete)$/.test(label));
+  }
+
+  function setNativeMenuItemLabel(item, label){
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+    while (textNode && norm(textNode.nodeValue || '') !== 'Rename') textNode = walker.nextNode();
+    if (textNode) textNode.nodeValue = label;
+    else item.appendChild(Object.assign(document.createElement('span'), { textContent: label }));
+    item.setAttribute('aria-label', label);
+  }
+
+  function injectSetEmojiMenuItem(menu){
+    if (!isNativeSidebarChatMenu(menu)) return false;
+    const currentChatId = lastNativeMenuChatId;
+    const existing = menu.querySelector(`[data-cgxui="${SET_EMOJI_MENU_MARK}"]`);
+    if (existing) {
+      existing.dataset.hoAutoEmojiChatId = currentChatId;
+      return true;
+    }
+    const rename = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+      .find((item) => norm(item.textContent || '') === 'Rename');
+    if (!rename?.parentNode) return false;
+
+    const item = rename.cloneNode(true);
+    item.removeAttribute('id');
+    item.setAttribute('data-cgxui', SET_EMOJI_MENU_MARK);
+    item.setAttribute('data-cgxui-owner', '9D1a');
+    item.setAttribute('data-ho-auto-emoji-menu-item', '1');
+    item.dataset.hoAutoEmojiChatId = currentChatId;
+    item.tabIndex = 0;
+    setNativeMenuItemLabel(item, 'Set emoji');
+
+    const fire = (event) => {
+      stopEmojiEvent(event);
+      const chatId = item.dataset.hoAutoEmojiChatId || '';
+      if (!chatId) return;
+      const r = item.getBoundingClientRect();
+      openUnifiedTitlePanel({ chatId, sourceEl: item, x: r.right + 6, y: r.top });
+    };
+    item.addEventListener('click', fire, true);
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      fire(event);
+    }, true);
+    rename.parentNode.insertBefore(item, rename.nextSibling);
+    return true;
+  }
+
+  function augmentOpenSidebarChatMenus(){
+    const menus = Array.from(document.querySelectorAll('[role="menu"][data-state="open"], [data-radix-menu-content][data-state="open"]'));
+    menus.forEach(injectSetEmojiMenuItem);
+  }
+
+  function scheduleSidebarMenuAugmentation(){
+    if (nativeMenuAugmentRaf) return;
+    nativeMenuAugmentRaf = requestAnimationFrame(() => {
+      nativeMenuAugmentRaf = 0;
+      augmentOpenSidebarChatMenus();
+    });
+  }
+
   function installUnifiedTitlePanelApi(){
     const root = (window.H2O = window.H2O || {});
     const api = (root.AutoEmojiTitle = root.AutoEmojiTitle || {});
@@ -1955,6 +2102,12 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     api.openPicker = openUnifiedTitlePanel;
     api.getConfig = getAutoEmojiConfig;
     api.applySetting = applyAutoEmojiSetting;
+    api.getAutomaticallyAssignEmoji = getAutomaticallyAssignEmoji;
+    api.setAutomaticallyAssignEmoji = (value) => setBooleanSetting(KEY_AE_.AUTO_ASSIGN, !!value, 'automaticallyAssignEmoji', 'api-setting');
+    api.getShowPreEmojiChatIcon = getShowPreEmojiChatIcon;
+    api.setShowPreEmojiChatIcon = (value) => setBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, !!value, 'showPreEmojiChatIcon', 'api-setting');
+    api.getShowHeatPill = getShowHeatPill;
+    api.setShowHeatPill = (value) => setBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, !!value, 'showHeatPill', 'api-setting');
     api.getEmptyBadgeIcon = getEmptyBadgeIcon;
     api.setEmptyBadgeIcon = (value) => setEmptyBadgeIcon(value, { reason: 'api-set-empty-badge-icon' });
     api.getPickerGrouping = getPickerGrouping;
@@ -2390,6 +2543,14 @@ function ensureBadgeForChat(chatId){
   // One badge only (remove duplicates created by rerenders)
   keepOnlyOneBadgeAny(entry, leaf);
 
+  // The visibility preference applies only to the empty sidebar placeholder.
+  // Real canonical emoji remain visible regardless of this presentation toggle.
+  if (!badgeEmoji && !getShowPreEmojiChatIcon()) {
+    entry.querySelectorAll(':scope > .ho-emoji-badge.ho-emoji-empty').forEach((node) => node.remove());
+    entry.classList.remove('ho-emoji-row');
+    return;
+  }
+
   // Badge (create or update)
   let badge = entry.querySelector(':scope .ho-emoji-badge');
   if (!badge){
@@ -2488,14 +2649,19 @@ function maybeAutoEmojiRename(){
     return;
   }
 
-  // One-time only
-  if (isDone(chatId)) return;
-
   const st = (chatState[chatId] ||= { last:'', stable:0 });
   if (plain === st.last) st.stable++;
   else { st.last = plain; st.stable = 1; }
 
-  if (st.stable < STABLE_RUNS_REQUIRED) return;
+  if (!isAutomaticEmojiEligible({
+    autoEnabled: getAutomaticallyAssignEmoji(),
+    chatId,
+    plainTitle: plain,
+    hasEmoji: !!storedEmoji,
+    done: isDone(chatId),
+    pending: !!runtimeNativeRenamePending[chatId],
+    stableRuns: st.stable,
+  })) return;
 
   const emoji = pickEmojiForTitle(plain);
   applyNativeAutoEmoji(chatId, plain, emoji, {
@@ -2512,14 +2678,23 @@ function maybeAutoEmojiRename(){
    **************************************************************/
   let t = null;
   function schedule(){
+    // Native Radix menus are short-lived portals. Queue their bounded,
+    // idempotent augmentation immediately so unrelated ChatGPT mutations
+    // cannot keep resetting the slower title/automation debounce forever.
+    scheduleSidebarMenuAugmentation();
     clearTimeout(t);
-    t = setTimeout(maybeAutoEmojiRename, 110);
+    t = setTimeout(() => {
+      maybeAutoEmojiRename();
+    }, 110);
   }
 
 function init(){
   installUnifiedTitlePanelApi();
+  applySidebarPresentationSettings();
   bindEmojiDblClickOnce();      // sidebar dblclick
   bindProjectEmojiClickOnce();  // project list click
+  document.addEventListener('pointerdown', captureSidebarChatMenuIdentity, true);
+  window.addEventListener(EV_AE_SETTINGS_CANON, applySidebarPresentationSettings);
 
   const mo = new MutationObserver(schedule);
   mo.observe(document.body, { childList:true, subtree:true });
