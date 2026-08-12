@@ -44,6 +44,7 @@
   let attachTimer = 0;
   let settingsAttachTimer = 0;
   let refreshTimer = 0;
+  let presentationRefreshRaf = 0;
   let nativeDisclaimerRaf = 0;
   let internalTitleWidthRaf = 0;
   let internalTitleResizeObserver = null;
@@ -531,6 +532,8 @@
     clearTimeout(attachTimer);
     clearTimeout(settingsAttachTimer);
     clearTimeout(refreshTimer);
+    cancelAnimationFrame(presentationRefreshRaf);
+    presentationRefreshRaf = 0;
     cancelAnimationFrame(nativeDisclaimerRaf);
     nativeDisclaimerRaf = 0;
     cancelAnimationFrame(internalTitleWidthRaf);
@@ -620,29 +623,40 @@
     return rows;
   }
 
+  function projectIdentityRoot(value) {
+    const raw = norm(value).split(/[/?#]/)[0];
+    const match = raw.match(/^(g-p-[a-f0-9]{32})(?:-|$)/i);
+    return match ? match[1].toLowerCase() : raw.toLowerCase();
+  }
+
+  function resolveCanonicalProjectMeta(rows, routeId) {
+    const id = norm(routeId);
+    const identity = projectIdentityRoot(id);
+    if (!id || !identity || !Array.isArray(rows)) return null;
+    const candidates = rows.filter((row) => {
+      const rowId = norm(row?.id || row?.projectId || '');
+      const hrefId = norm(String(row?.href || '').match(/\/g\/([^/]+)\/project(?:$|[?#])/i)?.[1] || '');
+      return rowId === id || hrefId === id ||
+        projectIdentityRoot(rowId) === identity || projectIdentityRoot(hrefId) === identity;
+    });
+    const unique = [...new Map(candidates.map((row) => {
+      const key = `${norm(row?.id || row?.projectId || '')}\u0001${norm(row?.href || '')}`;
+      return [key, row];
+    })).values()];
+    if (unique.length !== 1) return null;
+    const row = unique[0];
+    const title = norm(row?.title || row?.name || row?.projectName || '');
+    if (!title) return null;
+    const rowId = norm(row?.id || row?.projectId || id);
+    const href = norm(row?.href || '') || normalizeProjectHref(rowId || id);
+    return { id: rowId || id, routeId: id, href, title };
+  }
+
   function readProjectMeta() {
+    if (!showProject) return null;
     const id = getCurrentProjectId();
     if (!id) return null;
-    const href = normalizeProjectHref(id);
-    const rows = projectRowsFromStore();
-    const found = rows.find((row) => {
-      const rowHref = String(row?.href || '').trim();
-      const rowId = String(row?.id || row?.projectId || '').trim();
-      return rowId === id || rowHref === href || rowHref.endsWith(href);
-    });
-
-    let title = norm(found?.title || found?.name || '');
-    if (!title) {
-      const selector = `a[href="${href.replace(/"/g, '\\"')}"], a[href$="${href.replace(/"/g, '\\"')}"]`;
-      const link = D.querySelector(selector);
-      title = norm(link?.querySelector?.('.truncate,[class*="truncate"]')?.textContent || link?.textContent || '');
-    }
-
-    return {
-      id,
-      href,
-      title: title || 'Project',
-    };
+    return resolveCanonicalProjectMeta(projectRowsFromStore(), id);
   }
 
   function openProject(project) {
@@ -1320,6 +1334,11 @@
     return form ? form.parentElement : null;
   }
 
+  function isCurrentTitleSurface(label, host, parent) {
+    return !!parent && !!label?.isConnected && label.parentElement === parent &&
+      !!host?.isConnected && host === parent;
+  }
+
   function normalizeInternalChatTitleWidth(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return DEFAULT_INTERNAL_CHAT_TITLE_WIDTH;
@@ -1475,8 +1494,19 @@
     let parent = getComposerContainer() || getDisclaimerContainer();
     if (!parent) return false;
 
+    if (labelEl && !isCurrentTitleSurface(labelEl, titleHostEl, parent)) {
+      closeTitleMenu(true);
+      labelEl = null;
+      shownProjectKey = '';
+      appliedInternalTitleWidthPx = NaN;
+      appliedInternalProjectWidthPx = NaN;
+    }
+    if (titleHostEl && (!titleHostEl.isConnected || titleHostEl !== parent)) {
+      try { titleHostEl.removeAttribute?.('data-ho-internal-title-host'); } catch {}
+      titleHostEl = null;
+      observeInternalTitleHost(null);
+    }
     if (titleHostEl !== parent) {
-      try { titleHostEl?.removeAttribute?.('data-ho-internal-title-host'); } catch {}
       titleHostEl = parent;
       titleHostEl.setAttribute('data-ho-internal-title-host', '1');
       observeInternalTitleHost(titleHostEl);
@@ -1948,6 +1978,25 @@
     }, 120);
   }
 
+  function refreshPresentationSoon(reason) {
+    if (destroyed || presentationRefreshRaf) return;
+    presentationRefreshRaf = requestAnimationFrame(() => {
+      presentationRefreshRaf = 0;
+      const parent = getComposerContainer() || getDisclaimerContainer();
+      const surfaceCurrent = !!labelEl?.isConnected && !!parent && labelEl.parentElement === parent;
+      const hostCurrent = !!titleHostEl?.isConnected && titleHostEl === parent;
+      if (!isCurrentTitleSurface(labelEl, titleHostEl, parent)) {
+        if (!parent) return;
+        labelEl = surfaceCurrent ? labelEl : null;
+        titleHostEl = hostCurrent ? titleHostEl : null;
+      }
+      let current = null;
+      try { current = W.H2O?.ChatTitle?.getState?.() || null; } catch {}
+      if (current) renderFromState(current);
+      else refreshSoon(reason || 'presentation-readiness');
+    });
+  }
+
   function init() {
     if (destroyed) return;
     ensureLabel();
@@ -1963,8 +2012,11 @@
     const onTitleChanged = (event) => renderCurrentState(event);
     const onEmojiUpdated = (event) => renderCurrentState(event);
     const onAutoEmojiChanged = () => refreshSoon('legacy-autoemoji-changed');
-    const onPopState = () => refreshSoon('popstate');
-    const onProjectsChanged = () => refreshSoon('projects-changed');
+    const onPopState = () => {
+      refreshPresentationSoon('popstate-presentation');
+      refreshSoon('popstate');
+    };
+    const onProjectsChanged = () => refreshPresentationSoon('projects-changed');
 
     W.addEventListener('h2o:chat-title:changed', onTitleChanged);
     W.addEventListener('h2o:chat-title:emoji-updated', onEmojiUpdated);
@@ -1978,7 +2030,7 @@
     addCleanup(() => W.removeEventListener('evt:h2o:projects:changed', onProjectsChanged));
 
     bodyObserver = new MutationObserver(() => {
-      refreshSoon('composer-dom-mutation');
+      refreshPresentationSoon('composer-dom-mutation');
       scheduleNativeDisclaimerVisibility();
       scheduleOpenMenuPositions();
     });

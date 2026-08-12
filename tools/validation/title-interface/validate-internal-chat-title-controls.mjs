@@ -124,6 +124,22 @@ assert.match(source.title, /let parent = getComposerContainer\(\) \|\| getDiscla
   'the actual composer container is the primary native-space host');
 assert.match(source.title, /titleHostEl\.setAttribute\('data-ho-internal-title-host',\s*'1'\)/,
   '9C1a marks only its current composer host for positioning');
+assert.match(source.title, /function isCurrentTitleSurface\(label, host, parent\)[\s\S]*label\?\.isConnected[\s\S]*label\.parentElement === parent[\s\S]*host\?\.isConnected[\s\S]*host === parent/,
+  'mounted state requires one connected title owned by the current connected composer host');
+assert.match(source.title, /if \(labelEl && !isCurrentTitleSurface\(labelEl, titleHostEl, parent\)\)[\s\S]*labelEl = null/,
+  'a detached or replaced composer surface is invalidated before deterministic remount');
+assert.match(source.title, /bodyObserver = new MutationObserver\(\(\) => \{[\s\S]*refreshPresentationSoon\('composer-dom-mutation'\)/,
+  'composer DOM readiness schedules a coalesced presentation remount instead of waiting for title-state changes');
+assert.match(source.title, /if \(destroyed \|\| presentationRefreshRaf\) return[\s\S]*requestAnimationFrame\(\(\) =>/,
+  'repeated SPA mutations coalesce into one lifecycle refresh');
+assert.match(source.title, /W\.addEventListener\('evt:h2o:projects:changed', onProjectsChanged\)/,
+  'canonical Projects readiness drives presentation refresh through the public change signal');
+assert.match(source.title, /function readProjectMeta\(\)[\s\S]*resolveCanonicalProjectMeta\(projectRowsFromStore\(\), id\)/,
+  'project presentation resolves exclusively from canonical Projects rows');
+assert.doesNotMatch(source.title, /title:\s*title \|\| 'Project'/,
+  'unresolved metadata never renders a bare Project placeholder');
+assert.doesNotMatch(extractFunction(source.title, 'readProjectMeta'), /querySelector\(/,
+  'project metadata resolution does not scrape sidebar labels');
 assert.doesNotMatch(source.title, /(?:9B1a|9B2a|document\.title).*--ho-internal-title-width/,
   'the presentation preference does not target tab or sidebar title consumers');
 assert.match(source.title, /openTitleMenu\(/, 'existing Rename/menu flow remains wired');
@@ -238,5 +254,46 @@ assert.equal(computeAdaptive({ composerWidth: 500, basePct: 75, titleIntrinsicWi
   'a narrow composer retains the same 90% cap');
 assert.equal(api.getInternalChatTitleSettings().widthPct, 60,
   'adaptive rendering never writes back over the persisted base width');
+
+const lifecycleSandbox = { Array, Map, String };
+lifecycleSandbox.globalThis = lifecycleSandbox;
+vm.createContext(lifecycleSandbox);
+vm.runInContext(
+  `${extractFunction(source.title, 'norm')}\n` +
+  `${extractFunction(source.title, 'normalizeProjectHref')}\n` +
+  `${extractFunction(source.title, 'projectIdentityRoot')}\n` +
+  `${extractFunction(source.title, 'resolveCanonicalProjectMeta')}\n` +
+  `${extractFunction(source.title, 'isCurrentTitleSurface')}\n` +
+  'globalThis.resolveProject = resolveCanonicalProjectMeta; globalThis.isCurrent = isCurrentTitleSurface;',
+  lifecycleSandbox,
+  { filename: rel.title }
+);
+const oldHost = { isConnected: false };
+const oldLabel = { isConnected: false, parentElement: oldHost };
+const currentHost = { isConnected: true };
+const currentLabel = { isConnected: true, parentElement: currentHost };
+assert.equal(lifecycleSandbox.isCurrent(oldLabel, oldHost, currentHost), false,
+  'a detached old title cannot satisfy mounted state');
+assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, currentHost), true,
+  'exact current-host ownership satisfies mounted state');
+assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, { isConnected: true }), false,
+  'returning to the same chat still requires remount when the composer host changed');
+const canonicalRows = [{
+  id: 'g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying',
+  href: '/g/g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying/project',
+  title: '#\ufe0f\u20e3\ud83d\udd35 2. H2O Studying \ud83d\udcda',
+}];
+assert.equal(lifecycleSandbox.resolveProject(canonicalRows, 'g-p-694c441066b08191add4a7c3293f5e7a').title,
+  '#\ufe0f\u20e3\ud83d\udd35 2. H2O Studying \ud83d\udcda',
+  'stable route identity resolves the unique canonical slugged project row');
+assert.equal(lifecycleSandbox.resolveProject([], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'unready canonical project metadata omits the segment');
+assert.equal(lifecycleSandbox.resolveProject([{ ...canonicalRows[0], title: '' }], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'a project row without a canonical name cannot become a bare placeholder');
+assert.equal(lifecycleSandbox.resolveProject([
+  canonicalRows[0],
+  { ...canonicalRows[0], id: `${canonicalRows[0].id}-duplicate`, href: `${canonicalRows[0].href}?duplicate=1` },
+], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'ambiguous identity-root metadata fails closed rather than reusing a stale name');
 
 console.log('validate-internal-chat-title-controls: ok');

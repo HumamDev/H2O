@@ -116,6 +116,16 @@ assert.equal((source.match(/markTitleOwnedMenu\((?:menu|picker|popup)\);/g) || [
 assert.match(source, /W\.addEventListener\('scroll',\s*onGeometry/, 'open menus track page/composer scrolling');
 assert.match(source, /W\.addEventListener\('resize',\s*onGeometry/, 'open menus track viewport resizing');
 assert.match(source, /scheduleOpenMenuPositions\(\)/, 'DOM/layout changes request anchored repositioning');
+assert.match(source, /function isCurrentTitleSurface\(label, host, parent\)[\s\S]*label\?\.isConnected[\s\S]*host\?\.isConnected/,
+  'SPA mount validity is based on live DOM connectivity');
+assert.match(source, /if \(labelEl && !isCurrentTitleSurface\(labelEl, titleHostEl, parent\)\)[\s\S]*labelEl = null/,
+  'a composer replacement invalidates the stale title reference before remount');
+assert.match(source, /function refreshPresentationSoon\(reason\)[\s\S]*if \(destroyed \|\| presentationRefreshRaf\) return[\s\S]*renderFromState\(current\)/,
+  'composer readiness and project updates share one coalesced presentation refresh');
+assert.match(source, /const onProjectsChanged = \(\) => refreshPresentationSoon\('projects-changed'\)/,
+  'canonical project readiness reactively rerenders the project presentation');
+assert.doesNotMatch(source, /title:\s*title \|\| 'Project'/,
+  'project presentation cannot expose a bare Project fallback');
 
 const projectSandbox = { Map, String };
 projectSandbox.globalThis = projectSandbox;
