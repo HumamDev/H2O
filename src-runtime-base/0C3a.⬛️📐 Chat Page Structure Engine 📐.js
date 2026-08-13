@@ -1575,7 +1575,125 @@
   let dividerScrollContainerBound = null;
 
   function runDividerRepair() {
-    try { renderChatPageDividers(resolveChatId()); } catch {}
+    // Scroll can fire at frame frequency while the page-unit model, mounted
+    // page anchors and owned divider nodes are completely unchanged. Keep the
+    // cache on this scroll-only entry point so explicit/public renders and
+    // every non-scroll reconciliation authority remain untouched.
+    const snapshot = () => {
+      const state = getChatPageUnitState();
+      const last = state.last || null;
+      const turns = Array.isArray(S.turnList) ? S.turnList : [];
+      const structuralCount = turns.length;
+      const pageCount = structuralCount > 0 ? Math.ceil(structuralCount / 25) : 0;
+      const effective = getEffectivePresentationRuntimeStatus() || {};
+      const transitionActive = chatPageUnitBranchTransitionActive() === true;
+      const boundaryIdentity = [];
+      const anchors = [];
+      for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
+        const startIndex = (pageNum - 1) * 25;
+        const endIndex = Math.min(structuralCount, pageNum * 25) - 1;
+        const start = turns[startIndex] || null;
+        const end = turns[endIndex] || null;
+        const stableTurnId = (turn = null) => [
+          String(turn?.questionId || turn?.qId || ''),
+          String(turn?.answerId || turn?.primaryAId || ''),
+          String(turn?.turnId || ''),
+          String(chatPageRecordOrder(turn, 0)),
+        ].join(':');
+        boundaryIdentity.push(`${String(pageNum)}:${stableTurnId(start)}>${stableTurnId(end)}`);
+        let anchor = null;
+        try { anchor = getPageStartTurnWrapper(pageNum) || null; } catch { anchor = null; }
+        const wrapper = anchor?.wrapper || null;
+        const section = anchor?.section || null;
+        anchors.push({
+          wrapper,
+          section,
+          testid: String(anchor?.testid || section?.getAttribute?.('data-testid') || ''),
+          parent: wrapper?.parentNode || null,
+          previous: wrapper?.previousSibling || null,
+          next: wrapper?.nextSibling || null,
+        });
+      }
+      const expectedOwner = String(UI_TOK.OWNER || '');
+      const dividers = [];
+      let dividersIntact = pageCount > 0 && state.pendingDividers.size === pageCount;
+      for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
+        const divider = state.pendingDividers.get(pageNum) || null;
+        const owner = String(divider?.getAttribute?.('data-cgxui-owner') || '');
+        const owned = !!divider
+          && divider.isConnected === true
+          && divider.classList?.contains('cgxui-chat-page-divider') === true
+          && owner === expectedOwner
+          && pageNumberOfThreadDivider(divider) === pageNum;
+        if (!owned) dividersIntact = false;
+        dividers.push({
+          divider,
+          owner,
+          parent: divider?.parentNode || null,
+          next: divider?.nextSibling || null,
+        });
+      }
+      const lastStatus = String(last?.status || '');
+      const lastIdentity = String(last?.identity || state.identity || '');
+      const lastCount = Math.max(0, Number(last?.count || 0) || 0);
+      const lastPageCount = Math.max(0, Number(last?.pageCount || 0) || 0);
+      const authorityCount = Math.max(0, Number(effective?.effectiveCount || effective?.count || 0) || 0);
+      const modelUnavailable = structuralCount === 0 && authorityCount > 0;
+      const coherent = authorityCount <= 0 || structuralCount === authorityCount;
+      return {
+        stateKey: [
+          lastIdentity,
+          lastStatus,
+          String(lastCount),
+          String(lastPageCount),
+          String(structuralCount),
+          String(pageCount),
+          String(authorityCount),
+          String(effective?.source || ''),
+          String(effective?.canonicalFingerprint || ''),
+          String(effective?.effectiveFingerprint || ''),
+          String(effective?.generation || 0),
+          transitionActive ? '1' : '0',
+          boundaryIdentity.join('|'),
+        ].join('||'),
+        anchors,
+        dividers,
+        eligible: lastStatus === 'settled'
+          && lastCount === structuralCount
+          && lastPageCount === pageCount
+          && transitionActive !== true
+          && modelUnavailable !== true
+          && coherent === true
+          && dividersIntact === true,
+      };
+    };
+    const sameReferences = (current = [], prior = [], fields = []) => {
+      if (current.length !== prior.length) return false;
+      for (let i = 0; i < current.length; i += 1) {
+        for (const field of fields) {
+          if (current[i]?.[field] !== prior[i]?.[field]) return false;
+        }
+      }
+      return true;
+    };
+    let before = null;
+    try { before = snapshot(); } catch { before = null; }
+    const prior = runDividerRepair._lastSuccessfulSnapshot || null;
+    if (
+      before?.eligible === true
+      && prior?.eligible === true
+      && before.stateKey === prior.stateKey
+      && sameReferences(before.anchors, prior.anchors, ['wrapper', 'section', 'testid', 'parent', 'previous', 'next'])
+      && sameReferences(before.dividers, prior.dividers, ['divider', 'owner', 'parent', 'next'])
+    ) {
+      return false;
+    }
+    let repaired = false;
+    try { repaired = renderChatPageDividers(resolveChatId()) === true; } catch { repaired = false; }
+    let after = null;
+    try { after = snapshot(); } catch { after = null; }
+    runDividerRepair._lastSuccessfulSnapshot = repaired && after?.eligible === true ? after : null;
+    return repaired;
   }
 
   function onDividerRepairScroll() {

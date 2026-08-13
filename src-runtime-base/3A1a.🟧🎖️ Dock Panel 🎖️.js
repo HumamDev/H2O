@@ -364,6 +364,7 @@
     moRoot: null,
     moRail: null,
     railRAF: 0,
+    nativeCloseReq: false,
 
     isOpen: false,
     renderPending: false,
@@ -1341,6 +1342,13 @@ function UI_DP_nativeClose_sync() {
       try { UI_DPANEL_installRailButtons(); } catch (_) {}
       try { CORE_DP_bindRailObserversOnce();
         CORE_DP_bindRailDelegationOnce(); } catch (_) {}
+      // Observer-driven native-close discovery only. The flag is read here, so
+      // a request raised while this frame was already pending is still served
+      // by it. Cleared before the pass, so a later mutation re-requests.
+      if (S.nativeCloseReq) {
+        S.nativeCloseReq = false;
+        try { UI_DP_nativeClose_sync(); } catch (_) {}
+      }
     });
   }
 
@@ -1360,8 +1368,11 @@ function UI_DP_nativeClose_sync() {
     if (typeof MutationObserver !== 'function') return;
 
     S.moRail = new MutationObserver(() => {
+      // Every mutation batch still requests native-close discovery; the rail
+      // frame collapses many same-frame requests into one pass. Explicit
+      // Dock-state callers keep calling UI_DP_nativeClose_sync() directly.
+      S.nativeCloseReq = true;
       UI_DPANEL_scheduleRailEnsure();
-      try { UI_DP_nativeClose_sync(); } catch (_) {}
     });
     S.moRail.observe(document.documentElement, { childList: true, subtree: true });
 
