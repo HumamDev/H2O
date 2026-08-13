@@ -663,6 +663,8 @@
     qById: new Map(),
     aById: new Map(),
     scheduled: false,
+    lastPublishedSemanticIdentity: null,
+    lastPublishedMountIdentity: null,
   };
 
   const weakFallback = new WeakMap();
@@ -2769,6 +2771,23 @@
 
 
 
+  function coreIndexSemanticIdentity() {
+    return JSON.stringify(turnState.turns.map((turn) => [
+      Number(turn?.turnNo || 0),
+      String(turn?.qId || ''),
+      String(turn?.primaryAId || ''),
+      turn?.noAnswer === true ? 1 : 0,
+      turn?.stopped === true ? 1 : 0,
+    ]));
+  }
+
+  function coreIndexMountIdentity() {
+    return JSON.stringify([
+      state.qList.map((row) => String(row?.id || '')),
+      state.aList.map((row) => String(row?.id || '')),
+    ]);
+  }
+
   function refresh(reason = 'manual') {
     state.version++;
 
@@ -2812,14 +2831,23 @@
 
     buildTurns(allRoleNodes);
 
-    const emitFn = H2O.events?.emit || H2O.bus?.emit || busEmit;
-    emitFn(EV_CORE_INDEX_UPDATED, {
-      reason,
-      version: state.version,
-      qTotal: state.qList.length,
-      aTotal: state.aList.length,
-      turnTotal: turnState.turns.length,
-    });
+    const semanticIdentity = coreIndexSemanticIdentity();
+    const mountIdentity = coreIndexMountIdentity();
+    if (
+      semanticIdentity !== state.lastPublishedSemanticIdentity
+      || mountIdentity !== state.lastPublishedMountIdentity
+    ) {
+      const emitFn = H2O.events?.emit || H2O.bus?.emit || busEmit;
+      emitFn(EV_CORE_INDEX_UPDATED, {
+        reason,
+        version: state.version,
+        qTotal: state.qList.length,
+        aTotal: state.aList.length,
+        turnTotal: turnState.turns.length,
+      });
+      state.lastPublishedSemanticIdentity = semanticIdentity;
+      state.lastPublishedMountIdentity = mountIdentity;
+    }
 
   }
 

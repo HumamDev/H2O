@@ -1239,12 +1239,18 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
   if (path.basename(intentPath) !== `${activationId}.json`) {
     return unresolved("intent-id-filename-mismatch");
   }
-  // 1: the intent's own source authority must still be exactly this repository.
+  try {
+    requireIntentBoundaryFields(journal);
+  } catch {
+    return unresolved("intent-malformed");
+  }
+  // 1: the intent must belong to this canonical repository and branch. Its
+  // generation identity is historical evidence, however, so HEAD, tree and Git
+  // executable are compared to the receipt and transaction below rather than
+  // to today's executable checkout.
   if (realAware(journal.repositoryRealpath ?? "") !== source.repository ||
       realAware(journal.authorizedWorktreeRealpath ?? "") !== source.repository ||
-      journal.branch !== source.branch || journal.approvedHead !== source.approvedHead ||
-      journal.sourceTree !== source.sourceTree ||
-      !sameJson(journal.gitExecutable, source.gitExecutable)) {
+      journal.branch !== source.branch) {
     return unresolved("intent-foreign-source");
   }
   if (journal.acceptedExtensionVariant !== undefined &&
@@ -1266,7 +1272,10 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("receipt-malformed");
   }
   const receiptSha256 = sha256Bytes(receiptBytes);
-  if (receipt?.mode !== ACTIVATION_RECEIPT_MODE || receipt?.activationId !== activationId) {
+  if (receipt?.schemaVersion !== ACTIVATION_RECEIPT_SCHEMA_VERSION ||
+      receipt?.mode !== ACTIVATION_RECEIPT_MODE || receipt?.activationId !== activationId ||
+      receipt.activationPerformed !== true || receipt.reloadPerformed !== false ||
+      receipt.canaryPerformed !== false || receipt.pushPerformed !== false) {
     return unresolved("receipt-identity-mismatch");
   }
   // 4: the receipt must bind this exact intent path and digest.
@@ -1274,12 +1283,16 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
       receipt.intentSha256 !== sha256Bytes(bytes)) {
     return unresolved("receipt-intent-binding-mismatch");
   }
-  // 5: and the same source, stage and variant identity.
-  if (realAware(receipt.repositoryRealpath ?? "") !== source.repository ||
-      realAware(receipt.authorizedWorktreeRealpath ?? "") !== source.repository ||
-      receipt.branch !== source.branch || receipt.approvedHead !== source.approvedHead ||
-      receipt.sourceTree !== source.sourceTree ||
+  // 5: and the same historical source, stage and variant identity as the
+  // immutable intent. Later advancement of main cannot invalidate this chain.
+  if (realAware(receipt.repositoryRealpath ?? "") !== realAware(journal.repositoryRealpath ?? "") ||
+      realAware(receipt.authorizedWorktreeRealpath ?? "") !==
+        realAware(journal.authorizedWorktreeRealpath ?? "") ||
+      receipt.branch !== journal.branch || receipt.approvedHead !== journal.approvedHead ||
+      receipt.sourceTree !== journal.sourceTree ||
+      !sameJson(receipt.stableGitIdentity, journal.gitExecutable) ||
       receipt.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT ||
+      realAware(receipt.stageReceiptPath ?? "") !== realAware(journal.stageReceiptPath ?? "") ||
       receipt.stageReceiptSha256 !== journal.stageReceiptSha256 ||
       receipt.buildMarker !== journal.buildMarker) {
     return unresolved("receipt-source-mismatch");
@@ -1296,7 +1309,18 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
   if (!terminal || terminal.mode !== TRANSACTION_MODE || terminal.activationId !== activationId) {
     return unresolved("transaction-foreign");
   }
-  if (realAware(terminal.repositoryRealpath ?? "") !== source.repository) {
+  if (realAware(terminal.repositoryRealpath ?? "") !== realAware(journal.repositoryRealpath ?? "") ||
+      realAware(terminal.authorizedWorktreeRealpath ?? "") !==
+        realAware(journal.authorizedWorktreeRealpath ?? "") ||
+      terminal.branch !== journal.branch || terminal.approvedHead !== journal.approvedHead ||
+      terminal.sourceTree !== journal.sourceTree ||
+      !sameJson(terminal.stableGitIdentity, journal.gitExecutable) ||
+      realAware(terminal.intentPath ?? "") !== realAware(intentPath) ||
+      terminal.intentSha256 !== sha256Bytes(bytes) ||
+      realAware(terminal.stageReceiptPath ?? "") !== realAware(journal.stageReceiptPath ?? "") ||
+      terminal.stageReceiptSha256 !== journal.stageReceiptSha256 ||
+      terminal.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT ||
+      terminal.buildMarker !== journal.buildMarker) {
     return unresolved("transaction-foreign");
   }
   if (terminal.transactionState !== "accepted") return unresolved("transaction-not-accepted");
