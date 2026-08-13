@@ -3616,7 +3616,14 @@ ${out.answerText}`);
     const chatId = toChatId(opts.chatId || msgEl?.closest?.('[data-chat-id]')?.getAttribute?.('data-chat-id') || toChatId());
     const mode = getChatMode(chatId);
     const stateRes = ensureTurnState(chatId, answerId, { reason: 'attachTurnUi', mode });
-    refreshChatSummaryAndProject(chatId, { reason: 'attach-turn-ui', project: false });
+    // aggregateChat() walks the WHOLE route and reads every turn's rendered text,
+    // so running it once per attached turn makes a multi-turn rescan O(turns²).
+    // A multi-turn rescan therefore defers it and aggregates once after its loop;
+    // the deferral is opt-in, so every standalone caller keeps refreshing here.
+    // We only report the deferral after clearing the early returns above, so the
+    // batched pass runs exactly when at least one attach would have aggregated.
+    const deferAggregate = opts.deferAggregate === true;
+    if (!deferAggregate) refreshChatSummaryAndProject(chatId, { reason: 'attach-turn-ui', project: false });
     const visibleCount = getAttachedVisibleTags(chatId, answerId, stateRes?.state || null).length;
     pill.textContent = visibleCount > 0 ? `#${visibleCount}` : '#';
     pill.onclick = (e) => {
@@ -3626,7 +3633,7 @@ ${out.answerText}`);
       else openTurnUi(chatId, answerId, { source: 'pill' });
     };
 
-    return { ok: true, status: 'ok', bar, pill };
+    return { ok: true, status: 'ok', bar, pill, chatId, aggregateDeferred: deferAggregate };
   }
 
   function detachTurnUi(answerIdRaw) {
@@ -3644,14 +3651,20 @@ ${out.answerText}`);
     const titleApi = getTitleApi();
     if (!titleApi || (typeof titleApi.getBar !== 'function' && typeof titleApi.ensureBar !== 'function')) return false;
     const turns = listTurns();
+    let deferredChatId = '';
     for (const turn of turns) {
       const answerId = normalizeId(turn?.answerId || '');
       if (!answerId) continue;
       const ensured = titleApi.ensureBar?.(answerId) || null;
       const bar = ensured?.bar || titleApi.getBar?.(answerId) || null;
       if (!(bar instanceof HTMLElement)) continue;
-      attachTurnUi(turn.answerEl || turn.node || null, answerId, { reason });
+      const res = attachTurnUi(turn.answerEl || turn.node || null, answerId, { reason, deferAggregate: true });
+      if (res?.aggregateDeferred && !deferredChatId) deferredChatId = res.chatId || '';
     }
+    // One aggregation for the whole rescan, and only when an attach actually
+    // reached the point that used to trigger it. Running last also means the
+    // aggregate now sees the completed turn state for every turn in the pass.
+    if (deferredChatId) refreshChatSummaryAndProject(deferredChatId, { reason: 'attach-turn-ui', project: false });
     return true;
   }
 
