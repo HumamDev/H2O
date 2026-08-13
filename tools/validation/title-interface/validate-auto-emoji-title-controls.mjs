@@ -6,6 +6,9 @@ import vm from 'node:vm';
 const root = process.cwd();
 const rel = Object.freeze({
   auto: 'src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js',
+  list: 'src-runtime-base/9A1b.🟫🖥️ Chat List Decorator 🎨🖥️.js',
+  kernel: 'src-runtime-base/9A1a.🟫🖥️ Interface Kernel ⚙️🖥️.js',
+  themes: 'src-runtime-base/8A1b.🟪🎨 Themes Panel 🎨.js',
   controls: 'src-runtime-base/0Z1p.⚫️🖥️🕹️ Interface Controls (Control Hub 🔌 Plugin) 🕹️.js',
   order: 'config/dev-order.tsv',
 });
@@ -107,5 +110,200 @@ assert.match(source.auto, /pickerEl\.dataset\.chatId = chatId;[\s\S]*pickerEl\.d
   'the single picker exposes its exact requested chat identity and authority for lifecycle proof');
 assert.doesNotMatch(source.auto, /window\.H2O\s*=\s*\{\s*emoji/,
   'no sidebar-only emoji state is introduced');
+
+/* Sidebar presentation while a Theme is active.
+ *
+ * Both owned sidebar controls are real `role="button"` elements, which places
+ * them inside the Themes generic sidebar reset that blanks background, border
+ * and box-shadow on those elements and on their pseudo-elements. The nodes
+ * stayed in the DOM and painted nothing. The repair is owned by the controls:
+ * each restates its own existing paint at a cascade rank that outranks the
+ * generic reset, so Themes keeps its reset unmodified. */
+
+function cssRuleBody(text, selectorSource) {
+  const match = text.match(new RegExp(`^\\s*${selectorSource}\\s*\\{([^}]*)\\}`, 'mu'));
+  assert.ok(match, `css rule present: ${selectorSource}`);
+  return match[1];
+}
+
+function cssDeclaration(body, property) {
+  const match = body.match(new RegExp(`(?:^|;)\\s*${property}\\s*:([^;]*);`, 'u'));
+  return match ? match[1].replace('!important', '').replace(/\s+/gu, ' ').trim() : null;
+}
+
+function compareSpecificity(a, b) {
+  return (a[0] - b[0]) || (a[1] - b[1]) || (a[2] - b[2]);
+}
+
+function specificity(selector) {
+  let ids = 0;
+  let classes = 0;
+  let elements = 0;
+  let rest = selector.trim();
+
+  rest = rest.replace(/:(?:is|not|has)\(([^()]*)\)/gu, (_, args) => {
+    const strongest = args.split(',').map(specificity).sort(compareSpecificity).pop();
+    ids += strongest[0];
+    classes += strongest[1];
+    elements += strongest[2];
+    return ' ';
+  });
+  rest = rest.replace(/:where\([^()]*\)/gu, ' ');
+
+  const take = (pattern) => {
+    const found = rest.match(pattern) || [];
+    rest = rest.replace(pattern, ' ');
+    return found.length;
+  };
+
+  ids += take(/#[\w-]+/gu);
+  elements += take(/::[\w-]+/gu);
+  classes += take(/\[[^\]]*\]/gu);
+  classes += take(/\.[\w-]+/gu);
+  classes += take(/:[\w-]+/gu);
+  elements += rest.split(/[\s>+~,]+/u).filter((token) => /^[a-z][\w-]*$/iu.test(token)).length;
+
+  return [ids, classes, elements];
+}
+
+assert.deepEqual(specificity('body[a="1"] aside :is(div, a, [role="button"])::before'), [0, 2, 3],
+  'the specificity model matches the CSS cascade rules this proof depends on');
+
+assert.match(source.auto, /badge\.setAttribute\('role', 'button'\)/u,
+  'the pre-emoji placeholder is a real button, which is why the Themes sidebar reset reaches it');
+assert.match(source.list, /btn\.setAttribute\("role", "button"\)/u,
+  'the Heat Pill is a real button, which is why the Themes sidebar reset reaches it');
+
+const themeCss = source.themes
+  .replaceAll('${ATTR_HO_THEME_ENABLED}', 'data-ho-theme-enabled')
+  .replaceAll('${ATTR_HO_CHATGPT_SIDEBAR}', 'data-ho-chatgpt-sidebar');
+// Every sidebar container Themes resets through, id-scoped ones included. The
+// live docked "Chats" list renders inside #stage-slideover-sidebar, so the
+// id-scoped branch is the one that actually governs the rows the user sees;
+// excluding it here would let a restoration that never paints pass this file.
+const dockedSidebarResets = (themeCss.match(/^body\[data-ho-theme-enabled="true"\][^\n{]*\[role="button"\][^\n{,]*/gmu) || [])
+  .map((selector) => selector.trim())
+  .filter((selector) => /aside|sidebar|nav\[aria-label/u.test(selector));
+assert.ok(dockedSidebarResets.length >= 8,
+  'Themes still owns its generic docked-sidebar reset over role=button controls and their pseudo-elements');
+
+// Both reset families must be represented, or "outranks every reset" would be a
+// weaker claim than it reads: the generic container branches and the id-scoped
+// #stage-slideover-sidebar branch that governs the live docked Chats rows.
+const genericResets = dockedSidebarResets.filter((selector) => !selector.includes('#'));
+const idScopedResets = dockedSidebarResets.filter((selector) => selector.includes('#stage-slideover-sidebar'));
+assert.ok(genericResets.length >= 8, 'the generic Themes sidebar reset branches are still present');
+assert.ok(idScopedResets.length >= 2, 'the id-scoped Themes sidebar reset branch is still present');
+
+const restorations = Object.freeze([
+  {
+    owner: '9D1a',
+    control: 'pre-emoji placeholder',
+    key: 'auto',
+    selector: 'body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) a[href*="/c/"] > .ho-emoji-badge.ho-emoji-empty[data-ho-emoji-ctx="side"]::before',
+  },
+  {
+    owner: '9A1b',
+    control: 'Heat Pill',
+    key: 'list',
+    selector: 'body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"]',
+  },
+]);
+
+for (const restoration of restorations) {
+  assert.ok(source[restoration.key].replace(/\s+/gu, ' ').includes(restoration.selector),
+    `${restoration.owner} owns the themed restoration for its ${restoration.control}`);
+  for (const reset of genericResets) {
+    assert.ok(compareSpecificity(specificity(restoration.selector), specificity(reset)) > 0,
+      `${restoration.owner} ${restoration.control} outranks the generic Themes reset "${reset}"`);
+  }
+  for (const reset of idScopedResets) {
+    assert.ok(compareSpecificity(specificity(restoration.selector), specificity(reset)) > 0,
+      `${restoration.owner} ${restoration.control} outranks the id-scoped Themes reset "${reset}"`);
+  }
+}
+
+// Negative control: the ownership hook and the live sidebar id are both load
+// bearing. Drop either and the restoration must stop outranking the reset that
+// governs the docked rows, so a future "simplification" cannot silently ship a
+// selector that leaves the controls transparent again.
+const strongestIdReset = idScopedResets.slice().sort(compareSpecificity).pop();
+for (const [label, weakened] of Object.entries({
+  'without the owner hook': 'body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i]) .ho-colorbtn-side',
+  'without the live sidebar id': 'body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i]) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"]',
+})) {
+  assert.ok(compareSpecificity(specificity(weakened), specificity(strongestIdReset)) <= 0,
+    `a restoration ${label} must lose to the id-scoped Themes reset (negative control)`);
+}
+
+for (const key of ['auto', 'list']) {
+  assert.doesNotMatch(source[key], /\[role="button"\]\)?::(?:before|after)/u,
+    'the repair restores only its own controls and never re-opens the generic Themes sidebar reset');
+  assert.doesNotMatch(source[key], /(?:set|remove)Attribute\(\s*['"]data-ho-theme-enabled/u,
+    'the repair reads the Themes state purely as a CSS scope and never mutates Themes');
+}
+
+assert.match(source.list, /btn\.dataset\.hoHeatPillOwner = "9A1b"/u,
+  'the existing Heat Pill decoration path stamps the ownership hook the restoration selects on');
+assert.equal((source.list.match(/dataset\.hoHeatPillOwner/gu) || []).length, 1,
+  'exactly one Heat Pill ownership stamp exists, so no second Heat Pill implementation appears');
+assert.match(source.auto, /setBadgeDisplay\(badge, badgeEmoji, 'side'\)/u,
+  'sidebar placeholders carry the side context the themed restoration is scoped to');
+assert.match(source.auto, /entry\.insertBefore\(badge, entry\.firstChild\)/u,
+  'the sidebar placeholder stays a direct child of the chat anchor the restoration targets');
+
+const themedPlaceholder = cssRuleBody(source.auto, 'a\\[href\\*="/c/"\\] > \\.ho-emoji-badge\\.ho-emoji-empty\\[data-ho-emoji-ctx="side"\\]::before');
+assert.equal(cssDeclaration(themedPlaceholder, 'background'),
+  cssDeclaration(cssRuleBody(source.auto, '\\.ho-emoji-badge\\.ho-emoji-empty::before'), 'background'),
+  'the themed placeholder repaints the established glyph fill rather than inventing a new one');
+assert.doesNotMatch(themedPlaceholder, /mask/iu,
+  'the themed placeholder leaves the distinct empty-icon masks untouched');
+
+for (const state of ['off', 'warm', 'hot']) {
+  const baseline = cssRuleBody(source.list, `\\.ho-colorbtn\\.ho-heat-${state}`);
+  const themed = cssRuleBody(source.list, `\\.ho-colorbtn-side\\[data-ho-heat-pill-owner="9A1b"\\]\\.ho-heat-${state}`);
+  for (const property of ['border-color', 'box-shadow']) {
+    assert.equal(cssDeclaration(themed, property), cssDeclaration(baseline, property),
+      `the themed Heat Pill restores the established ${state} ${property} rather than a second heat design`);
+  }
+}
+
+const themedHotCore = cssRuleBody(source.list, '\\.ho-colorbtn-side\\[data-ho-heat-pill-owner="9A1b"\\]\\.ho-heat-hot::before');
+const baselineHotCore = cssRuleBody(source.list, '\\.ho-colorbtn\\.ho-heat-hot::before');
+for (const property of ['background', 'box-shadow']) {
+  assert.equal(cssDeclaration(themedHotCore, property), cssDeclaration(baselineHotCore, property),
+    `the themed Heat Pill restores the established hot ${property} rather than a second heat design`);
+}
+
+// The whole owner restoration has to carry the live sidebar id, not just the
+// one rule spot-checked above. A leftover id-less owner scope would paint in
+// some presentation modes and stay invisible in others.
+assert.doesNotMatch(source.list, /:is\(aside, nav\[aria-label\*="chat" i\]\)(?!\s*,)/u,
+  'every 9A1b owner restoration scope names the live docked sidebar container');
+assert.doesNotMatch(source.auto, /:is\(aside, nav\[aria-label\*="chat" i\]\)(?!\s*,)/u,
+  'the 9D1a owner restoration scope names the live docked sidebar container');
+
+// Heat scoring and state stay with the 9A1a kernel. 9A1b restores paint only.
+assert.match(source.kernel, /btn\.classList\.add\("ho-heat-" \+ api\.heat\.getLevel\(chatId\)\)/u,
+  '9A1a remains the Heat Pill state authority that assigns the heat level class');
+assert.doesNotMatch(source.list, /classList\.(?:add|toggle|remove)\(\s*["'][^"']*ho-heat/u,
+  '9A1b never assigns or clears a heat class, so restoring paint cannot alter heat state');
+assert.doesNotMatch(source.list, /api\.heat\.(?:set|compute|score)/u,
+  '9A1b never writes Heat Pill scoring');
+
+// Fresh-load lifecycle: the badge scan must not sit behind the resettable
+// debounce, and must come to rest on its own rather than re-scanning per frame.
+assert.match(source.auto, /function scheduleSidebarBadgeScan\(\)\{[\s\S]*if \(sidebarBadgeScanRaf\) return;[\s\S]*requestAnimationFrame\(/u,
+  'the initial sidebar scan is coalesced through one guarded animation frame');
+assert.match(source.auto, /const signature = sidebarBadgeScanState\(\);\s*if \(signature === sidebarBadgeScanSignature\) return;/u,
+  'a settled sidebar stops re-scanning, so the scan cannot become a per-frame loop');
+assert.match(source.auto, /scheduleSidebarMenuAugmentation\(\);[\s\S]{0,320}scheduleSidebarBadgeScan\(\);\s*clearTimeout\(t\);/u,
+  'the sidebar scan is queued off the debounce that unrelated mutations keep resetting');
+assert.match(source.auto, /t = setTimeout\(\(\) => \{\s*maybeAutoEmojiRename\(\);\s*\}, 110\);/u,
+  'automatic emoji assignment still waits behind the title-stability debounce');
+assert.equal((source.auto.match(/scheduleSidebarBadgeScan\(\)/gu) || []).length, 2,
+  'exactly one definition and one call site exist, so no duplicate scan path is installed');
+assert.doesNotMatch(source.auto, /setInterval\(/u,
+  'the lifecycle uses observers and coalesced frames, never polling');
 
 console.log('validate-auto-emoji-title-controls: ok');

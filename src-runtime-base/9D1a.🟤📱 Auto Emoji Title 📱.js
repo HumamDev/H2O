@@ -904,6 +904,22 @@ html[data-ho-show-heat-pill="0"] aside a.ho-has-colorbtn-side{
   filter: drop-shadow(0 0 8px rgba(132,198,255,.72)) !important;
 }
 
+/* Themes owns the sidebar canvas, but its generic pseudo-element reset must
+   not erase this owner-marked placeholder glyph. Keep the exception scoped
+   to an exact native chat row and the existing 9D1a sidebar badge surface.
+
+   #stage-slideover-sidebar is listed because the live docked Chats list
+   renders inside it, so Themes clears this glyph through an id-scoped branch
+   of that same reset. Naming the container here is what lets the owner rule
+   outrank it; without it the placeholder stays in the DOM painting nothing. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a[href*="/c/"] > .ho-emoji-badge.ho-emoji-empty[data-ho-emoji-ctx="side"]::before{
+  background: rgba(218,235,255,.96) !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
 .ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-circle"]{
   --ho-empty-badge-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M21 11.5a8.5 8.5 0 0 1-12.4 7.6L3 21l1.9-5.4A8.5 8.5 0 1 1 21 11.5Z'/%3E%3C/svg%3E") !important;
 }
@@ -2601,6 +2617,42 @@ function ensureVisibleSidebarBadges(){
   });
 }
 
+/* Sidebar decoration cannot ride the 110ms title/automation debounce alone.
+   That debounce is cleared on every observed mutation, so a page that keeps
+   mutating — a streaming answer, a long conversation mounting — resets it
+   indefinitely and the sidebar never gets decorated at all. The native menu
+   augmentation above already had to be lifted out of that debounce for the
+   same reason; the badge scan needs the same treatment.
+
+   The signature is what keeps this cheap: a scan only runs when the sidebar
+   row set or its decoration state actually changed, so a settled sidebar and
+   a Pre-emoji-off sidebar both come to rest instead of re-scanning per frame.
+   It also covers the boot race — when the sidebar mounts after 9D1a, the row
+   count changes and the existing observer arms this scan, so no readiness
+   timer or polling loop is needed. */
+let sidebarBadgeScanRaf = 0;
+let sidebarBadgeScanSignature = '';
+
+function sidebarBadgeScanState(){
+  const anchors = findSidebarChatAnchors();
+  let undecorated = 0;
+  anchors.forEach((anchor) => {
+    if (!anchor.querySelector(':scope > .ho-emoji-badge')) undecorated += 1;
+  });
+  return `${anchors.length}:${undecorated}`;
+}
+
+function scheduleSidebarBadgeScan(){
+  if (sidebarBadgeScanRaf) return;
+  sidebarBadgeScanRaf = requestAnimationFrame(() => {
+    sidebarBadgeScanRaf = 0;
+    const signature = sidebarBadgeScanState();
+    if (signature === sidebarBadgeScanSignature) return;
+    sidebarBadgeScanSignature = signature;
+    ensureVisibleSidebarBadges();
+  });
+}
+
 
 
 
@@ -2682,6 +2734,10 @@ function maybeAutoEmojiRename(){
     // idempotent augmentation immediately so unrelated ChatGPT mutations
     // cannot keep resetting the slower title/automation debounce forever.
     scheduleSidebarMenuAugmentation();
+    // Sidebar decoration is subject to the same starvation, so it is queued
+    // off the debounce too. Automatic emoji assignment stays behind the
+    // debounce, where waiting for a stable title is the point.
+    scheduleSidebarBadgeScan();
     clearTimeout(t);
     t = setTimeout(() => {
       maybeAutoEmojiRename();

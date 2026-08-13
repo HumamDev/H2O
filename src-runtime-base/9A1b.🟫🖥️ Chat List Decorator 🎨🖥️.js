@@ -495,6 +495,74 @@ html[data-ho-chat-list-activity-style="edge-wide"] .ho-colorbtn.ho-heat-hot::bef
     0 0 14px rgba(255,255,255,0.12) !important;
 }
 
+/* Themes deliberately clears generic sidebar pseudo-elements. Heat Pill is
+   an owned 9A1b control, so restore only its existing paint model instead of
+   weakening the Themes reset or creating a second heat implementation.
+
+   #stage-slideover-sidebar is named in the scope because the live docked Chats
+   list renders inside it and Themes clears the pill through an id-scoped branch
+   of that same reset; without the id here these rules lose the cascade and the
+   pill stays in the DOM painting nothing. Note that background is a transitioned
+   property on .ho-colorbtn::before, so the restored colour lands one transition
+   later — reading it in the same tick as a style change reports the
+   pre-transition value, not a failure to apply. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"] {
+  background: transparent !important;
+  background-image: none !important;
+  border: 1px solid rgba(210,215,225,0.85) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off {
+  border-color: rgba(128,138,148,0.66) !important;
+  box-shadow: none !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm {
+  border-color: rgba(245,248,255,0.96) !important;
+  box-shadow: 0 0 0 1px rgba(245,248,255,0.38), 0 0 10px rgba(245,248,255,0.30) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot {
+  border-color: rgba(255,255,255,0.98) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.42), 0 0 13px rgba(255,255,255,0.36), 0 0 26px rgba(255,255,255,0.18) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before {
+  background: rgba(255,255,255,0.48) !important;
+  box-shadow: inset 0 0 6px rgba(255,255,255,0.62) !important;
+}
+
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"],
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"] {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off::before {
+  background: rgba(142,150,160,0.66) !important;
+  box-shadow: none !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm::before {
+  background: rgba(142,150,160,0.66) !important;
+  border: 1px solid rgba(255,255,255,0.82) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.14), 0 0 8px rgba(245,248,255,0.30) !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before {
+  background: rgba(255,255,255,0.72) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 0 8px rgba(255,255,255,0.26), 0 0 14px rgba(255,255,255,0.12) !important;
+}
+
 /* =========================================================
    3) Palette UI (popup) + Swatches
    ========================================================= */
@@ -1955,6 +2023,7 @@ function decorateLink(link) {
     : "ho-colorbtn ho-colorbtn-main ho-colorbtn-tail";
 
   btn.dataset.chatid = id;
+  btn.dataset.hoHeatPillOwner = "9A1b";
 
   // make it behave like a button
   btn.setAttribute("role", "button");
