@@ -130,5 +130,11 @@ assert.match(extractFunction(source.state, 'readTextExcluding'),
 assert.doesNotMatch(extractFunction(source.state, 'patchNativeConversationTitle'),
   /sidebar|placeholder|textContent/iu,
   'native PATCH payload construction has no dependency on decorated sidebar chrome');
+assert.match(extractFunction(source.auto, 'activatePinnedNativePlaceholder'),
+  /openUnifiedTitlePanel\(\{[\s\S]*chatId: context\.chatId/u,
+  'the restored native placeholder after removal reuses the same exact-chat picker authority');
+assert.doesNotMatch(extractFunction(source.auto, 'activatePinnedNativePlaceholder'),
+  /setEmojiAndPersist|removeLeadingEmojiAndPersist|patchNative/u,
+  'opening the pinned placeholder performs no native title mutation');
 
 console.log('validate-native-emoji-title-persistence: ok');

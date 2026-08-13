@@ -380,5 +380,31 @@ assert.match(extractFunction(source.state, 'readTextExcluding'),
 assert.match(extractFunction(source.auto, 'sidebarBadgeScanState'),
   /data-ho-pinned-emoji-slot[\s\S]*data-ho-pinned-native-chat-placeholder/u,
   'row replacement invalidates the coalesced signature until pinned ownership is restored');
+assert.match(extractFunction(source.auto, 'applyPinnedEmojiSlotPresentation'),
+  /data-ho-pinned-native-chat-id[\s\S]*chatId[\s\S]*title[\s\S]*Set emoji for chat/u,
+  'an eligible native pinned placeholder carries its exact canonical chatId and useful affordance title');
+assert.match(extractFunction(source.auto, 'pinnedNativePlaceholderActivationContext'),
+  /data-ho-pinned-native-chat-placeholder="1"[\s\S]*isPinnedSidebarChatRow[\s\S]*data-ho-pinned-emoji-slot'\) !== 'native'[\s\S]*ho-emoji-badge:not\(\.ho-emoji-empty\)[\s\S]*data-ho-pinned-native-chat-id/u,
+  'activation fails closed unless the exact emoji-less pinned native slot and exact chatId agree');
+assert.match(extractFunction(source.auto, 'activatePinnedNativePlaceholder'),
+  /button !== 0[\s\S]*stopEmojiEvent\(event\)[\s\S]*openUnifiedTitlePanel\(\{[\s\S]*chatId: context\.chatId[\s\S]*sourceEl: context\.placeholder/u,
+  'primary native-placeholder activation prevents row navigation and opens the canonical exact-chat picker');
+assert.match(extractFunction(source.auto, 'suppressPinnedNativePlaceholderActivation'),
+  /pinnedNativePlaceholderActivationContext\(event\)[\s\S]*stopEmojiEvent\(event\)/u,
+  'mousedown/click defaults are suppressed only for the exact eligible native placeholder');
+assert.match(extractFunction(source.auto, 'bindPinnedNativePlaceholderActivationOnce'),
+  /__HO_PINNED_NATIVE_EMOJI_BOUND[\s\S]*pointerdown[\s\S]*mousedown[\s\S]*click/u,
+  'one delegated lifecycle binding survives row replacement without per-row handler accumulation');
+assert.equal((source.auto.match(/bindPinnedNativePlaceholderActivationOnce\(\)/gu) || []).length, 2,
+  'the pinned activation binding has one definition and one initialization call');
+assert.match(source.auto,
+  /a\[data-ho-pinned-emoji-slot="native"\][\s\S]*\[data-ho-pinned-native-chat-placeholder="1"\][\s\S]*cursor:\s*pointer !important/u,
+  'the exact native slot presents a pointer cursor without changing focus semantics');
+assert.doesNotMatch(extractFunction(source.auto, 'activatePinnedNativePlaceholder'),
+  /getShowPreEmojiChatIcon/u,
+  'Show Pre-emoji never gates the pinned native manual picker affordance');
+assert.match(extractFunction(source.auto, 'clearPinnedEmojiSlotPresentation'),
+  /removeAttribute\('data-ho-pinned-native-chat-id'\)[\s\S]*Set emoji for chat/u,
+  'reclassified rows cannot retain a stale pinned chat identity or owned title');
 
 console.log('validate-auto-emoji-title-controls: ok');

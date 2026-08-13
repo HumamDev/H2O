@@ -817,6 +817,8 @@
     entry.removeAttribute('data-ho-pinned-emoji-slot');
     entry.querySelectorAll('[data-ho-pinned-native-chat-placeholder="1"]').forEach((node) => {
       node.removeAttribute('data-ho-pinned-native-chat-placeholder');
+      node.removeAttribute('data-ho-pinned-native-chat-id');
+      if (node.getAttribute('title') === 'Set emoji for chat') node.removeAttribute('title');
     });
   }
 
@@ -826,9 +828,59 @@
       return false;
     }
     const nativePlaceholder = findPinnedNativeChatPlaceholder(entry);
-    if (nativePlaceholder) nativePlaceholder.setAttribute('data-ho-pinned-native-chat-placeholder', '1');
+    const chatId = extractChatIdFromHref(entry.getAttribute('href') || '');
+    if (nativePlaceholder) {
+      nativePlaceholder.setAttribute('data-ho-pinned-native-chat-placeholder', '1');
+      nativePlaceholder.setAttribute('data-ho-pinned-native-chat-id', chatId || '');
+      nativePlaceholder.setAttribute('title', 'Set emoji for chat');
+    }
     entry.setAttribute('data-ho-pinned-emoji-slot', norm(emoji) ? 'real' : 'native');
     return true;
+  }
+
+  function pinnedNativePlaceholderActivationContext(event){
+    const placeholder = event?.target?.closest?.('[data-ho-pinned-native-chat-placeholder="1"]');
+    if (!placeholder) return null;
+    const anchor = placeholder.closest?.('a[href*="/c/"]');
+    if (!anchor || !isPinnedSidebarChatRow(anchor)) return null;
+    if (anchor.getAttribute('data-ho-pinned-emoji-slot') !== 'native') return null;
+    if (anchor.querySelector(':scope > .ho-emoji-badge:not(.ho-emoji-empty)')) return null;
+    if (findPinnedNativeChatPlaceholder(anchor) !== placeholder) return null;
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    if (!chatId || placeholder.getAttribute('data-ho-pinned-native-chat-id') !== chatId) return null;
+    return { placeholder, anchor, chatId };
+  }
+
+  function suppressPinnedNativePlaceholderActivation(event){
+    const context = pinnedNativePlaceholderActivationContext(event);
+    if (!context) return false;
+    stopEmojiEvent(event);
+    return true;
+  }
+
+  function activatePinnedNativePlaceholder(event){
+    if (event?.button !== 0 || event?.isPrimary === false) return false;
+    const context = pinnedNativePlaceholderActivationContext(event);
+    if (!context) return false;
+    stopEmojiEvent(event);
+    const plainTitle = plainTitleFromAnchor(context.anchor, context.chatId);
+    const rect = context.placeholder.getBoundingClientRect();
+    return openUnifiedTitlePanel({
+      chatId: context.chatId,
+      anchor: context.anchor,
+      sourceEl: context.placeholder,
+      plainTitle,
+      x: rect.left,
+      y: rect.bottom + 6,
+    });
+  }
+
+  function bindPinnedNativePlaceholderActivationOnce(){
+    if (window.__HO_PINNED_NATIVE_EMOJI_BOUND) return;
+    window.__HO_PINNED_NATIVE_EMOJI_BOUND = true;
+    document.addEventListener('pointerdown', activatePinnedNativePlaceholder, true);
+    document.addEventListener('mousedown', suppressPinnedNativePlaceholderActivation, true);
+    document.addEventListener('click', suppressPinnedNativePlaceholderActivation, true);
   }
 
   function findLeafTitleNode(entry){
@@ -996,6 +1048,11 @@ body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-
 :is(aside, nav) a[data-ho-pinned-emoji-slot="real"]
   [data-ho-pinned-native-chat-placeholder="1"]{
   display: none !important;
+}
+
+:is(aside, nav) a[data-ho-pinned-emoji-slot="native"]
+  [data-ho-pinned-native-chat-placeholder="1"]{
+  cursor: pointer !important;
 }
 
 .ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-circle"]{
@@ -2916,6 +2973,7 @@ function init(){
   applySidebarPresentationSettings();
   bindEmojiDblClickOnce();      // sidebar dblclick
   bindProjectEmojiClickOnce();  // project list click
+  bindPinnedNativePlaceholderActivationOnce();
   document.addEventListener('pointerdown', captureSidebarChatMenuIdentity, true);
   window.addEventListener(EV_AE_SETTINGS_CANON, applySidebarPresentationSettings);
 
