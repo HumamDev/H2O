@@ -269,6 +269,7 @@
       chatId,
       emoji,
       source: source || 'auto',
+      emojiOwner: options?.emojiOwner || '',
       priority: priority == null ? 50 : priority,
       confidence: confidence == null ? 0.75 : confidence,
       reason: options?.reason || '9d-emoji-publish',
@@ -304,7 +305,7 @@
   };
 
   const setSavedEmoji = (chatId, emoji) => {
-    publishEmoji(chatId, emoji, 'native-title', 90, 0.9, { reason: '9d-existing-title-emoji' });
+    publishEmoji(chatId, emoji, 'native-title', 90, 0.9, { emojiOwner: 'native', reason: '9d-existing-title-emoji' });
   };
 
   const EMPTY_BADGE_TEXT = '';
@@ -625,7 +626,14 @@
     return Array.from(s);
   }
 
-  const isEmojiCluster = (cluster) => /\p{Extended_Pictographic}/u.test(cluster || '');
+  const isEmojiCluster = (cluster) => /[\uFE0F\u200D]|\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(cluster || '');
+
+  function takeLeadingEmojiSlot(value){
+    const title = norm(value);
+    const parts = graphemes(title);
+    const emoji = parts[0] && isEmojiCluster(parts[0]) ? parts[0] : '';
+    return { emoji, remainder: emoji ? norm(parts.slice(1).join('')) : title };
+  }
 
   function getEdgeEmoji(s){
     const t = norm(s);
@@ -673,23 +681,9 @@
     return /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(text || '');
   }
 
-  // IMPORTANT: no invisible marks -> avoids “random letters” issue
-  function formatTitleWithEmoji(plain, emoji){
-    const p = norm(plain);
-    if (!p) return emoji;
-    // RTL: append at end (visually left)
-    if (isRTL(p)) return `${p} ${emoji}`;
-    // LTR: prefix
-    return `${emoji} ${p}`;
-  }
-
   function finishAutoEmoji(chatId, emoji, source, reason, priority, confidence){
     delete runtimePendingEmoji[chatId];
-    publishEmoji(chatId, emoji, source || 'auto-native-rename', priority == null ? 90 : priority, confidence == null ? 0.92 : confidence, {
-      force: true,
-      emit: true,
-      reason: reason || 'auto-emoji-native-rename',
-    });
+    emitAutoEmojiChanged(chatId, emoji, reason || 'emoji-native-persisted');
     setDone(chatId);
     setTimeout(() => {
       ensureBadgeForChat(chatId);
@@ -699,24 +693,24 @@
 
   function applyNativeAutoEmoji(chatId, plainTitle, emoji, options = {}){
     if (!chatId || !plainTitle || !emoji) return false;
-    if (runtimeNativeRenamePending[chatId]) return true;
-    if ((runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
+    if (runtimeNativeRenamePending[chatId] && options.userInitiated !== true) return true;
+    if (options.userInitiated === true) runtimeNativeRenameAttempts[chatId] = 0;
+    if (options.userInitiated !== true && (runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
 
     const source = options.source || 'auto-native-rename';
     const reason = options.reason || 'auto-emoji-native-rename';
     const priority = options.priority == null ? 90 : options.priority;
     const confidence = options.confidence == null ? 0.92 : options.confidence;
     const api = chatTitleApi();
-    const nextTitle = formatTitleWithEmoji(plainTitle, emoji);
-    if (typeof api?.renameNative !== 'function') {
-      try { console.warn('[H2O.AutoEmojiTitle] native rename API missing'); } catch {}
+    if (typeof api?.setEmojiAndPersist !== 'function') {
+      try { console.warn('[H2O.AutoEmojiTitle] canonical emoji persistence API missing'); } catch {}
       return false;
     }
 
     runtimeNativeRenamePending[chatId] = 1;
-    Promise.resolve(api.renameNative(nextTitle, {
+    Promise.resolve(api.setEmojiAndPersist(chatId, emoji, {
       chatId,
-      userInitiated: true,
+      userInitiated: options.userInitiated === true,
       source: reason,
     })).then((result) => {
       if (result?.ok) {
@@ -1812,22 +1806,9 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
         reason: 'emoji-picker-native-rename',
         priority: 100,
         confidence: 1,
+        userInitiated: true,
       });
-      if (!submitted) {
-        publishEmoji(chatId, e, 'user-picker', 100, 1, {
-          force: true,
-          emit: true,
-          userInitiated: true,
-          reason: 'emoji-picker-fallback',
-        });
-        delete runtimePendingEmoji[chatId];
-      }
-
-      // LIVE UI update immediately
-      if (badgeEl) {
-        setBadgeDisplay(badgeEl, e, badgeEl.dataset.hoEmojiCtx || '');
-        delete badgeEl.dataset.hoEmojiPending;
-      }
+      if (!submitted) delete runtimePendingEmoji[chatId];
 
       setTimeout(() => {
         ensureBadgeForChat(chatId);
@@ -1956,17 +1937,10 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
       reason: 'emoji-badge-add-native-rename',
       priority: 100,
       confidence: 0.96,
+      userInitiated: true,
     });
 
-    if (!submitted) {
-      publishEmoji(chatId, emoji, 'user-badge', 100, 0.96, {
-        force: true,
-        emit: true,
-        userInitiated: true,
-        reason: 'emoji-badge-add-fallback',
-      });
-      delete runtimePendingEmoji[chatId];
-    }
+    if (!submitted) delete runtimePendingEmoji[chatId];
 
     setTimeout(() => {
       ensureBadgeForChat(chatId);
@@ -2163,7 +2137,7 @@ function getFirstTextFromAnchor(anchor){
  * Remove leading emoji ONLY from the first real text node.
  * Never touches element.innerHTML / leaf.textContent replacements.
  **************************************************************/
-function stripLeadingEmojiFromFirstText(anchor){
+function stripLeadingEmojiFromFirstText(anchor, expectedEmoji){
   if (!anchor) return;
 
   const walker = document.createTreeWalker(
@@ -2186,10 +2160,10 @@ function stripLeadingEmojiFromFirstText(anchor){
   const before = firstText.nodeValue || '';
   const trimmedLeft = before.replace(/^\s+/, '');
 
-  const edge = getEdgeEmoji(trimmedLeft);
-  if (!edge) return;
+  const parsed = takeLeadingEmojiSlot(trimmedLeft);
+  if (!parsed.emoji || parsed.emoji !== norm(expectedEmoji)) return;
 
-  let after = stripEdgeEmoji(trimmedLeft) || trimmedLeft;
+  let after = parsed.remainder || trimmedLeft;
   after = after.replace(/^\s+/, '');
 
   if (after !== trimmedLeft){
@@ -2402,15 +2376,15 @@ function bindMiddleOpenOnce(){
   const MIN_TITLE_LENGTH = 4;
   const STABLE_RUNS_REQUIRED = 2;
 
-function stripEdgeEmojiFromLeaf(leaf){
+function stripEdgeEmojiFromLeaf(leaf, expectedEmoji){
   if (!leaf) return;
   const cur = (leaf.textContent || '').replace(/^\s+/, '').replace(/\s+/g,' ').trim();
   if (!cur) return;
 
-  const edge = getEdgeEmoji(cur);
-  if (!edge) return;
+  const parsed = takeLeadingEmojiSlot(cur);
+  if (!parsed.emoji || parsed.emoji !== norm(expectedEmoji)) return;
 
-  const next = (stripEdgeEmoji(cur) || cur).replace(/^\s+/, '').replace(/\s+/g,' ').trim();
+  const next = (parsed.remainder || cur).replace(/^\s+/, '').replace(/\s+/g,' ').trim();
   if (leaf.textContent !== next){
     leaf.textContent = '';
     leaf.textContent = next;
@@ -2498,7 +2472,8 @@ function ensureBadgeForProjectListEntry(anchor){
 
   // 5) Display-only: remove emoji from visible leaf text so you never see double
   const cur = norm(leaf.textContent || '');
-  if (getEdgeEmoji(cur)) leaf.textContent = stripEdgeEmoji(cur) || cur;
+  const parsedLeaf = takeLeadingEmojiSlot(cur);
+  if (parsedLeaf.emoji && parsedLeaf.emoji === badgeEmoji) leaf.textContent = parsedLeaf.remainder || cur;
 
   // 6) Bind ONCE: first click adds an emoji; later clicks are consumed.
   if (!badge.dataset.hoEmojiBound){
@@ -2606,8 +2581,8 @@ function ensureBadgeForChat(chatId){
   }
 
   // Display-only: remove emoji from visible title so you don't see double
-  if (leaf) stripEdgeEmojiFromLeaf(leaf);
-  stripLeadingEmojiFromFirstText(entry);
+  if (leaf) stripEdgeEmojiFromLeaf(leaf, badgeEmoji);
+  stripLeadingEmojiFromFirstText(entry, badgeEmoji);
 }
 
 function ensureVisibleSidebarBadges(){

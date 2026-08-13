@@ -35,8 +35,10 @@ assert.match(source.controls, /const DEFAULT_AE_AUTO_ASSIGN = true/,
   'automatic emoji assignment defaults on');
 assert.match(source.auto, /if \(!isAutomaticEmojiEligible\([\s\S]*\)\) return;[\s\S]*pickEmojiForTitle\(plain\)[\s\S]*applyNativeAutoEmoji/,
   'only eligible chats reach the canonical suggested-emoji/native-title path');
-assert.match(source.auto, /chatTitleApi\(\)\?\.setEmoji\?\./,
-  '9D1a publishes emoji through canonical 9B0a ChatTitle authority');
+assert.match(source.auto, /api\?\.setEmojiAndPersist/,
+  '9D1a persists emoji through the canonical verified 9B0a operation');
+assert.doesNotMatch(extractFunction(source.auto, 'applyNativeAutoEmoji'), /renameNative|publishEmoji/,
+  '9D1a no longer owns a second native rename or local-only success fallback');
 assert.match(source.auto, /localStorage\.getItem\(KEY_AE_\.DONE\(chatId\)\) === '1'/,
   'automatic completion is durable across reload and navigation');
 assert.match(source.auto, /localStorage\.setItem\(KEY_AE_\.DONE\(chatId\), '1'\)/,

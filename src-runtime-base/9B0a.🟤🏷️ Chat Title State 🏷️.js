@@ -105,6 +105,10 @@
   let lastError = '';
   let renameOperationSeq = 0;
   let activeRenameOperation = null;
+  const emojiAssignmentQueues = new Map();
+  const nativeReconcileTimers = new Map();
+  const nativeReconciledThisSession = new Set();
+  const nativeRepairAttemptedThisSession = new Set();
   let convergenceFlagListenerInstalled = false;
   let convergenceFlagListenerDisposer = null;
   let convergenceFlagAttachTimer = 0;
@@ -503,6 +507,72 @@
     return /[\uFE0F\u200D]|\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(cluster || '');
   }
 
+  // Native persistence has exactly one optional H2O-owned leading grapheme.
+  // This intentionally does not share the legacy edge-emoji helpers: those
+  // remove multiple leading/trailing emoji and therefore cannot preserve a
+  // user-authored secondary emoji in the title remainder.
+  function takeLeadingEmojiSlot(raw) {
+    const title = norm(raw);
+    if (!title) return { title: '', emoji: '', remainder: '', hasSlot: false };
+    const parts = graphemes(title);
+    const emoji = parts[0] && isEmojiCluster(parts[0]) ? parts[0] : '';
+    if (!emoji) return { title, emoji: '', remainder: title, hasSlot: false };
+    return {
+      title,
+      emoji,
+      remainder: norm(parts.slice(1).join('')),
+      hasSlot: true,
+    };
+  }
+
+  function stripLeadingOwnedSlot(raw, ownedEmoji) {
+    const parsed = takeLeadingEmojiSlot(raw);
+    return parsed.hasSlot && parsed.emoji === norm(ownedEmoji)
+      ? parsed.remainder
+      : parsed.title;
+  }
+
+  function composeNativeTitle(emoji, remainder) {
+    const slot = norm(emoji);
+    const base = norm(remainder);
+    if (!slot) return base;
+    return base ? `${slot} ${base}` : slot;
+  }
+
+  function normalizeEmojiOwner(value) {
+    return value === 'h2o' || value === 'native' ? value : '';
+  }
+
+  function normalizeNativeSubmission(value) {
+    if (!value || typeof value !== 'object') return null;
+    const title = norm(value.title);
+    const emoji = norm(value.emoji);
+    if (!title || !emoji) return null;
+    return Object.freeze({
+      title,
+      emoji,
+      confirmedAt: Math.max(0, Number(value.confirmedAt || 0) || 0),
+    });
+  }
+
+  function normalizePendingEmojiAssignment(value) {
+    if (!value || typeof value !== 'object') return null;
+    const emoji = norm(value.emoji);
+    const title = norm(value.title);
+    if (!emoji || !title) return null;
+    return Object.freeze({
+      emoji,
+      title,
+      source: String(value.source || 'emoji-assignment'),
+      userInitiated: value.userInitiated === true,
+      attempts: Math.max(0, Math.min(3, Number(value.attempts || 0) || 0)),
+      repairAttempts: Math.max(0, Math.min(1, Number(value.repairAttempts || 0) || 0)),
+      createdAt: Math.max(0, Number(value.createdAt || 0) || now()),
+      updatedAt: Math.max(0, Number(value.updatedAt || 0) || now()),
+      status: String(value.status || 'pending'),
+    });
+  }
+
   function getEdgeEmoji(text) {
     const g = graphemes(text);
     if (!g.length) return '';
@@ -521,20 +591,15 @@
   function splitEmojiFromTitle(raw) {
     const title = sanitizeTitleForState(raw);
     if (!title) return { baseTitle: '', emoji: '' };
-    const emoji = getEdgeEmoji(title);
-    const baseTitle = emoji ? stripEdgeEmoji(title) : title;
-    return { baseTitle: baseTitle || title, emoji };
+    const parsed = takeLeadingEmojiSlot(title);
+    return { baseTitle: parsed.hasSlot ? parsed.remainder : title, emoji: parsed.emoji };
   }
 
   function splitNativeSubmission(raw) {
     const title = norm(raw);
     if (!title) return { baseTitle: '', emoji: '' };
-    const emoji = getEdgeEmoji(title);
-    const baseTitle = emoji ? stripEdgeEmoji(title) : title;
-    return {
-      baseTitle: norm(baseTitle),
-      emoji,
-    };
+    const parsed = takeLeadingEmojiSlot(title);
+    return { baseTitle: parsed.remainder, emoji: parsed.emoji };
   }
 
   function isRTL(text) {
@@ -809,6 +874,7 @@
         priority: 0,
         confidence: 0,
         emoji: '',
+        emojiOwner: '',
         emojiSource: 'none',
         emojiPriority: 0,
         emojiConfidence: 0,
@@ -816,6 +882,8 @@
         emojiUpdatedAt: 0,
         rev: 0,
         hydrated: false,
+        lastNativeSubmission: null,
+        pendingEmojiAssignment: null,
       };
       records.set(k, rec);
     }
@@ -832,11 +900,14 @@
       priority: rec.priority || 0,
       confidence: rec.confidence || 0,
       emoji: rec.emoji || '',
+      emojiOwner: normalizeEmojiOwner(rec.emojiOwner),
       emojiSource: rec.emojiSource || 'none',
       emojiPriority: rec.emojiPriority || 0,
       emojiConfidence: rec.emojiConfidence || 0,
       updatedAt: rec.updatedAt || 0,
       emojiUpdatedAt: rec.emojiUpdatedAt || 0,
+      lastNativeSubmission: normalizeNativeSubmission(rec.lastNativeSubmission),
+      pendingEmojiAssignment: normalizePendingEmojiAssignment(rec.pendingEmojiAssignment),
     };
   }
 
@@ -880,10 +951,30 @@
       const nextEmoji = norm(payload.emoji);
       if (nextEmoji && (nextEmoji !== rec.emoji || emojiPriority !== rec.emojiPriority)) {
         rec.emoji = nextEmoji;
+        rec.emojiOwner = normalizeEmojiOwner(payload.emojiOwner) || (
+          /(?:auto|picker|user-badge).*native|native-rename/i.test(String(payload.emojiSource || payload.source || ''))
+            ? 'h2o'
+            : normalizeEmojiOwner(rec.emojiOwner)
+        );
         rec.emojiSource = payload.emojiSource || payload.source || rec.emojiSource || reason || 'stored';
         rec.emojiPriority = emojiPriority;
         rec.emojiConfidence = clampConfidence(payload.emojiConfidence || payload.confidence, rec.emojiConfidence || 0.8);
         rec.emojiUpdatedAt = Number(payload.emojiUpdatedAt || payload.updatedAt || now());
+        changed = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'lastNativeSubmission')) {
+      const submission = normalizeNativeSubmission(payload.lastNativeSubmission);
+      if (JSON.stringify(submission) !== JSON.stringify(rec.lastNativeSubmission)) {
+        rec.lastNativeSubmission = submission;
+        changed = true;
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'pendingEmojiAssignment')) {
+      const pending = normalizePendingEmojiAssignment(payload.pendingEmojiAssignment);
+      if (JSON.stringify(pending) !== JSON.stringify(rec.pendingEmojiAssignment)) {
+        rec.pendingEmojiAssignment = pending;
         changed = true;
       }
     }
@@ -911,6 +1002,9 @@
       routeToken,
       baseTitle: rec.baseTitle || '',
       emoji: rec.emoji || '',
+      emojiOwner: normalizeEmojiOwner(rec.emojiOwner),
+      lastNativeSubmission: normalizeNativeSubmission(rec.lastNativeSubmission),
+      pendingEmojiAssignment: normalizePendingEmojiAssignment(rec.pendingEmojiAssignment),
       displayTitle,
       documentTitle: displayTitle,
       source: rec.source || 'none',
@@ -948,6 +1042,7 @@
       documentTitle: eventState.documentTitle || '',
       source: eventState.source || 'none',
       emojiSource: eventState.emojiSource || 'none',
+      emojiOwner: normalizeEmojiOwner(eventState.emojiOwner),
       priority: eventState.priority || 0,
       emojiPriority: eventState.emojiPriority || 0,
       confidence: eventState.confidence || 0,
@@ -1067,7 +1162,11 @@
       const emojiPriority = sourcePriority(emojiSource, input.emojiPriority, 'emoji');
       if (shouldAcceptEmoji(rec, emojiPriority, options)) {
         if (split.emoji !== rec.emoji || emojiPriority !== rec.emojiPriority || emojiSource !== rec.emojiSource) {
+          const previousEmoji = rec.emoji;
           rec.emoji = split.emoji;
+          if (normalizeEmojiOwner(rec.emojiOwner) !== 'h2o' || previousEmoji !== split.emoji) {
+            rec.emojiOwner = source.includes('native') || source.includes('official') ? 'native' : normalizeEmojiOwner(input.emojiOwner);
+          }
           rec.emojiSource = emojiSource;
           rec.emojiPriority = emojiPriority;
           rec.emojiConfidence = clampConfidence(input.emojiConfidence || input.confidence, 0.85);
@@ -1109,6 +1208,9 @@
     if (emoji === rec.emoji && priority === rec.emojiPriority && source === rec.emojiSource) return false;
 
     rec.emoji = emoji;
+    rec.emojiOwner = normalizeEmojiOwner(input.emojiOwner) || (
+      /(?:auto|picker|user-badge).*native|native-rename/i.test(source) ? 'h2o' : normalizeEmojiOwner(rec.emojiOwner)
+    );
     rec.emojiSource = source;
     rec.emojiPriority = priority;
     rec.emojiConfidence = clampConfidence(input.confidence, 0.75);
@@ -1552,6 +1654,248 @@
     return { ok: true, status: 'backend-submitted', statusCode: Number(res.status || 200), body };
   }
 
+  async function readNativeConversationTitle(chatId, options) {
+    if (!isStableChatId(chatId)) return { ok: false, status: 'invalid-chat-id', chatId };
+    if (typeof W.fetch !== 'function') return { ok: false, status: 'fetch-unavailable', chatId };
+    const signal = options?.signal;
+    const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
+    try {
+      const accessToken = await readChatGptAccessToken(signal);
+      if (signal?.aborted) return { ok: false, status: 'aborted', chatId };
+      const res = await W.fetch(path, {
+        method: 'GET',
+        credentials: 'include',
+        cache: 'no-store',
+        headers: nativeConversationHeaders(path, accessToken),
+        signal,
+      });
+      let body = null;
+      try { body = await res.clone().json(); } catch {}
+      if (!res?.ok) {
+        return { ok: false, status: `backend-${res?.status || 'unknown'}`, statusCode: Number(res?.status || 0) || 0, chatId };
+      }
+      const title = norm(body?.title || body?.conversation?.title || '');
+      if (!title) return { ok: false, status: 'native-title-unavailable', chatId };
+      return { ok: true, status: 'native-title-read', statusCode: Number(res.status || 200), chatId, title };
+    } catch (err) {
+      if (signal?.aborted || err?.name === 'AbortError') return { ok: false, status: 'aborted', chatId };
+      return { ok: false, status: 'network-error', chatId, error: String(err?.message || err || '') };
+    }
+  }
+
+  function hasConfirmedOwnedSlot(rec, nativeTitle) {
+    const parsed = takeLeadingEmojiSlot(nativeTitle);
+    if (!parsed.hasSlot) return false;
+    if (normalizeEmojiOwner(rec?.emojiOwner) === 'h2o' && parsed.emoji === norm(rec?.emoji)) return true;
+    const submitted = normalizeNativeSubmission(rec?.lastNativeSubmission);
+    return !!submitted && submitted.title === norm(nativeTitle) && submitted.emoji === parsed.emoji;
+  }
+
+  function nativeRemainderForAssignment(rec, nativeTitle) {
+    if (!hasConfirmedOwnedSlot(rec, nativeTitle)) return norm(nativeTitle);
+    return stripLeadingOwnedSlot(nativeTitle, takeLeadingEmojiSlot(nativeTitle).emoji);
+  }
+
+  function mutateRecord(rec, reason, mutator) {
+    if (!rec || typeof mutator !== 'function') return false;
+    const before = JSON.stringify(snapshotRecord(rec));
+    mutator(rec);
+    if (before === JSON.stringify(snapshotRecord(rec))) return false;
+    rec.rev += 1;
+    rec.hydrated = true;
+    rec.restoredFromPersistence = false;
+    const targetIdentity = { chatId: rec.chatId, routeKind: 'chat', stableId: isStableChatId(rec.chatId), routeKey: `chat:${rec.chatId}` };
+    const eventState = composeState(rec, targetIdentity, reason);
+    emitEvent('changed', eventState, reason);
+    if (rec.chatId === identity.chatId) notify(reason, rec);
+    else persistRecord(rec, reason);
+    return true;
+  }
+
+  function setPendingEmojiAssignment(rec, payload, reason) {
+    const pending = normalizePendingEmojiAssignment(payload);
+    return mutateRecord(rec, reason || 'emoji-assignment-pending', (record) => {
+      record.pendingEmojiAssignment = pending;
+    });
+  }
+
+  function confirmNativeEmojiState(rec, nativeTitle, emoji, source, reason) {
+    const parsed = takeLeadingEmojiSlot(nativeTitle);
+    const confirmedAt = now();
+    const incomingEmojiPriority = /(?:user|picker|badge)/i.test(String(source || ''))
+      ? EMOJI_PRIORITY.user
+      : EMOJI_PRIORITY.native;
+    return mutateRecord(rec, reason || 'emoji-assignment-confirmed', (record) => {
+      record.baseTitle = parsed.remainder;
+      if (incomingEmojiPriority >= Number(record.emojiPriority || 0) || record.emoji !== emoji) {
+        record.source = source || 'native-confirmed';
+        record.emojiSource = source || 'native-confirmed';
+      }
+      record.priority = Math.max(record.priority || 0, incomingEmojiPriority === EMOJI_PRIORITY.user ? BASE_PRIORITY.user : BASE_PRIORITY.native);
+      record.confidence = 1;
+      record.updatedAt = confirmedAt;
+      record.emoji = emoji;
+      record.emojiOwner = 'h2o';
+      record.emojiPriority = Math.max(record.emojiPriority || 0, incomingEmojiPriority);
+      record.emojiConfidence = 1;
+      record.emojiUpdatedAt = confirmedAt;
+      record.lastNativeSubmission = normalizeNativeSubmission({ title: nativeTitle, emoji, confirmedAt });
+      record.pendingEmojiAssignment = null;
+    });
+  }
+
+  function isTransientNativeFailure(result) {
+    const code = Number(result?.statusCode || 0);
+    return result?.status === 'network-error' || code === 429 || code >= 500;
+  }
+
+  function delay(ms) {
+    return new Promise((resolve) => W.setTimeout(resolve, ms));
+  }
+
+  async function runEmojiAssignment(chatId, emoji, options, sequence) {
+    const opts = options || {};
+    const rec = ensureRecord(chatId, chatId);
+    const source = String(opts.source || (opts.userInitiated ? 'user-emoji-native' : 'auto-emoji-native'));
+    const currentQueue = emojiAssignmentQueues.get(chatId);
+    if (!opts.userInitiated && currentQueue && currentQueue.latestUserSequence > sequence) {
+      return { ok: false, status: 'superseded-by-user', chatId, emoji };
+    }
+
+    let nativeBefore = await readNativeConversationTitle(chatId, { signal: opts.signal });
+    if (!nativeBefore.ok && isTransientNativeFailure(nativeBefore) && opts.repair !== true) {
+      await delay(120);
+      nativeBefore = await readNativeConversationTitle(chatId, { signal: opts.signal });
+    }
+    if (!nativeBefore.ok) {
+      const provisionalRemainder = normalizeEmojiOwner(rec.emojiOwner) === 'native'
+        ? composeNativeTitle(rec.emoji, rec.baseTitle)
+        : rec.baseTitle;
+      const provisionalTitle = composeNativeTitle(emoji, provisionalRemainder || `Chat ${chatId.slice(0, 8)}`);
+      setPendingEmojiAssignment(rec, {
+        emoji,
+        title: provisionalTitle,
+        source,
+        userInitiated: opts.userInitiated === true,
+        attempts: 0,
+        createdAt: now(),
+        updatedAt: now(),
+        status: 'awaiting-native-read',
+      }, 'emoji-assignment-awaiting-native-read');
+      return { ...nativeBefore, emoji, title: provisionalTitle, pending: true };
+    }
+    const remainder = nativeRemainderForAssignment(rec, nativeBefore.title);
+    const desiredNativeTitle = composeNativeTitle(emoji, remainder);
+    if (nativeBefore.title === desiredNativeTitle) {
+      const priorSubmission = normalizeNativeSubmission(rec.lastNativeSubmission);
+      const alreadyConfirmed = normalizeEmojiOwner(rec.emojiOwner) === 'h2o' &&
+        rec.emoji === emoji &&
+        priorSubmission?.title === desiredNativeTitle &&
+        priorSubmission?.emoji === emoji &&
+        !rec.pendingEmojiAssignment;
+      if (!alreadyConfirmed) {
+        confirmNativeEmojiState(rec, desiredNativeTitle, emoji, source, 'emoji-assignment-already-current');
+      }
+      return { ok: true, status: 'already-current', chatId, emoji, title: desiredNativeTitle, baseTitle: remainder, patchCount: 0 };
+    }
+
+    const createdAt = now();
+    setPendingEmojiAssignment(rec, {
+      emoji,
+      title: desiredNativeTitle,
+      source,
+      userInitiated: opts.userInitiated === true,
+      attempts: 0,
+      repairAttempts: 0,
+      createdAt,
+      updatedAt: createdAt,
+      status: 'pending',
+    }, 'emoji-assignment-pending');
+
+    let lastResult = { ok: false, status: 'persistence-unconfirmed', chatId };
+    const maxAttempts = opts.repair === true ? 1 : 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const queue = emojiAssignmentQueues.get(chatId);
+      if (!opts.userInitiated && queue && queue.latestUserSequence > sequence) {
+        return { ok: false, status: 'superseded-by-user', chatId, emoji, title: desiredNativeTitle };
+      }
+      setPendingEmojiAssignment(rec, {
+        ...rec.pendingEmojiAssignment,
+        attempts: attempt,
+        repairAttempts: opts.repair === true ? 1 : Number(rec.pendingEmojiAssignment?.repairAttempts || 0),
+        updatedAt: now(),
+        status: 'submitting',
+      }, 'emoji-assignment-submitting');
+      const submitted = await patchNativeConversationTitle(chatId, desiredNativeTitle, { signal: opts.signal });
+      if (!submitted.ok) {
+        lastResult = submitted;
+        if (attempt < maxAttempts && isTransientNativeFailure(submitted)) {
+          await delay(120 * attempt);
+          continue;
+        }
+        break;
+      }
+      const verified = await readNativeConversationTitle(chatId, { signal: opts.signal });
+      if (verified.ok && verified.title === desiredNativeTitle) {
+        updateConversationHistoryCacheTitle(chatId, desiredNativeTitle);
+        reconcileNativeSidebarTitle(chatId, desiredNativeTitle);
+        confirmNativeEmojiState(rec, desiredNativeTitle, emoji, source, 'emoji-assignment-confirmed');
+        scheduleRefresh('emoji-assignment-confirmed', 80);
+        return {
+          ok: true,
+          status: 'persisted-confirmed',
+          chatId,
+          emoji,
+          title: desiredNativeTitle,
+          baseTitle: remainder,
+          patchCount: attempt,
+          verification: 'authoritative-get',
+        };
+      }
+      lastResult = {
+        ok: false,
+        status: 'persistence-unconfirmed',
+        chatId,
+        expectedTitle: desiredNativeTitle,
+        actualTitle: verified.ok ? verified.title : '',
+        verificationStatus: verified.status,
+      };
+      if (attempt < maxAttempts && isTransientNativeFailure(verified)) {
+        await delay(120 * attempt);
+        continue;
+      }
+      break;
+    }
+
+    setPendingEmojiAssignment(rec, {
+      ...rec.pendingEmojiAssignment,
+      attempts: Math.max(1, Number(rec.pendingEmojiAssignment?.attempts || 0)),
+      updatedAt: now(),
+      status: 'unconfirmed',
+    }, 'emoji-assignment-unconfirmed');
+    return { ...lastResult, ok: false, chatId, emoji, title: desiredNativeTitle, pending: true };
+  }
+
+  function setEmojiAndPersist(chatIdRaw, emojiRaw, options) {
+    const chatId = String(chatIdRaw || options?.chatId || '').trim();
+    const emoji = norm(emojiRaw || options?.emoji || '');
+    if (!isStableChatId(chatId)) return Promise.resolve({ ok: false, status: 'invalid-chat-id', chatId });
+    if (!emoji || graphemes(emoji).length !== 1 || !isEmojiCluster(emoji)) {
+      return Promise.resolve({ ok: false, status: 'invalid-emoji', chatId });
+    }
+    const previous = emojiAssignmentQueues.get(chatId) || { tail: Promise.resolve(), sequence: 0, latestUserSequence: 0 };
+    const sequence = previous.sequence + 1;
+    const entry = { ...previous, sequence };
+    if (options?.userInitiated === true) entry.latestUserSequence = sequence;
+    const task = previous.tail.catch(() => null).then(() => runEmojiAssignment(chatId, emoji, options || {}, sequence));
+    entry.tail = task.finally(() => {
+      const current = emojiAssignmentQueues.get(chatId);
+      if (current?.sequence === sequence) emojiAssignmentQueues.delete(chatId);
+    });
+    emojiAssignmentQueues.set(chatId, entry);
+    return task;
+  }
+
   function updateConversationHistoryCacheTitle(chatId, title) {
     try {
       const box = W.localStorage;
@@ -1582,16 +1926,16 @@
   }
 
   // After a confirmed Native rename the server and the ChatGPT history cache
-  // both hold the new clean base title, but an already-rendered sidebar row
+  // both hold the exact submitted native title, but an already-rendered row
   // keeps its previous text until ChatGPT itself re-renders. Reconcile those
   // rows with the value we just made authoritative so a later reveal (feature
   // rollback, collapse, virtualization) cannot expose a pre-rename title.
   //
-  // Only the confirmed clean baseTitle is written - never a composed display
-  // title - so every existing native-title reader keeps reading clean base
-  // text. H2O-owned nodes are skipped and no ownership marker is added.
-  function reconcileNativeSidebarTitle(chatId, baseTitle) {
-    const nextText = norm(baseTitle);
+  // Only the verified native title is mirrored. H2O-owned nodes are skipped
+  // and no ownership marker is added; 9D1a/9B2a then present one badge plus the
+  // clean remainder without using that DOM write as persistence evidence.
+  function reconcileNativeSidebarTitle(chatId, nativeTitle) {
+    const nextText = norm(nativeTitle);
     if (!chatId || !nextText || !isStableChatId(chatId)) return 0;
     const id = String(chatId).replace(/"/g, '\\"');
     let updated = 0;
@@ -1642,6 +1986,66 @@
     if (docTitle) setTitle({ baseTitle: docTitle, source: 'document', priority: BASE_PRIORITY.document, confidence: 0.55, reason }, { reason });
   }
 
+  async function reconcileRecordWithNative(chatId, reason) {
+    if (!isStableChatId(chatId) || nativeReconciledThisSession.has(chatId)) return false;
+    nativeReconciledThisSession.add(chatId);
+    const rec = ensureRecord(chatId, chatId);
+    const native = await readNativeConversationTitle(chatId);
+    if (!native.ok) {
+      nativeReconciledThisSession.delete(chatId);
+      return false;
+    }
+
+    const pending = normalizePendingEmojiAssignment(rec.pendingEmojiAssignment);
+    if (pending && !nativeRepairAttemptedThisSession.has(chatId)) {
+      if (native.title === pending.title) {
+        confirmNativeEmojiState(rec, native.title, pending.emoji, pending.source, 'native-rehydrate-pending-confirmed');
+        return true;
+      }
+      if (pending.repairAttempts >= 1) {
+        setPendingEmojiAssignment(rec, { ...pending, status: 'repair-abandoned', updatedAt: now() }, 'native-rehydrate-repair-abandoned');
+        return false;
+      }
+      nativeRepairAttemptedThisSession.add(chatId);
+      void setEmojiAndPersist(chatId, pending.emoji, {
+        source: pending.source,
+        userInitiated: pending.userInitiated,
+        repair: true,
+      });
+      return true;
+    }
+
+    const parsed = takeLeadingEmojiSlot(native.title);
+    const owned = hasConfirmedOwnedSlot(rec, native.title);
+    mutateRecord(rec, reason || 'native-rehydrate', (record) => {
+      record.baseTitle = parsed.hasSlot ? parsed.remainder : native.title;
+      record.source = 'native-authoritative';
+      record.priority = BASE_PRIORITY.native;
+      record.confidence = 1;
+      record.updatedAt = now();
+      record.emoji = parsed.hasSlot ? parsed.emoji : '';
+      record.emojiOwner = parsed.hasSlot ? (owned ? 'h2o' : 'native') : '';
+      record.emojiSource = parsed.hasSlot ? (owned ? 'native-confirmed-h2o' : 'native-title') : 'none';
+      record.emojiPriority = parsed.hasSlot ? EMOJI_PRIORITY.native : EMOJI_PRIORITY.none;
+      record.emojiConfidence = parsed.hasSlot ? 1 : 0;
+      record.emojiUpdatedAt = now();
+      if (!owned) record.lastNativeSubmission = null;
+      record.pendingEmojiAssignment = null;
+    });
+    return true;
+  }
+
+  function scheduleNativeReconcile(chatId, reason) {
+    if (!isStableChatId(chatId) || nativeReconciledThisSession.has(chatId)) return false;
+    W.clearTimeout(nativeReconcileTimers.get(chatId));
+    const timer = W.setTimeout(() => {
+      nativeReconcileTimers.delete(chatId);
+      void reconcileRecordWithNative(chatId, reason).catch((err) => fail('native-reconcile', err));
+    }, 80);
+    nativeReconcileTimers.set(chatId, timer);
+    return true;
+  }
+
   function refresh(reason) {
     if (destroyed) return getState();
     const nextIdentity = detectIdentity();
@@ -1659,7 +2063,9 @@
       if (identity.chatId && canPersistChatId(identity.chatId, identity.routeKind)) {
         readBootCache(identity.chatId, capture);
         migrateLegacyEmoji(identity.chatId, capture);
-        hydrateFromStore(identity.chatId, reason || 'route-change');
+        hydrateFromStore(identity.chatId, reason || 'route-change').finally(() => {
+          scheduleNativeReconcile(identity.chatId, reason || 'route-change');
+        });
       }
     } else {
       identity = nextIdentity;
@@ -1852,6 +2258,9 @@
     destroyed = true;
     try { activeRenameOperation?.controller?.abort?.(); } catch {}
     activeRenameOperation = null;
+    for (const timer of nativeReconcileTimers.values()) W.clearTimeout(timer);
+    nativeReconcileTimers.clear();
+    emojiAssignmentQueues.clear();
     clearTimeout(refreshTimer);
     refreshTimer = 0;
     pendingRefresh = null;
@@ -1922,11 +2331,17 @@
 
     const sanitizedSubmission = sanitizeNativeBaseTitle(title);
     if (!sanitizedSubmission) return rejectBeforeRequest('empty-title', { chatId, routeToken });
-    const submitted = splitNativeSubmission(sanitizedSubmission);
-    const nextBaseTitle = sanitizeNativeBaseTitle(submitted.baseTitle);
+    const renameRecord = ensureRecord(chatId, chatId);
+    const renameEmojiOwner = normalizeEmojiOwner(renameRecord.emojiOwner);
+    const preservedEmoji = renameEmojiOwner ? norm(renameRecord.emoji) : '';
+    const ownedEmoji = renameEmojiOwner === 'h2o' ? preservedEmoji : '';
+    const nextBaseTitle = sanitizeNativeBaseTitle(
+      preservedEmoji ? stripLeadingOwnedSlot(sanitizedSubmission, preservedEmoji) : sanitizedSubmission
+    );
     if (!nextBaseTitle) {
       return rejectBeforeRequest('empty-base-after-emoji', { chatId, routeToken });
     }
+    const desiredNativeTitle = preservedEmoji ? composeNativeTitle(preservedEmoji, nextBaseTitle) : nextBaseTitle;
 
     const reason = opts.source || 'rename-native';
     const operationNonce = ++renameOperationSeq;
@@ -1982,7 +2397,13 @@
       if (freshness !== 'current') {
         return { ok: false, status: freshness, reason: freshness, operationId, title: nextBaseTitle, chatId };
       }
-      const result = await patchNativeConversationTitle(chatId, nextBaseTitle, {
+      const existingNative = await readNativeConversationTitle(chatId, { signal });
+      if (!existingNative.ok) {
+        return { ...existingNative, operationId, title: desiredNativeTitle, baseTitle: nextBaseTitle, chatId };
+      }
+      const result = existingNative.title === desiredNativeTitle
+        ? { ok: true, status: 'already-current', statusCode: 200, patchCount: 0 }
+        : await patchNativeConversationTitle(chatId, desiredNativeTitle, {
         signal,
         operationStatus,
       });
@@ -1994,7 +2415,7 @@
           reason: completionStatus,
           operationId,
           title: nextBaseTitle,
-          emoji: submitted.emoji,
+          emoji: preservedEmoji,
           chatId,
         };
       }
@@ -2003,28 +2424,54 @@
           ...result,
           operationId,
           title: nextBaseTitle,
-          emoji: submitted.emoji,
+          emoji: preservedEmoji,
           chatId,
         };
       }
-      updateConversationHistoryCacheTitle(chatId, nextBaseTitle);
-      reconcileNativeSidebarTitle(chatId, nextBaseTitle);
-      setTitle({
-        chatId,
-        baseTitle: submitted.emoji ? sanitizedSubmission : nextBaseTitle,
-        source: 'user',
-        priority: BASE_PRIORITY.user,
-        confidence: 1,
-        reason,
-      }, { force: true, userInitiated: true, reason });
+      const verified = await readNativeConversationTitle(chatId, { signal });
+      if (!verified.ok || verified.title !== desiredNativeTitle) {
+        return {
+          ok: false,
+          status: 'persistence-unconfirmed',
+          operationId,
+          title: desiredNativeTitle,
+          expectedTitle: desiredNativeTitle,
+          actualTitle: verified.ok ? verified.title : '',
+          verificationStatus: verified.status,
+          chatId,
+        };
+      }
+      updateConversationHistoryCacheTitle(chatId, desiredNativeTitle);
+      reconcileNativeSidebarTitle(chatId, desiredNativeTitle);
+      mutateRecord(renameRecord, reason, (record) => {
+        record.baseTitle = nextBaseTitle;
+        record.source = 'user';
+        record.priority = BASE_PRIORITY.user;
+        record.confidence = 1;
+        record.updatedAt = now();
+        if (ownedEmoji) {
+          record.emoji = ownedEmoji;
+          record.emojiOwner = 'h2o';
+          record.lastNativeSubmission = normalizeNativeSubmission({ title: desiredNativeTitle, emoji: ownedEmoji, confirmedAt: now() });
+        } else {
+          const parsed = takeLeadingEmojiSlot(desiredNativeTitle);
+          record.emoji = parsed.hasSlot ? parsed.emoji : '';
+          record.emojiOwner = parsed.hasSlot ? 'native' : '';
+          record.emojiSource = parsed.hasSlot ? 'native-title' : 'none';
+          record.baseTitle = parsed.hasSlot ? parsed.remainder : desiredNativeTitle;
+        }
+        record.pendingEmojiAssignment = null;
+      });
       scheduleRefresh(reason, 80);
       return {
         ...result,
+        status: result.status === 'already-current' ? 'already-current' : 'persisted-confirmed',
         operationId,
-        title: nextBaseTitle,
+        title: desiredNativeTitle,
         baseTitle: nextBaseTitle,
-        emoji: submitted.emoji,
+        emoji: preservedEmoji,
         chatId,
+        verification: 'authoritative-get',
       };
     } catch (err) {
       const completionStatus = operationStatus();
@@ -2035,7 +2482,7 @@
           reason: completionStatus === 'current' ? 'aborted' : completionStatus,
           operationId,
           title: nextBaseTitle,
-          emoji: submitted.emoji,
+          emoji: preservedEmoji,
           chatId,
         };
       }
@@ -2046,7 +2493,7 @@
         reason: 'error',
         operationId,
         title: nextBaseTitle,
-        emoji: submitted.emoji,
+        emoji: preservedEmoji,
         chatId,
         error: String(err && err.message || err),
       };
@@ -2083,6 +2530,9 @@
       version: VERSION,
       currentTitle: state.baseTitle || '',
       currentEmoji: state.emoji || '',
+      emojiOwner: state.emojiOwner || '',
+      pendingEmojiAssignment: state.pendingEmojiAssignment || null,
+      lastNativeSubmission: state.lastNativeSubmission || null,
       displayTitle: state.displayTitle || '',
       documentTitle: state.documentTitle || '',
       source: state.source || 'none',
@@ -2232,7 +2682,9 @@
     getState,
     setTitle,
     setEmoji,
+    setEmojiAndPersist,
     renameNative,
+    readNativeTitle: readNativeConversationTitle,
     subscribe,
     refresh,
     markDocumentTitleWrite,
@@ -2250,6 +2702,13 @@
       storageKey,
       bootCacheKey(chatId) { return `${BOOT_CACHE_KEY_PREFIX}${chatId}`; },
       migrationKey: MIGRATION_KEY,
+      takeLeadingEmojiSlot,
+      stripLeadingOwnedSlot,
+      composeNativeTitle,
+      reconcileNativeTitle(chatId) {
+        nativeReconciledThisSession.delete(chatId);
+        return reconcileRecordWithNative(chatId, 'debug-native-reconcile');
+      },
     },
   };
 
