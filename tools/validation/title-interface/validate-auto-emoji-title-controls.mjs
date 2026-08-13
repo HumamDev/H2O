@@ -97,6 +97,25 @@ assert.match(source.auto, /data-ho-show-heat-pill[\s\S]*\.ho-colorbtn-side[\s\S]
 assert.doesNotMatch(extractFunction(source.auto, 'applyAutoEmojiSetting'), /setOverride|setRow|applyToBtn/,
   'Heat Pill setting path does not mutate Heat Pill scoring/state');
 
+assert.match(source.kernel, /setRow\(id, idx\)[\s\S]*localStorage[\s\S]*mirrorInterfaceState\(id,[\s\S]*h2o:interface:row-tint-change[\s\S]*chatId: String\(id/u,
+  'the existing Interface row-color store persists and publishes the exact canonical chat identity');
+assert.doesNotMatch(source.auto, /function applyIntegratedRowByIndex/u,
+  'the Title Palette does not maintain a second sidebar row-color renderer');
+assert.match(source.auto, /mode === 'row'[\s\S]*api\.store\.setRow\?\.\(chatId, next\)/u,
+  'a palette color click writes the exact picker chatId through the existing Interface authority');
+assert.match(source.list, /link\.dataset\.hoRowColorOwner = "9A1b"/u,
+  'the existing 9A1b renderer stamps its owner-scoped row-color presentation hook');
+for (const color of ['gold', 'red', 'blue', 'green']) {
+  assert.match(source.list, new RegExp(`data-ho-row-color-owner="9A1b"\\]\\.ho-row-${color}[\\s\\S]*background(?:-color)?:\\s*rgba`, 'u'),
+    `the existing ${color} row tint is restored above the Themes reset without changing its palette`);
+}
+assert.match(source.list, /h2o:interface:row-tint-change[\s\S]*scheduleChatMetaDecorationRefresh\(event\?\.detail\?\.chatId\)/u,
+  'the sidebar repaints the exact changed row immediately without reload');
+assert.match(source.list, /function refreshChatMetaDecorations\(chatId\)[\s\S]*I\.store\.getRow\(id\)[\s\S]*forEachNativeChatLink\(id/u,
+  'row replacement and duplicate-title chats restore color strictly by chatId');
+assert.match(source.list, /if \(rowIdx >= 0\) applyRowByIndex\(link, rowIdx\)/u,
+  'freshly virtualized sidebar rows rehydrate their persisted color');
+
 assert.equal((source.auto.match(/new MutationObserver\(/g) || []).length, 1,
   'Auto Emoji uses one existing lifecycle observer for badges and menu augmentation');
 assert.equal((source.auto.match(/document\.addEventListener\('pointerdown', captureSidebarChatMenuIdentity, true\)/g) || []).length, 1,

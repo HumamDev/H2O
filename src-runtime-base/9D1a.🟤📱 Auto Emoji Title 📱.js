@@ -1200,6 +1200,62 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
   transform: scale(.96) !important;
 }
 
+.ho-emoji-top-actions{
+  position: relative !important;
+  z-index: 2 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 30px !important;
+}
+
+.ho-emoji-remove-action{
+  appearance: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--ho-sand-btn-border) !important;
+  border-radius: 9px !important;
+  background: var(--ho-sand-btn-bg) !important;
+  color: var(--ho-sand-text) !important;
+  cursor: pointer !important;
+  font: 650 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+  transition: border-color .14s ease, background .14s ease, opacity .14s ease !important;
+}
+
+.ho-emoji-remove-action svg{
+  width: 14px !important;
+  height: 14px !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 1.8 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+.ho-emoji-remove-action:hover:not(:disabled){
+  border-color: var(--ho-sand-sel-border) !important;
+  background: var(--ho-sand-btn-bg-hover) !important;
+}
+
+.ho-emoji-remove-action:disabled{
+  cursor: default !important;
+  opacity: .48 !important;
+}
+
+.ho-emoji-remove-status{
+  min-width: 0 !important;
+  color: var(--ho-sand-text-mute) !important;
+  font: 600 11px/1.25 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+}
+
+.ho-emoji-remove-status[data-state="error"]{
+  color: #fca5a5 !important;
+}
+
 .ho-emoji-search{
   position: relative !important;
   z-index: 2 !important;
@@ -1571,22 +1627,6 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     return document.querySelector(`.ho-colorbtn[data-chatid="${CSS.escape(String(chatId || ''))}"]`);
   }
 
-  function applyIntegratedRowByIndex(chatId, idx, sourceEl){
-    const api = getInterfaceApi();
-    const link = findChatAnchorById(chatId, sourceEl);
-    if (!api?.config?.COLORS || !link) return;
-
-    const rowEl = link.closest('.ho-main-row') || link;
-    api.config.COLORS.forEach((def) => {
-      const cls = `ho-row-${def.name}`;
-      rowEl.classList.remove(cls);
-      link.classList.remove(cls);
-    });
-
-    if (idx < 0 || idx >= api.config.COLORS.length) return;
-    rowEl.classList.add(`ho-row-${api.config.COLORS[idx].name}`);
-  }
-
   function refreshIntegratedMetaPalette(palette, chatId){
     const api = getInterfaceApi();
     if (!palette || !api?.store) return;
@@ -1614,7 +1654,6 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
       const idx = Number.parseInt(target.dataset.idx || '0', 10);
       const current = Number(api.store.getRow?.(chatId));
       const next = current === idx ? -1 : idx;
-      applyIntegratedRowByIndex(chatId, next, sourceEl);
       api.store.setRow?.(chatId, next);
     }
     refreshIntegratedMetaPalette(palette, chatId);
@@ -1746,6 +1785,61 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
 
     topbar.appendChild(title);
     topbar.appendChild(close);
+
+    const topActions = document.createElement('div');
+    topActions.className = 'ho-emoji-top-actions';
+
+    const removeEmoji = document.createElement('button');
+    removeEmoji.type = 'button';
+    removeEmoji.className = 'ho-emoji-remove-action';
+    removeEmoji.dataset.hoRemoveEmojiAction = '1';
+    removeEmoji.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M8.5 12h7"/></svg><span>Remove emoji</span>';
+    removeEmoji.setAttribute('aria-label', 'Remove leading title emoji');
+    removeEmoji.disabled = !selectedEmoji;
+
+    const removeStatus = document.createElement('span');
+    removeStatus.className = 'ho-emoji-remove-status';
+    removeStatus.setAttribute('role', 'status');
+    removeStatus.setAttribute('aria-live', 'polite');
+
+    removeEmoji.addEventListener('pointerdown', stopEmojiEvent, true);
+    removeEmoji.addEventListener('click', (ev) => {
+      stopEmojiEvent(ev);
+      if (removeEmoji.disabled || removeEmoji.dataset.pending === '1') return;
+      const api = chatTitleApi();
+      if (typeof api?.removeLeadingEmojiAndPersist !== 'function') {
+        removeStatus.dataset.state = 'error';
+        removeStatus.textContent = 'Native removal is unavailable.';
+        return;
+      }
+      removeEmoji.dataset.pending = '1';
+      removeEmoji.disabled = true;
+      removeStatus.dataset.state = 'pending';
+      removeStatus.textContent = 'Removing…';
+      Promise.resolve(api.removeLeadingEmojiAndPersist(chatId, {
+        chatId,
+        source: 'title-palette-remove-emoji',
+        userInitiated: true,
+      })).then((result) => {
+        if (!result?.ok) {
+          removeStatus.dataset.state = 'error';
+          removeStatus.textContent = `Could not remove emoji (${result?.status || 'unconfirmed'}).`;
+          removeEmoji.disabled = false;
+          return;
+        }
+        delete runtimePendingEmoji[chatId];
+        ensureBadgeForChat(chatId);
+        closePicker();
+      }).catch((err) => {
+        removeStatus.dataset.state = 'error';
+        removeStatus.textContent = `Could not remove emoji (${String(err?.message || 'error')}).`;
+        removeEmoji.disabled = false;
+      }).finally(() => {
+        delete removeEmoji.dataset.pending;
+      });
+    }, true);
+    topActions.appendChild(removeEmoji);
+    topActions.appendChild(removeStatus);
 
     const input = document.createElement('input');
     input.placeholder = 'Search emoji, symbols, food, travel, flags';
@@ -1882,6 +1976,7 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     });
 
     pickerEl.appendChild(topbar);
+    pickerEl.appendChild(topActions);
     pickerEl.appendChild(search);
     if (metaPalette) pickerEl.appendChild(metaPalette);
     pickerEl.appendChild(grid);

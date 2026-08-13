@@ -557,10 +557,14 @@
 
   function normalizePendingEmojiAssignment(value) {
     if (!value || typeof value !== 'object') return null;
+    const operation = value.operation === 'remove-leading-emoji'
+      ? 'remove-leading-emoji'
+      : 'assign-emoji';
     const emoji = norm(value.emoji);
     const title = norm(value.title);
     if (!emoji || !title) return null;
     return Object.freeze({
+      operation,
       emoji,
       title,
       source: String(value.source || 'emoji-assignment'),
@@ -947,18 +951,21 @@
       || !emojiRecordUpdatedAt
       || (Number.isFinite(emojiPayloadUpdatedAt) && emojiPayloadUpdatedAt > emojiRecordUpdatedAt);
 
-    if (payload.emoji && emojiPriority >= (rec.emojiPriority || 0) && emojiFreshEnough) {
+    const payloadCarriesEmoji = Object.prototype.hasOwnProperty.call(payload, 'emoji');
+    if (payloadCarriesEmoji && emojiPriority >= (rec.emojiPriority || 0) && emojiFreshEnough) {
       const nextEmoji = norm(payload.emoji);
-      if (nextEmoji && (nextEmoji !== rec.emoji || emojiPriority !== rec.emojiPriority)) {
+      if (nextEmoji !== rec.emoji || emojiPriority !== rec.emojiPriority) {
         rec.emoji = nextEmoji;
-        rec.emojiOwner = normalizeEmojiOwner(payload.emojiOwner) || (
+        rec.emojiOwner = nextEmoji ? (normalizeEmojiOwner(payload.emojiOwner) || (
           /(?:auto|picker|user-badge).*native|native-rename/i.test(String(payload.emojiSource || payload.source || ''))
             ? 'h2o'
             : normalizeEmojiOwner(rec.emojiOwner)
-        );
+        )) : '';
         rec.emojiSource = payload.emojiSource || payload.source || rec.emojiSource || reason || 'stored';
         rec.emojiPriority = emojiPriority;
-        rec.emojiConfidence = clampConfidence(payload.emojiConfidence || payload.confidence, rec.emojiConfidence || 0.8);
+        rec.emojiConfidence = nextEmoji
+          ? clampConfidence(payload.emojiConfidence || payload.confidence, rec.emojiConfidence || 0.8)
+          : 0;
         rec.emojiUpdatedAt = Number(payload.emojiUpdatedAt || payload.updatedAt || now());
         changed = true;
       }
@@ -1744,6 +1751,35 @@
     });
   }
 
+  function confirmNativeEmojiRemoval(rec, nativeTitle, source, reason) {
+    const parsed = takeLeadingEmojiSlot(nativeTitle);
+    const confirmedAt = now();
+    // Retire the bounded pre-canonical Auto Emoji cache for this exact chat
+    // before publishing the empty state. Otherwise 9D1a can observe that old
+    // value in the same tick, re-publish it, and invalidate persistence of the
+    // verified removal tombstone.
+    try { localStorage.removeItem(`h2o:prm:cgx:tmjttl:state:emoji_${safeId(rec?.chatId)}:v1`); } catch {}
+    try { localStorage.removeItem(`ho:autoemoji:emoji:${rec?.chatId || ''}`); } catch {}
+    return mutateRecord(rec, reason || 'emoji-removal-confirmed', (record) => {
+      record.baseTitle = parsed.hasSlot ? parsed.remainder : nativeTitle;
+      record.source = source || 'native-emoji-removal';
+      record.priority = Math.max(record.priority || 0, BASE_PRIORITY.user);
+      record.confidence = 1;
+      record.updatedAt = confirmedAt;
+      record.emoji = parsed.hasSlot ? parsed.emoji : '';
+      record.emojiOwner = parsed.hasSlot ? 'native' : '';
+      record.emojiSource = parsed.hasSlot ? 'native-title-after-explicit-removal' : 'user-explicit-removal';
+      // An explicit verified removal needs a durable tombstone. Otherwise an
+      // older persisted non-empty emoji can win hydration merely because an
+      // empty value has no payload priority of its own.
+      record.emojiPriority = parsed.hasSlot ? EMOJI_PRIORITY.native : EMOJI_PRIORITY.user;
+      record.emojiConfidence = parsed.hasSlot ? 1 : 0;
+      record.emojiUpdatedAt = confirmedAt;
+      record.lastNativeSubmission = null;
+      record.pendingEmojiAssignment = null;
+    });
+  }
+
   function isTransientNativeFailure(result) {
     const code = Number(result?.statusCode || 0);
     return result?.status === 'network-error' || code === 429 || code >= 500;
@@ -1876,6 +1912,142 @@
     return { ...lastResult, ok: false, chatId, emoji, title: desiredNativeTitle, pending: true };
   }
 
+  async function runLeadingEmojiRemoval(chatId, options, sequence) {
+    const opts = options || {};
+    const rec = ensureRecord(chatId, chatId);
+    const source = String(opts.source || 'user-remove-leading-emoji');
+    const currentQueue = emojiAssignmentQueues.get(chatId);
+    if (currentQueue && currentQueue.latestUserSequence > sequence) {
+      return { ok: false, status: 'superseded-by-user', chatId };
+    }
+
+    let nativeBefore = await readNativeConversationTitle(chatId, { signal: opts.signal });
+    if (!nativeBefore.ok && isTransientNativeFailure(nativeBefore) && opts.repair !== true) {
+      await delay(120);
+      nativeBefore = await readNativeConversationTitle(chatId, { signal: opts.signal });
+    }
+    if (!nativeBefore.ok) return { ...nativeBefore, pending: false };
+
+    const parsedBefore = takeLeadingEmojiSlot(nativeBefore.title);
+    if (!parsedBefore.hasSlot) {
+      confirmNativeEmojiRemoval(rec, nativeBefore.title, source, 'emoji-removal-already-current');
+      return {
+        ok: true,
+        status: 'already-current',
+        chatId,
+        removedEmoji: '',
+        title: nativeBefore.title,
+        patchCount: 0,
+      };
+    }
+
+    const desiredNativeTitle = parsedBefore.remainder;
+    if (!desiredNativeTitle) {
+      return { ok: false, status: 'empty-native-title', chatId, removedEmoji: parsedBefore.emoji };
+    }
+
+    const createdAt = now();
+    setPendingEmojiAssignment(rec, {
+      operation: 'remove-leading-emoji',
+      emoji: parsedBefore.emoji,
+      title: desiredNativeTitle,
+      source,
+      userInitiated: true,
+      attempts: 0,
+      repairAttempts: opts.repair === true ? 1 : 0,
+      createdAt,
+      updatedAt: createdAt,
+      status: 'pending',
+    }, 'emoji-removal-pending');
+
+    let lastResult = { ok: false, status: 'persistence-unconfirmed', chatId };
+    const maxAttempts = opts.repair === true ? 1 : 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const queue = emojiAssignmentQueues.get(chatId);
+      if (queue && queue.latestUserSequence > sequence) {
+        return { ok: false, status: 'superseded-by-user', chatId };
+      }
+      setPendingEmojiAssignment(rec, {
+        ...rec.pendingEmojiAssignment,
+        operation: 'remove-leading-emoji',
+        attempts: attempt,
+        repairAttempts: opts.repair === true ? 1 : Number(rec.pendingEmojiAssignment?.repairAttempts || 0),
+        updatedAt: now(),
+        status: 'submitting',
+      }, 'emoji-removal-submitting');
+
+      const submitted = await patchNativeConversationTitle(chatId, desiredNativeTitle, { signal: opts.signal });
+      if (!submitted.ok) {
+        lastResult = submitted;
+        if (attempt < maxAttempts && isTransientNativeFailure(submitted)) {
+          await delay(120 * attempt);
+          continue;
+        }
+        break;
+      }
+
+      const verified = await readNativeConversationTitle(chatId, { signal: opts.signal });
+      if (verified.ok && verified.title === desiredNativeTitle) {
+        updateConversationHistoryCacheTitle(chatId, desiredNativeTitle);
+        reconcileNativeSidebarTitle(chatId, desiredNativeTitle);
+        confirmNativeEmojiRemoval(rec, desiredNativeTitle, source, 'emoji-removal-confirmed');
+        scheduleRefresh('emoji-removal-confirmed', 80);
+        return {
+          ok: true,
+          status: 'persisted-confirmed',
+          chatId,
+          removedEmoji: parsedBefore.emoji,
+          title: desiredNativeTitle,
+          patchCount: attempt,
+          verification: 'authoritative-get',
+        };
+      }
+      lastResult = {
+        ok: false,
+        status: 'persistence-unconfirmed',
+        chatId,
+        expectedTitle: desiredNativeTitle,
+        actualTitle: verified.ok ? verified.title : '',
+        verificationStatus: verified.status,
+      };
+      if (attempt < maxAttempts && isTransientNativeFailure(verified)) {
+        await delay(120 * attempt);
+        continue;
+      }
+      break;
+    }
+
+    setPendingEmojiAssignment(rec, {
+      ...rec.pendingEmojiAssignment,
+      operation: 'remove-leading-emoji',
+      attempts: Math.max(1, Number(rec.pendingEmojiAssignment?.attempts || 0)),
+      updatedAt: now(),
+      status: 'unconfirmed',
+    }, 'emoji-removal-unconfirmed');
+    return {
+      ...lastResult,
+      ok: false,
+      chatId,
+      removedEmoji: parsedBefore.emoji,
+      title: desiredNativeTitle,
+      pending: true,
+    };
+  }
+
+  function enqueueEmojiMutation(chatId, options, runner) {
+    const previous = emojiAssignmentQueues.get(chatId) || { tail: Promise.resolve(), sequence: 0, latestUserSequence: 0 };
+    const sequence = previous.sequence + 1;
+    const entry = { ...previous, sequence };
+    if (options?.userInitiated === true) entry.latestUserSequence = sequence;
+    const task = previous.tail.catch(() => null).then(() => runner(sequence));
+    entry.tail = task.finally(() => {
+      const current = emojiAssignmentQueues.get(chatId);
+      if (current?.sequence === sequence) emojiAssignmentQueues.delete(chatId);
+    });
+    emojiAssignmentQueues.set(chatId, entry);
+    return task;
+  }
+
   function setEmojiAndPersist(chatIdRaw, emojiRaw, options) {
     const chatId = String(chatIdRaw || options?.chatId || '').trim();
     const emoji = norm(emojiRaw || options?.emoji || '');
@@ -1883,17 +2055,18 @@
     if (!emoji || graphemes(emoji).length !== 1 || !isEmojiCluster(emoji)) {
       return Promise.resolve({ ok: false, status: 'invalid-emoji', chatId });
     }
-    const previous = emojiAssignmentQueues.get(chatId) || { tail: Promise.resolve(), sequence: 0, latestUserSequence: 0 };
-    const sequence = previous.sequence + 1;
-    const entry = { ...previous, sequence };
-    if (options?.userInitiated === true) entry.latestUserSequence = sequence;
-    const task = previous.tail.catch(() => null).then(() => runEmojiAssignment(chatId, emoji, options || {}, sequence));
-    entry.tail = task.finally(() => {
-      const current = emojiAssignmentQueues.get(chatId);
-      if (current?.sequence === sequence) emojiAssignmentQueues.delete(chatId);
-    });
-    emojiAssignmentQueues.set(chatId, entry);
-    return task;
+    return enqueueEmojiMutation(chatId, options || {}, (sequence) => runEmojiAssignment(chatId, emoji, options || {}, sequence));
+  }
+
+  function removeLeadingEmojiAndPersist(chatIdRaw, options) {
+    const chatId = String(chatIdRaw || options?.chatId || '').trim();
+    if (!isStableChatId(chatId)) return Promise.resolve({ ok: false, status: 'invalid-chat-id', chatId });
+    if (options?.userInitiated !== true) {
+      return Promise.resolve({ ok: false, status: 'explicit-user-action-required', chatId });
+    }
+    return enqueueEmojiMutation(chatId, { ...(options || {}), userInitiated: true }, (sequence) => (
+      runLeadingEmojiRemoval(chatId, { ...(options || {}), userInitiated: true }, sequence)
+    ));
   }
 
   function updateConversationHistoryCacheTitle(chatId, title) {
@@ -1999,7 +2172,11 @@
     const pending = normalizePendingEmojiAssignment(rec.pendingEmojiAssignment);
     if (pending && !nativeRepairAttemptedThisSession.has(chatId)) {
       if (native.title === pending.title) {
-        confirmNativeEmojiState(rec, native.title, pending.emoji, pending.source, 'native-rehydrate-pending-confirmed');
+        if (pending.operation === 'remove-leading-emoji') {
+          confirmNativeEmojiRemoval(rec, native.title, pending.source, 'native-rehydrate-removal-confirmed');
+        } else {
+          confirmNativeEmojiState(rec, native.title, pending.emoji, pending.source, 'native-rehydrate-pending-confirmed');
+        }
         return true;
       }
       if (pending.repairAttempts >= 1) {
@@ -2007,11 +2184,19 @@
         return false;
       }
       nativeRepairAttemptedThisSession.add(chatId);
-      void setEmojiAndPersist(chatId, pending.emoji, {
-        source: pending.source,
-        userInitiated: pending.userInitiated,
-        repair: true,
-      });
+      if (pending.operation === 'remove-leading-emoji') {
+        void removeLeadingEmojiAndPersist(chatId, {
+          source: pending.source,
+          userInitiated: true,
+          repair: true,
+        });
+      } else {
+        void setEmojiAndPersist(chatId, pending.emoji, {
+          source: pending.source,
+          userInitiated: pending.userInitiated,
+          repair: true,
+        });
+      }
       return true;
     }
 
@@ -2683,6 +2868,7 @@
     setTitle,
     setEmoji,
     setEmojiAndPersist,
+    removeLeadingEmojiAndPersist,
     renameNative,
     readNativeTitle: readNativeConversationTitle,
     subscribe,

@@ -58,12 +58,28 @@ for (const [title, emoji, remainder] of cases) {
 assert.equal(parser.stripLeadingOwnedSlot('🍋 🔥 Best Choice', '🍋'), '🔥 Best Choice', 'only the proven owned slot is stripped');
 assert.equal(parser.stripLeadingOwnedSlot('🔥 Best Choice', '🍋'), '🔥 Best Choice', 'an unknown native emoji is never claimed');
 assert.equal(parser.composeNativeTitle('🚲', parser.stripLeadingOwnedSlot('🍋 🔥 Best Choice', '🍋')), '🚲 🔥 Best Choice', 'changing the H2O slot preserves a secondary user emoji');
+assert.equal(parser.takeLeadingEmojiSlot('🚲 🔥 Title').remainder, '🔥 Title', 'explicit removal drops exactly one leading emoji cluster');
+assert.equal(parser.takeLeadingEmojiSlot('👩🏽‍💻 🔥 Title').remainder, '🔥 Title', 'explicit removal treats a ZWJ skin-tone emoji as one cluster');
+assert.equal(parser.takeLeadingEmojiSlot('🇦🇹 🔥 Title').remainder, '🔥 Title', 'explicit removal treats a flag as one cluster');
+assert.equal(parser.takeLeadingEmojiSlot('Title 🔥').hasSlot, false, 'a title without a leading emoji is a no-op and preserves trailing emoji');
 
 assert.match(source.state, /emojiOwner:\s*''/u, 'records add explicit emoji ownership');
 assert.match(source.state, /value === 'h2o' \|\| value === 'native'/u, 'emoji ownership is a closed enum');
 assert.match(source.state, /lastNativeSubmission:\s*null/u, 'records retain one bounded native-submission proof');
 assert.match(source.state, /pendingEmojiAssignment:\s*null/u, 'records retain durable pending assignment intent');
 assert.match(source.state, /function setEmojiAndPersist\(/u, '9B0a owns the canonical set-and-persist operation');
+assert.match(source.state, /function removeLeadingEmojiAndPersist\(/u, '9B0a owns the canonical explicit remove-leading-emoji operation');
+assert.match(source.state, /operation === 'remove-leading-emoji'/u, 'durable pending state distinguishes removal from assignment');
+assert.match(source.state, /const desiredNativeTitle = parsedBefore\.remainder/u, 'removal preserves every byte after exactly one leading grapheme');
+assert.match(source.state, /patchNativeConversationTitle\(chatId, desiredNativeTitle[\s\S]*verified\.title === desiredNativeTitle/u, 'removal PATCH is confirmed by an authoritative native GET equality check');
+assert.match(source.state, /status: 'empty-native-title'/u, 'an emoji-only native title fails closed instead of submitting an empty title');
+assert.match(source.state, /explicit-user-action-required/u, 'native/user-owned first emoji removal requires an explicit user action');
+assert.match(source.state, /record\.lastNativeSubmission = null;[\s\S]*record\.pendingEmojiAssignment = null;/u, 'verified removal clears stale H2O submission ownership and pending evidence');
+assert.match(source.state, /payloadCarriesEmoji[\s\S]*nextEmoji !== rec\.emoji[\s\S]*rec\.emoji = nextEmoji/u, 'persisted empty emoji tombstones participate in backward-compatible hydration');
+assert.match(source.state, /user-explicit-removal[\s\S]*EMOJI_PRIORITY\.user/u, 'verified explicit removal carries user priority so a stale persisted emoji cannot return on reload');
+assert.match(source.state, /removeItem\(`h2o:prm:cgx:tmjttl:state:emoji_\$\{safeId\(rec\?\.chatId\)\}:v1`\)[\s\S]*removeItem\(`ho:autoemoji:emoji:/u, 'verified removal retires only the exact chat’s bounded pre-canonical emoji caches before they can republish stale state');
+assert.match(source.state, /parsed\.hasSlot \? 'native' : ''/u, 'a surviving second emoji is reconciled as native instead of showing a placeholder beside it');
+assert.match(source.state, /return enqueueEmojiMutation\(chatId,[\s\S]*runLeadingEmojiRemoval/u, 'assignment and removal share one per-chat queue, preventing double submission races');
 assert.match(source.state, /patchNativeConversationTitle\(chatId, desiredNativeTitle/u, 'native PATCH includes the composed H2O emoji title');
 assert.match(source.state, /const verified = await readNativeConversationTitle[\s\S]*verified\.title === desiredNativeTitle/u, 'PATCH success is followed by authoritative native GET equality');
 assert.match(source.state, /status: 'persistence-unconfirmed'[\s\S]*actualTitle:/u, 'authoritative mismatch cannot report confirmed success');
@@ -83,6 +99,10 @@ assert.doesNotMatch(autoAssignment, /renameNative|publishEmoji/u, '9D1a has no s
 const pickerSelection = extractFunction(source.auto, 'selectEmoji');
 assert.match(pickerSelection, /applyNativeAutoEmoji[\s\S]*userInitiated:\s*true/u, 'manual picker enters the same canonical transaction as a user-priority request');
 assert.doesNotMatch(pickerSelection, /publishEmoji|setBadgeDisplay/u, 'manual picker does not claim optimistic persisted success');
+assert.match(source.auto, /removeEmoji\.dataset\.hoRemoveEmojiAction = '1'/u, 'the canonical Title Palette exposes a dedicated Remove emoji action');
+assert.match(source.auto, /api\.removeLeadingEmojiAndPersist\(chatId,[\s\S]*userInitiated:\s*true/u, 'the palette removal action enters the canonical 9B0a transaction for its exact chat');
+assert.match(source.auto, /removeEmoji\.dataset\.pending === '1'/u, 'the palette removal action suppresses double-submit while native verification is pending');
+assert.match(source.auto, /Could not remove emoji/u, 'failed verification stays visible and retryable instead of claiming removal success');
 assert.match(source.auto, /openUnifiedTitlePanel\(\{ chatId, sourceEl: item/u, 'sidebar Set emoji still opens the shared picker for the exact chat');
 
 assert.match(source.sidebar, /current\.visual\.textContent !== snapshot\.baseTitle/u, '9B2a renders only the title remainder');

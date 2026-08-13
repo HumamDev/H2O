@@ -770,6 +770,30 @@ a.ho-has-colorbtn.ho-row-red   { background-color: rgba(179,58,58,0.15) !importa
 a.ho-has-colorbtn.ho-row-blue  { background-color: rgba(70,100,200,0.15) !important; }
 a.ho-has-colorbtn.ho-row-green { background-color: rgba(60,150,90,0.15) !important; }
 
+/* Themes intentionally clears generic sidebar backgrounds with an id-scoped
+   reset. These rules restore only 9A1b-owned, canonically tinted chat rows at
+   greater owner specificity; project/folder/action rows remain untouched. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-gold {
+  background: rgba(212,175,55,0.12) !important;
+  background-color: rgba(212,175,55,0.12) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-red {
+  background: rgba(179,58,58,0.15) !important;
+  background-color: rgba(179,58,58,0.15) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-blue {
+  background: rgba(70,100,200,0.15) !important;
+  background-color: rgba(70,100,200,0.15) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-green {
+  background: rgba(60,150,90,0.15) !important;
+  background-color: rgba(60,150,90,0.15) !important;
+}
+
 /* Default subtle gray highlight for *sidebar* chats with no custom color */
 nav a.ho-has-colorbtn:not(.ho-row-gold):not(.ho-row-red):not(.ho-row-blue):not(.ho-row-green) {
   background-color: rgba(255, 255, 255, 0.04);  /* tweak alpha for stronger/weaker */
@@ -1197,6 +1221,9 @@ function applyRowByIndex(link, idx) {
   // In project list: use the row container.
   // In sidebar: link itself (no .ho-main-row above).
   const rowEl = link.closest(".ho-main-row") || link;
+  if (link.closest("nav, aside") && !link.closest("main")) {
+    link.dataset.hoRowColorOwner = "9A1b";
+  }
 
   // clear old colors from both container and link
   [rowEl, link].forEach(el => {
@@ -2392,6 +2419,9 @@ const rescan = I.utils.debounce(scanSidebar, 50);
 
 window.addEventListener(I.nav.EVENT, markActiveSidebarLink, true);
 window.addEventListener("h2o:interface:meta-mirror", (event) => {
+  scheduleChatMetaDecorationRefresh(event?.detail?.chatId);
+}, true);
+window.addEventListener("h2o:interface:row-tint-change", (event) => {
   scheduleChatMetaDecorationRefresh(event?.detail?.chatId);
 }, true);
 window.addEventListener("evt:h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);

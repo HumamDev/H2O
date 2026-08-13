@@ -248,6 +248,9 @@
         if (!Number.isFinite(next) || next < 0) localStorage.removeItem(ROW_KEY(id));
         else localStorage.setItem(ROW_KEY(id), String(next));
         mirrorInterfaceState(id, { rowTint: Number.isFinite(next) ? next : -1 }, "interface-row-tint");
+        window.dispatchEvent(new CustomEvent("h2o:interface:row-tint-change", {
+          detail: { chatId: String(id || ""), rowTint: Number.isFinite(next) ? next : -1 },
+        }));
       },
       getOverride(id) {
         const stored = localStorage.getItem(OVERRIDE_KEY(id));
