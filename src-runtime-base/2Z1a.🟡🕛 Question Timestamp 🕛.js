@@ -218,8 +218,17 @@
 
   /* ───────────────────────────── 6) BUILD / POSITION TIMESTAMP ───────────────────────────── */
 
-  /** @critical */
-  function DOM_QT_ensureTimestamp(userMsgDiv) {
+  // Reconciliation is split into three phases so a multi-turn scan performs
+  // ALL preparation writes, then ALL geometry reads, then ALL positional
+  // writes. Previously each turn did write -> getBoundingClientRect -> write
+  // inside one loop, so every mounted turn forced its own synchronous layout
+  // flush; a live paired A/B measured 3006.964 ms of getBoundingClientRect in
+  // this module alone. Nothing is cached and nothing is skipped: the same two
+  // rects are still read for every eligible turn, and the left value is
+  // computed identically. Only the ORDER changed.
+
+  /** @helper Phase 1 — resolve + ensure DOM. Performs no geometry reads. */
+  function DOM_QT_prepareTimestamp(userMsgDiv) {
     const ts =
       W.H2O?.time?.getCreateTime?.(userMsgDiv) ||
       DOM_QT_findCreateTimeFromReact(userMsgDiv);
@@ -259,12 +268,46 @@
 
     // Align to question left edge (stable, no clamping loops)
     const anchor = DOM_QT_findQuestionAnchor(userMsgDiv);
-    const barRect = outerBar.getBoundingClientRect();
-    const aRect   = anchor.getBoundingClientRect();
-    const left = Math.max(0, Math.round(aRect.left - barRect.left));
-    inline.style.setProperty(`--cgxui-${SkID}-left`, `${left}px`);
+    return { turnRoot, outerBar, inline, anchor };
+  }
 
-    return { turnRoot, anchorRect: aRect };
+  /** @helper Phase 2 — geometry only. Performs no DOM or style writes. */
+  function DOM_QT_measureTimestamp(prepared) {
+    if (!prepared) return null;
+    const barRect = prepared.outerBar.getBoundingClientRect();
+    const aRect   = prepared.anchor.getBoundingClientRect();
+    const left = Math.max(0, Math.round(aRect.left - barRect.left));
+    return { turnRoot: prepared.turnRoot, inline: prepared.inline, left, anchorRect: aRect };
+  }
+
+  /** @helper Phase 3 — positional write only. */
+  function DOM_QT_applyTimestampPosition(measured) {
+    if (!measured) return null;
+    measured.inline.style.setProperty(`--cgxui-${SkID}-left`, `${measured.left}px`);
+    return { turnRoot: measured.turnRoot, anchorRect: measured.anchorRect };
+  }
+
+  /** @helper Batched reconciliation: all writes, then all reads, then all writes. */
+  function DOM_QT_reconcileTimestamps(userMsgDivs) {
+    const prepared = [];
+    for (const userMsgDiv of userMsgDivs) {
+      const p = DOM_QT_prepareTimestamp(userMsgDiv);
+      if (p) prepared.push(p);
+    }
+    const measured = [];
+    for (const p of prepared) measured.push(DOM_QT_measureTimestamp(p));
+    for (const m of measured) DOM_QT_applyTimestampPosition(m);
+    return prepared.length;
+  }
+
+  /**
+   * @critical Single-turn path (hover sequencing). Contract unchanged: returns
+   * { turnRoot, anchorRect } or null, with identical eligibility and placement.
+   */
+  function DOM_QT_ensureTimestamp(userMsgDiv) {
+    return DOM_QT_applyTimestampPosition(
+      DOM_QT_measureTimestamp(DOM_QT_prepareTimestamp(userMsgDiv)),
+    );
   }
 
   /* ───────────────────────────── 7) HOVER SEQUENCING (SHORT QUESTIONS) ───────────────────────────── */
@@ -376,9 +419,7 @@
         const turnRoot = DOM_QT_findTurnRoot(userMsgDiv);
         if (turnRoot) DOM_QT_bindTurn(turnRoot);
       }
-      for (const userMsgDiv of list) {
-        DOM_QT_ensureTimestamp(userMsgDiv);
-      }
+      DOM_QT_reconcileTimestamps(list);
       return list.length;
     }
 
@@ -386,7 +427,7 @@
     turns.forEach(DOM_QT_bindTurn);
 
     const usersAll = document.querySelectorAll(SEL_QTIMESTAMP_.USER_MSG);
-    usersAll.forEach(DOM_QT_ensureTimestamp);
+    DOM_QT_reconcileTimestamps(usersAll);
     return usersAll.length;
   }
 

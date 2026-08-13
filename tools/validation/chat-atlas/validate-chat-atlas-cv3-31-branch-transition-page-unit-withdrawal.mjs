@@ -211,8 +211,8 @@ const BOUNDARY_ATTR = 'data-h2o-chat-page-boundary';
 //                         narrow count-only model used by the gate fixtures
 function makeHarness(options = {}) {
   const turns = Number(options.turns ?? 39);
-  const effectiveCount = Number(options.effectiveCount ?? turns);
-  const effectiveFp = String(options.effectiveFp ?? (turns === 18 ? FP_18 : FP_39));
+  let effectiveCount = Number(options.effectiveCount ?? turns);
+  let effectiveFp = String(options.effectiveFp ?? (turns === 18 ? FP_18 : FP_39));
   const transition = Object.assign({
     trustedSelectionIntentActive: false,
     branchSelectionStale: false,
@@ -367,7 +367,9 @@ function makeHarness(options = {}) {
     unit: (page, kind) => root.querySelectorAll(`[${BOUNDARY_ATTR}="page-${page}-${kind}"]`)[0] || null,
     divider: (page) => root.querySelectorAll(`.cgxui-chat-page-divider[data-page-num="${page}"]`)[0] || null,
     setTurns: (n) => { structuralHost.turns = makeStructuralTurns(Math.max(0, Number(n || 0) || 0)); },
-    structuralHost,
+    structuralHost, transition,
+    setEffectiveCount: (n) => { effectiveCount = Math.max(0, Number(n || 0) || 0); },
+    setEffectiveFingerprint: (value) => { effectiveFp = String(value || ''); },
   };
 }
 
@@ -495,6 +497,96 @@ function makeTemporaryStructuralModelRecoveryWorld() {
     timerTrace,
     pendingTimers: () => Array.from(timers.values()),
   };
+}
+
+// Public scroll-repair world. The structural render/reconcile authority is the
+// same production-backed world above; only time and browser event delivery are
+// deterministic. Counters wrap the production boundaries without replacing
+// their work, so the RED proves repeated entry into the expensive public path.
+function makeDividerScrollRepairWorld() {
+  const world = makeTemporaryStructuralModelRecoveryWorld();
+  const { page } = world;
+  page.mountUnits(2);
+  page.api.reconcileChatPageUnits('divider-scroll:baseline');
+  world.runPublicPageStructurePass('divider-scroll:baseline-render');
+  world.flushImmediateTimers();
+
+  const counters = {
+    notifications: 0,
+    runDividerRepair: 0,
+    fullRender: 0,
+    reconcile: 0,
+  };
+  let clock = 1000;
+  let anchorGeneration = 1;
+  const anchorHost = () => {
+    const section = new El('SECTION');
+    section.setAttribute('data-testid', `conversation-turn-${anchorGeneration}`);
+    section.getBoundingClientRect = () => ({ top: 100, bottom: 200, left: 0, right: 100 });
+    const wrapper = new El('DIV');
+    wrapper.appendChild(section);
+    return { wrapper, section, testid: section.getAttribute('data-testid'), mode: 'test-host' };
+  };
+  let liveAnchor = anchorHost();
+  page.sandbox.getPageStartTurnWrapper = () => liveAnchor;
+
+  const originalEnforce = page.sandbox.enforceChatPageUnitOrder;
+  page.sandbox.enforceChatPageUnitOrder = (model, candidatesByPage, reason) => {
+    // This remains an instrumented ordering seam, as elsewhere in CV-3.31,
+    // but it performs the one public DOM effect needed by the missing-divider
+    // control: attach the exact candidate production created for each page.
+    for (const pageModel of Array.isArray(model?.pages) ? model.pages : []) {
+      const candidate = (candidatesByPage.get(pageModel.pageNum) || [])[0] || null;
+      if (candidate && !candidate.isConnected) page.root.appendChild(candidate);
+    }
+    return originalEnforce(model, candidatesByPage, reason);
+  };
+
+  const originalReconcile = page.sandbox.reconcileChatPageUnits;
+  page.sandbox.reconcileChatPageUnits = (...args) => {
+    counters.reconcile += 1;
+    return originalReconcile(...args);
+  };
+  const originalRender = page.sandbox.renderChatPageDividers;
+  page.sandbox.renderChatPageDividers = (...args) => {
+    counters.fullRender += 1;
+    return originalRender(...args);
+  };
+  page.sandbox.Date = { now: () => clock };
+  new vm.Script(`
+    let dividerScrollRepairAt = 0;
+    let dividerScrollTrailTimer = 0;
+    ${extractFunction(STRUCTURE_SOURCE, 'runDividerRepair')}
+    ${extractFunction(STRUCTURE_SOURCE, 'onDividerRepairScroll')}
+    globalThis.__dividerScrollRepairApi = Object.freeze({
+      notify: onDividerRepairScroll,
+      run: runDividerRepair,
+    });
+  `, { filename: `${STRUCTURE_PATH}:divider-scroll-repair` }).runInContext(page.sandbox);
+  const productionRun = page.sandbox.__dividerScrollRepairApi.run;
+  page.sandbox.runDividerRepair = (...args) => {
+    counters.runDividerRepair += 1;
+    return productionRun(...args);
+  };
+
+  const notify = (advanceMs = 400) => {
+    clock += Math.max(0, Number(advanceMs || 0) || 0);
+    counters.notifications += 1;
+    return page.sandbox.__dividerScrollRepairApi.notify();
+  };
+  const flush = () => world.runProductionCallbacks(100);
+  const resetCounts = () => {
+    counters.notifications = 0;
+    counters.runDividerRepair = 0;
+    counters.fullRender = 0;
+    counters.reconcile = 0;
+  };
+  const replaceAnchor = () => {
+    anchorGeneration += 1;
+    liveAnchor = anchorHost();
+    return liveAnchor;
+  };
+  return { world, page, counters, notify, flush, resetCounts, replaceAnchor };
 }
 
 function makeRebuildCounterHarness(options = {}) {
@@ -2151,6 +2243,118 @@ await fixture('page-structure recovery: a temporarily unavailable structural tur
   equal(retryDisarmed, true, 'successful settlement cancels the bounded recovery task');
 });
 
+let dividerScrollRepairRedOutcome = null;
+await fixture('divider scroll repair: unchanged settled inputs do not repeat the full public repair path', () => {
+  const unchanged = makeDividerScrollRepairWorld();
+  const initialIdentity = unchanged.page.api.buildChatPageUnitModel().identity;
+  const initialDividers = unchanged.page.dividers().length;
+  unchanged.notify(400);
+  unchanged.notify(400);
+  unchanged.notify(400);
+  unchanged.flush();
+  const unchangedCounts = { ...unchanged.counters };
+  const unchangedFinalIdentity = unchanged.page.api.buildChatPageUnitModel().identity;
+  const unchangedFinalDividers = unchanged.page.dividers().length;
+
+  const pageUnitChange = makeDividerScrollRepairWorld();
+  pageUnitChange.notify(400);
+  pageUnitChange.flush();
+  pageUnitChange.resetCounts();
+  pageUnitChange.page.setEffectiveFingerprint('djb2:changed-page-unit-identity');
+  pageUnitChange.notify(400);
+  pageUnitChange.flush();
+  const pageUnitChangeControl = pageUnitChange.counters.fullRender > 0;
+
+  const anchorChange = makeDividerScrollRepairWorld();
+  anchorChange.notify(400);
+  anchorChange.flush();
+  anchorChange.resetCounts();
+  anchorChange.replaceAnchor();
+  anchorChange.notify(400);
+  anchorChange.flush();
+  const anchorChangeControl = anchorChange.counters.fullRender > 0;
+
+  const branchSettlement = makeDividerScrollRepairWorld();
+  branchSettlement.notify(400);
+  branchSettlement.flush();
+  branchSettlement.page.transition.selectedPathRequestLeaseActive = true;
+  branchSettlement.page.api.reconcileChatPageUnits('divider-scroll:transition-active');
+  branchSettlement.resetCounts();
+  branchSettlement.page.transition.selectedPathRequestLeaseActive = false;
+  branchSettlement.notify(400);
+  branchSettlement.flush();
+  const branchSettlementControl = branchSettlement.counters.fullRender > 0
+    && branchSettlement.page.api.chatPageUnitBranchTransitionActive() === false;
+
+  const modelRecovery = makeDividerScrollRepairWorld();
+  modelRecovery.notify(400);
+  modelRecovery.flush();
+  modelRecovery.page.setTurns(0);
+  modelRecovery.world.runPublicPageStructurePass('divider-scroll:model-unavailable');
+  modelRecovery.world.flushImmediateTimers();
+  modelRecovery.resetCounts();
+  modelRecovery.page.setTurns(37);
+  modelRecovery.notify(400);
+  modelRecovery.flush();
+  const modelRecoveryControl = modelRecovery.counters.fullRender > 0
+    && modelRecovery.page.api.buildChatPageUnitModel().count === 37;
+
+  const pageCountChange = makeDividerScrollRepairWorld();
+  pageCountChange.notify(400);
+  pageCountChange.flush();
+  pageCountChange.resetCounts();
+  pageCountChange.page.setTurns(51);
+  pageCountChange.page.setEffectiveCount(51);
+  pageCountChange.page.setEffectiveFingerprint('djb2:page-count-3');
+  pageCountChange.notify(400);
+  pageCountChange.flush();
+  const pageCountChangeControl = pageCountChange.counters.fullRender > 0
+    && pageCountChange.page.api.buildChatPageUnitModel().pageCount === 3;
+
+  const missingDivider = makeDividerScrollRepairWorld();
+  missingDivider.notify(400);
+  missingDivider.flush();
+  missingDivider.resetCounts();
+  missingDivider.page.divider(2)?.remove();
+  const missingBefore = missingDivider.page.divider(2) == null;
+  missingDivider.notify(400);
+  missingDivider.flush();
+  const missingDividerControl = missingBefore
+    && missingDivider.counters.fullRender > 0
+    && !!missingDivider.page.divider(2);
+
+  dividerScrollRepairRedOutcome = {
+    repairEntryPath: 'bindDividerScrollRepairOnce -> onDividerRepairScroll -> runDividerRepair -> renderChatPageDividers -> reconcileChatPageUnits',
+    scrollNotifications: unchangedCounts.notifications,
+    runDividerRepairCount: unchangedCounts.runDividerRepair,
+    fullRenderCount: unchangedCounts.fullRender,
+    pageUnitReconcileCount: unchangedCounts.reconcile,
+    initialIdentity,
+    finalIdentity: unchangedFinalIdentity,
+    initialDividers,
+    finalDividers: unchangedFinalDividers,
+    unchangedStateRepeatsRepair: unchangedCounts.fullRender > 1,
+    pageUnitChangeControl,
+    anchorChangeControl,
+    branchSettlementControl,
+    modelRecoveryControl,
+    pageCountChangeControl,
+    missingDividerControl,
+  };
+
+  equal(initialIdentity, unchangedFinalIdentity, 'equivalent scroll notifications retain exact page-unit identity');
+  equal(initialDividers, 2, 'stable baseline starts with exactly two dividers');
+  equal(unchangedFinalDividers, 2, 'equivalent notifications preserve exactly two correct dividers');
+  equal(pageUnitChangeControl, true, 'page-unit identity change still executes repair');
+  equal(anchorChangeControl, true, 'divider anchor/host replacement still executes repair');
+  equal(branchSettlementControl, true, 'branch-transition settlement still executes repair');
+  equal(modelRecoveryControl, true, 'model-unavailable recovery still executes repair');
+  equal(pageCountChangeControl, true, 'valid page-count change still executes repair');
+  equal(missingDividerControl, true, 'missing required divider still executes repair and restores it');
+  equal(unchangedCounts.fullRender, 1,
+    'UNCHANGED_DIVIDER_STATE_MUST_NOT_REPEAT_FULL_SCROLL_REPAIR: equivalent scroll notifications must coalesce to one full repair');
+});
+
 
 // ── Stage 2C — selectedPathFail transaction-lifecycle guard ───────────────
 // The real chatAtlasSelectedPathFail body is executed against a sandbox that
@@ -2252,6 +2456,9 @@ await fixture('stage-2c H: the guard asserts nothing about success', () => {
 });
 
 const failed = fixtures.filter((f) => !f.ok);
+if (dividerScrollRepairRedOutcome) {
+  console.log(`CV-3.31 divider-scroll-repair ${JSON.stringify(dividerScrollRepairRedOutcome)}`);
+}
 console.log(`CV-3.31 fixtures ${fixtures.length - failed.length}/${fixtures.length} assertions ${assertions}`);
 if (failed.length) {
   for (const f of failed) console.error(`${f.name}: ${f.error?.message || f.error}`);

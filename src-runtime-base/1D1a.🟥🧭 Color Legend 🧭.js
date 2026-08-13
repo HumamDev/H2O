@@ -777,6 +777,28 @@
     btn.style.transform = (Math.abs(desiredShift) <= 0) ? '' : `translateX(${desiredShift}px)`;
   }
 
+  // Frame-coalesced composer-gap geometry.
+  //
+  // The boot() MutationObserver is deliberately broad, so the hot paths — every
+  // document mutation batch, every raw scroll event — can ask for this many
+  // times before a single paint. Each ask is the first reader after somebody
+  // else's pending invalidation, so each one forces a full synchronous layout.
+  // Coalescing to one reconciliation per animation frame keeps the result
+  // identical (nothing paints between requests within a frame) while paying for
+  // the flush once. No rect is cached and no geometry is carried across frames:
+  // a request on a later frame measures again.
+  let mirrorGapFrameRequested = false;
+  function runMirrorGapFrame() {
+    mirrorGapFrameRequested = false;
+    syncButtonMirrorGap();
+    if (panel && panel.isConnected) positionPanelNearButton();
+  }
+  function requestMirrorGapSync() {
+    if (mirrorGapFrameRequested) return;
+    mirrorGapFrameRequested = true;
+    requestAnimationFrame(runMirrorGapFrame);
+  }
+
   function updateButtonPageState() {
     if (!btn) return;
     btn.setAttribute('data-page', String(currentPage || 0));
@@ -1294,7 +1316,8 @@
     const slot = findNavRightSlot();
     if (!slot) return false;
     if (btn.parentElement !== slot) slot.appendChild(btn);
-    syncButtonMirrorGap();
+    // Mount stays synchronous; only its geometry side effect is frame-coalesced.
+    requestMirrorGapSync();
     return true;
   }
 
@@ -1304,10 +1327,7 @@
   function boot() {
     syncLegendVisibility();
 
-    const followPanel = () => {
-      syncButtonMirrorGap();
-      if (panel && panel.isConnected) positionPanelNearButton();
-    };
+    const followPanel = () => { requestMirrorGapSync(); };
     let resizeBurstTimer = 0;
     let resizeBurstUntil = 0;
     const kickResizeBurst = () => {
