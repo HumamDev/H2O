@@ -762,14 +762,90 @@
       .filter(a => extractChatIdFromHref(a.getAttribute('href') || ''));
   }
 
+  function findSidebarExpandoSection(entry){
+    if (!entry) return null;
+    let node = entry.parentElement;
+    while (node && !node.matches?.('nav, aside')) {
+      const className = String(node.className || '');
+      if (className.includes('sidebar-expando-section') && !className.includes('sidebar-expando-section-header')) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function getSidebarSectionName(entry){
+    const section = findSidebarExpandoSection(entry);
+    if (!section) return '';
+    const header = Array.from(section.children)
+      .find((node) => String(node.className || '').includes('sidebar-expando-section-header'));
+    const heading = header?.querySelector?.('h2') || null;
+    return norm(heading?.textContent || '');
+  }
+
+  function isPinnedSidebarSectionName(value){
+    return norm(value) === 'Pinned';
+  }
+
+  function isPinnedSidebarChatRow(entry){
+    if (!entry || !extractChatIdFromHref(entry.getAttribute?.('href') || '')) return false;
+    return isPinnedSidebarSectionName(getSidebarSectionName(entry));
+  }
+
+  function isSidebarChromeTextNode(node){
+    const parent = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    return !!parent?.closest?.(
+      '.ho-emoji-badge, .ho-emoji-lane, .ho-emoji-picker, .ho-colorbtn, .ho-palette,' +
+      ' [data-trailing-button], .trailing, [aria-hidden="true"], [data-ho-pinned-native-chat-placeholder="1"]'
+    );
+  }
+
+  function findPinnedNativeChatPlaceholder(entry){
+    if (!isPinnedSidebarChatRow(entry)) return null;
+    for (const use of entry.querySelectorAll('svg[aria-hidden="true"] use[href$="#chat"]')) {
+      if (use.closest?.('[data-trailing-button], .trailing, [data-h2o-owner], [data-ho-owner]')) continue;
+      const svg = use.closest('svg');
+      const host = svg?.parentElement || null;
+      if (host && entry.contains(host)) return host;
+    }
+    return null;
+  }
+
+  function clearPinnedEmojiSlotPresentation(entry){
+    if (!entry) return;
+    entry.removeAttribute('data-ho-pinned-emoji-slot');
+    entry.querySelectorAll('[data-ho-pinned-native-chat-placeholder="1"]').forEach((node) => {
+      node.removeAttribute('data-ho-pinned-native-chat-placeholder');
+    });
+  }
+
+  function applyPinnedEmojiSlotPresentation(entry, emoji){
+    if (!isPinnedSidebarChatRow(entry)) {
+      clearPinnedEmojiSlotPresentation(entry);
+      return false;
+    }
+    const nativePlaceholder = findPinnedNativeChatPlaceholder(entry);
+    if (nativePlaceholder) nativePlaceholder.setAttribute('data-ho-pinned-native-chat-placeholder', '1');
+    entry.setAttribute('data-ho-pinned-emoji-slot', norm(emoji) ? 'real' : 'native');
+    return true;
+  }
+
   function findLeafTitleNode(entry){
     if (!entry) return null;
-    // pick the longest leaf text node
-    const leafs = Array.from(entry.querySelectorAll('*'))
+    // ChatGPT's semantic title container is separate from pinned-row chrome.
+    // Prefer it before the generic fallback so the aria-hidden native #chat
+    // icon can never participate in title parsing or a native PATCH payload.
+    const preferredRoot = entry.querySelector('[data-marquee-text]') ||
+      entry.querySelector('.truncate, [class*="truncate"]') || entry;
+    const leafs = Array.from(preferredRoot.querySelectorAll('*'))
       .filter(el => el.childElementCount === 0)
+      .filter(el => !isSidebarChromeTextNode(el))
       .filter(el => norm(el.textContent).length >= 2);
     leafs.sort((a,b) => norm(b.textContent).length - norm(a.textContent).length);
-    return leafs[0] || null;
+    if (leafs[0]) return leafs[0];
+    const own = norm(preferredRoot.textContent || '');
+    return own && !isSidebarChromeTextNode(preferredRoot) ? preferredRoot : null;
   }
 
   function getTrueTitle(entry){
@@ -912,6 +988,14 @@ body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-
   background-image: none !important;
   border-color: transparent !important;
   box-shadow: none !important;
+}
+
+/* Pinned owns one leading visual slot jointly with ChatGPT. The native #chat
+   placeholder remains in the DOM and is hidden only while this exact pinned
+   row has a real canonical H2O/native emoji badge. */
+:is(aside, nav) a[data-ho-pinned-emoji-slot="real"]
+  [data-ho-pinned-native-chat-placeholder="1"]{
+  display: none !important;
 }
 
 .ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-circle"]{
@@ -2217,8 +2301,7 @@ function getFirstTextFromAnchor(anchor){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane')) return NodeFilter.FILTER_REJECT;
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -2242,8 +2325,7 @@ function stripLeadingEmojiFromFirstText(anchor, expectedEmoji){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane')) return NodeFilter.FILTER_REJECT;
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -2275,10 +2357,7 @@ function findFirstRealTextHost(anchor){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane, .ho-emoji-proj-badge')) {
-          return NodeFilter.FILTER_REJECT;
-        }
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -2610,8 +2689,6 @@ function ensureBadgeForChat(chatId){
   const entry = findSidebarEntry(chatId);
   if (!entry) return;
 
-  entry.classList.add('ho-emoji-row');
-
   const trueTitle = getTrueTitle(entry);
   if (!trueTitle) return;
 
@@ -2629,13 +2706,28 @@ function ensureBadgeForChat(chatId){
   // One badge only (remove duplicates created by rerenders)
   keepOnlyOneBadgeAny(entry, leaf);
 
+  // Pinned rows already own a native leading #chat placeholder. An empty H2O
+  // badge would create two placeholders, so pinned emoji-less rows intentionally
+  // keep only ChatGPT's native slot. A real emoji uses the H2O badge and merely
+  // suppresses that exact native placeholder through the owner marker above.
+  const pinned = isPinnedSidebarChatRow(entry);
+  if (!badgeEmoji && pinned) {
+    entry.querySelectorAll(':scope > .ho-emoji-badge').forEach((node) => node.remove());
+    entry.classList.remove('ho-emoji-row');
+    applyPinnedEmojiSlotPresentation(entry, '');
+    return;
+  }
+
   // The visibility preference applies only to the empty sidebar placeholder.
   // Real canonical emoji remain visible regardless of this presentation toggle.
   if (!badgeEmoji && !getShowPreEmojiChatIcon()) {
     entry.querySelectorAll(':scope > .ho-emoji-badge.ho-emoji-empty').forEach((node) => node.remove());
     entry.classList.remove('ho-emoji-row');
+    clearPinnedEmojiSlotPresentation(entry);
     return;
   }
+
+  entry.classList.add('ho-emoji-row');
 
   // Badge (create or update)
   let badge = entry.querySelector(':scope .ho-emoji-badge');
@@ -2645,6 +2737,7 @@ function ensureBadgeForChat(chatId){
     entry.insertBefore(badge, entry.firstChild);
   }
   setBadgeDisplay(badge, badgeEmoji, 'side');
+  applyPinnedEmojiSlotPresentation(entry, badgeEmoji);
 
   // Bind once so the emoji control does not trigger row navigation.
   if (!badge.dataset.hoEmojiBound){
@@ -2705,11 +2798,15 @@ let sidebarBadgeScanSignature = '';
 
 function sidebarBadgeScanState(){
   const anchors = findSidebarChatAnchors();
-  let undecorated = 0;
-  anchors.forEach((anchor) => {
-    if (!anchor.querySelector(':scope > .ho-emoji-badge')) undecorated += 1;
+  const rows = anchors.map((anchor) => {
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    const badge = anchor.querySelector(':scope > .ho-emoji-badge');
+    const badgeState = badge ? (badge.classList.contains('ho-emoji-empty') ? 'empty' : 'real') : 'none';
+    const pinnedState = anchor.getAttribute('data-ho-pinned-emoji-slot') || '';
+    const nativeOwned = anchor.querySelector('[data-ho-pinned-native-chat-placeholder="1"]') ? 'native-owned' : '';
+    return `${chatId}:${badgeState}:${pinnedState}:${nativeOwned}`;
   });
-  return `${anchors.length}:${undecorated}`;
+  return `${anchors.length}:${rows.join('|')}`;
 }
 
 function scheduleSidebarBadgeScan(){

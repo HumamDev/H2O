@@ -115,4 +115,20 @@ assert.match(source.state, /preservedEmoji \? composeNativeTitle\(preservedEmoji
 assert.match(source.state, /const ownedEmoji = renameEmojiOwner === 'h2o'/u, 'only an H2O-owned slot receives H2O submission evidence');
 assert.match(source.state, /record\.baseTitle = nextBaseTitle/u, 'confirmed internal rename retains the separate base-title model');
 
+assert.match(extractFunction(source.auto, 'findPinnedNativeChatPlaceholder'),
+  /svg\[aria-hidden="true"\] use\[href\$="#chat"\]/u,
+  'the pinned ChatGPT placeholder is identified as native aria-hidden UI chrome, never title content');
+assert.match(extractFunction(source.auto, 'findLeafTitleNode'),
+  /entry\.querySelector\('\[data-marquee-text\]'\)[\s\S]*isSidebarChromeTextNode/u,
+  '9D1a reads the actual marquee title instead of row-wide text that can contain UI chrome');
+assert.match(extractFunction(source.state, 'readSidebarTitle'),
+  /entry\.querySelector\(NATIVE_TITLE_SELECTOR\)[\s\S]*sanitizeTitleForState\(semanticText\)/u,
+  '9B0a canonical fallback derives title text from the native title container');
+assert.match(extractFunction(source.state, 'readTextExcluding'),
+  /\[aria-hidden="true"\][\s\S]*\[data-ho-pinned-native-chat-placeholder="1"\]/u,
+  'native pinned icon chrome is excluded even if semantic title fallback is unavailable');
+assert.doesNotMatch(extractFunction(source.state, 'patchNativeConversationTitle'),
+  /sidebar|placeholder|textContent/iu,
+  'native PATCH payload construction has no dependency on decorated sidebar chrome');
+
 console.log('validate-native-emoji-title-persistence: ok');

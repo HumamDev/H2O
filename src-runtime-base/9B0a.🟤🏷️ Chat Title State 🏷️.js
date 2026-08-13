@@ -1539,6 +1539,10 @@
       '[data-cgxui-owner]',
       '[data-h2o-owner]',
       '[data-ho-owner]',
+      '[data-trailing-button]',
+      '.trailing',
+      '[aria-hidden="true"]',
+      '[data-ho-pinned-native-chat-placeholder="1"]',
     ].join(',');
     const walker = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
@@ -1564,6 +1568,9 @@
       ''
     );
     if (raw) return sanitizeTitleForState(raw) || raw;
+    const semanticTitle = entry.querySelector(NATIVE_TITLE_SELECTOR);
+    const semanticText = norm(semanticTitle?.textContent || '');
+    if (semanticText) return sanitizeTitleForState(semanticText) || semanticText;
     return readTextExcluding(entry);
   }
 

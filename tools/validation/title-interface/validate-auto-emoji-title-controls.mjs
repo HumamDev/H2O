@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const root = process.cwd();
 const rel = Object.freeze({
   auto: 'src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js',
+  state: 'src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js',
   list: 'src-runtime-base/9A1b.🟫🖥️ Chat List Decorator 🎨🖥️.js',
   kernel: 'src-runtime-base/9A1a.🟫🖥️ Interface Kernel ⚙️🖥️.js',
   themes: 'src-runtime-base/8A1b.🟪🎨 Themes Panel 🎨.js',
@@ -326,5 +327,58 @@ assert.equal((source.auto.match(/scheduleSidebarBadgeScan\(\)/gu) || []).length,
   'exactly one definition and one call site exist, so no duplicate scan path is installed');
 assert.doesNotMatch(source.auto, /setInterval\(/u,
   'the lifecycle uses observers and coalesced frames, never polling');
+
+const pinnedSandbox = { String };
+pinnedSandbox.globalThis = pinnedSandbox;
+vm.createContext(pinnedSandbox);
+vm.runInContext(
+  `const norm=(value)=>String(value||'').replace(/\\s+/gu,' ').trim();\n` +
+  `${extractFunction(source.auto, 'isPinnedSidebarSectionName')}\n` +
+  'globalThis.isPinned=isPinnedSidebarSectionName;',
+  pinnedSandbox,
+  { filename: rel.auto }
+);
+assert.equal(pinnedSandbox.isPinned('Pinned'), true,
+  'the exact native Pinned section is classified as pinned');
+assert.equal(pinnedSandbox.isPinned('Chats'), false,
+  'ordinary Chats rows retain the established placeholder contract');
+assert.equal(pinnedSandbox.isPinned('Projects'), false,
+  'project rows cannot be misclassified as pinned chats');
+assert.match(extractFunction(source.auto, 'getSidebarSectionName'),
+  /section\.children[\s\S]*sidebar-expando-section-header[\s\S]*querySelector\?\.\('h2'\)/u,
+  'pinned classification derives from the structural expando-section heading');
+assert.match(extractFunction(source.auto, 'isPinnedSidebarChatRow'),
+  /extractChatIdFromHref[\s\S]*isPinnedSidebarSectionName/u,
+  'only an exact conversation href inside Pinned is eligible for the special slot policy');
+assert.match(extractFunction(source.auto, 'findPinnedNativeChatPlaceholder'),
+  /svg\[aria-hidden="true"\] use\[href\$="#chat"\][\s\S]*data-trailing-button[\s\S]*return host/u,
+  'the native pinned placeholder is the aria-hidden ChatGPT #chat sprite outside trailing controls');
+assert.match(extractFunction(source.auto, 'ensureBadgeForChat'),
+  /!badgeEmoji && pinned[\s\S]*:scope > \.ho-emoji-badge[\s\S]*remove\(\)[\s\S]*classList\.remove\('ho-emoji-row'\)[\s\S]*applyPinnedEmojiSlotPresentation\(entry, ''\)/u,
+  'an emoji-less pinned row removes every H2O placeholder and releases its H2O lane');
+assert.match(extractFunction(source.auto, 'ensureBadgeForChat'),
+  /!badgeEmoji && !getShowPreEmojiChatIcon\(\)[\s\S]*entry\.classList\.add\('ho-emoji-row'\)[\s\S]*setBadgeDisplay\(badge, badgeEmoji, 'side'\)/u,
+  'ordinary Chats rows keep the established show-pre-emoji behavior');
+assert.match(source.auto,
+  /a\[data-ho-pinned-emoji-slot="real"\][\s\S]*\[data-ho-pinned-native-chat-placeholder="1"\][\s\S]*display:\s*none !important/u,
+  'only a real-emoji pinned row visually suppresses its marked native placeholder');
+assert.match(extractFunction(source.auto, 'applyPinnedEmojiSlotPresentation'),
+  /norm\(emoji\) \? 'real' : 'native'/u,
+  'removal immediately restores the native pinned slot instead of an H2O empty badge');
+assert.match(extractFunction(source.auto, 'findLeafTitleNode'),
+  /\[data-marquee-text\][\s\S]*isSidebarChromeTextNode/u,
+  'sidebar title extraction prefers the semantic marquee title and excludes row chrome');
+assert.match(extractFunction(source.auto, 'isSidebarChromeTextNode'),
+  /data-trailing-button[\s\S]*aria-hidden="true"[\s\S]*data-ho-pinned-native-chat-placeholder/u,
+  'native placeholder and trailing UI chrome are never title text candidates');
+assert.match(extractFunction(source.state, 'readSidebarTitle'),
+  /entry\.querySelector\(NATIVE_TITLE_SELECTOR\)[\s\S]*semanticText[\s\S]*readTextExcluding/u,
+  '9B0a sidebar fallback consumes the semantic title node before generic text traversal');
+assert.match(extractFunction(source.state, 'readTextExcluding'),
+  /aria-hidden="true"[\s\S]*data-ho-pinned-native-chat-placeholder/u,
+  '9B0a explicitly excludes native pinned chrome from fallback title text');
+assert.match(extractFunction(source.auto, 'sidebarBadgeScanState'),
+  /data-ho-pinned-emoji-slot[\s\S]*data-ho-pinned-native-chat-placeholder/u,
+  'row replacement invalidates the coalesced signature until pinned ownership is restored');
 
 console.log('validate-auto-emoji-title-controls: ok');
