@@ -1600,23 +1600,206 @@
     return sanitizeTitleForState(raw);
   }
 
-  async function readChatGptAccessToken(signal) {
+  /* Backend request governor.
+
+     ChatGPT rate-limits its conversation endpoint per account. A 429 is not a
+     transient blip — it is the backend telling us to stop — but it used to be
+     classified alongside network errors and 5xx, so every layer retried it.
+     Four layers did so independently: the access token was re-fetched on each
+     call, the pre-read retried, the patch/verify loop retried, and the Auto
+     Emoji pump re-drove the whole thing. One emoji assignment could therefore
+     cost dozens of requests against an endpoint already refusing us, and
+     because every guard lived in memory, reloading the page started it again
+     at full rate.
+
+     All backend traffic now funnels through governedFetch: one request in
+     flight at a time, a cooldown that outlives the page, and Retry-After
+     honoured whenever the server sends it. */
+
+  const BACKEND_COOLDOWN_KEY = 'h2o:chat-title:backend-cooldown:v1';
+  const BACKEND_MIN_REQUEST_GAP_MS = 250;
+  const BACKEND_COOLDOWN_STEPS_MS = Object.freeze([30000, 60000, 120000, 300000, 600000]);
+  const BACKEND_COOLDOWN_MAX_MS = 900000;
+  const ACCESS_TOKEN_TTL_MS = 240000;
+
+  let backendTail = Promise.resolve();
+  let backendLastRequestAt = 0;
+  let accessTokenCache = null;
+
+  /* Server-directed and locally-invented cooldowns are tracked separately.
+     A server deadline is preserved exactly as sent; the local exponential
+     fallback is our own invention and keeps its own cap. The effective
+     cooldown is whichever is further out.
+
+     Storing one merged `until` was wrong: several tabs share this record, and
+     an unconditional write let a tab holding stale state replace a long server
+     deadline with a short locally-computed one. Every write now merges. */
+  function readBackendCooldownRecord() {
+    try {
+      const raw = localStorage.getItem(BACKEND_COOLDOWN_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const serverUntil = Number(parsed?.serverUntil || 0) || 0;
+      // Records written before the split carried a single `until`; treat it as
+      // a local deadline so an old record can never be mistaken for a server
+      // instruction it never was.
+      const localUntil = Number(parsed?.localUntil || parsed?.until || 0) || 0;
+      const consecutive = Math.max(0, Number(parsed?.consecutive || 0) || 0);
+      if (!serverUntil && !localUntil && !consecutive) return null;
+      return { serverUntil, localUntil, consecutive };
+    } catch {
+      return null;
+    }
+  }
+
+  function writeBackendCooldownRecord(record) {
+    try {
+      if (record) localStorage.setItem(BACKEND_COOLDOWN_KEY, JSON.stringify(record));
+      else localStorage.removeItem(BACKEND_COOLDOWN_KEY);
+    } catch {}
+  }
+
+  function effectiveCooldownUntil(record) {
+    if (!record) return 0;
+    return Math.max(Number(record.serverUntil || 0), Number(record.localUntil || 0));
+  }
+
+  function backendCooldownRemainingMs() {
+    const remaining = effectiveCooldownUntil(readBackendCooldownRecord()) - now();
+    return remaining > 0 ? remaining : 0;
+  }
+
+  /* A valid server deadline is preserved verbatim — no cap. Malformed or
+     already-past values yield 0 so the caller falls back to local backoff. */
+  function parseRetryAfterMs(res) {
+    let header = '';
+    try { header = norm(res?.headers?.get?.('retry-after') || ''); } catch {}
+    if (!header) return 0;
+    if (/^\d+$/.test(header)) return Number(header) * 1000;
+    const at = Date.parse(header);
+    if (!Number.isFinite(at)) return 0;
+    const delta = at - now();
+    return delta > 0 ? delta : 0;
+  }
+
+  /* The escalation count deliberately survives an expired cooldown: only an
+     entitled success clears it. Otherwise a limit that outlasts our wait would
+     drop us back to the shortest delay and we would probe far too eagerly. */
+  function noteBackendRateLimited(res) {
+    const previous = readBackendCooldownRecord();
+    const consecutive = Math.max(1, Number(previous?.consecutive || 0) + 1);
+    const serverWait = parseRetryAfterMs(res);
+
+    let serverUntil = Number(previous?.serverUntil || 0);
+    let localUntil = Number(previous?.localUntil || 0);
+
+    if (serverWait > 0) {
+      // Never pull a server deadline closer than one already recorded.
+      serverUntil = Math.max(serverUntil, now() + serverWait);
+    } else {
+      const step = BACKEND_COOLDOWN_STEPS_MS[Math.min(consecutive - 1, BACKEND_COOLDOWN_STEPS_MS.length - 1)];
+      // Jitter so several tabs on one account do not resume in lockstep.
+      const jittered = Math.round(step * (0.8 + Math.random() * 0.4));
+      const waitMs = Math.max(1000, Math.min(jittered, BACKEND_COOLDOWN_MAX_MS));
+      localUntil = Math.max(localUntil, now() + waitMs);
+    }
+
+    const record = { serverUntil, localUntil, consecutive };
+    writeBackendCooldownRecord(record);
+    return record;
+  }
+
+  /* Entitlement: a success may only clear a cooldown that was already over
+     when its request was issued. A request that left before a limit was
+     recorded proves nothing about that limit — without this rule one tab's
+     in-flight success wiped a server-mandated cooldown for every tab. */
+  function noteBackendSuccess(issuedAt) {
+    const record = readBackendCooldownRecord();
+    if (!record) return;
+    const until = effectiveCooldownUntil(record);
+    if (until && Number(issuedAt || 0) < until) return;
+    writeBackendCooldownRecord(null);
+  }
+
+  function backendRateLimitedResult(extra) {
+    return {
+      ok: false,
+      status: 'rate-limited-cooldown',
+      statusCode: 429,
+      rateLimited: true,
+      retryAfterMs: backendCooldownRemainingMs(),
+      ...(extra || {}),
+    };
+  }
+
+  /* Resolves { rateLimited, res }. A rate-limited outcome never carries a
+     response, because in cooldown no request is issued at all. */
+  function governedFetch(path, init) {
+    if (backendCooldownRemainingMs() > 0) return Promise.resolve({ rateLimited: true, res: null });
+    const run = async () => {
+      if (backendCooldownRemainingMs() > 0) return { rateLimited: true, res: null };
+      const gap = BACKEND_MIN_REQUEST_GAP_MS - (now() - backendLastRequestAt);
+      if (gap > 0) await delay(gap);
+      // The cooldown may have opened while this request waited its turn.
+      if (backendCooldownRemainingMs() > 0) return { rateLimited: true, res: null };
+      backendLastRequestAt = now();
+      const issuedAt = now();
+      const res = await W.fetch(path, init);
+      if (Number(res?.status || 0) === 429) {
+        noteBackendRateLimited(res);
+        return { rateLimited: true, res };
+      }
+      if (res?.ok) noteBackendSuccess(issuedAt);
+      return { rateLimited: false, res };
+    };
+    const task = backendTail.catch(() => null).then(run);
+    backendTail = task.catch(() => null);
+    return task;
+  }
+
+  async function fetchChatGptAccessToken(signal) {
     try {
       if (typeof W.fetch !== 'function') return '';
-      const res = await W.fetch('/api/auth/session', {
+      const outcome = await governedFetch('/api/auth/session', {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
         headers: { accept: 'application/json' },
         signal,
       });
-      if (!res?.ok) return '';
-      const json = await res.json();
+      if (outcome.rateLimited || !outcome.res?.ok) return '';
+      const json = await outcome.res.json();
       return norm(json?.accessToken || json?.access_token || '');
     } catch (err) {
       if (signal?.aborted || err?.name === 'AbortError') throw err;
       return '';
     }
+  }
+
+  /* Dropping the cache is what lets a 401 recover: the ungoverned code got
+     this for free by re-fetching the session every call, so caching without an
+     invalidation path turned a stale token into a dead operation for the whole
+     TTL. */
+  function invalidateAccessToken() {
+    accessTokenCache = null;
+  }
+
+  /* Cached with in-flight dedupe. Every conversation read and patch needed a
+     token, and each one used to re-fetch the session, so the endpoint saw two
+     requests for every one operation. */
+  function readChatGptAccessToken(signal) {
+    const cached = accessTokenCache;
+    if (cached?.value && cached.expiresAt > now()) return Promise.resolve(cached.value);
+    if (cached?.inflight) return cached.inflight;
+    const inflight = fetchChatGptAccessToken(signal).then((value) => {
+      accessTokenCache = value ? { value, expiresAt: now() + ACCESS_TOKEN_TTL_MS, inflight: null } : null;
+      return value;
+    }).catch((err) => {
+      accessTokenCache = null;
+      throw err;
+    });
+    accessTokenCache = { value: '', expiresAt: 0, inflight };
+    return inflight;
   }
 
   function nativeConversationHeaders(path, accessToken) {
@@ -1632,6 +1815,7 @@
 
   async function patchNativeConversationTitle(chatId, title, options) {
     if (typeof W.fetch !== 'function') return { ok: false, status: 'fetch-unavailable' };
+    if (backendCooldownRemainingMs() > 0) return backendRateLimitedResult({ chatId });
     const signal = options?.signal;
     const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
     const accessToken = await readChatGptAccessToken(signal);
@@ -1647,7 +1831,7 @@
         beforePatch: true,
       };
     }
-    const res = await W.fetch(path, {
+    const outcome = await governedFetch(path, {
       method: 'PATCH',
       credentials: 'include',
       cache: 'no-store',
@@ -1655,13 +1839,26 @@
       body: JSON.stringify({ title }),
       signal,
     });
+    if (outcome.rateLimited) return backendRateLimitedResult({ chatId });
+    const res = outcome.res;
     let body = null;
     try { body = await res.clone().json(); } catch {}
     if (!res?.ok) {
+      const code = Number(res?.status || 0) || 0;
+      /* 401 may be a stale token, so it earns one refresh and one retry. 403
+         does not: it means authenticated but not permitted, and a new token
+         cannot change an authorization decision — refreshing would spend a
+         session request for no expected benefit. Nothing here inspects the
+         response body, so the reason is not knowable; this is the bounded
+         choice under that uncertainty. */
+      if (code === 401 && options?.allowAuthRetry !== false) {
+        invalidateAccessToken();
+        return patchNativeConversationTitle(chatId, title, { ...(options || {}), allowAuthRetry: false });
+      }
       return {
         ok: false,
         status: `backend-${res?.status || 'unknown'}`,
-        statusCode: Number(res?.status || 0) || 0,
+        statusCode: code,
         body,
       };
     }
@@ -1671,22 +1868,32 @@
   async function readNativeConversationTitle(chatId, options) {
     if (!isStableChatId(chatId)) return { ok: false, status: 'invalid-chat-id', chatId };
     if (typeof W.fetch !== 'function') return { ok: false, status: 'fetch-unavailable', chatId };
+    if (backendCooldownRemainingMs() > 0) return backendRateLimitedResult({ chatId });
     const signal = options?.signal;
     const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
     try {
       const accessToken = await readChatGptAccessToken(signal);
       if (signal?.aborted) return { ok: false, status: 'aborted', chatId };
-      const res = await W.fetch(path, {
+      const outcome = await governedFetch(path, {
         method: 'GET',
         credentials: 'include',
         cache: 'no-store',
         headers: nativeConversationHeaders(path, accessToken),
         signal,
       });
+      if (outcome.rateLimited) return backendRateLimitedResult({ chatId });
+      const res = outcome.res;
       let body = null;
       try { body = await res.clone().json(); } catch {}
       if (!res?.ok) {
-        return { ok: false, status: `backend-${res?.status || 'unknown'}`, statusCode: Number(res?.status || 0) || 0, chatId };
+        const code = Number(res?.status || 0) || 0;
+        // Exactly one refresh-and-retry, made terminal by the flag rather than
+        // by a counter, so no pair of operations can chain into a loop.
+        if (code === 401 && options?.allowAuthRetry !== false) {
+          invalidateAccessToken();
+          return readNativeConversationTitle(chatId, { ...(options || {}), allowAuthRetry: false });
+        }
+        return { ok: false, status: `backend-${res?.status || 'unknown'}`, statusCode: code, chatId };
       }
       const title = norm(body?.title || body?.conversation?.title || '');
       if (!title) return { ok: false, status: 'native-title-unavailable', chatId };
@@ -1787,9 +1994,21 @@
     });
   }
 
+  function isRateLimitedFailure(result) {
+    return result?.rateLimited === true
+      || result?.status === 'rate-limited-cooldown'
+      || Number(result?.statusCode || 0) === 429;
+  }
+
+  /* A 429 is deliberately not transient. Treating it as one — the same bucket
+     as a dropped connection — is what let a single rate limit escalate: each
+     layer retried within a few hundred milliseconds against a backend that had
+     just asked us to stop. Rate limiting is owned by the governor's persisted
+     cooldown instead, so callers must stop rather than retry. */
   function isTransientNativeFailure(result) {
+    if (isRateLimitedFailure(result)) return false;
     const code = Number(result?.statusCode || 0);
-    return result?.status === 'network-error' || code === 429 || code >= 500;
+    return result?.status === 'network-error' || code >= 500;
   }
 
   function delay(ms) {

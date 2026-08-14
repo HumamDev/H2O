@@ -714,8 +714,33 @@
     }, 80);
   }
 
+  /* Auto Emoji must stop driving renames while the backend is rate limiting
+     the account. 9B0a already refuses those requests without touching the
+     network, but this pump re-enters roughly every 120ms, so without a local
+     pause the runtime spins against a closed door. An explicit user action is
+     still allowed through: it costs no request during cooldown and returns an
+     honest rate-limited status the caller can surface. */
+  let backendPauseUntil = 0;
+
+  function isBackendRateLimited(result){
+    return result?.rateLimited === true
+      || result?.status === 'rate-limited-cooldown'
+      || Number(result?.statusCode || 0) === 429;
+  }
+
+  function noteBackendPause(result){
+    const retryAfterMs = Math.max(0, Number(result?.retryAfterMs || 0) || 0);
+    const until = Date.now() + (retryAfterMs || 60000);
+    if (until > backendPauseUntil) backendPauseUntil = until;
+  }
+
+  function backendPauseActive(){
+    return backendPauseUntil > Date.now();
+  }
+
   function applyNativeAutoEmoji(chatId, plainTitle, emoji, options = {}){
     if (!chatId || !plainTitle || !emoji) return false;
+    if (backendPauseActive() && options.userInitiated !== true) return false;
     if (runtimeNativeRenamePending[chatId] && options.userInitiated !== true) return true;
     if (options.userInitiated === true) runtimeNativeRenameAttempts[chatId] = 0;
     if (options.userInitiated !== true && (runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
@@ -738,6 +763,14 @@
     })).then((result) => {
       if (result?.ok) {
         finishAutoEmoji(chatId, emoji, source, reason, priority, confidence);
+        return;
+      }
+      /* A rate limit is the backend asking us to stop, so it must not spend
+         this chat's rename budget: the attempt never reached the server, and
+         counting it would abandon the chat for the rest of the session over a
+         condition that clears on its own. Pause the pump instead. */
+      if (isBackendRateLimited(result)) {
+        noteBackendPause(result);
         return;
       }
       runtimeNativeRenameAttempts[chatId] = (runtimeNativeRenameAttempts[chatId] || 0) + 1;
