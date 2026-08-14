@@ -3173,6 +3173,158 @@ function main() {
       'Export, beginImport and Apply remain the three portability boundaries');
   });
 
+  /* ── Route suppression: chat-only controls must never mount, remount or
+   * remain visible off an active chat route, while product-wide Prompt Manager
+   * services stay unconditional. ─────────────────────────────────────────── */
+
+  const rsSlice = (start, end) => {
+    const a = CODE.indexOf(start);
+    assert.ok(a >= 0, `missing anchor: ${start}`);
+    const b = CODE.indexOf(end, a + start.length);
+    assert.ok(b > a, `missing terminator: ${end}`);
+    return CODE.slice(a, b);
+  };
+
+  check('3A-R1: route eligibility is pathname-derived and its pattern is pinned', () => {
+    const CHAT_RE = /^(?:\/c\/|\/g\/[^/]+\/c\/)/i;
+    assert.ok(CODE.includes(`CHAT_PATH_RE: ${CHAT_RE.toString()},`),
+      'VIEW_PM.CHAT_PATH_RE drifted from the pinned pattern');
+    assert.match(CODE, /const VIEW_PM_isChatPath = \(\) => VIEW_PM\.CHAT_PATH_RE\.test\(String\(W\.location\?\.pathname/,
+      'route eligibility must be derived from live location.pathname');
+    for (const p of ['/c/abc', '/C/abc', '/g/g-1/c/abc']) {
+      assert.ok(CHAT_RE.test(p), `must be eligible: ${p}`);
+    }
+    for (const p of ['/g/g-1/project', '/g/g-1/project/x', '/', '/library', '/gpts', '/codex']) {
+      assert.ok(!CHAT_RE.test(p), `must be ineligible: ${p}`);
+    }
+  });
+
+  check('3A-R2: the mount boundary fails closed on route before it reads the form', () => {
+    const head = rsSlice('ensureUI() {', 'const existing = UI_PM.getRoot();');
+    const guard = head.indexOf('if (!VIEW_PM_isChatPath()) return null;');
+    const form = head.indexOf('const form = DOM_getForm();');
+    assert.ok(guard >= 0, 'ensureUI does not refuse ineligible routes');
+    assert.ok(form >= 0, 'ensureUI no longer reads the form');
+    assert.ok(guard < form,
+      'the route guard must precede the form read — composer presence alone must never authorise a mount');
+  });
+
+  check('3A-R3: ensureUI remains the single creator of the owned root', () => {
+    assert.equal((CODE.match(/setAttribute\(ATTR_CGXUI, UI_PM_WRAP\)/g) || []).length, 1,
+      'more than one site creates the Prompt Manager wrap');
+    assert.equal((CODE.match(/UI_PM\.ensureUI\(\)/g) || []).length, 1,
+      'ensureUI gained a second call site; the mount boundary must stay single');
+  });
+
+  check('3A-R4: product-wide boot initialization is NOT route-gated', () => {
+    const pre = rsSlice('function CORE_PM_boot() {', 'const root = UI_PM.ensureUI();');
+    for (const marker of [
+      'ENGINE_PM.migrateKeysOnce()', 'ENGINE_PM.migrateDraftsFromHistoryOnce()',
+      'ENGINE_PM.loadPrompts()', 'ENGINE_PM.loadQuick()', 'UI_ensureStyle()',
+    ]) assert.ok(pre.includes(marker), `core initialization lost: ${marker}`);
+    assert.ok(!/VIEW_PM_isChatPath|VIEW_PM_shouldShow/.test(pre),
+      'boot must not refuse core/background initialization on non-chat routes');
+  });
+
+  check('3A-R5: an ineligible route is a refusal, not a boot failure', () => {
+    const branch = rsSlice('const root = UI_PM.ensureUI();', 'PM_DOCK_installBridge();');
+    const ineligible = branch.indexOf('if (!VIEW_PM_isChatPath()) {');
+    const unlatch = branch.indexOf('STATE_PM.booted = false;');
+    assert.ok(ineligible >= 0, 'boot does not distinguish an ineligible route from a failed mount');
+    assert.ok(unlatch > ineligible,
+      'the ineligible branch must be handled before the failure branch un-latches booted');
+    const refusal = branch.slice(ineligible, unlatch);
+    assert.ok(refusal.includes('CORE_PM_finishBoot();') && refusal.includes('return;'),
+      'the ineligible branch must still run the non-UI tail, then return');
+    assert.ok(!/PM_FORCE_RECOVER = true|CORE_PM_scheduleBootRetry/.test(refusal),
+      'an ineligible route must not arm recovery — that would re-run migrations every retry');
+  });
+
+  check('3A-R6: the non-UI tail is shared by both boot paths', () => {
+    const tail = rsSlice('function CORE_PM_finishBoot() {', 'function CORE_PM_invalidateRoute');
+    for (const marker of [
+      'TIME_PM.ensureHistoryCapture();', 'TIME_PM.attachDraftCaptureOnClose();',
+      'TIME_PM.attachPastedCapture();', 'PM_READY_EMITTED = true;',
+      'UTIL_event.emit(EV_PM_READY_V1, detail)', 'UTIL_event.emit(EV_PM_READY_LEGACY_V1, detail)',
+    ]) assert.ok(tail.includes(marker), `non-UI tail lost: ${marker}`);
+    assert.ok(!/STATE_PM\.ui\.root|UI_PM\.getRoot\(\)/.test(tail),
+      'the non-UI tail must not depend on the root');
+    assert.equal((CODE.match(/CORE_PM_finishBoot\(\);/g) || []).length, 2,
+      'the tail must run on exactly the mounted path and the route-withheld path');
+    assert.equal((CODE.match(/function CORE_PM_finishBoot\(\)/g) || []).length, 1);
+  });
+
+  check('3A-R7: remount/self-heal recovery is route-gated', () => {
+    const heal = rsSlice('function CORE_PM_scheduleSelfHeal', 'function CORE_PM_installSelfHealObserver');
+    assert.match(heal, /if \(!hasRoot && VIEW_PM_isChatPath\(\)\) \{/,
+      'the no-root recovery branch must be route-gated or it loops forever off a chat route');
+    assert.ok(heal.includes('CORE_PM_dispose();'), 'recovery still disposes before re-boot');
+  });
+
+  check('3A-R8: invalidation tears down synchronously, in the only correct order', () => {
+    const inv = rsSlice('function CORE_PM_invalidateRoute() {', 'function PM_ROUTE_installInvalidation');
+    const dock = inv.indexOf('PM_DOCK_sync(root);');
+    const place = inv.indexOf('UI_PM_placeFloatingRoot(root);');
+    assert.ok(dock >= 0 && place >= 0, 'invalidation must use the existing hide-only paths');
+    assert.ok(dock < place,
+      'PM_DOCK_sync must run first: it clears dockMode, which UI_PM_scheduleFloatingLayout early-returns on');
+    assert.ok(!inv.includes('UI_PM_scheduleFloatingLayout'),
+      'teardown must not defer through requestAnimationFrame — that reopens the frame it exists to close');
+    assert.ok(!inv.includes('CORE_PM_dispose'),
+      'teardown must not dispose; Project->chat must remount without a full re-boot');
+    assert.ok(!/persist|commit|localStorage|setItem|removeItem/i.test(inv),
+      'route invalidation must never touch storage');
+    assert.ok(!/setInterval|MutationObserver|requestAnimationFrame/.test(inv),
+      'no new timers, observers or frame work in the teardown path');
+  });
+
+  check('3A-R9: the route listener is document-scoped, not module-scoped', () => {
+    const ins = rsSlice('function PM_ROUTE_installInvalidation() {', 'function CORE_PM_boot()');
+    assert.match(ins, /if \(W\.__H2O_PM_ROUTE_WIRED__\) return;\s*\n\s*W\.__H2O_PM_ROUTE_WIRED__ = true;/,
+      'idempotency must use a window-owned sentinel; a module-local flag resets on re-evaluation');
+    assert.ok(!ins.includes('CLEAN_addFn'),
+      'the route listener must outlive CORE_PM_dispose(), like the self-heal observer');
+    assert.match(ins, /MOD_OBJ\.core\?\.invalidateRoute\?\.\(\)/,
+      'the handler must dispatch through the window-owned module object, never a captured closure');
+    assert.ok(!/CORE_PM_invalidateRoute\(\)/.test(ins),
+      'binding the local function directly would strand a stale scope after re-evaluation');
+  });
+
+  check('3A-R10: ho:navigate is the authority; the rest are supplemental', () => {
+    const ins = rsSlice('function PM_ROUTE_installInvalidation() {', 'function CORE_PM_boot()');
+    assert.ok(ins.includes(`W.addEventListener('ho:navigate', onRoute`),
+      'the synchronous pushState/replaceState authority must be bound');
+    for (const ev of ['evt:h2o:route:changed', 'h2o:route:changed', 'popstate', 'pageshow']) {
+      assert.ok(ins.includes(`W.addEventListener('${ev}', onRoute`), `supplemental signal lost: ${ev}`);
+    }
+    assert.match(ins, /typeof onChange === 'function'/,
+      'H2O.surface must be optional — it is only pushState-aware via optional MiniMap');
+    assert.ok(!/setInterval|setTimeout/.test(ins), 'no polling for a navigation signal');
+  });
+
+  check('3A-R11: lifecycle is published before the permanent listener is installed', () => {
+    const boot = rsSlice('MOD_OBJ.core = MOD_OBJ.core ||', 'MOD_OBJ.api.open = API_PM_open;');
+    const publish = boot.indexOf('MOD_OBJ.core.invalidateRoute = CORE_PM_invalidateRoute;');
+    const install = boot.indexOf('PM_ROUTE_installInvalidation();');
+    assert.ok(publish >= 0 && install >= 0, 'bootstrap must publish and install');
+    assert.ok(publish < install, 'the lazy MOD_OBJ.core lookup must never be able to miss');
+    assert.ok(boot.indexOf('CORE_PM_installSelfHealObserver();') < install + 1);
+    assert.equal((CODE.match(/PM_ROUTE_installInvalidation\(\);/g) || []).length, 1);
+  });
+
+  check('3A-R12: visibility policy is unchanged and no router was added', () => {
+    assert.equal((CODE.match(/VIEW_PM_shouldShow/g) || []).length, 3,
+      'VIEW_PM_shouldShow must remain its definition plus exactly its two existing hide-only call sites');
+    for (const host of ['PM_DOCK_sync', 'UI_PM_placeFloatingRoot']) {
+      assert.ok(CODE.includes(host), `hide-only call site lost: ${host}`);
+    }
+    assert.ok(!/history\.(pushState|replaceState)\s*=/.test(CODE),
+      'Prompt Manager must never wrap history; ho:navigate is the existing authority');
+    assert.ok(!/new MutationObserver/.test(
+      rsSlice('function CORE_PM_finishBoot() {', 'function CORE_PM_boot()')),
+      'no new observer was introduced by the suppression work');
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {

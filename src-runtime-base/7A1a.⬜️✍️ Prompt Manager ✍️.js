@@ -5098,6 +5098,13 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     ensureUI() {
       return SAFE_try('UI_PM.ensureUI', () => {
         try { D.querySelector(LEGACY_XPCH_PROMPT_EXPORT_SEL)?.remove?.(); } catch {}
+        /* Route eligibility is the mount boundary, and it is checked before the
+         * form. The composer also exists on `/g/<id>/project`, so form presence
+         * alone must never authorise a mount — that is exactly how the chat-only
+         * controls used to leak onto the Project surface. Callers must read a
+         * null here together with VIEW_PM_isChatPath(): off a chat route this is
+         * a deliberate refusal, not a mount failure to be retried. */
+        if (!VIEW_PM_isChatPath()) return null;
         const form = DOM_getForm();
         if (!form) return null;
 
@@ -6004,7 +6011,11 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         return;
       }
 
-      if (!hasRoot) {
+      /* Remount recovery is route-gated for the same reason the mount is. A
+       * booted Prompt Manager legitimately has no root while off a chat route,
+       * so without VIEW_PM_isChatPath() here every Project-surface DOM mutation
+       * would drive an endless dispose -> boot -> no-root loop. */
+      if (!hasRoot && VIEW_PM_isChatPath()) {
         PM_FORCE_RECOVER = true;
         CORE_PM_dispose();
         STATE_PM.booted = false;
@@ -6034,6 +6045,92 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     else D.addEventListener('DOMContentLoaded', start, { once: true });
 
     W.addEventListener('pageshow', () => { CORE_PM_scheduleSelfHeal(40); }, { passive: true });
+  }
+
+  /* ── Non-UI boot tail ──────────────────────────────────────────────────────
+   * Composer capture wiring plus the one-shot ready emission. None of it reads
+   * or needs the Prompt Manager root, and none of it is chat-only: the capture
+   * hooks bind to the host composer (which exists on Project surfaces too, and
+   * submitting there produces a real prompt), while the ready payload is how the
+   * Control Hub tab obtains the public API. Both boot paths therefore run this —
+   * the mounted one and the route-withheld one — so that suppressing the chat
+   * controls never degrades product-wide Prompt Manager services. */
+  function CORE_PM_finishBoot() {
+    TIME_PM.ensureHistoryCapture();
+    TIME_PM.attachDraftCaptureOnClose();
+    TIME_PM.attachPastedCapture();
+
+    if (!PM_READY_EMITTED) {
+      PM_READY_EMITTED = true;
+      const detail = { tok: TOK, pid: PID, skid: SkID, v: MOD_VERSION, api: MOD_OBJ.api };
+      UTIL_event.emit(EV_PM_READY_V1, detail);
+      UTIL_event.emit(EV_PM_READY_LEGACY_V1, detail);
+    }
+    PM_FORCE_RECOVER = false;
+    CORE_PM_scheduleSelfHeal(80);
+  }
+
+  /* ── Route invalidation ────────────────────────────────────────────────────
+   * Runs synchronously inside the patched history.pushState/replaceState, so a
+   * mounted root is hidden, closed and made inert before the SPA router returns
+   * — no frame in which the chat-only controls survive on a Project surface.
+   * Both calls are existing hide-only paths and neither touches storage.
+   * Ordering is load-bearing: PM_DOCK_sync must run first because it clears
+   * dockMode via PM_DOCK_disable, and UI_PM_scheduleFloatingLayout early-returns
+   * while dockMode is set. UI_PM_placeFloatingRoot is then called directly
+   * rather than through the scheduler, whose requestAnimationFrame would defer
+   * the teardown past the very frame this exists to close. */
+  function CORE_PM_invalidateRoute() {
+    SAFE_try('CORE_PM.invalidateRoute', () => {
+      if (VIEW_PM_isChatPath()) {
+        /* Entering a chat route: hand remounting to the existing self-heal path
+         * rather than duplicating mount logic on the navigation edge. */
+        CORE_PM_scheduleSelfHeal(0);
+        return;
+      }
+      const root = STATE_PM.ui.root || UI_PM.getRoot();
+      if (!root) return;
+      PM_DOCK_sync(root);
+      UI_PM_placeFloatingRoot(root);
+    }, null);
+  }
+
+  /* Installed once per document, not once per module evaluation. 7A1a carries no
+   * re-entry guard and already reuses its window-owned MOD_OBJ across
+   * evaluations, and the loader ships H2O.loader.guard() precisely because a
+   * script body can run twice; a module-local flag would therefore reset and
+   * bind a second listener. The sentinel follows the established convention
+   * (W.__H2O_MM_HISTORY_PATCHED__, window.__h2o_interface_history_hooked).
+   * The handler dispatches through MOD_OBJ.core — the same window-owned object
+   * the newest evaluation rebinds — so the surviving listener can never hold a
+   * stale closure over a superseded module scope.
+   *
+   * These listeners are deliberately NOT registered in CLEAN_: they must outlive
+   * CORE_PM_dispose(), exactly like the module-scope self-heal observer. The
+   * handler is a no-op when no root exists, so surviving teardown is harmless. */
+  function PM_ROUTE_installInvalidation() {
+    if (W.__H2O_PM_ROUTE_WIRED__) return;
+    W.__H2O_PM_ROUTE_WIRED__ = true;
+
+    const onRoute = () => {
+      try { MOD_OBJ.core?.invalidateRoute?.(); } catch {}
+    };
+
+    /* Authority: 9A1a Interface Kernel wraps pushState/replaceState and fires
+     * this synchronously after the real call, so location.pathname is already
+     * the new path. It installs unconditionally at module scope and is
+     * independent of MiniMap. The rest are supplemental and must never be
+     * required — H2O.surface only learns about pushState via MiniMap's optional
+     * route:changed, which is why it cannot be the authority. */
+    W.addEventListener('ho:navigate', onRoute, { passive: true });
+    W.addEventListener('evt:h2o:route:changed', onRoute, { passive: true });
+    W.addEventListener('h2o:route:changed', onRoute, { passive: true });
+    W.addEventListener('popstate', onRoute, { passive: true });
+    W.addEventListener('pageshow', onRoute, { passive: true });
+    SAFE_try('PM_ROUTE.surfaceSubscribe', () => {
+      const onChange = W.H2O?.surface?.onChange;
+      if (typeof onChange === 'function') onChange(onRoute);
+    }, null);
   }
 
   function CORE_PM_boot() {
@@ -6070,6 +6167,18 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       const root = UI_PM.ensureUI();
       STATE_PM.ui.root = root;
       if (!root) {
+        /* Two different null roots, and conflating them is a defect. Off a chat
+         * route the refusal is deliberate and permanent until navigation, so the
+         * boot must stay latched and must NOT arm a recovery retry — un-latching
+         * here would re-run the migrations and the data load every 260 ms for as
+         * long as the user stays on a Project surface. The non-UI tail still runs
+         * so composer capture stays bound and ready is still emitted; the route
+         * listener remounts when a chat route is entered. */
+        if (!VIEW_PM_isChatPath()) {
+          UTIL_diagStep(`[BOOT][${MODTAG}] core ready; UI withheld (non-chat route)`);
+          CORE_PM_finishBoot();
+          return;
+        }
         UTIL_diagStep(`[BOOT][${MODTAG}] no root (form missing?)`);
         STATE_PM.booted = false;
         PM_FORCE_RECOVER = true;
@@ -6913,19 +7022,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         UI_PM_scheduleFloatingLayout(root);
       }
 
-      // capture wiring
-      TIME_PM.ensureHistoryCapture();
-      TIME_PM.attachDraftCaptureOnClose();
-      TIME_PM.attachPastedCapture();
-
-      if (!PM_READY_EMITTED) {
-        PM_READY_EMITTED = true;
-        const detail = { tok: TOK, pid: PID, skid: SkID, v: MOD_VERSION, api: MOD_OBJ.api };
-        UTIL_event.emit(EV_PM_READY_V1, detail);
-        UTIL_event.emit(EV_PM_READY_LEGACY_V1, detail);
-      }
-      PM_FORCE_RECOVER = false;
-      CORE_PM_scheduleSelfHeal(80);
+      CORE_PM_finishBoot();
       UTIL_diagStep(`[BOOT][${MODTAG}] ready`);
     }, null);
   }
@@ -7006,14 +7103,20 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
   /* ───────────────────────────── ⚫️ BOOTSTRAP (no top-level DOM mutation beyond calling boot) ───────────────────────────── */
   // Contract allows boot call here because side-effects are inside CORE_PM_boot().
-  CORE_PM_installSelfHealObserver();
-  if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', CORE_PM_boot, { once: true });
-  else CORE_PM_boot();
-
-  // Optional: expose lifecycle on vault for internal debugging (not a promised public API)
+  //
+  // Lifecycle is published on the window-owned module object BEFORE the permanent
+  // route listener is installed, so that listener's lazy MOD_OBJ.core lookup can
+  // never miss — and so a later re-evaluation of this file rebinds these entries
+  // to its own scope while the already-installed listener keeps working.
   MOD_OBJ.core = MOD_OBJ.core || {};
   MOD_OBJ.core.boot = CORE_PM_boot;
   MOD_OBJ.core.dispose = CORE_PM_dispose;
+  MOD_OBJ.core.invalidateRoute = CORE_PM_invalidateRoute;
+
+  CORE_PM_installSelfHealObserver();
+  PM_ROUTE_installInvalidation();
+  if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', CORE_PM_boot, { once: true });
+  else CORE_PM_boot();
 
   /* [API][PUBLIC] External API (for Control Hub + other modules) */
   function API_PM_findRoot() {
