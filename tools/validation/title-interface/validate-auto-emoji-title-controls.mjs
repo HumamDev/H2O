@@ -319,7 +319,7 @@ assert.match(source.auto, /function scheduleSidebarBadgeScan\(\)\{[\s\S]*if \(si
   'the initial sidebar scan is coalesced through one guarded animation frame');
 assert.match(source.auto, /const signature = sidebarBadgeScanState\(\);\s*if \(signature === sidebarBadgeScanSignature\) return;/u,
   'a settled sidebar stops re-scanning, so the scan cannot become a per-frame loop');
-assert.match(source.auto, /scheduleSidebarMenuAugmentation\(\);[\s\S]{0,320}scheduleSidebarBadgeScan\(\);\s*clearTimeout\(t\);/u,
+assert.match(source.auto, /scheduleSidebarMenuAugmentation\(\);[\s\S]{0,320}scheduleSidebarBadgeScan\(\);[\s\S]{0,320}clearTimeout\(t\);/u,
   'the sidebar scan is queued off the debounce that unrelated mutations keep resetting');
 assert.match(source.auto, /t = setTimeout\(\(\) => \{\s*maybeAutoEmojiRename\(\);\s*\}, 110\);/u,
   'automatic emoji assignment still waits behind the title-stability debounce');
@@ -327,6 +327,48 @@ assert.equal((source.auto.match(/scheduleSidebarBadgeScan\(\)/gu) || []).length,
   'exactly one definition and one call site exist, so no duplicate scan path is installed');
 assert.doesNotMatch(source.auto, /setInterval\(/u,
   'the lifecycle uses observers and coalesced frames, never polling');
+
+/* Project cards: the emoji is only clickable because it is an owned badge, so
+ * decoration must not wait behind the auto-assignment debounce. These pin the
+ * same starvation-resistant shape the sidebar already uses. */
+assert.match(source.auto, /function scheduleProjectBadgeScan\(\)\{[\s\S]*if \(projectBadgeScanRaf\) return;[\s\S]*requestAnimationFrame\(/u,
+  'project decoration is coalesced through one guarded animation frame');
+assert.match(source.auto, /const signature = projectBadgeScanState\(\);\s*if \(signature === projectBadgeScanSignature\) return;/u,
+  'a settled project list stops re-scanning, so decoration cannot churn per frame');
+assert.match(source.auto, /scheduleSidebarBadgeScan\(\);[\s\S]{0,320}scheduleProjectBadgeScan\(\);\s*clearTimeout\(t\);/u,
+  'the project scan is queued off the resettable debounce, beside the sidebar scan');
+assert.equal((source.auto.match(/scheduleProjectBadgeScan\(\)/gu) || []).length, 2,
+  'exactly one project scan definition and one call site exist');
+assert.equal((source.auto.match(/requestAnimationFrame\(/gu) || []).length, 3,
+  'three coalesced frame requests exist: menu augmentation, sidebar scan, project scan');
+assert.match(extractFunction(source.auto, 'projectBadgeScanState'),
+  /location\.pathname/u,
+  'the project signature includes the route so Project A -> B -> A re-decorates');
+assert.match(extractFunction(source.auto, 'projectBadgeScanState'),
+  /data-ho-emoji-ctx="proj"/u,
+  'the project signature observes the owned badge that makes the emoji clickable');
+assert.match(extractFunction(source.auto, 'ensureVisibleProjectListBadges'),
+  /findProjectListAnchors\(\)[\s\S]*ensureBadgeForProjectListEntry\(/u,
+  'the project scan reuses the canonical project decoration entry point');
+assert.match(extractFunction(source.auto, 'isProjectListSurface'),
+  /!isInChatView\(\) && isProjectsAreaPage\(\)/u,
+  'project decoration keeps the established project-list surface gate');
+assert.match(extractFunction(source.auto, 'ensureBadgeForProjectListEntry'), /keepOnlyOneBadgeAny\(anchor\)/u,
+  'project decoration still collapses to exactly one badge per card');
+assert.match(source.auto, /\.ho-emoji-badge\[data-ho-emoji-ctx="proj"\]/u,
+  'the document-level capture handlers remain the project interaction authority');
+assert.equal((source.auto.match(/__HO_PROJ_EMOJI_CLICK_BOUND/gu) || []).length, 2,
+  'project click binding stays installed exactly once');
+assert.doesNotMatch(extractFunction(source.auto, 'scheduleProjectBadgeScan'), /addEventListener|MutationObserver/u,
+  'the project scan installs no listener or observer of its own');
+
+// Phase boundary: Issue 1 only.
+assert.equal((source.auto.match(/new MutationObserver\(/gu) || []).length, 1,
+  'still exactly one observer authority after adding the project scan');
+assert.match(source.auto, /function takeLeadingEmojiSlot\(value\)\{/u,
+  'Issue 2 parser unification has not started: 9D1a still carries its existing parser');
+assert.ok((source.auto.match(/stripEdgeEmoji\(/gu) || []).length > 1,
+  'Issue 2 parser migration is deliberately not performed in this phase');
 
 const pinnedSandbox = { String };
 pinnedSandbox.globalThis = pinnedSandbox;

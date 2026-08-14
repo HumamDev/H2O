@@ -2877,6 +2877,55 @@ function scheduleSidebarBadgeScan(){
   });
 }
 
+/* Project cards need the same treatment for a sharper reason than the sidebar.
+   The project emoji is only clickable because it is an owned badge: the
+   document-level capture handlers match .ho-emoji-badge[data-ho-emoji-ctx="proj"]
+   and nothing else. Until a card is decorated its leading emoji is still raw
+   title text inside the card anchor, so a click there navigates into the chat
+   instead of opening the palette. Decoration therefore cannot wait behind the
+   110ms auto-assignment debounce, which project-page churn keeps resetting —
+   that gap is exactly the intermittency users see. Presentation runs here;
+   maybeAutoEmojiRename keeps owning auto-assignment semantics. */
+let projectBadgeScanRaf = 0;
+let projectBadgeScanSignature = '';
+
+function isProjectListSurface(){
+  return !isInChatView() && isProjectsAreaPage();
+}
+
+function ensureVisibleProjectListBadges(){
+  ensureStyle();
+  findProjectListAnchors().forEach((anchor) => ensureBadgeForProjectListEntry(anchor));
+}
+
+function projectBadgeScanState(){
+  if (!isProjectListSurface()) return 'off';
+  const anchors = findProjectListAnchors();
+  const rows = anchors.map((anchor) => {
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    const badge = anchor.querySelector('.ho-emoji-badge[data-ho-emoji-ctx="proj"]');
+    const badgeState = badge
+      ? (badge.classList.contains('ho-emoji-empty') ? 'empty' : `real:${norm(badge.textContent)}`)
+      : 'none';
+    return `${chatId}:${badgeState}`;
+  });
+  // The pathname is part of the signature so Project A -> B -> A re-decorates
+  // instead of resting on the previous project's settled state.
+  return `${location.pathname}:${anchors.length}:${rows.join('|')}`;
+}
+
+function scheduleProjectBadgeScan(){
+  if (projectBadgeScanRaf) return;
+  projectBadgeScanRaf = requestAnimationFrame(() => {
+    projectBadgeScanRaf = 0;
+    const signature = projectBadgeScanState();
+    if (signature === projectBadgeScanSignature) return;
+    projectBadgeScanSignature = signature;
+    if (!isProjectListSurface()) return;
+    ensureVisibleProjectListBadges();
+  });
+}
+
 
 
 
@@ -2962,6 +3011,9 @@ function maybeAutoEmojiRename(){
     // off the debounce too. Automatic emoji assignment stays behind the
     // debounce, where waiting for a stable title is the point.
     scheduleSidebarBadgeScan();
+    // Project cards share the same starvation problem, and for them the badge
+    // is what makes the emoji clickable at all, so it must not wait either.
+    scheduleProjectBadgeScan();
     clearTimeout(t);
     t = setTimeout(() => {
       maybeAutoEmojiRename();
