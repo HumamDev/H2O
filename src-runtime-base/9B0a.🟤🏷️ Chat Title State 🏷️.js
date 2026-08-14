@@ -2882,6 +2882,11 @@
     refresh,
     markDocumentTitleWrite,
     selfCheck,
+    // Canonical one-leading-slot parser, public because presentation surfaces
+    // must reach the same verdict as persistence. A second implementation
+    // elsewhere would drift, and the whole point of the slot rule is that every
+    // surface agrees on which grapheme is the emoji. Read-only.
+    takeLeadingEmojiSlot,
     _isOwnDocumentTitle: isOwnDocumentTitle,
     _eventPayload: () => payloadFor(state, 'debug'),
     debug: {

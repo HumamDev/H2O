@@ -628,29 +628,52 @@
 
   const isEmojiCluster = (cluster) => /[\uFE0F\u200D]|\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(cluster || '');
 
+  /* One leading grapheme is the emoji slot; everything after it is the user's
+     title, including a second or trailing emoji. 9B0a owns that rule so
+     persistence and presentation cannot disagree about which grapheme is the
+     slot, and 9D1a consumes that authority instead of carrying a second
+     implementation. The predecessors here inspected and stripped BOTH edges,
+     which silently ate a user's second emoji and could mistake a trailing
+     emoji for the slot; they are gone rather than left available to drift
+     back into a decision path. */
+  function canonicalTitleSlotApi(){
+    const api = window.H2O && window.H2O.ChatTitle;
+    return api && typeof api.takeLeadingEmojiSlot === 'function' ? api : null;
+  }
+
   function takeLeadingEmojiSlot(value){
+    const canonical = canonicalTitleSlotApi();
+    if (canonical){
+      const parsed = canonical.takeLeadingEmojiSlot(value) || {};
+      return {
+        emoji: parsed.emoji || '',
+        remainder: parsed.remainder || '',
+        hasSlot: !!parsed.hasSlot,
+      };
+    }
+    /* Boot-order fallback only, for the window before 9B0a publishes. It must
+       stay an exact mirror of the canonical algorithm — first grapheme only,
+       never both edges — and the validator pins it so it cannot regress. */
     const title = norm(value);
     const parts = graphemes(title);
     const emoji = parts[0] && isEmojiCluster(parts[0]) ? parts[0] : '';
-    return { emoji, remainder: emoji ? norm(parts.slice(1).join('')) : title };
+    return {
+      emoji,
+      remainder: emoji ? norm(parts.slice(1).join('')) : title,
+      hasSlot: !!emoji,
+    };
   }
 
-  function getEdgeEmoji(s){
-    const t = norm(s);
-    if (!t) return '';
-    const g = graphemes(t);
-    const first = g[0] || '';
-    const last  = g[g.length - 1] || '';
-    if (isEmojiCluster(first)) return first;
-    if (isEmojiCluster(last)) return last;
-    return '';
+  // Presentation asks only "is the slot occupied?", never "who owns it?", so a
+  // manually typed, natively renamed, imported or H2O-assigned emoji all behave
+  // identically to the user. Ownership stays internal to 9B0a persistence.
+  function leadingEmojiOf(value){
+    return takeLeadingEmojiSlot(value).emoji;
   }
 
-  function stripEdgeEmoji(s){
-    let g = graphemes(s);
-    while (g.length && isEmojiCluster(g[0])) g.shift();
-    while (g.length && isEmojiCluster(g[g.length-1])) g.pop();
-    return norm(g.join(''));
+  function titleRemainderOf(value){
+    const parsed = takeLeadingEmojiSlot(value);
+    return parsed.remainder || norm(value);
   }
 
   function tokenizeTitle(title){
@@ -2154,15 +2177,15 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     if (inSidebar){
       const entry = findSidebarEntry(chatId) || anchor;
       const raw = getTrueTitle(entry) || norm(anchor.textContent || '');
-      return stripEdgeEmoji(raw) || raw;
+      return titleRemainderOf(raw);
     }
     const leaf = findProjectTitleNode(anchor);
     const raw = norm(leaf?.textContent || getFirstTextFromAnchor(anchor) || anchor.textContent || '');
-    return stripEdgeEmoji(raw) || raw;
+    return titleRemainderOf(raw);
   }
 
   function addSuggestedEmojiFromBadge(chatId, plainTitle, badge){
-    const plain = stripEdgeEmoji(norm(plainTitle || getPlainTitleForChatId(chatId, ''))) || norm(plainTitle || '');
+    const plain = titleRemainderOf(norm(plainTitle || getPlainTitleForChatId(chatId, '')));
     const emoji = pickEmojiForTitle(plain) || DEFAULT_EMOJI;
     runtimePendingEmoji[chatId] = emoji;
     setBadgeDisplay(badge, emoji, badge?.dataset?.hoEmojiCtx || '');
@@ -2440,7 +2463,7 @@ function getPlainTitleForChatId(chatId, fallbackPlain){
   const entry = findSidebarEntry(chatId);
   if (entry){
     const t = getTrueTitle(entry);
-    const plain = stripEdgeEmoji(t) || t;
+    const plain = titleRemainderOf(t);
     return plain || fallbackPlain;
   }
   return fallbackPlain;
@@ -2463,7 +2486,7 @@ function openPickerForAnchor(anchor, ev){
 
   // title source: sidebar true title if possible, else first text node from this row
   const rawLocal = getFirstTextFromAnchor(anchor) || norm(anchor.textContent || '');
-  const localPlain = stripEdgeEmoji(rawLocal) || rawLocal;
+  const localPlain = titleRemainderOf(rawLocal);
   const plainTitle = getPlainTitleForChatId(chatId, localPlain);
 
   const r = badge.getBoundingClientRect();
@@ -2566,7 +2589,7 @@ function bindMiddleOpenOnce(){
     const inSidebar = !!a.closest('aside, nav') && !a.closest('main, section');
     const leaf = inSidebar ? findLeafTitleNode(a) : findProjectTitleNode(a);
     const raw = norm(leaf?.textContent || a.textContent || '');
-    const plainTitle = stripEdgeEmoji(raw) || raw;
+    const plainTitle = titleRemainderOf(raw);
 
     // use an existing badge (or create it minimally)
     let badgeEl = a.querySelector('.ho-emoji-badge');
@@ -2680,14 +2703,16 @@ function ensureBadgeForProjectListEntry(anchor){
   const trueTitle = norm(leaf.textContent || '');
   if (!trueTitle) return;
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
-    setSavedEmoji(chatId, existingEdge);
+  // Occupied slot, whoever authored it: palette, Auto Emoji, a native rename,
+  // manual typing or a title that predates H2O all land here identically.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
+    setSavedEmoji(chatId, existingLeadingEmoji);
     setDone(chatId);
   }
 
   const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-  const badgeEmoji = existingEdge || saved || '';
+  const badgeEmoji = existingLeadingEmoji || saved || '';
 
   // 4) Create/move badge so it lives INSIDE titleline, before the title leaf
   let badge = anchor.querySelector('.ho-emoji-badge');
@@ -2751,14 +2776,16 @@ function ensureBadgeForChat(chatId){
 
   const leaf = findLeafTitleNode(entry);
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
-    setSavedEmoji(chatId, existingEdge);
+  // Occupied slot, whoever authored it: palette, Auto Emoji, a native rename,
+  // manual typing or a title that predates H2O all land here identically.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
+    setSavedEmoji(chatId, existingLeadingEmoji);
     setDone(chatId);
   }
 
   const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-  const badgeEmoji = existingEdge || saved || '';
+  const badgeEmoji = existingLeadingEmoji || saved || '';
 
   // One badge only (remove duplicates created by rerenders)
   keepOnlyOneBadgeAny(entry, leaf);
@@ -2953,13 +2980,16 @@ function maybeAutoEmojiRename(){
   const trueTitle = getTrueTitle(entry);
   if (!trueTitle) return;
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
+  // Auto Emoji abstains whenever the slot is already occupied, regardless of
+  // who put the emoji there. A trailing emoji is title content, not a slot,
+  // so it no longer suppresses assignment the way edge parsing made it.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
     setDone(chatId);
     return;
   }
 
-  const plain = stripEdgeEmoji(trueTitle);
+  const plain = takeLeadingEmojiSlot(trueTitle).remainder;
   if (!plain || plain.length < MIN_TITLE_LENGTH) return;
 
   const state = chatTitleApi()?.getState?.(chatId) || {};

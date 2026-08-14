@@ -362,13 +362,9 @@ assert.equal((source.auto.match(/__HO_PROJ_EMOJI_CLICK_BOUND/gu) || []).length, 
 assert.doesNotMatch(extractFunction(source.auto, 'scheduleProjectBadgeScan'), /addEventListener|MutationObserver/u,
   'the project scan installs no listener or observer of its own');
 
-// Phase boundary: Issue 1 only.
+// Phase boundary: Issues 1 and 2 are done; Issue 3 has not started.
 assert.equal((source.auto.match(/new MutationObserver\(/gu) || []).length, 1,
   'still exactly one observer authority after adding the project scan');
-assert.match(source.auto, /function takeLeadingEmojiSlot\(value\)\{/u,
-  'Issue 2 parser unification has not started: 9D1a still carries its existing parser');
-assert.ok((source.auto.match(/stripEdgeEmoji\(/gu) || []).length > 1,
-  'Issue 2 parser migration is deliberately not performed in this phase');
 
 const pinnedSandbox = { String };
 pinnedSandbox.globalThis = pinnedSandbox;
@@ -448,5 +444,101 @@ assert.doesNotMatch(extractFunction(source.auto, 'activatePinnedNativePlaceholde
 assert.match(extractFunction(source.auto, 'clearPinnedEmojiSlotPresentation'),
   /removeAttribute\('data-ho-pinned-native-chat-id'\)[\s\S]*Set emoji for chat/u,
   'reclassified rows cannot retain a stale pinned chat identity or owned title');
+
+/* One leading grapheme is the emoji slot; everything after it is the user's
+ * title. These fixtures run the REAL canonical parser from 9B0a, so the rule
+ * is proven rather than asserted, and they pin the behaviours edge parsing got
+ * wrong: a second emoji being eaten, and a trailing emoji being mistaken for
+ * the slot. */
+const slotSandbox = { Intl, Array, String, RegExp };
+slotSandbox.globalThis = slotSandbox;
+vm.createContext(slotSandbox);
+vm.runInContext([
+  'const W = { Intl };',
+  extractFunction(source.state, 'norm'),
+  extractFunction(source.state, 'graphemes'),
+  extractFunction(source.state, 'isEmojiCluster'),
+  extractFunction(source.state, 'takeLeadingEmojiSlot'),
+  'globalThis.slot = takeLeadingEmojiSlot;',
+].join('\n'), slotSandbox, { filename: rel.state });
+const slot = slotSandbox.slot;
+
+const SLOT_FIXTURES = Object.freeze([
+  { title: '🧠 My ADHD', emoji: '🧠', remainder: 'My ADHD', why: 'single leading emoji occupies the slot' },
+  { title: '🚲 🔥 My ADHD', emoji: '🚲', remainder: '🔥 My ADHD', why: 'a second emoji stays title content' },
+  { title: '🚲 My ADHD 🔥', emoji: '🚲', remainder: 'My ADHD 🔥', why: 'a trailing emoji stays title content' },
+  { title: 'My ADHD 🔥', emoji: '', remainder: 'My ADHD 🔥', why: 'a trailing-only emoji never creates a slot' },
+  { title: '👨‍💻 Development Work', emoji: '👨‍💻', remainder: 'Development Work', why: 'a ZWJ sequence is one slot' },
+  { title: '🇫🇮 Hello Assistance Offer', emoji: '🇫🇮', remainder: 'Hello Assistance Offer', why: 'a flag is one slot' },
+  { title: '👍🏽 Example', emoji: '👍🏽', remainder: 'Example', why: 'a skin-tone modifier stays with its base' },
+  { title: '❤️ Variation', emoji: '❤️', remainder: 'Variation', why: 'a variation selector stays with its base' },
+  { title: '🧠', emoji: '🧠', remainder: '', why: 'an emoji-only title is a slot with an empty remainder' },
+  { title: 'Plain Title', emoji: '', remainder: 'Plain Title', why: 'a plain title has no slot' },
+]);
+for (const fixture of SLOT_FIXTURES) {
+  const parsed = slot(fixture.title);
+  assert.equal(parsed.emoji, fixture.emoji, `${fixture.why}: emoji of "${fixture.title}"`);
+  assert.equal(parsed.remainder, fixture.remainder, `${fixture.why}: remainder of "${fixture.title}"`);
+  assert.equal(parsed.hasSlot, fixture.emoji !== '', `${fixture.why}: hasSlot of "${fixture.title}"`);
+  // Losslessness: the slot plus its remainder must reconstruct the title.
+  const rebuilt = parsed.emoji ? `${parsed.emoji}${parsed.remainder ? ` ${parsed.remainder}` : ''}` : parsed.remainder;
+  assert.equal(rebuilt, fixture.title.replace(/\s+/gu, ' ').trim(),
+    `${fixture.why}: "${fixture.title}" round-trips without losing content`);
+}
+
+// Replacement targets the slot and preserves everything after it.
+const replaceSlot = (title, next) => {
+  const parsed = slot(title);
+  return parsed.remainder ? `${next} ${parsed.remainder}` : next;
+};
+assert.equal(replaceSlot('🧠 My ADHD', '🚲'), '🚲 My ADHD', 'replacement swaps the slot');
+assert.equal(replaceSlot('🧠 🔥 My ADHD', '🚲'), '🚲 🔥 My ADHD', 'replacement keeps the second emoji');
+assert.equal(replaceSlot('My ADHD 🔥', '🚲'), '🚲 My ADHD 🔥', 'replacement prefixes when no slot existed');
+// Remove takes exactly one leading grapheme.
+assert.equal(slot('🧠 🔥 My ADHD').remainder, '🔥 My ADHD', 'remove strips only the first grapheme');
+assert.equal(slot('👨‍💻 Development').remainder, 'Development', 'remove never splits a ZWJ cluster');
+assert.equal(slot('🇫🇮 Hello').remainder, 'Hello', 'remove never splits a flag');
+assert.equal(slot('👍🏽 Example').remainder, 'Example', 'remove never splits a skin-tone cluster');
+
+// 9B0a is the authority and 9D1a consumes it.
+assert.match(source.state, /selfCheck,\s*(?:\/\/[^\n]*\n\s*)*takeLeadingEmojiSlot,/u,
+  '9B0a publishes the canonical parser as public read-only API');
+assert.match(extractFunction(source.auto, 'canonicalTitleSlotApi'),
+  /H2O\.ChatTitle[\s\S]*typeof api\.takeLeadingEmojiSlot === 'function'/u,
+  '9D1a resolves the canonical parser through the ChatTitle authority');
+assert.match(extractFunction(source.auto, 'takeLeadingEmojiSlot'),
+  /canonicalTitleSlotApi\(\)[\s\S]*canonical\.takeLeadingEmojiSlot\(value\)/u,
+  '9D1a delegates to the authority instead of deciding for itself');
+// The boot-order fallback is allowed, but only as an exact mirror.
+const autoFallback = extractFunction(source.auto, 'takeLeadingEmojiSlot');
+assert.match(autoFallback, /parts\[0\] && isEmojiCluster\(parts\[0\]\) \? parts\[0\] : ''/u,
+  'the boot-order fallback takes the first grapheme only');
+assert.doesNotMatch(autoFallback, /while\s*\(|g\.pop\(\)|parts\.pop\(\)/u,
+  'the boot-order fallback can never regress to both-edge stripping');
+
+// Legacy edge semantics are gone from 9D1a entirely.
+assert.doesNotMatch(source.auto, /function getEdgeEmoji\(/u,
+  'the both-edge emoji reader no longer exists in 9D1a');
+assert.doesNotMatch(source.auto, /function stripEdgeEmoji\(/u,
+  'the both-edge stripper no longer exists in 9D1a');
+assert.equal((source.auto.match(/\bgetEdgeEmoji\(/gu) || []).length, 0,
+  'no slot decision reads both title edges');
+assert.equal((source.auto.match(/(?<!FromLeaf)\bstripEdgeEmoji\(/gu) || []).length, 0,
+  'no remainder extraction strips both title edges');
+
+// Presentation is owner-agnostic: the slot decides, not who authored it.
+for (const fn of ['ensureBadgeForChat', 'ensureBadgeForProjectListEntry', 'maybeAutoEmojiRename']) {
+  const body = extractFunction(source.auto, fn);
+  assert.match(body, /leadingEmojiOf\(/u, `${fn} decides slot occupancy through the canonical parser`);
+  assert.doesNotMatch(body, /emojiOwner/u, `${fn} never branches on emoji ownership`);
+}
+assert.doesNotMatch(source.auto, /emojiOwner\s*===\s*'h2o'/u,
+  'no user-facing path is conditional on H2O authorship of the emoji');
+// Ownership stays meaningful where it belongs: persistence safety in 9B0a.
+assert.match(source.state, /function normalizeEmojiOwner/u, 'internal emoji provenance is preserved');
+assert.match(source.state, /stripLeadingOwnedSlot/u, 'owner-gated destructive stripping is preserved');
+for (const field of ['lastNativeSubmission', 'pendingEmojiAssignment']) {
+  assert.match(source.state, new RegExp(field, 'u'), `${field} persistence safety is preserved`);
+}
 
 console.log('validate-auto-emoji-title-controls: ok');
