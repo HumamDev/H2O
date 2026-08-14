@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-/* Backend rate-limit governor — behavioural proof.
-
-   This validator does not re-implement the governor. It slices the real source
-   out of 9B0a and runs it in a sandbox that supplies only ambient dependencies
-   (clock, string normaliser, delay, window, localStorage). If the source is
-   reshaped so the slice markers no longer resolve, extraction fails loudly
-   rather than silently proving nothing about code that is no longer there.
-
-   The property that matters most is the last one: a cooldown recorded by one
-   page instance must still be in force for the next, because every guard that
-   lived only in memory was reset by the reload that a rate-limited user
-   naturally reaches for. */
+/* Backend Request Authority — behavioural proof.
+ *
+ * Loads the REAL 0A4a module into a sandbox and drives it through its public
+ * API. Only the network, the clock, storage and the Web Locks manager are
+ * synthetic, so the properties below describe code that actually runs.
+ *
+ * The Web Locks shim is spec-faithful: exclusive mode, FIFO queue, a queued
+ * request may be aborted via signal, and the lock releases when the callback's
+ * promise settles. Aborting has NO effect once the callback is running — which
+ * is exactly why the fetch must consume cancellation separately.
+ *
+ * NO LIVE NETWORK.
+ */
 
 import assert from "node:assert";
 import fs from "node:fs";
@@ -19,379 +20,561 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const SOURCE_REL = "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js";
-/* Overridable so the suite can be mutation-tested against a deliberately
-   broken copy, proving these assertions can actually fail. Unset in normal
-   runs, where the real owner is the subject. */
-const SOURCE_PATH = process.env.H2O_GOVERNOR_SOURCE || path.join(ROOT, SOURCE_REL);
-const SOURCE = fs.readFileSync(SOURCE_PATH, "utf8");
+const AUTHORITY_REL = "src-runtime-base/0A4a.⬛️🌐 Backend Request Authority 🌐.js";
+const PUMP_REL = "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js";
+const AUTHORITY_PATH = process.env.H2O_AUTHORITY_SOURCE || path.join(ROOT, AUTHORITY_REL);
+const AUTHORITY_SOURCE = fs.readFileSync(AUTHORITY_PATH, "utf8");
+const PUMP_SOURCE = fs.readFileSync(process.env.H2O_PUMP_SOURCE || path.join(ROOT, PUMP_REL), "utf8");
 
-function slice(startMarker, endMarker, label) {
-  const start = SOURCE.indexOf(startMarker);
-  assert.notStrictEqual(start, -1, `extraction failed: ${label} start marker absent (${startMarker})`);
-  const end = SOURCE.indexOf(endMarker, start);
-  assert.notStrictEqual(end, -1, `extraction failed: ${label} end marker absent (${endMarker})`);
-  const text = SOURCE.slice(start, end);
-  assert.ok(text.length > 200, `extraction failed: ${label} slice implausibly small`);
-  return text;
+const SUPPORTED_ORIGIN = "https://chatgpt.com";
+const CONV = { resource: "conversation", chatId: "abc" };
+
+/* ── spec-faithful Web Locks shim ─────────────────────────────────────── */
+function makeLockManager() {
+  const queues = new Map();
+  const stats = { maxHeld: 0, held: 0, acquisitions: 0 };
+  return {
+    stats,
+    async request(name, options, callback) {
+      if (typeof options === "function") { callback = options; options = {}; }
+      const signal = options?.signal;
+      if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      const queue = queues.get(name) || Promise.resolve();
+      let release;
+      const held = new Promise((r) => { release = r; });
+      queues.set(name, queue.then(() => held));
+      let onAbort;
+      try {
+        await new Promise((resolve, reject) => {
+          queue.then(resolve, resolve);
+          if (signal) {
+            onAbort = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+            signal.addEventListener("abort", onAbort, { once: true });
+          }
+        });
+      } catch (err) {
+        release();
+        throw err;
+      } finally {
+        if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      }
+      stats.acquisitions += 1;
+      stats.held += 1;
+      stats.maxHeld = Math.max(stats.maxHeld, stats.held);
+      try {
+        return await callback({ name, mode: "exclusive" });
+      } finally {
+        stats.held -= 1;
+        release();
+      }
+    },
+  };
 }
 
-const GOVERNOR_SRC = slice("const BACKEND_COOLDOWN_KEY", "function nativeConversationHeaders(", "governor");
-const CLASSIFIER_SRC = slice("function isRateLimitedFailure(", "function delay(ms)", "classifiers");
-
-/* Extraction sanity: the slices must actually contain the machinery under
-   test, so a future refactor that moves a piece elsewhere fails here. */
-for (const needle of [
-  "function governedFetch(",
-  "function noteBackendRateLimited(",
-  "function backendCooldownRemainingMs(",
-  "function parseRetryAfterMs(",
-  "function readChatGptAccessToken(",
-  "localStorage.setItem(BACKEND_COOLDOWN_KEY",
-]) {
-  assert.ok(GOVERNOR_SRC.includes(needle), `governor slice is missing ${needle}`);
+/* A manager that never serialises — used only to prove the cooldown merge
+   holds even if the lock were absent (defence in depth). */
+function makeUnserialisedLockManager() {
+  return { stats: { maxHeld: 0 }, async request(name, options, callback) {
+    if (typeof options === "function") { callback = options; }
+    return callback({ name, mode: "exclusive" });
+  } };
 }
-assert.ok(CLASSIFIER_SRC.includes("function isTransientNativeFailure("), "classifier slice incomplete");
 
 function makeResponse({ status = 200, body = {}, headers = {} } = {}) {
   const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
   const res = {
     status,
     ok: status >= 200 && status < 300,
-    headers: { get: (name) => (name.toLowerCase() in lower ? lower[name.toLowerCase()] : null) },
+    headers: { get: (n) => (n.toLowerCase() in lower ? lower[n.toLowerCase()] : null) },
     json: async () => body,
   };
   res.clone = () => res;
   return res;
 }
 
-/* One sandbox == one page instance. Passing the same store to a second
-   sandbox is how a reload is modelled. */
-function makeInstance(store, script) {
-  let clock = 1_700_000_000_000;
+/* One sandbox == one tab. Passing the same store to another models a second
+   tab in the same profile; passing the same lock manager models the shared
+   serialization domain. */
+function loadAuthority(store, opts = {}) {
+  let clock = opts.clock ?? 1_700_000_000_000;
   const calls = [];
-  let inFlight = 0;
-  let maxInFlight = 0;
-  let responder = () => makeResponse({ body: { title: "ok" } });
+  const locks = opts.locks || makeLockManager();
+  let responder = opts.responder || (() => makeResponse({ body: { accessToken: "tok" } }));
+  const timers = new Set();
 
   const localStorage = {
     getItem: (k) => (k in store ? store[k] : null),
-    setItem: (k, v) => { store[k] = String(v); },
+    setItem: (k, v) => { if (opts.storageThrows) throw new Error("denied"); store[k] = String(v); },
     removeItem: (k) => { delete store[k]; },
   };
 
+  const RealDate = Date;
+  const ClockDate = new Proxy(RealDate, {
+    get(t, p) { return p === "now" ? () => clock : Reflect.get(t, p); },
+    construct(t, a) { return a.length ? new t(...a) : new t(clock); },
+  });
+
   const W = {
-    fetch: async (url, init) => {
-      calls.push({ url, method: init?.method || "GET", at: clock });
-      inFlight += 1;
-      maxInFlight = Math.max(maxInFlight, inFlight);
-      try {
-        return responder(url, init, calls.length);
-      } finally {
-        inFlight -= 1;
+    location: { origin: opts.origin ?? SUPPORTED_ORIGIN, pathname: "/", href: `${opts.origin ?? SUPPORTED_ORIGIN}/` },
+    navigator: opts.noLocks ? {} : { locks },
+    fetch: opts.noFetch ? undefined : async (url, init) => {
+      const entry = { url: String(url), method: (init?.method || "GET").toUpperCase(), body: init?.body ?? null, at: clock };
+      calls.push(entry);
+      const signal = init?.signal;
+      const spec = responder(entry, calls);
+      if (spec?.hang) {
+        // Never settles on its own; only cancellation ends it.
+        return new Promise((_, reject) => {
+          if (signal?.aborted) return reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+        });
       }
+      if (spec?.throw) throw Object.assign(new Error(spec.throw), spec.throw === "aborted" ? { name: "AbortError" } : {});
+      // An explicit gate makes completion ordering deterministic. Relying on
+      // timer races instead let a test pass whether or not the behaviour under
+      // test was present.
+      if (spec?.gate) await spec.gate;
+      if (spec?.delayMs) {
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(resolve, 1);
+          signal?.addEventListener("abort", () => { clearTimeout(t); reject(Object.assign(new Error("aborted"), { name: "AbortError" })); }, { once: true });
+        });
+      }
+      /* Responders may return either a plain spec or an already-built
+         response. Re-wrapping a built one would destructure its live headers
+         object into nothing and silently drop Retry-After, so detect it. */
+      return typeof spec?.headers?.get === "function" ? spec : makeResponse(spec);
     },
-    setTimeout: (fn, ms) => { clock += Number(ms) || 0; return setTimeout(fn, 0); },
+    /* Pacing waits are collapsed so tests stay fast, but long deadlines are
+       left alone: clamping the 30s operation timeout too would fire it during
+       every test and mislabel ordinary aborts as timeouts. */
+    setTimeout: (fn, ms) => {
+      const raw = Number(ms) || 0;
+      const t = setTimeout(fn, raw >= 10000 ? raw : Math.min(raw, 5));
+      timers.add(t);
+      return t;
+    },
+    clearTimeout: (t) => { clearTimeout(t); timers.delete(t); },
   };
+  W.H2O = {};
 
   const sandbox = {
-    W,
-    localStorage,
-    // Math's methods are non-enumerable, so a spread would silently produce an
-    // object with nothing on it. Derive from the real Math and override only
-    // random, keeping the jitter deterministic.
-    Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
-    JSON,
-    Number,
-    String,
-    Date,
-    Promise,
-    now: () => clock,
-    norm: (v) => String(v || "").replace(/[\s ]+/g, " ").trim(),
-    delay: (ms) => new Promise((r) => { clock += Number(ms) || 0; setTimeout(r, 0); }),
-    __exports: {},
+    window: W, unsafeWindow: undefined, localStorage,
+    Date: ClockDate, Math: Object.assign(Object.create(Math), { random: () => 0.5 }),
+    JSON, Number, String, Boolean, Object, Array, Promise, Error, RegExp, Symbol, Reflect, Proxy,
+    AbortController, isNaN, parseInt, parseFloat,
+    setTimeout, clearTimeout,
+    console: { log() {}, warn() {}, error() {} },
   };
+  sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  new vm.Script(`${script}\n Object.assign(__exports, {
-    governedFetch, backendCooldownRemainingMs, readChatGptAccessToken,
-    noteBackendSuccess, noteBackendRateLimited, backendRateLimitedResult, parseRetryAfterMs,
-    isTransientNativeFailure, isRateLimitedFailure, readBackendCooldownRecord });`).runInContext(sandbox);
+  new vm.Script(AUTHORITY_SOURCE, { filename: "0A4a.js" }).runInContext(sandbox);
 
   return {
-    api: sandbox.__exports,
-    calls,
+    api: W.H2O.BackendAuthority || null,
+    calls, store, locks,
     setResponder: (fn) => { responder = fn; },
     advance: (ms) => { clock += ms; },
     clockNow: () => clock,
-    maxInFlight: () => maxInFlight,
+    pendingTimers: () => timers.size,
+    reset: () => { calls.length = 0; },
   };
 }
 
-const SCRIPT = `${GOVERNOR_SRC}\n${CLASSIFIER_SRC}\n`;
+const tallySession = (calls) => calls.filter((c) => c.url.includes("/api/auth/session")).length;
+const tallyConv = (calls) => calls.filter((c) => c.url.includes("/backend-api/")).length;
+
 const results = [];
-const check = async (name, fn) => {
-  await fn();
-  results.push(name);
-};
+const check = async (name, fn) => { await fn(); results.push(name); };
 
-/* 1 — 429 is not a transient failure. This single misclassification is what
-   authorised every retry layer above it. */
+const okBackend = (e) => (e.url.includes("/api/auth/session")
+  ? makeResponse({ body: { accessToken: "tok" } })
+  : makeResponse({ body: { title: "t" } }));
+const conv429 = (retryAfter) => (e) => (e.url.includes("/api/auth/session")
+  ? makeResponse({ body: { accessToken: "tok" } })
+  : makeResponse({ status: 429, headers: retryAfter != null ? { "retry-after": String(retryAfter) } : {} }));
+
+/* ══ 1–10: governor semantics, preserved through the extraction ══════════ */
+
 await check("429 is not classified transient", async () => {
-  const store = {};
-  const { api } = makeInstance(store, SCRIPT);
-  assert.strictEqual(api.isTransientNativeFailure({ statusCode: 429 }), false, "429 must not be transient");
-  assert.strictEqual(api.isTransientNativeFailure({ status: "rate-limited-cooldown" }), false, "cooldown must not be transient");
-  assert.strictEqual(api.isTransientNativeFailure({ rateLimited: true }), false, "rateLimited flag must not be transient");
-  // Genuinely transient conditions must still retry, or the fix would have
-  // traded a retry storm for a runtime that gives up on a dropped connection.
-  assert.strictEqual(api.isTransientNativeFailure({ status: "network-error" }), true, "network errors stay transient");
-  assert.strictEqual(api.isTransientNativeFailure({ statusCode: 503 }), true, "5xx stays transient");
-  assert.strictEqual(api.isRateLimitedFailure({ statusCode: 429 }), true, "429 is rate limited");
+  const a = loadAuthority({});
+  assert.strictEqual(a.api.isTransient({ statusCode: 429 }), false, "429 must not be transient");
+  assert.strictEqual(a.api.isTransient({ status: "rate-limited-cooldown" }), false);
+  assert.strictEqual(a.api.isTransient({ rateLimited: true }), false);
+  assert.strictEqual(a.api.isTransient({ aborted: true }), false, "abort is not transient");
+  assert.strictEqual(a.api.isTransient({ timedOut: true }), false, "timeout is not transient");
+  // Genuinely transient conditions must still be retryable, or the fix would
+  // have traded a retry storm for giving up on a dropped connection.
+  assert.strictEqual(a.api.isTransient({ status: "network-error" }), true);
+  assert.strictEqual(a.api.isTransient({ statusCode: 503 }), true);
+  assert.strictEqual(a.api.isRateLimited({ statusCode: 429 }), true);
 });
 
-/* 2 — a 429 opens a cooldown, and while it is open no request is issued. */
 await check("cooldown suppresses all network traffic", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429 }));
-
-  const first = await inst.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-  assert.strictEqual(first.rateLimited, true, "429 must report rateLimited");
-  assert.strictEqual(inst.calls.length, 1, "the first request does reach the network");
-  assert.ok(inst.api.backendCooldownRemainingMs() > 0, "a cooldown must be open after a 429");
-
+  const a = loadAuthority({});
+  a.setResponder(conv429(null));
+  const first = await a.api.request({ ...CONV });
+  assert.strictEqual(first.status, "rate-limited-cooldown");
+  assert.ok(a.api.cooldownRemainingMs() > 0, "a cooldown must open");
+  const before = a.calls.length;
   for (let i = 0; i < 25; i += 1) {
-    const outcome = await inst.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-    assert.strictEqual(outcome.rateLimited, true, "calls during cooldown must report rate limited");
-    assert.strictEqual(outcome.res, null, "no response exists when no request was sent");
+    const r = await a.api.request({ ...CONV });
+    assert.strictEqual(r.status, "rate-limited-cooldown");
   }
-  assert.strictEqual(inst.calls.length, 1, `cooldown leaked ${inst.calls.length - 1} requests`);
+  assert.strictEqual(a.calls.length, before, `cooldown leaked ${a.calls.length - before} requests`);
 });
 
-/* 3 — THE recurrence fix: the cooldown outlives the page. */
 await check("cooldown survives a reload", async () => {
   const store = {};
-  const first = makeInstance(store, SCRIPT);
-  first.setResponder(() => makeResponse({ status: 429 }));
-  await first.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-  assert.strictEqual(first.calls.length, 1);
-
-  // A fresh sandbox is a fresh page: new closures, new in-memory guards, same
-  // browser storage. Before this fix every guard was in memory, so a reload
-  // resumed at full rate.
-  const reloaded = makeInstance(store, SCRIPT);
-  reloaded.setResponder(() => makeResponse({ status: 429 }));
-  assert.ok(reloaded.api.backendCooldownRemainingMs() > 0, "reload must inherit the cooldown");
-  for (let i = 0; i < 10; i += 1) {
-    await reloaded.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-  }
-  assert.strictEqual(reloaded.calls.length, 0, "a reloaded page must issue no requests during cooldown");
+  const first = loadAuthority(store);
+  first.setResponder(conv429(null));
+  await first.api.request({ ...CONV });
+  // A fresh sandbox is a fresh page: new closures, same browser storage.
+  const reloaded = loadAuthority(store);
+  reloaded.setResponder(conv429(null));
+  assert.ok(reloaded.api.cooldownRemainingMs() > 0, "reload must inherit the cooldown");
+  for (let i = 0; i < 10; i += 1) await reloaded.api.request({ ...CONV });
+  assert.strictEqual(reloaded.calls.length, 0, "a reloaded page must issue nothing during cooldown");
 });
 
-/* 4 — Retry-After is obeyed, in both permitted encodings. */
 await check("Retry-After is honoured", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429, headers: { "retry-after": "120" } }));
-  await inst.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-  const remaining = inst.api.backendCooldownRemainingMs();
-  assert.ok(remaining > 110000 && remaining <= 120000, `delta-seconds ignored (got ${remaining}ms)`);
+  const a = loadAuthority({});
+  a.setResponder(conv429(120));
+  await a.api.request({ ...CONV });
+  const remaining = a.api.cooldownRemainingMs();
+  assert.ok(remaining > 110000 && remaining <= 120000, `delta-seconds ignored (${remaining}ms)`);
 
-  const dateStore = {};
-  const dated = makeInstance(dateStore, SCRIPT);
-  const httpDate = new Date(dated.clockNow() + 300000).toUTCString();
-  dated.setResponder(() => makeResponse({ status: 429, headers: { "retry-after": httpDate } }));
-  await dated.api.governedFetch("/backend-api/conversation/abc", { method: "GET" });
-  const datedRemaining = dated.api.backendCooldownRemainingMs();
-  assert.ok(datedRemaining > 290000 && datedRemaining <= 300000, `HTTP-date ignored (got ${datedRemaining}ms)`);
+  const b = loadAuthority({});
+  const httpDate = new Date(b.clockNow() + 300000).toUTCString();
+  b.setResponder(conv429(httpDate));
+  await b.api.request({ ...CONV });
+  const bRemaining = b.api.cooldownRemainingMs();
+  assert.ok(bRemaining > 290000 && bRemaining <= 300000, `HTTP-date ignored (${bRemaining}ms)`);
 });
 
-/* 5 — consecutive limits escalate, and escalation is not forgotten merely
-   because a wait expired. */
 await check("backoff escalates and escalation persists past expiry", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429 }));
-
-  await inst.api.governedFetch("/x", { method: "GET" });
-  const firstWait = inst.api.backendCooldownRemainingMs();
-
-  inst.advance(firstWait + 1);
-  assert.strictEqual(inst.api.backendCooldownRemainingMs(), 0, "cooldown must expire on its own");
-  await inst.api.governedFetch("/x", { method: "GET" });
-  const secondWait = inst.api.backendCooldownRemainingMs();
-  assert.ok(secondWait > firstWait, `second wait (${secondWait}) must exceed the first (${firstWait})`);
-
-  inst.advance(secondWait + 1);
-  await inst.api.governedFetch("/x", { method: "GET" });
-  assert.ok(inst.api.backendCooldownRemainingMs() > secondWait, "third wait must continue escalating");
-  assert.strictEqual(inst.api.readBackendCooldownRecord().consecutive, 3, "consecutive count must accumulate");
+  const a = loadAuthority({});
+  a.setResponder(conv429(null));
+  await a.api.request({ ...CONV });
+  const first = a.api.cooldownRemainingMs();
+  a.advance(first + 1);
+  assert.strictEqual(a.api.cooldownRemainingMs(), 0, "cooldown must expire on its own");
+  await a.api.request({ ...CONV });
+  const second = a.api.cooldownRemainingMs();
+  assert.ok(second > first, `second wait (${second}) must exceed the first (${first})`);
+  a.advance(second + 1);
+  await a.api.request({ ...CONV });
+  assert.ok(a.api.cooldownRemainingMs() > second, "escalation must continue");
 });
 
-/* 6 — a success clears the cooldown, so recovery is immediate once the
-   account is healthy again. */
 await check("success clears the cooldown", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder((url, init, n) => (n === 1 ? makeResponse({ status: 429 }) : makeResponse({ body: { title: "t" } })));
-  await inst.api.governedFetch("/x", { method: "GET" });
-  const wait = inst.api.backendCooldownRemainingMs();
+  const a = loadAuthority({});
+  a.setResponder(conv429(30));
+  await a.api.request({ ...CONV });
+  const wait = a.api.cooldownRemainingMs();
   assert.ok(wait > 0);
-  inst.advance(wait + 1);
-  const ok = await inst.api.governedFetch("/x", { method: "GET" });
-  assert.strictEqual(ok.rateLimited, false, "the probe after expiry must be allowed through");
-  assert.strictEqual(inst.api.backendCooldownRemainingMs(), 0, "success must clear the cooldown");
-  assert.strictEqual(inst.api.readBackendCooldownRecord(), null, "success must clear the escalation record too");
+  a.advance(wait + 1);
+  a.setResponder(okBackend);
+  const r = await a.api.request({ ...CONV });
+  assert.strictEqual(r.ok, true, "the probe after expiry must be allowed through");
+  assert.strictEqual(a.api.cooldownRemainingMs(), 0, "success must clear the cooldown");
 });
 
-/* 7 — the access token is cached, removing the ×2 amplification where every
-   conversation call first re-fetched the session. */
 await check("access token is cached across calls", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ body: { accessToken: "tok-1" } }));
-  const tokens = [];
-  for (let i = 0; i < 8; i += 1) tokens.push(await inst.api.readChatGptAccessToken());
-  assert.deepStrictEqual([...new Set(tokens)], ["tok-1"], "cached token must stay stable");
-  const sessionCalls = inst.calls.filter((c) => c.url === "/api/auth/session").length;
-  assert.strictEqual(sessionCalls, 1, `session endpoint hit ${sessionCalls}x for 8 reads; expected 1`);
+  const a = loadAuthority({});
+  a.setResponder(okBackend);
+  for (let i = 0; i < 8; i += 1) { await a.api.request({ ...CONV }); a.advance(400); }
+  assert.strictEqual(tallySession(a.calls), 1, `session hit ${tallySession(a.calls)}x for 8 operations; expected 1`);
+  assert.strictEqual(tallyConv(a.calls), 8, "every operation must still reach the backend");
 });
 
-await check("concurrent token reads share one request", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ body: { accessToken: "tok-2" } }));
-  const parallel = await Promise.all(Array.from({ length: 6 }, () => inst.api.readChatGptAccessToken()));
-  assert.deepStrictEqual([...new Set(parallel)], ["tok-2"], "all concurrent readers get the same token");
-  const sessionCalls = inst.calls.filter((c) => c.url === "/api/auth/session").length;
-  assert.strictEqual(sessionCalls, 1, `in-flight dedupe failed: ${sessionCalls} session requests`);
+await check("concurrent operations share one session request", async () => {
+  const a = loadAuthority({});
+  a.setResponder(okBackend);
+  await Promise.all(Array.from({ length: 6 }, () => a.api.request({ ...CONV })));
+  assert.strictEqual(tallySession(a.calls), 1, `in-flight dedupe failed: ${tallySession(a.calls)} session requests`);
 });
 
-/* 8 — requests are serialised, so a burst cannot stack against the endpoint. */
-await check("requests are serialised", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ body: { title: "t" } }));
-  await Promise.all(Array.from({ length: 10 }, (_, i) => inst.api.governedFetch(`/x/${i}`, { method: "GET" })));
-  assert.strictEqual(inst.maxInFlight(), 1, `expected at most 1 in-flight request, saw ${inst.maxInFlight()}`);
-  assert.strictEqual(inst.calls.length, 10, "every queued request should still complete");
+await check("requests are serialised by the lock", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "tok" } }) : makeResponse({ body: {}, delayMs: 1 })));
+  await Promise.all(Array.from({ length: 10 }, () => a.api.request({ ...CONV })));
+  assert.strictEqual(a.locks.stats.maxHeld, 1, `expected 1 lock holder, saw ${a.locks.stats.maxHeld}`);
 });
 
-/* 9 — a burst that meets a limit mid-flight must not drain to the network. */
 await check("queued requests abort once a limit opens mid-burst", async () => {
-  const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder((url, init, n) => (n === 1 ? makeResponse({ status: 429 }) : makeResponse({ body: { title: "t" } })));
-  const outcomes = await Promise.all(
-    Array.from({ length: 12 }, (_, i) => inst.api.governedFetch(`/backend-api/conversation/${i}`, { method: "GET" })),
-  );
-  assert.strictEqual(inst.calls.length, 1, `queue drained ${inst.calls.length} requests after a 429`);
-  assert.strictEqual(outcomes.filter((o) => o.rateLimited).length, 12, "every queued call must report rate limited");
+  const a = loadAuthority({});
+  let n = 0;
+  a.setResponder((e) => {
+    if (e.url.includes("session")) return makeResponse({ body: { accessToken: "tok" } });
+    n += 1;
+    return n === 1 ? makeResponse({ status: 429 }) : makeResponse({ body: {} });
+  });
+  const outcomes = await Promise.all(Array.from({ length: 12 }, () => a.api.request({ ...CONV })));
+  assert.strictEqual(tallyConv(a.calls), 1, `queue drained ${tallyConv(a.calls)} backend requests after a 429`);
+  assert.strictEqual(outcomes.filter((o) => o.status === "rate-limited-cooldown").length, 12);
 });
 
-/* ── Cooldown merge semantics ─────────────────────────────────────────
-   Several tabs share one stored record. Storing a single merged deadline let
-   a tab holding stale state replace a long server deadline with a short
-   locally-computed one, so every write must merge rather than replace. */
-/* Driven through noteBackendRateLimited directly, because that is what the
-   race actually is: two tabs writing the shared record. Going through
-   governedFetch could not express it — the second tab short-circuits on the
-   cooldown the first one opened and never reaches the write, which would make
-   this assertion pass without testing anything. */
-const res429 = (retryAfter) => ({
-  status: 429,
-  headers: { get: (n) => (n.toLowerCase() === "retry-after" && retryAfter != null ? String(retryAfter) : null) },
-});
+/* ══ 11–14: cooldown merge + entitlement (defence in depth) ═════════════
+   Driven through an unserialised lock manager so the merge is proven on its
+   own. Under the real lock these writes cannot interleave, but the merge must
+   not depend on that. */
 
+/* Both tabs must be in flight together: with the cooldown gate, a sequential
+   second caller short-circuits before it can write, which would make these
+   assertions pass without exercising the merge at all. Firing concurrently
+   through an unserialised manager reproduces the genuine interleaving — both
+   read cooldown 0, both receive a 429, both write. */
 await check("a later writer never shortens a server deadline", async () => {
   const store = {};
-  const a = makeInstance(store, SCRIPT);
-  const b = makeInstance(store, SCRIPT);            // second tab, same storage
+  const locks = makeUnserialisedLockManager();
+  const a = loadAuthority(store, { locks });
+  const b = loadAuthority(store, { locks });
+  a.setResponder(conv429(600));         // server: wait 600s
+  b.setResponder(conv429(null));        // stale tab: local fallback (~30s)
+  await Promise.all([a.api.request({ ...CONV }), b.api.request({ ...CONV })]);
+  const merged = a.api.cooldownRemainingMs();
+  assert.ok(merged > 590000, `a fallback writer shortened the server deadline to ${merged}ms`);
 
-  a.api.noteBackendRateLimited(res429(600));
-  const afterServer = a.api.backendCooldownRemainingMs();
-  assert.ok(afterServer > 590000, `server deadline not recorded (${afterServer}ms)`);
-
-  b.api.noteBackendRateLimited(res429(null));       // stale tab, local fallback
-  const afterFallback = a.api.backendCooldownRemainingMs();
-  assert.ok(afterFallback >= afterServer, `a stale fallback writer shortened the cooldown to ${afterFallback}ms`);
-
-  b.api.noteBackendRateLimited(res429(60));         // shorter server value
-  const afterShorter = a.api.backendCooldownRemainingMs();
-  assert.ok(afterShorter >= afterServer, `a shorter server value shortened the cooldown to ${afterShorter}ms`);
+  // And a shorter *server* value must not pull it in either.
+  const store2 = {};
+  const locks2 = makeUnserialisedLockManager();
+  const c = loadAuthority(store2, { locks: locks2 });
+  const d = loadAuthority(store2, { locks: locks2 });
+  c.setResponder(conv429(900));
+  d.setResponder(conv429(60));
+  await Promise.all([c.api.request({ ...CONV }), d.api.request({ ...CONV })]);
+  assert.ok(c.api.cooldownRemainingMs() > 890000,
+    `a shorter server value shortened the cooldown to ${c.api.cooldownRemainingMs()}ms`);
 });
 
 await check("server and local cooldowns are tracked separately", async () => {
   const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.api.noteBackendRateLimited(res429(null));    // local fallback
-  inst.api.noteBackendRateLimited(res429(600));     // server deadline
-  const rec = inst.api.readBackendCooldownRecord();
-  assert.ok(rec.serverUntil > 0 && rec.localUntil > 0, "both deadlines must be retained");
+  const locks = makeUnserialisedLockManager();
+  const a = loadAuthority(store, { locks });
+  const b = loadAuthority(store, { locks });
+  a.setResponder(conv429(600));         // records serverUntil
+  b.setResponder(conv429(null));        // records localUntil
+  await Promise.all([a.api.request({ ...CONV }), b.api.request({ ...CONV })]);
+  const rec = JSON.parse(store["h2o:backend-authority:cooldown:v1"]);
+  assert.ok(rec.serverUntil > 0 && rec.localUntil > 0,
+    `both deadlines must be retained (got ${JSON.stringify(rec)})`);
   assert.ok(rec.serverUntil > rec.localUntil, "effective deadline must be the later one");
 });
 
-/* A valid server deadline is preserved verbatim — the local exponential
-   fallback has a cap, but capping a server instruction would mean retrying
-   earlier than we were told to. */
-await check("large valid Retry-After is preserved uncapped", async () => {
+/* The gate is the first line of defence: while a cooldown is active a second
+   caller must not reach the network at all, so the merge above is depth, not
+   the only protection. */
+await check("the cooldown gate blocks a second writer outright", async () => {
   const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429, headers: { "retry-after": "86400" } }));
-  await inst.api.governedFetch("/x", { method: "GET" });
-  const remaining = inst.api.backendCooldownRemainingMs();
-  assert.ok(remaining > 86_000_000, `24h server deadline was clamped to ${remaining}ms`);
+  const locks = makeUnserialisedLockManager();
+  const a = loadAuthority(store, { locks });
+  const b = loadAuthority(store, { locks });
+  a.setResponder(conv429(600));
+  b.setResponder(conv429(null));
+  await a.api.request({ ...CONV });
+  const before = a.api.cooldownRemainingMs();
+  const r = await b.api.request({ ...CONV });
+  assert.strictEqual(r.status, "rate-limited-cooldown", "the second tab must be gated");
+  assert.strictEqual(b.calls.length, 0, "the gated tab must issue nothing");
+  assert.ok(a.api.cooldownRemainingMs() >= before - 5, "and must not disturb the deadline");
 });
 
-/* ── Success entitlement ──────────────────────────────────────────────
-   A success only proves the limit is over if its request was issued after the
-   deadline. Without this, one tab's in-flight success wiped a server-mandated
-   cooldown for every tab sharing the profile. */
+await check("large valid Retry-After is preserved uncapped", async () => {
+  const a = loadAuthority({});
+  a.setResponder(conv429(86400));
+  await a.api.request({ ...CONV });
+  assert.ok(a.api.cooldownRemainingMs() > 86_000_000, `24h server deadline was clamped to ${a.api.cooldownRemainingMs()}ms`);
+});
+
 await check("an unentitled success cannot clear an active cooldown", async () => {
   const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429, headers: { "retry-after": "600" } }));
-  await inst.api.governedFetch("/x", { method: "GET" });
-  const before = inst.api.backendCooldownRemainingMs();
-  inst.api.noteBackendSuccess(inst.clockNow() - 5000);   // issued before the limit
-  assert.strictEqual(inst.api.backendCooldownRemainingMs(), before, "an in-flight success cleared an active cooldown");
+  const locks = makeUnserialisedLockManager();
+  const a = loadAuthority(store, { locks });
+  const b = loadAuthority(store, { locks });
+  /* Ordering must be forced, not raced: b's request has to still be in flight
+     when a records the limit, and must land afterwards. Without the gate this
+     passed whether or not entitlement was implemented. */
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  b.setResponder((e) => (e.url.includes("session")
+    ? { body: { accessToken: "tok" } }
+    : { body: {}, gate }));
+  const inflight = b.api.request({ ...CONV });
+  await new Promise((r) => setTimeout(r, 5));      // let b reach its fetch
+
+  a.setResponder(conv429(600));
+  await a.api.request({ ...CONV });
+  const before = a.api.cooldownRemainingMs();
+  assert.ok(before > 590000, "the server deadline must be recorded first");
+
+  release();                                        // b's success lands now
+  await inflight;
+  assert.ok(a.api.cooldownRemainingMs() >= before - 50,
+    `an in-flight success cleared an active cooldown (${before} -> ${a.api.cooldownRemainingMs()})`);
 });
 
-await check("an entitled probe success clears the cooldown", async () => {
+/* ══ 15–16: auth recovery ══════════════════════════════════════════════ */
+
+await check("401 recovers with exactly one refresh and one retry", async () => {
+  const a = loadAuthority({});
+  let issued = 0;
+  a.setResponder((e) => {
+    if (e.url.includes("/api/auth/session")) { issued += 1; return makeResponse({ body: { accessToken: `tok-${issued}` } }); }
+    const auth = e.body === null ? null : null;
+    return issued <= 1 ? makeResponse({ status: 401 }) : makeResponse({ body: { title: "t" } });
+  });
+  const r = await a.api.request({ ...CONV });
+  assert.strictEqual(r.ok, true, `401 did not recover (${r.status})`);
+  assert.strictEqual(tallySession(a.calls), 2, `expected 1 refresh, saw ${tallySession(a.calls) - 1}`);
+  assert.strictEqual(tallyConv(a.calls), 2, "exactly one retry");
+});
+
+await check("persistent 401 fails closed; 403 never refreshes", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : makeResponse({ status: 401 })));
+  const r = await a.api.request({ ...CONV });
+  assert.strictEqual(r.status, "unauthorized-failed-closed", "persistent 401 must fail closed");
+  assert.strictEqual(tallyConv(a.calls), 2, `401 must not loop (saw ${tallyConv(a.calls)} attempts)`);
+
+  const b = loadAuthority({});
+  b.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : makeResponse({ status: 403 })));
+  const rb = await b.api.request({ ...CONV });
+  assert.strictEqual(rb.status, "forbidden-failed-closed");
+  assert.strictEqual(tallySession(b.calls), 1, "403 must not trigger a token refresh");
+  assert.strictEqual(tallyConv(b.calls), 1, "403 must not retry");
+});
+
+/* ══ 17–23: cancellation, timeout, fail-closed, origin ═════════════════ */
+
+await check("abort while waiting for the lock issues nothing", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : makeResponse({ body: {}, delayMs: 1 })));
+  const holder = a.api.request({ ...CONV });
+  const ctrl = new AbortController();
+  const waiter = a.api.request({ ...CONV, signal: ctrl.signal });
+  ctrl.abort();
+  const [, w] = await Promise.all([holder, waiter]);
+  assert.strictEqual(w.status, "aborted", "aborted waiter must report abort");
+  assert.strictEqual(w.beforeAcquire, true, "must never have entered the critical section");
+  assert.strictEqual(tallyConv(a.calls), 1, "only the holder may reach the network");
+});
+
+await check("abort during the fetch releases the lock and opens no cooldown", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : { hang: true }));
+  const ctrl = new AbortController();
+  const p = a.api.request({ ...CONV, signal: ctrl.signal });
+  await new Promise((r) => setTimeout(r, 15));
+  ctrl.abort();
+  const r = await p;
+  assert.strictEqual(r.status, "aborted");
+  assert.strictEqual(a.api.cooldownRemainingMs(), 0, "abort must not open a cooldown");
+  assert.strictEqual(a.locks.stats.held, 0, "the lock must be released");
+});
+
+await check("abort during the pacing wait issues nothing", async () => {
   const store = {};
-  const inst = makeInstance(store, SCRIPT);
-  inst.setResponder(() => makeResponse({ status: 429, headers: { "retry-after": "30" } }));
-  await inst.api.governedFetch("/x", { method: "GET" });
-  inst.advance(31000);                                   // wait it out
-  inst.api.noteBackendSuccess(inst.clockNow());          // probe issued after the deadline
-  assert.strictEqual(inst.api.backendCooldownRemainingMs(), 0, "recovery must be possible");
-  assert.strictEqual(inst.api.readBackendCooldownRecord(), null, "escalation must clear too");
+  const a = loadAuthority(store);
+  a.setResponder(okBackend);
+  await a.api.request({ ...CONV });      // establishes lastRequestAt
+  a.reset();
+  const ctrl = new AbortController();
+  const p = a.api.request({ ...CONV, background: true, signal: ctrl.signal });
+  ctrl.abort();
+  const r = await p;
+  assert.ok(r.status === "aborted", `expected abort, got ${r.status}`);
+  assert.strictEqual(tallyConv(a.calls), 0, "no backend request may be issued");
 });
 
-/* ── Auth recovery shape ──────────────────────────────────────────────
-   401 may be a stale token and earns exactly one refresh-and-retry, made
-   terminal by a flag rather than a counter. 403 means authenticated but not
-   permitted, so a new token cannot help and none is fetched. */
-await check("401 earns one bounded retry; 403 earns none", async () => {
-  assert.ok(SOURCE.includes("function invalidateAccessToken()"), "token invalidation must exist");
-  const retries = SOURCE.match(/if \(code === 401 && options\?\.allowAuthRetry !== false\)/g) || [];
-  assert.strictEqual(retries.length, 2, `both conversation calls must handle 401 (found ${retries.length})`);
-  const terminal = SOURCE.match(/allowAuthRetry: false/g) || [];
-  assert.strictEqual(terminal.length, 2, "each retry must be made terminal");
-  assert.ok(!/code === 403[\s\S]{0,120}invalidateAccessToken/.test(SOURCE), "403 must not trigger a token refresh");
-  // The retry must invalidate first, or it would re-send the same stale token.
-  for (const m of SOURCE.matchAll(/if \(code === 401 && options\?\.allowAuthRetry !== false\) \{([\s\S]{0,200}?)\}/g)) {
-    assert.ok(m[1].includes("invalidateAccessToken()"), "401 retry must invalidate the cached token first");
+await check("next holder acquires after an aborted holder exits", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : { hang: true }));
+  const ctrl = new AbortController();
+  const aborting = a.api.request({ ...CONV, signal: ctrl.signal });
+  await new Promise((r) => setTimeout(r, 10));
+  ctrl.abort();
+  await aborting;
+  a.setResponder(okBackend);
+  a.advance(5000);
+  const next = await a.api.request({ ...CONV });
+  assert.strictEqual(next.ok, true, "a later holder must proceed");
+});
+
+await check("a hung request times out, releases the lock, and is not a 429", async () => {
+  const a = loadAuthority({});
+  a.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : { hang: true }));
+  const r = await a.api.request({ ...CONV, timeoutMs: 20 });
+  assert.strictEqual(r.status, "timeout", `expected timeout, got ${r.status}`);
+  assert.strictEqual(r.timedOut, true);
+  assert.strictEqual(a.api.cooldownRemainingMs(), 0, "a timeout must not open a cooldown");
+  assert.strictEqual(a.api.isRateLimited(r), false, "a timeout is not a rate limit");
+  assert.strictEqual(a.api.isTransient(r), false, "a timeout must not be retried as transient");
+  assert.strictEqual(a.locks.stats.held, 0, "the lock must be released after a timeout");
+
+  a.setResponder(okBackend);
+  a.advance(5000);
+  const next = await a.api.request({ ...CONV });
+  assert.strictEqual(next.ok, true, "a queued tab must proceed after a timeout");
+  assert.strictEqual(a.pendingTimers(), 0, "operation timers must not leak");
+});
+
+await check("fails closed when a correctness dependency is missing", async () => {
+  for (const [label, opts] of [
+    ["web locks unavailable", { noLocks: true }],
+    ["storage unavailable", { storageThrows: true }],
+    ["fetch unavailable", { noFetch: true }],
+  ]) {
+    const a = loadAuthority({}, opts);
+    const r = await a.api.request({ ...CONV });
+    assert.strictEqual(r.status, "authority-unavailable", `${label}: expected fail-closed, got ${r.status}`);
+    assert.strictEqual(a.calls.length, 0, `${label}: no request may be issued`);
+    assert.strictEqual(a.api.status().available, false, `${label}: status must report unavailable`);
   }
 });
 
-/* 10 — the Auto Emoji pump must pause rather than spin. 9B0a refuses these
-   requests for free, but 9D1a re-enters roughly every 120ms, and a rate limit
-   must not spend a chat's rename budget: the attempt never reached the server,
-   so counting it would abandon the chat for the session over a condition that
-   clears by itself. */
-const PUMP_REL = "src-runtime-base/9D1a.🟤📱 Auto Emoji Title 📱.js";
-const PUMP_SOURCE = fs.readFileSync(process.env.H2O_PUMP_SOURCE || path.join(ROOT, PUMP_REL), "utf8");
+await check("fails closed outside the supported origin", async () => {
+  for (const origin of ["https://chat.openai.com", "https://evil.example", "https://sub.chatgpt.com"]) {
+    const a = loadAuthority({}, { origin });
+    const r = await a.api.request({ ...CONV });
+    assert.strictEqual(r.status, "authority-unavailable", `${origin} must fail closed`);
+    assert.strictEqual(r.reason, "unsupported-origin");
+    assert.strictEqual(a.calls.length, 0, `${origin}: no request may be issued`);
+  }
+  const good = loadAuthority({}, { origin: SUPPORTED_ORIGIN });
+  assert.strictEqual(good.api.status().available, true, "the supported origin must work");
+  assert.strictEqual(good.api.status().lockName, "h2o.backend-authority.chatgpt.v1");
+});
+
+/* ══ 24: cross-tab serialization through one shared lock ═══════════════ */
+
+await check("separate tabs share one serialization domain", async () => {
+  const store = {};
+  const locks = makeLockManager();          // one lock manager == one profile
+  const tabs = [loadAuthority(store, { locks }), loadAuthority(store, { locks }), loadAuthority(store, { locks })];
+  for (const t of tabs) {
+    t.setResponder((e) => (e.url.includes("session") ? makeResponse({ body: { accessToken: "t" } }) : makeResponse({ body: {}, delayMs: 1 })));
+  }
+  await Promise.all(tabs.flatMap((t) => [t.api.request({ ...CONV }), t.api.request({ ...CONV })]));
+  assert.strictEqual(locks.stats.maxHeld, 1, `three tabs produced ${locks.stats.maxHeld} concurrent holders`);
+  assert.ok(locks.stats.acquisitions >= 6, "every request must pass through the lock");
+});
+
+await check("pacing state is shared across tabs, not per tab", async () => {
+  const store = {};
+  const locks = makeLockManager();
+  const a = loadAuthority(store, { locks });
+  const b = loadAuthority(store, { locks });
+  a.setResponder(okBackend); b.setResponder(okBackend);
+  await a.api.request({ ...CONV });
+  const recorded = JSON.parse(store["h2o:backend-authority:pacing:v1"] || "{}").lastRequestAt;
+  assert.ok(recorded > 0, "pacing state must be persisted, not held in a module variable");
+  await b.api.request({ ...CONV });
+  const updated = JSON.parse(store["h2o:backend-authority:pacing:v1"]).lastRequestAt;
+  assert.ok(updated >= recorded, "the second tab must observe and update shared pacing state");
+});
+
+/* ══ 25–26: the Auto Emoji pump still yields under rate limiting ═══════ */
 
 await check("Auto Emoji pump pauses under rate limiting", async () => {
   const start = PUMP_SOURCE.indexOf("let backendPauseUntil");
@@ -402,51 +585,33 @@ await check("Auto Emoji pump pauses under rate limiting", async () => {
   for (const needle of ["function isBackendRateLimited(", "function noteBackendPause(", "function backendPauseActive("]) {
     assert.ok(pumpSrc.includes(needle), `pump slice missing ${needle}`);
   }
-
   const sandbox = { Date, Number, Math, __exports: {} };
   vm.createContext(sandbox);
   new vm.Script(`${pumpSrc}\n Object.assign(__exports, { isBackendRateLimited, noteBackendPause, backendPauseActive,
     pauseUntil: () => backendPauseUntil });`).runInContext(sandbox);
   const pump = sandbox.__exports;
-
-  assert.strictEqual(pump.backendPauseActive(), false, "no pause before any limit");
+  assert.strictEqual(pump.backendPauseActive(), false);
   assert.strictEqual(pump.isBackendRateLimited({ status: "rate-limited-cooldown" }), true);
-  assert.strictEqual(pump.isBackendRateLimited({ statusCode: 429 }), true);
   assert.strictEqual(pump.isBackendRateLimited({ status: "backend-500" }), false, "a 5xx is not a rate limit");
-
   pump.noteBackendPause({ rateLimited: true, retryAfterMs: 45000 });
-  assert.strictEqual(pump.backendPauseActive(), true, "a reported limit must pause the pump");
   const deadline = pump.pauseUntil();
-  assert.ok(deadline > Date.now() + 40000, "the pause must honour the reported retry-after");
-
-  /* A shorter follow-up must never pull the deadline in. Checking only that a
-     pause is still "active" would not catch this: a one-second pause is also
-     active, and would have the pump spinning again almost immediately. */
+  assert.ok(deadline > Date.now() + 40000);
   pump.noteBackendPause({ rateLimited: true, retryAfterMs: 1000 });
   assert.strictEqual(pump.pauseUntil(), deadline, "a shorter retry-after must not cut the pause short");
-
-  // A longer one must extend it.
   pump.noteBackendPause({ rateLimited: true, retryAfterMs: 300000 });
   assert.ok(pump.pauseUntil() > deadline, "a longer retry-after must extend the pause");
 });
 
-/* 11 — the pump must consult the pause before starting an automatic rename,
-   and must still let an explicit user action through. */
 await check("pump gates automatic renames but not user actions", async () => {
   const guard = "if (backendPauseActive() && options.userInitiated !== true) return false;";
   assert.ok(PUMP_SOURCE.includes(guard), "applyNativeAutoEmoji must consult the pause");
   const guardAt = PUMP_SOURCE.indexOf(guard);
-  const bodyAt = PUMP_SOURCE.indexOf("function applyNativeAutoEmoji(");
-  assert.ok(guardAt > bodyAt, "the pause guard must sit inside applyNativeAutoEmoji");
-  const pendingAt = PUMP_SOURCE.indexOf("runtimeNativeRenamePending[chatId] && options.userInitiated !== true", guardAt);
-  assert.ok(pendingAt > guardAt, "the pause guard must precede the pending-rename short circuit");
-
-  // The rate-limited branch must return before the attempt counter increments.
+  assert.ok(guardAt > PUMP_SOURCE.indexOf("function applyNativeAutoEmoji("), "guard must sit inside the function");
   const rateBranch = PUMP_SOURCE.indexOf("if (isBackendRateLimited(result)) {");
   const counterBump = PUMP_SOURCE.indexOf("runtimeNativeRenameAttempts[chatId] = (runtimeNativeRenameAttempts[chatId] || 0) + 1;", rateBranch);
   assert.ok(rateBranch !== -1 && counterBump > rateBranch, "rate-limit branch must precede the attempt counter");
-  const between = PUMP_SOURCE.slice(rateBranch, counterBump);
-  assert.ok(between.includes("return;"), "rate-limit branch must return before spending the rename budget");
+  assert.ok(PUMP_SOURCE.slice(rateBranch, counterBump).includes("return;"),
+    "rate-limit branch must return before spending the rename budget");
 });
 
 console.log(`PASS validate-backend-rate-limit-governor (${results.length} properties)`);

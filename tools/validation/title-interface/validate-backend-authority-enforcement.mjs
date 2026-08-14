@@ -1,0 +1,217 @@
+#!/usr/bin/env node
+/* Backend authority enforcement — architectural drift detector.
+ *
+ * Authenticated ChatGPT backend traffic must converge on 0A4a. Independent
+ * transports are what produced the rate-limit storm this architecture exists
+ * to prevent, and a new one would reintroduce it while looking like ordinary
+ * code. This validator makes that regression fail loudly.
+ *
+ * HONEST LIMIT — read this before trusting it. Static analysis cannot prove
+ * the absence of every dynamic request. A path assembled from character codes,
+ * fetched from configuration, or reached through an aliased function
+ * reference will not be detected. This is a drift detector for accidental
+ * architectural bypass, NOT a security sandbox. It raises the cost of leaving
+ * the architecture by accident; it does not make leaving it impossible.
+ */
+
+import assert from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const SCAN_DIRS = ["src-runtime-base", "shared"];
+
+const AUTHORITY_FILE = "0A4a.⬛️🌐 Backend Request Authority 🌐.js";
+
+/* Every file permitted to mention an authenticated backend endpoint, with the
+   reason. Anything else naming one is a drift failure. */
+const ALLOWED = new Map([
+  [AUTHORITY_FILE, {
+    role: "authority",
+    why: "owns authenticated backend transport",
+  }],
+  ["0F2a.⬛️🗂️ Projects 🗂️.js", {
+    role: "observational",
+    why: "wraps W.fetch to observe ChatGPT's own sidebar request; produces none",
+  }],
+  /* DECLARED EXCEPTION — remove in Mission 2.
+     0D3a still holds its own transport. It is recorded here deliberately so
+     the debt is visible in the validator rather than silently tolerated by a
+     scan that never looked at it. */
+  ["0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js", {
+    role: "pending-migration",
+    why: "MISSION 2: must migrate to the authority; ungoverned until then",
+  }],
+]);
+
+const AUTH_SESSION = "/api/auth/session";
+const BACKEND_PREFIX = "/backend-api/";
+
+function walk(dir) {
+  const out = [];
+  const abs = path.join(ROOT, dir);
+  if (!fs.existsSync(abs)) return out;
+  for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
+    const rel = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(rel));
+    else if (/\.(js|mjs)$/.test(entry.name)) out.push(rel);
+  }
+  return out;
+}
+
+/* Comments and the module header carry prose about endpoints; only code
+   should be judged. This strips line and block comments conservatively. */
+function stripComments(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .split("\n")
+    .map((l) => l.replace(/(^|[^:])\/\/.*$/, "$1"))
+    .join("\n");
+}
+
+const files = SCAN_DIRS.flatMap(walk);
+assert.ok(files.length > 50, `scan found only ${files.length} files; the tree layout probably changed`);
+
+const findings = [];
+const census = [];
+
+for (const rel of files) {
+  const base = path.basename(rel);
+  const raw = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  const code = stripComments(raw);
+  const allow = ALLOWED.get(base);
+
+  const mentionsSession = code.includes(AUTH_SESSION);
+  const mentionsBackend = code.includes(BACKEND_PREFIX);
+  const fetchSites = (code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length;
+
+  if (fetchSites > 0) census.push({ rel, base, fetchSites, mentionsSession, mentionsBackend, role: allow?.role || "none" });
+
+  if (mentionsSession && allow?.role !== "authority") {
+    findings.push(`${rel}: references ${AUTH_SESSION} — session acquisition belongs to the authority`
+      + (allow ? ` (declared role: ${allow.role})` : ""));
+  }
+  if (mentionsBackend && !allow) {
+    findings.push(`${rel}: references ${BACKEND_PREFIX} without an allow-list entry`);
+  }
+}
+
+/* The declared exception must actually still be needed: once 0D3a migrates,
+   this entry has to go, and a stale allowance is itself drift. */
+const archive = census.find((c) => c.base.startsWith("0D3a"));
+if (archive && !archive.mentionsBackend && !archive.mentionsSession) {
+  findings.push("0D3a no longer touches the backend — remove its pending-migration exception");
+}
+
+/* 0F2a is allowed to wrap fetch, but only to observe. If it ever constructs a
+   backend request of its own, the observational allowance no longer holds. */
+{
+  const rel = files.find((f) => path.basename(f).startsWith("0F2a"));
+  if (rel) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    assert.ok(code.includes("originalFetch.apply"),
+      "0F2a must delegate to the original fetch; its allowance is observational only");
+    assert.ok(!/\bfetch\s*\(\s*[`'"]\/backend-api\//.test(code),
+      "0F2a must not construct a backend request of its own");
+  }
+}
+
+/* Dynamic construction: a fragment assigned to a variable and concatenated
+   still leaves the literal behind, which the mention check above catches.
+   This asserts that assumption holds for the pattern we can see. */
+for (const rel of files) {
+  const base = path.basename(rel);
+  if (ALLOWED.has(base)) continue;
+  const code = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+  if (/['"`]\/backend-api['"`]|['"`]\/backend-api\/['"`]/.test(code)) {
+    findings.push(`${rel}: builds a backend path from a fragment without an allow-list entry`);
+  }
+}
+
+/* The authority itself must remain the only producer inside its own file, and
+   must keep its fail-closed and origin guards. */
+{
+  const code = fs.readFileSync(path.join(ROOT, "src-runtime-base", AUTHORITY_FILE), "utf8");
+  assert.ok(code.includes("const SUPPORTED_ORIGIN = 'https://chatgpt.com'"), "authority must pin the supported origin");
+  assert.ok(code.includes("h2o.backend-authority.chatgpt.v1"), "authority must use the approved lock name");
+  assert.ok(code.includes("navigator?.locks"), "authority must require Web Locks");
+  assert.ok(!/localStorage\.setItem\([^)]*(accessToken|Bearer)/i.test(code), "the access token must never be persisted");
+  const fetches = (stripComments(code).match(/\bW\.fetch\s*\(/g) || []).length;
+  assert.strictEqual(fetches, 2, `authority should hold exactly 2 fetch sites (session + request), found ${fetches}`);
+}
+
+/* Title must not have kept a private transport. */
+{
+  const rel = files.find((f) => path.basename(f).startsWith("9B0a"));
+  const code = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+  const fetches = (code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length;
+  assert.strictEqual(fetches, 0, `9B0a must issue no requests of its own, found ${fetches}`);
+  assert.ok(code.includes("H2O.BackendAuthority"), "9B0a must consume the authority");
+  assert.ok(code.includes("authority-unavailable"), "9B0a must fail closed when the authority is absent");
+}
+
+/* Generated aliases are delivery copies; an edit there would bypass every
+   check above, so where they exist they must match their source. */
+const aliasDir = path.join(ROOT, "apps/dev-server/alias");
+let aliasChecked = 0;
+if (fs.existsSync(aliasDir)) {
+  for (const rel of files) {
+    const base = path.basename(rel);
+    if (!ALLOWED.has(base) && !base.startsWith("9B0a")) continue;
+    const aliasName = base.replace(/[^\x20-\x7E]/g, "").replace(/\s+/g, "_").replace(/^_+|_+$/g, "");
+    const candidate = fs.readdirSync(aliasDir).find((f) => f.startsWith(aliasName.slice(0, 4)));
+    if (!candidate) continue;
+    const source = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    const alias = fs.readFileSync(path.join(aliasDir, candidate), "utf8");
+    assert.strictEqual(alias.trim(), source.trim(), `generated alias ${candidate} has drifted from ${rel}`);
+    aliasChecked += 1;
+  }
+}
+
+/* Acceptance-tooling rule, encoded rather than left to convention: ad-hoc
+   page-evaluated authenticated fetch loops are not an approved acceptance
+   path. Any future live acceptance helper must consume the authority. */
+{
+  const toolDirs = ["tools/validation", "tools/dev", "tools/smoke"].map((d) => path.join(ROOT, d)).filter((d) => fs.existsSync(d));
+  const offenders = [];
+  for (const dir of toolDirs) {
+    const stack = [dir];
+    while (stack.length) {
+      const cur = stack.pop();
+      for (const e of fs.readdirSync(cur, { withFileTypes: true })) {
+        const abs = path.join(cur, e.name);
+        if (e.isDirectory()) { stack.push(abs); continue; }
+        if (!/\.(mjs|js)$/.test(e.name)) continue;
+        // This file states the rule, so it necessarily contains the patterns
+        // the rule matches on; scanning itself would always self-report.
+        if (abs === fileURLToPath(import.meta.url)) continue;
+        const code = stripComments(fs.readFileSync(abs, "utf8"));
+        /* A tool that both drives a live page AND names a backend endpoint is
+           the ad-hoc acceptance pattern this rule forbids. */
+        const drivesPage = /Runtime\.evaluate|page\.evaluate|javascript_tool/.test(code);
+        if (drivesPage && (code.includes(BACKEND_PREFIX) || code.includes(AUTH_SESSION))) {
+          offenders.push(path.relative(ROOT, abs));
+        }
+      }
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    `ad-hoc page-evaluated authenticated backend access is not an approved acceptance path: ${offenders.join(", ")}`);
+}
+
+if (findings.length) {
+  console.error("FAIL validate-backend-authority-enforcement");
+  for (const f of findings) console.error(`  ✗ ${f}`);
+  process.exit(1);
+}
+
+console.log("PASS validate-backend-authority-enforcement");
+console.log(`  fetch call-site census: ${census.length} file(s) in ${SCAN_DIRS.join(", ")}`);
+for (const c of census) {
+  const tag = c.role === "none" ? "unrelated" : c.role;
+  console.log(`    ${c.base.slice(0, 46).padEnd(48)} fetch×${String(c.fetchSites).padEnd(2)} [${tag}]`);
+}
+console.log(`  generated aliases compared: ${aliasChecked}`);
+console.log("  NOTE: static analysis cannot prove the absence of every dynamic request;");
+console.log("        this detects accidental architectural drift, not deliberate evasion.");
