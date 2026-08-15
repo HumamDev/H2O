@@ -21,6 +21,7 @@ const PAYLOAD_MODULE_REL = "tools/publish/lean-payload-transaction.mjs";
 const VALIDATOR_REL = "tools/validation/publish/validate-lean-activator-v1.mjs";
 const PAYLOAD_VALIDATOR_REL = "tools/validation/publish/validate-lean-payload-transaction-v1.mjs";
 const PACKAGE_REL = "package.json";
+const PACKAGE_LOCK_REL = "package-lock.json";
 const P3A_AUTHORIZED_PATHS = Object.freeze([
   ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
@@ -123,7 +124,51 @@ const CURRENT_PAYLOAD_BASELINE_SUBJECT =
   "test(publish): authorize current-main payload baseline after activator repair";
 const CLASSIFIER_DURABILITY_BASE = "83ea42f0cab1c0e2a6756f4b94f195a27657cbb2";
 const CLASSIFIER_DURABILITY_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
-const EXPECTED_SCOPE = 22;
+// Durable Payload authority begins at the independently reviewed classifier
+// durability commit. Later canonical commits are acceptable only when every
+// protected publication change is one of the exact transitions declared here.
+const PAYLOAD_DURABILITY_ANCHOR = "b67dd6b511c2f0b4cac86416bf2ed7f0db96fd60";
+const APPROVED_ACTIVATOR_TRANSITION = "99466b422e86fb4b7731e2a23a877b48e04d7d03";
+const CURRENT_DURABLE_AUTHORITY_BASE = "13b333a2e6249aed9f90f0ec16776147c2edd434";
+const PAYLOAD_DURABLE_AUTHORITY_SUBJECT =
+  "test(publish): bind payload durability to approved authority transitions";
+const PAYLOAD_DURABLE_AUTHORITY_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const PROTECTED_PAYLOAD_AUTHORITY_PATHS = Object.freeze([
+  PAYLOAD_MODULE_REL,
+  ACTIVATOR_REL,
+  PAYLOAD_VALIDATOR_REL,
+  VALIDATOR_REL,
+  PACKAGE_REL,
+  PACKAGE_LOCK_REL,
+].sort());
+const APPROVED_ACTIVATOR_TRANSITION_PATHS = Object.freeze([
+  ACTIVATOR_REL,
+  VALIDATOR_REL,
+].sort());
+const APPROVED_PROTECTED_HISTORY = Object.freeze([
+  `${APPROVED_ACTIVATOR_TRANSITION}\t${APPROVED_ACTIVATOR_TRANSITION_PATHS.join("\t")}`,
+]);
+const ANCHOR_PROTECTED_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "3977cd1f7976513bc324368458f42328915c8f44075fc7eedd3eb5c3015e130a",
+  [PAYLOAD_MODULE_REL]: "f2c9c8483bf22ae864bc3bafaf3b4f87c65d09f84c6ef5e4f196f08af9652e01",
+  [VALIDATOR_REL]: "c94b27e5fdde9b739b0c63540cd1e8153c498efb29deae35f80f0b0f49abf74c",
+  [PAYLOAD_VALIDATOR_REL]: "88a188f55f75c7ac753ae057d6db7d0cd017ee72db8be441934c4dad006de694",
+  [PACKAGE_REL]: "3f3b6c30ba45a2e682b82328b7b8075aff50b872a7a1af0e2cb3d8a59af5eef8",
+  [PACKAGE_LOCK_REL]: "4e38680d7fdb4fa735de96c5827f894b08e06686c12515eb59dacf9386f7ab5b",
+});
+const APPROVED_ACTIVATOR_BEFORE_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: ANCHOR_PROTECTED_IDENTITIES[ACTIVATOR_REL],
+  [VALIDATOR_REL]: ANCHOR_PROTECTED_IDENTITIES[VALIDATOR_REL],
+});
+const APPROVED_ACTIVATOR_AFTER_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "eaac5ba995bd44740d3d1e26878872a3b3e4823f0df09aa27834232656c62db4",
+  [VALIDATOR_REL]: "2e20998a60bda20d53798637070fe67685e5fa753ba6ecbbc0942cc96b2f1c17",
+});
+const APPROVED_CURRENT_PROTECTED_IDENTITIES = Object.freeze({
+  ...ANCHOR_PROTECTED_IDENTITIES,
+  ...APPROVED_ACTIVATOR_AFTER_IDENTITIES,
+});
+const EXPECTED_SCOPE = 25;
 const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -161,6 +206,36 @@ function git(repository, args, { allowFailure = false } = {}) {
   }
 }
 
+function gitCommitParents(repository, commit) {
+  const output = git(repository, ["rev-list", "--parents", "-n", "1", commit]);
+  const fields = output ? output.split(/\s+/u).filter(Boolean) : [];
+  if (!fields.length || !/^[0-9a-f]{40}$/u.test(fields[0])) {
+    throw new Error(`unable to derive Git parents for ${commit}`);
+  }
+  return fields.slice(1);
+}
+
+function deriveProtectedHistory(repository, anchor, head = "HEAD",
+  protectedPaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS) {
+  const output = git(repository, ["rev-list", "--reverse", "--full-history",
+    `${anchor}..${head}`, "--", ...protectedPaths]);
+  const candidates = output ? output.split("\n").filter(Boolean) : [];
+  const commits = [];
+  const records = [];
+  for (const commit of candidates) {
+    const merge = gitCommitParents(repository, commit).length > 1;
+    const changedOutput = git(repository, ["diff-tree", ...(merge ? ["-c"] : []),
+      "--no-commit-id", "--name-only", "-r", commit, "--", ...protectedPaths]);
+    const changed = changedOutput
+      ? [...new Set(changedOutput.split("\n").filter(Boolean))].sort()
+      : [];
+    if (!changed.length) continue;
+    commits.push(commit);
+    records.push(`${commit}\t${changed.join("\t")}`);
+  }
+  return { commits, records };
+}
+
 function tempRoot(label) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `h2o-p3a-${label}-`));
   temporaryRoots.push(root);
@@ -182,6 +257,70 @@ function normalized(target) {
 
 function sha256Bytes(bytes) {
   return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function gitBlobIdentity(commit, relative) {
+  return sha256Bytes(execFileSync("git", ["-C", ROOT, "show", `${commit}:${relative}`], {
+    encoding: null, stdio: ["ignore", "pipe", "pipe"], timeout: 30_000,
+  }));
+}
+
+function protectedIdentityRecord(commit, paths = PROTECTED_PAYLOAD_AUTHORITY_PATHS) {
+  return Object.fromEntries(paths.map((relative) => [relative, gitBlobIdentity(commit, relative)]));
+}
+
+function identityRecordMatches(actual, expected, paths) {
+  if (!actual || typeof actual !== "object") return false;
+  return paths.every((relative) => actual[relative] === expected[relative]) &&
+    Object.keys(actual).length === paths.length;
+}
+
+function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
+  if (requireMainBranch && value.branch !== "main") return false;
+  const approvedFoundation = value.approvedAnchorAncestor === true &&
+    JSON.stringify(value.approvedTransitionPaths ?? []) ===
+      JSON.stringify(APPROVED_ACTIVATOR_TRANSITION_PATHS) &&
+    identityRecordMatches(value.anchorProtectedIdentities, ANCHOR_PROTECTED_IDENTITIES,
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS) &&
+    identityRecordMatches(value.approvedTransitionBeforeIdentities,
+      APPROVED_ACTIVATOR_BEFORE_IDENTITIES, APPROVED_ACTIVATOR_TRANSITION_PATHS) &&
+    identityRecordMatches(value.approvedTransitionAfterIdentities,
+      APPROVED_ACTIVATOR_AFTER_IDENTITIES, APPROVED_ACTIVATOR_TRANSITION_PATHS);
+  if (!approvedFoundation) return false;
+  const anchorPlusActivator =
+    JSON.stringify(value.protectedHistory ?? []) === JSON.stringify(APPROVED_PROTECTED_HISTORY) &&
+    identityRecordMatches(value.headProtectedIdentities, APPROVED_CURRENT_PROTECTED_IDENTITIES,
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS);
+  if (anchorPlusActivator) return true;
+  const repairCommit = value.payloadDurabilityRepairCommit;
+  const expectedRepairHistory = [...APPROVED_PROTECTED_HISTORY,
+    `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+  const immutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
+    .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
+  return typeof repairCommit === "string" && /^[0-9a-f]{40}$/u.test(repairCommit) &&
+    repairCommit !== APPROVED_ACTIVATOR_TRANSITION &&
+    JSON.stringify(value.protectedHistory ?? []) === JSON.stringify(expectedRepairHistory) &&
+    value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.payloadDurabilityRepairSubject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.payloadDurabilityRepairPaths ?? []) ===
+      JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS) &&
+    value.payloadDurabilityRepairBeforeIdentity ===
+      APPROVED_CURRENT_PROTECTED_IDENTITIES[PAYLOAD_VALIDATOR_REL] &&
+    typeof value.payloadDurabilityRepairAfterIdentity === "string" &&
+    value.payloadDurabilityRepairAfterIdentity === value.executionPayloadValidatorIdentity &&
+    value.payloadDurabilityRepairAfterIdentity ===
+      value.headProtectedIdentities?.[PAYLOAD_VALIDATOR_REL] &&
+    (value.head !== repairCommit || (
+      value.parent === CURRENT_DURABLE_AUTHORITY_BASE &&
+      value.subject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+      JSON.stringify(value.committedPaths ?? []) ===
+        JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS))) &&
+    identityRecordMatches(
+      Object.fromEntries(immutablePaths.map((relative) =>
+        [relative, value.headProtectedIdentities?.[relative]])),
+      APPROVED_CURRENT_PROTECTED_IDENTITIES, immutablePaths) &&
+    Object.keys(value.headProtectedIdentities ?? {}).length ===
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
 }
 
 /* --------------------------------------------------------------------- *
@@ -490,10 +629,27 @@ function classifyPayloadScope(state) {
     value.missingFinal.length === 0 &&
     JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
   if (durabilityRepair) return "classifier-durability-uncommitted";
+  const currentDurableAuthorityRepair = value.head === CURRENT_DURABLE_AUTHORITY_BASE &&
+    JSON.stringify(value.modifiedTracked) === JSON.stringify([PAYLOAD_VALIDATOR_REL]) &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    hasApprovedPayloadAuthority(value, { requireMainBranch: false });
+  if (currentDurableAuthorityRepair) return "payload-durable-authority-uncommitted";
+  const committedDurableAuthorityRepair = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    value.parent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.subject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS) &&
+    hasApprovedPayloadAuthority(value, { requireMainBranch: false });
+  if (committedDurableAuthorityRepair) return "payload-durable-authority-committed";
   const durableCommittedClean = value.modifiedTracked.length === 0 &&
     value.staged.length === 0 && value.untracked.length === 0 &&
     value.missingFinal.length === 0 &&
-    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    hasApprovedPayloadAuthority(value);
   if (durableCommittedClean) return "committed-clean";
   throw new Error("P3A source scope mismatch");
 }
@@ -505,8 +661,43 @@ function currentScopeState() {
   };
   const trackedFinal = lines(["ls-files", "--", ...FINAL_PATHS]);
   const missingFinal = FINAL_PATHS.filter((relative) => !fs.existsSync(path.join(ROOT, relative)));
+  const { commits: protectedHistoryCommits, records: protectedHistory } =
+    deriveProtectedHistory(ROOT, PAYLOAD_DURABILITY_ANCHOR);
+  const payloadDurabilityRepairCommit = protectedHistoryCommits.length === 2 &&
+    protectedHistoryCommits.includes(APPROVED_ACTIVATOR_TRANSITION)
+    ? protectedHistoryCommits.find((commit) => commit !== APPROVED_ACTIVATOR_TRANSITION)
+    : null;
+  const repairGit = (args) => payloadDurabilityRepairCommit ? git(ROOT, args) : null;
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
+    branch: git(ROOT, ["branch", "--show-current"]),
+    approvedAnchorAncestor: git(ROOT, ["merge-base", "--is-ancestor",
+      PAYLOAD_DURABILITY_ANCHOR, "HEAD"], { allowFailure: true }) !== null,
+    protectedHistory,
+    anchorProtectedIdentities: protectedIdentityRecord(PAYLOAD_DURABILITY_ANCHOR),
+    approvedTransitionPaths: lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+      APPROVED_ACTIVATOR_TRANSITION, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS]),
+    approvedTransitionBeforeIdentities:
+      protectedIdentityRecord(`${APPROVED_ACTIVATOR_TRANSITION}^`,
+        APPROVED_ACTIVATOR_TRANSITION_PATHS),
+    approvedTransitionAfterIdentities:
+      protectedIdentityRecord(APPROVED_ACTIVATOR_TRANSITION,
+        APPROVED_ACTIVATOR_TRANSITION_PATHS),
+    headProtectedIdentities: protectedIdentityRecord("HEAD"),
+    payloadDurabilityRepairCommit,
+    payloadDurabilityRepairParent: repairGit(["rev-parse", `${payloadDurabilityRepairCommit}^`]),
+    payloadDurabilityRepairSubject:
+      repairGit(["show", "-s", "--format=%s", payloadDurabilityRepairCommit]),
+    payloadDurabilityRepairPaths: payloadDurabilityRepairCommit
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+        payloadDurabilityRepairCommit, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    payloadDurabilityRepairBeforeIdentity: payloadDurabilityRepairCommit
+      ? gitBlobIdentity(`${payloadDurabilityRepairCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
+    payloadDurabilityRepairAfterIdentity: payloadDurabilityRepairCommit
+      ? gitBlobIdentity(payloadDurabilityRepairCommit, PAYLOAD_VALIDATOR_REL) : null,
+    executionPayloadValidatorIdentity:
+      sha256Bytes(fs.readFileSync(path.join(ROOT, PAYLOAD_VALIDATOR_REL))),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
     // Ordered parents of HEAD and of HEAD^, so a merge's shape is authority
     // rather than something inferred from a single hash.
@@ -537,8 +728,36 @@ function baseScope(overrides = {}) {
   return {
     head: ACCEPTED_P23_HEAD, parent: "51e21657f216da50e2183bb1e2d3512e946c1ea9",
     subject: P23_SUBJECT, modifiedTracked: [], staged: [], untracked: [],
-    trackedFinal: [], missingFinal: [], committedPaths: [], ...overrides,
+    trackedFinal: [], missingFinal: [], committedPaths: [], branch: "fixture",
+    approvedAnchorAncestor: false, protectedHistory: [],
+    anchorProtectedIdentities: {}, approvedTransitionPaths: [],
+    approvedTransitionBeforeIdentities: {}, approvedTransitionAfterIdentities: {},
+    headProtectedIdentities: {}, payloadDurabilityRepairCommit: null,
+    payloadDurabilityRepairParent: null, payloadDurabilityRepairSubject: null,
+    payloadDurabilityRepairPaths: [], payloadDurabilityRepairBeforeIdentity: null,
+    payloadDurabilityRepairAfterIdentity: null, executionPayloadValidatorIdentity: null,
+    ...overrides,
   };
+}
+
+function approvedAuthorityScope(overrides = {}) {
+  return baseScope({
+    head: CURRENT_DURABLE_AUTHORITY_BASE,
+    parent: APPROVED_ACTIVATOR_TRANSITION,
+    subject: "merge(perf): integrate scroll performance checkpoints",
+    branch: "main",
+    modifiedTracked: [], staged: [], untracked: [],
+    trackedFinal: [...FINAL_PATHS], missingFinal: [],
+    committedPaths: ["src-runtime-base/0C1a.🟫🛤️ Scroll Performance 🛤️.js"],
+    approvedAnchorAncestor: true,
+    protectedHistory: [...APPROVED_PROTECTED_HISTORY],
+    anchorProtectedIdentities: { ...ANCHOR_PROTECTED_IDENTITIES },
+    approvedTransitionPaths: [...APPROVED_ACTIVATOR_TRANSITION_PATHS],
+    approvedTransitionBeforeIdentities: { ...APPROVED_ACTIVATOR_BEFORE_IDENTITIES },
+    approvedTransitionAfterIdentities: { ...APPROVED_ACTIVATOR_AFTER_IDENTITIES },
+    headProtectedIdentities: { ...APPROVED_CURRENT_PROTECTED_IDENTITIES },
+    ...overrides,
+  });
 }
 
 function runScopeTests() {
@@ -793,50 +1012,293 @@ function runScopeTests() {
       committedPaths: [...P3A_AUTHORIZED_PATHS, PACKAGE_REL].sort(),
     })), /scope mismatch/u);
   });
-  scopeTest("durable committed-clean survives later commits and rejects adjacent states", () => {
-    const clean = {
+  scopeTest("historical classifier-durability repair state remains exact", () => {
+    assert.equal(classifyPayloadScope(baseScope({
       head: CLASSIFIER_DURABILITY_BASE,
-      parent: "a102e219da8efa71d95f88b12f489cf63a0339de",
-      subject: "test(publish): preserve E2B writer anchor identity",
-      modifiedTracked: [], staged: [], untracked: [],
-      trackedFinal: [...FINAL_PATHS], missingFinal: [],
-      committedPaths: ["tools/validation/publish/validate-e2b-writer-enforcement-v1.mjs"],
-    };
-    assert.equal(classifyPayloadScope(baseScope(clean)), "committed-clean");
-    assert.equal(classifyPayloadScope(baseScope({
-      ...clean,
-      head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
-      committedPaths: ["later/path.mjs"],
-    })), "committed-clean");
-    assert.equal(classifyPayloadScope(baseScope({
-      ...clean,
       modifiedTracked: [...CLASSIFIER_DURABILITY_PATHS],
+      trackedFinal: [...FINAL_PATHS], missingFinal: [],
     })), "classifier-durability-uncommitted");
+  });
+  scopeTest("approved anchor and exact 99466b42 transition authorize clean descendants", () => {
+    assert.equal(classifyPayloadScope(approvedAuthorityScope()), "committed-clean");
+    assert.equal(classifyPayloadScope(approvedAuthorityScope({
+      head: APPROVED_ACTIVATOR_TRANSITION,
+      parent: "a7817c9b99cb403f800c7f0405e0f1ec799e4384",
+      subject: "fix(publish): resolve accepted historical activation intents",
+      committedPaths: [...APPROVED_ACTIVATOR_TRANSITION_PATHS],
+    })), "committed-clean");
+    assert.equal(classifyPayloadScope(approvedAuthorityScope({
+      head: "f".repeat(40), parent: CURRENT_DURABLE_AUTHORITY_BASE,
+      subject: "feat(prompt-manager): unrelated descendant",
+      committedPaths: ["src-runtime-base/prompt-manager-fixture.js"],
+    })), "committed-clean");
+    assert.equal(classifyPayloadScope(approvedAuthorityScope({
+      branch: "w3-publish-payload-durable-authority-fixture",
+      modifiedTracked: [PAYLOAD_VALIDATOR_REL],
+    })), "payload-durable-authority-uncommitted");
+    const repairCommit = "c".repeat(40);
+    const repairIdentity = "1".repeat(64);
+    const committedRepair = {
+      head: repairCommit,
+      parent: CURRENT_DURABLE_AUTHORITY_BASE,
+      subject: PAYLOAD_DURABLE_AUTHORITY_SUBJECT,
+      committedPaths: [...PAYLOAD_DURABLE_AUTHORITY_PATHS],
+      protectedHistory: [...APPROVED_PROTECTED_HISTORY,
+        `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`],
+      headProtectedIdentities: { ...APPROVED_CURRENT_PROTECTED_IDENTITIES,
+        [PAYLOAD_VALIDATOR_REL]: repairIdentity },
+      payloadDurabilityRepairCommit: repairCommit,
+      payloadDurabilityRepairParent: CURRENT_DURABLE_AUTHORITY_BASE,
+      payloadDurabilityRepairSubject: PAYLOAD_DURABLE_AUTHORITY_SUBJECT,
+      payloadDurabilityRepairPaths: [...PAYLOAD_DURABLE_AUTHORITY_PATHS],
+      payloadDurabilityRepairBeforeIdentity:
+        APPROVED_CURRENT_PROTECTED_IDENTITIES[PAYLOAD_VALIDATOR_REL],
+      payloadDurabilityRepairAfterIdentity: repairIdentity,
+      executionPayloadValidatorIdentity: repairIdentity,
+    };
+    assert.equal(classifyPayloadScope(approvedAuthorityScope(committedRepair)),
+      "payload-durable-authority-committed");
+    assert.equal(classifyPayloadScope(approvedAuthorityScope({
+      ...committedRepair, branch: "w3-publish-payload-durable-authority-fixture",
+    })), "payload-durable-authority-committed");
+    assert.equal(classifyPayloadScope(approvedAuthorityScope({
+      ...committedRepair,
+      head: "e".repeat(40), parent: repairCommit, subject: "unrelated later descendant",
+      committedPaths: ["README.md"],
+    })), "committed-clean");
     for (const override of [
+      { parent: "0".repeat(40) },
+      { subject: "same shape, unapproved subject" },
+      { committedPaths: [PAYLOAD_VALIDATOR_REL, VALIDATOR_REL].sort() },
+      { payloadDurabilityRepairParent: "0".repeat(40) },
+      { payloadDurabilityRepairSubject: "same shape, unapproved subject" },
+      { payloadDurabilityRepairPaths: [PAYLOAD_VALIDATOR_REL, VALIDATOR_REL].sort() },
+      { payloadDurabilityRepairBeforeIdentity: "0".repeat(64) },
+      { payloadDurabilityRepairAfterIdentity: "2".repeat(64) },
+    ]) {
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        ...committedRepair, ...override,
+      })), /scope mismatch/u);
+    }
+  });
+  scopeTest("full history exposes protected branch and merge-result transitions without rejecting unrelated merges",
+    () => {
+      const initialize = (label) => {
+        const repository = path.join(tempRoot(label), "repository");
+        fs.mkdirSync(path.join(repository, path.dirname(PAYLOAD_MODULE_REL)), { recursive: true });
+        git(repository, ["init", "-q", "-b", "main"]);
+        git(repository, ["config", "user.name", "Payload Authority Fixture"]);
+        git(repository, ["config", "user.email", "payload-authority@example.invalid"]);
+        fs.writeFileSync(path.join(repository, PAYLOAD_MODULE_REL), "approved payload bytes\n");
+        git(repository, ["add", PAYLOAD_MODULE_REL]);
+        git(repository, ["commit", "-q", "-m", "fixture: approved authority"]);
+        return { repository, anchor: git(repository, ["rev-parse", "HEAD"]) };
+      };
+      const commitFile = (repository, relative, bytes, subject) => {
+        const absolute = path.join(repository, relative);
+        fs.mkdirSync(path.dirname(absolute), { recursive: true });
+        fs.writeFileSync(absolute, bytes);
+        git(repository, ["add", "--", relative]);
+        git(repository, ["commit", "-q", "-m", subject]);
+        return git(repository, ["rev-parse", "HEAD"]);
+      };
+      const deleteFile = (repository, relative, subject) => {
+        fs.rmSync(path.join(repository, relative));
+        git(repository, ["add", "-u", "--", relative]);
+        git(repository, ["commit", "-q", "-m", subject]);
+        return git(repository, ["rev-parse", "HEAD"]);
+      };
+      const mergeWithProtectedResult = (repository, branch, bytes, subject) => {
+        git(repository, ["merge", "-q", "--no-ff", "--no-commit", branch]);
+        fs.writeFileSync(path.join(repository, PAYLOAD_MODULE_REL), bytes);
+        git(repository, ["add", "--", PAYLOAD_MODULE_REL]);
+        git(repository, ["commit", "-q", "-m", subject]);
+        return git(repository, ["rev-parse", "HEAD"]);
+      };
+
+      const protectedFixture = initialize("authority-protected-merge");
+      git(protectedFixture.repository, ["checkout", "-q", "-b", "protected-side"]);
+      const mutation = commitFile(protectedFixture.repository, PAYLOAD_MODULE_REL,
+        "unapproved payload bytes\n", "fixture: mutate protected payload");
+      const reversion = commitFile(protectedFixture.repository, PAYLOAD_MODULE_REL,
+        "approved payload bytes\n", "fixture: restore approved payload bytes");
+      const deletion = deleteFile(protectedFixture.repository, PAYLOAD_MODULE_REL,
+        "fixture: delete protected payload");
+      const recreation = commitFile(protectedFixture.repository, PAYLOAD_MODULE_REL,
+        "approved payload bytes\n", "fixture: recreate approved payload bytes");
+      const linear = deriveProtectedHistory(protectedFixture.repository,
+        protectedFixture.anchor, recreation, [PAYLOAD_MODULE_REL]);
+      assert.deepEqual(linear.commits, [mutation, reversion, deletion, recreation],
+        "linear mutation, reversion, deletion, and recreation must all remain visible");
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, ...linear.records],
+      })), /scope mismatch/u);
+
+      git(protectedFixture.repository, ["checkout", "-q", "main"]);
+      commitFile(protectedFixture.repository, "main-unrelated.txt", "main advancement\n",
+        "fixture: advance main without publication authority");
+      git(protectedFixture.repository, ["merge", "-q", "--no-ff", "-m",
+        "fixture: merge protected side", "protected-side"]);
+      assert.equal(fs.readFileSync(path.join(protectedFixture.repository, PAYLOAD_MODULE_REL), "utf8"),
+        "approved payload bytes\n", "merged final bytes must equal approved authority");
+      const defaultOutput = git(protectedFixture.repository, ["rev-list", "--reverse",
+        `${protectedFixture.anchor}..HEAD`, "--", PAYLOAD_MODULE_REL]);
+      assert.equal(defaultOutput, "",
+        "default history simplification must reproduce the mutate/revert evasion");
+      const merged = deriveProtectedHistory(protectedFixture.repository,
+        protectedFixture.anchor, "HEAD", [PAYLOAD_MODULE_REL]);
+      assert.deepEqual(merged.commits, [mutation, reversion, deletion, recreation],
+        "full history must expose all merged non-merge protected commits");
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, ...merged.records],
+      })), /scope mismatch/u);
+
+      const evilFixture = initialize("authority-evil-merge");
+      assert.deepEqual(gitCommitParents(evilFixture.repository, evilFixture.anchor), [],
+        "approved fixture root must have no parents");
+      git(evilFixture.repository, ["checkout", "-q", "-b", "evil-one-side"]);
+      commitFile(evilFixture.repository, "side-one.txt", "side one\n",
+        "fixture: first unrelated side parent");
+      git(evilFixture.repository, ["checkout", "-q", "main"]);
+      const ordinary = commitFile(evilFixture.repository, "main-one.txt", "main one\n",
+        "fixture: first unrelated main parent");
+      assert.equal(gitCommitParents(evilFixture.repository, ordinary).length, 1,
+        "ordinary commit must have one parent");
+      const evilMerge = mergeWithProtectedResult(evilFixture.repository, "evil-one-side",
+        "evil merge-only payload bytes\n", "fixture: evil merge introduces protected bytes");
+      assert.equal(gitCommitParents(evilFixture.repository, evilMerge).length, 2,
+        "evil mutation must be a true two-parent merge");
+      for (const parent of gitCommitParents(evilFixture.repository, evilMerge)) {
+        assert.equal(git(evilFixture.repository, ["show", `${parent}:${PAYLOAD_MODULE_REL}`]),
+          "approved payload bytes",
+          "evil merge result must differ from the protected bytes in both parents");
+      }
+      const evilMutationHistory = deriveProtectedHistory(evilFixture.repository,
+        evilFixture.anchor, evilMerge, [PAYLOAD_MODULE_REL]);
+      assert.deepEqual(evilMutationHistory.commits, [evilMerge]);
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, ...evilMutationHistory.records],
+      })), /scope mismatch/u, "the merge-only protected mutation must reject independently");
+
+      git(evilFixture.repository, ["checkout", "-q", "-b", "evil-two-side"]);
+      commitFile(evilFixture.repository, "side-two.txt", "side two\n",
+        "fixture: second unrelated side parent");
+      git(evilFixture.repository, ["checkout", "-q", "main"]);
+      commitFile(evilFixture.repository, "main-two.txt", "main two\n",
+        "fixture: second unrelated main parent");
+      const restoreMerge = mergeWithProtectedResult(evilFixture.repository, "evil-two-side",
+        "approved payload bytes\n", "fixture: evil merge restores approved bytes");
+      assert.equal(gitCommitParents(evilFixture.repository, restoreMerge).length, 2,
+        "evil restoration must be a true two-parent merge");
+      for (const parent of gitCommitParents(evilFixture.repository, restoreMerge)) {
+        assert.equal(git(evilFixture.repository, ["show", `${parent}:${PAYLOAD_MODULE_REL}`]),
+          "evil merge-only payload bytes",
+          "restoring merge result must differ from the protected bytes in both parents");
+      }
+      assert.equal(fs.readFileSync(path.join(evilFixture.repository, PAYLOAD_MODULE_REL), "utf8"),
+        "approved payload bytes\n", "evil merge topology must finish on approved bytes");
+      const omittedMergeHistory = git(evilFixture.repository, ["rev-list", "--reverse",
+        "--full-history", "--no-merges", `${evilFixture.anchor}..HEAD`, "--",
+        PAYLOAD_MODULE_REL]);
+      assert.equal(omittedMergeHistory, "",
+        "the former --no-merges evidence must reproduce the merge-only evasion");
+      const evilHistory = deriveProtectedHistory(evilFixture.repository,
+        evilFixture.anchor, "HEAD", [PAYLOAD_MODULE_REL]);
+      assert.deepEqual(evilHistory.commits, [evilMerge, restoreMerge],
+        "merge-inclusive evidence must retain mutation and restoration merge records");
+      for (const record of evilHistory.records) {
+        assert.equal(record.split("\t")[1], PAYLOAD_MODULE_REL,
+          "each evil merge record must identify the protected path");
+        assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+          protectedHistory: [...APPROVED_PROTECTED_HISTORY, record],
+        })), /scope mismatch/u,
+        "each real-derived merge-only protected transition must reject independently");
+      }
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, ...evilHistory.records],
+      })), /scope mismatch/u);
+      assert.throws(() => gitCommitParents(evilFixture.repository, "0".repeat(40)),
+        /Command failed/u, "failed parent lookup must throw rather than downgrade a merge");
+
+      const unrelatedFixture = initialize("authority-unrelated-merge");
+      git(unrelatedFixture.repository, ["checkout", "-q", "-b", "unrelated-side"]);
+      commitFile(unrelatedFixture.repository, "side-unrelated.txt", "side only\n",
+        "fixture: unrelated side change");
+      git(unrelatedFixture.repository, ["checkout", "-q", "main"]);
+      commitFile(unrelatedFixture.repository, "main-unrelated.txt", "main only\n",
+        "fixture: unrelated main change");
+      git(unrelatedFixture.repository, ["merge", "-q", "--no-ff", "-m",
+        "fixture: merge unrelated side", "unrelated-side"]);
+      const unrelatedMerge = git(unrelatedFixture.repository, ["rev-parse", "HEAD"]);
+      assert.equal(gitCommitParents(unrelatedFixture.repository, unrelatedMerge).length, 2,
+        "unrelated positive control must be a true two-parent merge");
+      assert.equal(git(unrelatedFixture.repository, ["diff-tree", "-c", "--no-commit-id",
+        "--name-only", "-r", unrelatedMerge, "--", PAYLOAD_MODULE_REL]), "",
+      "ordinary unrelated merge must have no combined protected diff");
+      const unrelated = deriveProtectedHistory(unrelatedFixture.repository,
+        unrelatedFixture.anchor, "HEAD", [PAYLOAD_MODULE_REL]);
+      assert.deepEqual(unrelated, { commits: [], records: [] });
+      assert.equal(classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, ...unrelated.records],
+      })), "committed-clean");
+    });
+  scopeTest("durable authority rejects unexplained protected history and adjacent states", () => {
+    const changed = (commit, ...paths) => `${commit}\t${[...paths].sort().join("\t")}`;
+    const arbitrary = "d".repeat(40);
+    const reverted = "e".repeat(40);
+    const protectedMutations = [
+      ["payload production", PAYLOAD_MODULE_REL],
+      ["Activator production", ACTIVATOR_REL],
+      ["Payload validator", PAYLOAD_VALIDATOR_REL],
+      ["Activator validator", VALIDATOR_REL],
+      ["package authority", PACKAGE_REL],
+      ["package lock authority", PACKAGE_LOCK_REL],
+    ];
+    for (const [, relative] of protectedMutations) {
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, changed(arbitrary, relative)],
+      })), /scope mismatch/u);
+    }
+    for (const relative of APPROVED_ACTIVATOR_TRANSITION_PATHS) {
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+        protectedHistory: [...APPROVED_PROTECTED_HISTORY, changed(arbitrary, relative)],
+      })), /scope mismatch/u, `later mutation of ${relative} must reject`);
+    }
+    // A revert to the approved bytes is still unexplained protected history.
+    assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+      protectedHistory: [
+        ...APPROVED_PROTECTED_HISTORY,
+        changed(arbitrary, PAYLOAD_MODULE_REL),
+        changed(reverted, PAYLOAD_MODULE_REL),
+      ],
+    })), /scope mismatch/u);
+    // Subject resemblance grants nothing: transition identity is the commit SHA.
+    assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+      subject: "fix(publish): resolve accepted historical activation intents",
+      protectedHistory: [changed(arbitrary, ...APPROVED_ACTIVATOR_TRANSITION_PATHS)],
+    })), /scope mismatch/u);
+    assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
+      protectedHistory: [changed(APPROVED_ACTIVATOR_TRANSITION, ACTIVATOR_REL)],
+      approvedTransitionPaths: [ACTIVATOR_REL],
+    })), /scope mismatch/u);
+    for (const override of [
+      { branch: "feature/unregistered" },
+      { approvedAnchorAncestor: false },
       { modifiedTracked: [PAYLOAD_MODULE_REL] },
-      { modifiedTracked: [PAYLOAD_VALIDATOR_REL] },
-      { modifiedTracked: ["README.md"] },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL, VALIDATOR_REL].sort() },
       { staged: [PAYLOAD_VALIDATOR_REL] },
-      { staged: ["README.md"] },
       { untracked: ["foreign.txt"] },
       {
         trackedFinal: FINAL_PATHS.filter((relative) => relative !== PAYLOAD_MODULE_REL),
         missingFinal: [PAYLOAD_MODULE_REL],
       },
-      {
-        trackedFinal: FINAL_PATHS.filter((relative) => relative !== PAYLOAD_MODULE_REL),
-        untracked: [PAYLOAD_MODULE_REL],
-      },
+      { anchorProtectedIdentities: { ...ANCHOR_PROTECTED_IDENTITIES,
+        [PAYLOAD_MODULE_REL]: "0".repeat(64) } },
+      { headProtectedIdentities: { ...APPROVED_CURRENT_PROTECTED_IDENTITIES,
+        [PAYLOAD_MODULE_REL]: "0".repeat(64) } },
     ]) {
-      assert.throws(
-        () => classifyPayloadScope(baseScope({
-          ...clean,
-          head: "f".repeat(40), parent: "e".repeat(40), subject: "later legitimate commit",
-          committedPaths: ["later/path.mjs"],
-          ...override,
-        })),
-        /scope mismatch|rejects staged/u,
-      );
+      assert.throws(() => classifyPayloadScope(approvedAuthorityScope(override)),
+        /scope mismatch|rejects staged/u);
     }
     assert.throws(() => classifyPayloadScope({}), /TypeError|scope mismatch/u);
   });
