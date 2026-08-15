@@ -35,14 +35,6 @@ const ALLOWED = new Map([
     role: "observational",
     why: "wraps W.fetch to observe ChatGPT's own sidebar request; produces none",
   }],
-  /* DECLARED EXCEPTION — remove in Mission 2.
-     0D3a still holds its own transport. It is recorded here deliberately so
-     the debt is visible in the validator rather than silently tolerated by a
-     scan that never looked at it. */
-  ["0D3a.⬛️🗄️ Transcript Archive Engine 🗂️🗄️.js", {
-    role: "pending-migration",
-    why: "MISSION 2: must migrate to the authority; ungoverned until then",
-  }],
 ]);
 
 const AUTH_SESSION = "/api/auth/session";
@@ -61,13 +53,95 @@ function walk(dir) {
 }
 
 /* Comments and the module header carry prose about endpoints; only code
-   should be judged. This strips line and block comments conservatively. */
+   should be judged. This small lexical pass preserves quoted/template text
+   while blanking comments. Regex replacement is unsafe here: the module
+   header contains `https://chatgpt.com/*`, whose trailing `/*` previously
+   consumed source until an unrelated later block-comment terminator and made
+   the scanner blind to real fetch sites. */
 function stripComments(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .split("\n")
-    .map((l) => l.replace(/(^|[^:])\/\/.*$/, "$1"))
-    .join("\n");
+  const text = String(src || "");
+  let out = "";
+  let mode = "code";
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1] || "";
+
+    if (mode === "line-comment") {
+      if (ch === "\n" || ch === "\r") {
+        out += ch;
+        mode = "code";
+      } else {
+        out += " ";
+      }
+      continue;
+    }
+
+    if (mode === "block-comment") {
+      if (ch === "*" && next === "/") {
+        out += "  ";
+        i += 1;
+        mode = "code";
+      } else {
+        out += ch === "\n" || ch === "\r" ? ch : " ";
+      }
+      continue;
+    }
+
+    if (mode !== "code") {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (
+        (mode === "single-quote" && ch === "'")
+        || (mode === "double-quote" && ch === '"')
+        || (mode === "template" && ch === "`")
+      ) {
+        mode = "code";
+      }
+      continue;
+    }
+
+    if (ch === "/" && next === "/") {
+      out += "  ";
+      i += 1;
+      mode = "line-comment";
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      out += "  ";
+      i += 1;
+      mode = "block-comment";
+      continue;
+    }
+    if (ch === "'") mode = "single-quote";
+    else if (ch === '"') mode = "double-quote";
+    else if (ch === "`") mode = "template";
+    out += ch;
+  }
+
+  return out;
+}
+
+/* Regression proof for the exact blind spot plus a synthetic authenticated
+   backend mutation. These run before the repository census so a future
+   scanner regression cannot make the main validation pass vacuously. */
+{
+  const blindSpotFixture = [
+    "// @match https://chatgpt.com/*",
+    "const sessionPath = '/api/auth/session';",
+    "const conversationPath = `/backend-api/conversation/${chatId}`;",
+    "/* /backend-api/comment-only */",
+    "W.fetch(conversationPath); // fetch('/backend-api/comment-only')",
+  ].join("\n");
+  const code = stripComments(blindSpotFixture);
+  assert.ok(code.includes(AUTH_SESSION), "comment stripping must preserve the session endpoint after a URL module header");
+  assert.ok(code.includes(BACKEND_PREFIX), "comment stripping must preserve backend endpoint literals in code");
+  assert.strictEqual((code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length, 1,
+    "comment stripping must preserve the real fetch while removing comment-only fetch text");
 }
 
 const files = SCAN_DIRS.flatMap(walk);
@@ -75,6 +149,7 @@ assert.ok(files.length > 50, `scan found only ${files.length} files; the tree la
 
 const findings = [];
 const census = [];
+const records = [];
 
 for (const rel of files) {
   const base = path.basename(rel);
@@ -85,10 +160,12 @@ for (const rel of files) {
   const mentionsSession = code.includes(AUTH_SESSION);
   const mentionsBackend = code.includes(BACKEND_PREFIX);
   const fetchSites = (code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length;
+  const record = { rel, base, fetchSites, mentionsSession, mentionsBackend, role: allow?.role || "none" };
+  records.push(record);
 
-  if (fetchSites > 0) census.push({ rel, base, fetchSites, mentionsSession, mentionsBackend, role: allow?.role || "none" });
+  if (fetchSites > 0) census.push(record);
 
-  if (mentionsSession && allow?.role !== "authority") {
+  if (mentionsSession && allow?.role !== "authority" && allow?.role !== "pending-migration") {
     findings.push(`${rel}: references ${AUTH_SESSION} — session acquisition belongs to the authority`
       + (allow ? ` (declared role: ${allow.role})` : ""));
   }
@@ -99,9 +176,20 @@ for (const rel of files) {
 
 /* The declared exception must actually still be needed: once 0D3a migrates,
    this entry has to go, and a stale allowance is itself drift. */
-const archive = census.find((c) => c.base.startsWith("0D3a"));
-if (archive && !archive.mentionsBackend && !archive.mentionsSession) {
+const archive = records.find((c) => c.base.startsWith("0D3a"));
+if (ALLOWED.get(archive?.base)?.role === "pending-migration" && !archive?.mentionsBackend && !archive?.mentionsSession) {
   findings.push("0D3a no longer touches the backend — remove its pending-migration exception");
+}
+
+/* Deliberately reintroduce the forbidden shape in memory and prove that it is
+   visible and would fail without a pending-migration allowance. */
+{
+  const mutation = "async function rawArchiveRead() { return W.fetch('/backend-api/conversation/mutation', { headers: { authorization: 'Bearer mutation' } }); }";
+  const code = stripComments(mutation);
+  const mutationFetches = (code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length;
+  assert.strictEqual(mutationFetches, 1, "mutation proof must expose the injected raw backend fetch");
+  assert.ok(code.includes(BACKEND_PREFIX), "mutation proof must expose the injected backend endpoint");
+  assert.ok(!ALLOWED.has("0D3a.mutation.js"), "mutation proof must not inherit the real Archive allowance");
 }
 
 /* 0F2a is allowed to wrap fetch, but only to observe. If it ever constructs a
@@ -213,5 +301,6 @@ for (const c of census) {
   console.log(`    ${c.base.slice(0, 46).padEnd(48)} fetch×${String(c.fetchSites).padEnd(2)} [${tag}]`);
 }
 console.log(`  generated aliases compared: ${aliasChecked}`);
+console.log("  scanner regression + raw-backend mutation proofs: PASS");
 console.log("  NOTE: static analysis cannot prove the absence of every dynamic request;");
 console.log("        this detects accidental architectural drift, not deliberate evasion.");

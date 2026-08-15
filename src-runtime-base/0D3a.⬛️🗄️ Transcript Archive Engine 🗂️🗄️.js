@@ -455,35 +455,6 @@
     return "";
   }
 
-  async function readChatGptAccessToken(opts = {}) {
-    try {
-      if (typeof W.fetch !== "function") return "";
-      const res = await W.fetch("/api/auth/session", {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: { accept: "application/json" },
-        ...(opts?.signal ? { signal: opts.signal } : {}),
-      });
-      if (!res?.ok) return "";
-      const json = await res.json();
-      return String(json?.accessToken || json?.access_token || "").trim();
-    } catch {
-      return "";
-    }
-  }
-
-  function nativeConversationHeaders(path, accessToken) {
-    const headers = {
-      accept: "application/json",
-      "content-type": "application/json",
-      "x-openai-target-path": path,
-      "x-openai-target-route": path,
-    };
-    if (accessToken) headers.authorization = `Bearer ${accessToken}`;
-    return headers;
-  }
-
   function targetChatHref(chatIdRaw) {
     const chatId = toChatId(chatIdRaw);
     if (!chatId) return String(W.location.href || "");
@@ -1131,15 +1102,47 @@
     }
   }
 
+  const BACKEND_AUTHORITY_CAPABILITY_FAILURES = new Set([
+    "unsupported-origin",
+    "fetch-unavailable",
+    "web-locks-unavailable",
+    "storage-unavailable",
+  ]);
+
+  function backendAuthorityFailureReason(result, opts = {}) {
+    const status = String(result?.status || "").trim();
+    const reason = String(result?.reason || "").trim();
+    const statusCode = Number(result?.statusCode || 0) || 0;
+    if (status === "aborted") {
+      return opts?.turnIndex === true
+        ? (opts?.timedOut === true ? "turn-index-timeout" : "turn-index-aborted")
+        : "backend-request-failed";
+    }
+    if (status === "timeout") {
+      return opts?.turnIndex === true ? "turn-index-timeout" : "backend-request-failed";
+    }
+    if (statusCode === 401 || status === "unauthorized-failed-closed") return "backend-401";
+    if (statusCode === 403 || status === "forbidden-failed-closed") return "backend-403";
+    if (statusCode === 429 || status === "rate-limited-cooldown") return "backend-429";
+    if (/^backend-(?:\d+|unknown)$/.test(status)) return status;
+    if (status === "network-error") return "backend-request-failed";
+    if (BACKEND_AUTHORITY_CAPABILITY_FAILURES.has(status) || BACKEND_AUTHORITY_CAPABILITY_FAILURES.has(reason)) {
+      return "fetch-unavailable";
+    }
+    return "backend-request-failed";
+  }
+
   async function fetchConversationTurnIndex(chatIdRaw, opts = {}) {
     const chatId = conversationTurnIndexIdentity(chatIdRaw);
     if (!chatId) return conversationTurnIndexFailure("missing-chat-id", { chatId });
-    if (typeof W.fetch !== "function") return conversationTurnIndexFailure("fetch-unavailable", { chatId });
+    const authority = H2O.BackendAuthority;
+    if (typeof authority?.request !== "function") return conversationTurnIndexFailure("fetch-unavailable", { chatId });
+    const timeoutMs = Math.max(250, Number(opts?.timeoutMs || TURN_INDEX_FETCH_TIMEOUT_MS) || TURN_INDEX_FETCH_TIMEOUT_MS);
+    const deadline = Date.now() + timeoutMs;
     const Controller = W.AbortController || globalThis.AbortController;
     const controller = typeof Controller === "function" ? new Controller() : null;
     const signal = controller?.signal || opts?.signal || null;
     let timedOut = false;
-    const timeoutMs = Math.max(250, Number(opts?.timeoutMs || TURN_INDEX_FETCH_TIMEOUT_MS) || TURN_INDEX_FETCH_TIMEOUT_MS);
     const timeoutId = W.setTimeout?.(() => {
       timedOut = true;
       try { controller?.abort?.("turn-index-timeout"); } catch {}
@@ -1152,27 +1155,30 @@
       try { opts?.signal?.removeEventListener?.("abort", abortFromCaller); } catch {}
     };
 
-    const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
     try {
-      const accessToken = await readChatGptAccessToken({ signal });
       if (signal?.aborted) {
         finish();
         return conversationTurnIndexFailure(timedOut ? "turn-index-timeout" : "turn-index-aborted", { chatId });
       }
-      const response = await W.fetch(path, {
+      const remainingBudget = Math.max(0, deadline - Date.now());
+      if (remainingBudget <= 0) {
+        timedOut = true;
+        try { controller?.abort?.("turn-index-timeout"); } catch {}
+        finish();
+        return conversationTurnIndexFailure("turn-index-timeout", { chatId });
+      }
+      const response = await authority.request({
+        resource: "conversation",
+        chatId,
         method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: nativeConversationHeaders(path, accessToken),
         ...(signal ? { signal } : {}),
+        timeoutMs: remainingBudget,
       });
       if (!response?.ok) {
         finish();
-        return conversationTurnIndexFailure(`backend-${response?.status || "unknown"}`, { chatId });
+        return conversationTurnIndexFailure(backendAuthorityFailureReason(response, { turnIndex: true, timedOut }), { chatId });
       }
-      let payload = null;
-      try { payload = await response.json(); } catch {}
-      const parsed = normalizeBackendConversationTurnIndex(payload, {
+      const parsed = normalizeBackendConversationTurnIndex(response.body, {
         chatId,
         capturedAt: opts?.capturedAt || nowIso(),
         includeIdentityGraph: opts?.includeIdentityGraph === true,
@@ -1188,19 +1194,17 @@
   async function fetchConversationCapture(chatIdRaw, opts = {}) {
     const chatId = toChatId(chatIdRaw);
     if (!chatId) return { ok: false, reason: "missing-chat-id", message: "Missing chat id." };
-    if (typeof W.fetch !== "function") {
+    const authority = H2O.BackendAuthority;
+    if (typeof authority?.request !== "function") {
       return { ok: false, reason: "fetch-unavailable", message: "Browser fetch is unavailable." };
     }
 
-    const path = `/backend-api/conversation/${encodeURIComponent(chatId)}`;
-    const accessToken = await readChatGptAccessToken();
     let res = null;
     try {
-      res = await W.fetch(path, {
+      res = await authority.request({
+        resource: "conversation",
+        chatId,
         method: "GET",
-        credentials: "include",
-        cache: "no-store",
-        headers: nativeConversationHeaders(path, accessToken),
       });
     } catch (error) {
       return {
@@ -1211,17 +1215,23 @@
       };
     }
 
-    let body = null;
-    try { body = await res.clone().json(); } catch {}
     if (!res?.ok) {
+      const reason = backendAuthorityFailureReason(res);
+      if (reason === "fetch-unavailable") {
+        return { ok: false, reason, message: "Browser fetch is unavailable." };
+      }
+      const statusCode = Number(res?.statusCode || (/^backend-(\d+)$/.exec(reason)?.[1] || 0)) || 0;
+      const error = String(res?.error || "");
       return {
         ok: false,
-        reason: `backend-${res?.status || "unknown"}`,
-        statusCode: Number(res?.status || 0) || 0,
+        reason,
+        ...(statusCode ? { statusCode } : {}),
+        ...(error ? { error } : {}),
         message: "Could not load this chat from ChatGPT. Open the chat and try again.",
       };
     }
 
+    const body = res.body;
     const messages = normalizeBackendConversationMessages(body);
     if (!messages.length) {
       return {
