@@ -1,6 +1,18 @@
 // @version 1.2.0  (Phase 0H: LOADER_BUILD_TS / LOADER_BUILD_ISO honor H2O_BUILD_TS env override)
 import { TITLE_CONTRACT_BRIDGE_FILENAME } from "./title-contract/make-title-contract-bridge.mjs";
 
+export function resolveBackendAuthorityCapability(rawValue) {
+  // A missing value is the bypass-launcher/default case and is deliberately
+  // OFF. Once present, accept only the two canonical strings from the profile
+  // wrapper; JavaScript truthiness must never grant this capability.
+  if (rawValue == null) return false;
+  if (rawValue === "false") return false;
+  if (rawValue === "true") return true;
+  throw new Error(
+    `[H2O] Invalid H2O_BACKEND_AUTHORITY value ${JSON.stringify(rawValue)}; expected true or false.`,
+  );
+}
+
 export function makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME } = {}) {
   if (typeof TITLE_CONTRACT_BRIDGE_FILE !== "string" || !TITLE_CONTRACT_BRIDGE_FILE.trim()) {
     throw new TypeError("TITLE_CONTRACT_BRIDGE_FILE is required");
@@ -75,6 +87,7 @@ export function makeChromeLiveLoaderJs({
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
   TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME,
+  BACKEND_AUTHORITY_CAPABILITY = false,
 }) {
   // Phase 0H: prefer H2O_BUILD_TS env override (same value the rest of the
   // build chain already honors — proxy-pack `@version`, alias URL `?v=`,
@@ -86,6 +99,9 @@ export function makeChromeLiveLoaderJs({
   const buildTsMs = Number.isFinite(envBuildTs) && envBuildTs > 0 ? envBuildTs : Date.now();
   const buildIso = new Date(buildTsMs).toISOString();
   const titleContractBridgePrelude = makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE });
+  if (typeof BACKEND_AUTHORITY_CAPABILITY !== "boolean") {
+    throw new TypeError("BACKEND_AUTHORITY_CAPABILITY must be a boolean");
+  }
   return `(() => {
   "use strict";
 ${titleContractBridgePrelude}
@@ -100,6 +116,9 @@ ${titleContractBridgePrelude}
   const LOADER_BUILD_TS = ${buildTsMs};
   const LOADER_BUILD_ISO = ${JSON.stringify(buildIso)};
   const LOADER_LIBRARY_KV_OPS = true;
+  const H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1 = Object.freeze({
+    enabled: ${BACKEND_AUTHORITY_CAPABILITY},
+  });
   const STATUS_LABEL = ${JSON.stringify(DEV_TITLE)};
   const LOADER_INSTANCE_KEY = "__H2O_EXT_DEV_CTRL_LOADER_V1__";
   if (globalThis[LOADER_INSTANCE_KEY]?.active) {
@@ -3513,6 +3532,16 @@ ${titleContractBridgePrelude}
       s.src = withBuildAwareUrl(url);
       if (aliasIdRaw) {
         try { s.dataset.h2oAlias = aliasIdRaw; } catch {}
+      }
+      if (aliasIdRaw === "0a4a.backend.request.authority") {
+        // CSP-safe page-world handoff: the external module reads this exact
+        // built bit synchronously from document.currentScript and freezes it.
+        try {
+          s.setAttribute(
+            "data-h2o-backend-authority-profile-v1",
+            H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1.enabled ? "true" : "false",
+          );
+        } catch {}
       }
 
       const timeoutMs = Math.max(1000, Number(opts?.timeoutMs) || timeoutForPhase(phase));

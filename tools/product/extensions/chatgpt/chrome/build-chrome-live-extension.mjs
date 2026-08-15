@@ -42,7 +42,10 @@ import {
   buildIdentityProviderBundle,
   IDENTITY_PROVIDER_BUNDLE_RELATIVE_PATH,
 } from "../../../identity/build-identity-provider-bundle.mjs";
-import { makeChromeLiveLoaderJs } from "./chrome-live-loader.mjs";
+import {
+  makeChromeLiveLoaderJs,
+  resolveBackendAuthorityCapability,
+} from "./chrome-live-loader.mjs";
 import { makeChromeLivePopupHtml } from "./popup/chrome-live-popup-html.mjs";
 import { makeChromeLivePopupCss } from "./popup/chrome-live-popup-css.mjs";
 import { makeChromeLivePopupJs } from "./popup/chrome-live-popup-js.mjs";
@@ -106,6 +109,9 @@ const TITLE_DIAGNOSTIC_ENABLED = isTitleDiagnosticBuildEnabled({
   envValue: process.env.H2O_TITLE_DIAGNOSTIC,
   outVariant: OUTPUT_VARIANT,
 });
+const BACKEND_AUTHORITY_CAPABILITY = resolveBackendAuthorityCapability(
+  process.env.H2O_BACKEND_AUTHORITY,
+);
 // Phase 0G-2: ASSETS_DIR comes from paths.mjs (= <REPO_ROOT>/assets). Both
 // constants resolve byte-identical to the pre-Phase-0G-2 `path.join(SRC,
 // "assets", ...)` form under the standard invocation.
@@ -579,6 +585,7 @@ async function main() {
       PAGE_FOLDER_BRIDGE_FILE,
       PAGE_PILOT_OBSERVER_FILE,
       TITLE_CONTRACT_BRIDGE_FILE: TITLE_CONTRACT_BRIDGE_FILENAME,
+      BACKEND_AUTHORITY_CAPABILITY,
     }));
     writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
     writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());

@@ -75,6 +75,11 @@ function boot({ responder, withAuthority = true, store = {} }) {
   const D = {
     title: "Plain Title", readyState: "complete", body: makeElement("body"),
     documentElement: makeElement("html"), head: makeElement("head"),
+    // Model the loader's explicit authorized fixture; denial has its own
+    // profile-gate validator and must not vacuously replace Title coverage.
+    currentScript: { getAttribute: (name) => (
+      name === "data-h2o-backend-authority-profile-v1" ? "true" : null
+    ) },
     createElement: (t) => makeElement(t), createTextNode: (t) => ({ nodeType: 3, textContent: String(t) }),
     querySelector: () => null, querySelectorAll: () => [], getElementById: () => null,
     addEventListener() {}, removeEventListener() {}, dispatchEvent: () => true,

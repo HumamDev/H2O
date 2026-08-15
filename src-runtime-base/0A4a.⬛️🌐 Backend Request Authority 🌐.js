@@ -56,6 +56,19 @@
      one, so anything else fails closed rather than degrading. */
   const SUPPORTED_ORIGIN = 'https://chatgpt.com';
   const AUTHORITY_LOCK_NAME = 'h2o.backend-authority.chatgpt.v1';
+  /* The per-profile loader attaches its immutable build decision to this
+     external script before execution. Capture it exactly once; an absent,
+     malformed, or differently loaded module is not authorized. */
+  const PROFILE_CAPABILITY_ATTRIBUTE = 'data-h2o-backend-authority-profile-v1';
+  const PROFILE_CAPABILITY = Object.freeze({
+    backendAuthority: (() => {
+      try {
+        return W.document?.currentScript?.getAttribute(PROFILE_CAPABILITY_ATTRIBUTE) === 'true';
+      } catch {
+        return false;
+      }
+    })(),
+  });
 
   const BACKEND_COOLDOWN_KEY = 'h2o:backend-authority:cooldown:v1';
   const BACKEND_PACING_KEY = 'h2o:backend-authority:pacing:v1';
@@ -100,6 +113,9 @@
     const origin = currentOrigin();
     if (origin !== SUPPORTED_ORIGIN) {
       return { available: false, reason: 'unsupported-origin', origin };
+    }
+    if (!PROFILE_CAPABILITY.backendAuthority) {
+      return { available: false, reason: 'profile-not-authorized', origin };
     }
     if (typeof W.fetch !== 'function') return { available: false, reason: 'fetch-unavailable', origin };
     if (!lockManager() || typeof lockManager().request !== 'function') {

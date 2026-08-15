@@ -115,6 +115,11 @@ function loadAuthority(store, opts = {}) {
   });
 
   const W = {
+    // This suite exercises the already-authorized governor path. Profile
+    // denial itself is pinned by validate-backend-authority-profile-gate.
+    document: { currentScript: { getAttribute: (name) => (
+      name === "data-h2o-backend-authority-profile-v1" ? "true" : null
+    ) } },
     location: { origin: opts.origin ?? SUPPORTED_ORIGIN, pathname: "/", href: `${opts.origin ?? SUPPORTED_ORIGIN}/` },
     navigator: opts.noLocks ? {} : { locks },
     fetch: opts.noFetch ? undefined : async (url, init) => {
