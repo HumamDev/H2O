@@ -3085,9 +3085,25 @@ __ROOT__ .cgxui-qbig-number{
     return cls.length ? `${tag}.${cls.join('.')}` : tag;
   }
 
-  function CHUB_hitBelongsToCandidate(el, x, y){
+  // One collection pass performs no writes, so elementFromPoint is invariant
+  // per coordinate for its duration. Nested sidebar wrappers share a left edge
+  // and therefore re-probe identical coordinates once per candidate; hitMemo
+  // collapses those to one call. Nested numeric Maps, so fractional and
+  // negative coordinates cannot collide. Lives exactly one pass — a throwing
+  // probe caches nothing, and a missing memo simply probes directly.
+  function CHUB_hitCacheGet(hitMemo, x, y){
+    if (!hitMemo) return D.elementFromPoint(x, y);
+    const row = hitMemo.get(x);
+    if (row && row.has(y)) return row.get(y);
+    const hit = D.elementFromPoint(x, y);
+    if (row) row.set(y, hit);
+    else hitMemo.set(x, new Map([[y, hit]]));
+    return hit;
+  }
+
+  function CHUB_hitBelongsToCandidate(el, x, y, hitMemo){
     try {
-      const hit = D.elementFromPoint(x, y);
+      const hit = CHUB_hitCacheGet(hitMemo, x, y);
       return !!hit && (hit === el || el.contains?.(hit));
     } catch { return false; }
   }
@@ -3095,7 +3111,7 @@ __ROOT__ .cgxui-qbig-number{
   // Resolve the rightmost screen pixel actually occupied by this sidebar
   // candidate. Raw shell rects are insufficient: ChatGPT keeps a ~260px stage
   // shell mounted while its visible collapsed rail is only ~50px wide.
-  function CHUB_getHitTestedSidebarEdge(el, rect){
+  function CHUB_getHitTestedSidebarEdge(el, rect, hitMemo){
     const vw = W.innerWidth || D.documentElement.clientWidth || 0;
     const vh = W.innerHeight || D.documentElement.clientHeight || 0;
     if (!vw || !vh || !rect) return 0;
@@ -3109,14 +3125,14 @@ __ROOT__ .cgxui-qbig-number{
     for (let x = right - 1; x >= left; x -= 2) {
       let hits = 0;
       for (const y of ys) {
-        if (CHUB_hitBelongsToCandidate(el, x, y)) hits += 1;
+        if (CHUB_hitBelongsToCandidate(el, x, y, hitMemo)) hits += 1;
       }
       if (hits >= Math.min(2, ys.length)) return Math.min(vw, x + 1);
     }
     return 0;
   }
 
-  function CHUB_evaluateSidebarCandidate(el, selector){
+  function CHUB_evaluateSidebarCandidate(el, selector, hitMemo){
     const reasons = [];
     let rect = null;
     let style = null;
@@ -3137,7 +3153,7 @@ __ROOT__ .cgxui-qbig-number{
     if (rect && rect.left > 16) reasons.push('not-left-anchored');
     if (rect && rect.width > Math.min(460, vw * 0.45)) reasons.push('too-wide-for-sidebar');
     if (rect && rect.height < Math.max(180, vh * 0.35)) reasons.push('too-short-for-sidebar');
-    const visibleRightEdge = reasons.length ? 0 : CHUB_getHitTestedSidebarEdge(el, rect);
+    const visibleRightEdge = reasons.length ? 0 : CHUB_getHitTestedSidebarEdge(el, rect, hitMemo);
     if (!visibleRightEdge) reasons.push('no-visible-hit-tested-occupancy');
     return {
       element: el || null,
@@ -3155,6 +3171,8 @@ __ROOT__ .cgxui-qbig-number{
 
   function CHUB_collectSidebarCandidates(){
     const found = new Map();
+    // Pass-scoped elementFromPoint memo: created here, discarded on return.
+    const hitMemo = new Map();
     const add = (el, source) => {
       if (!el) return;
       if (!found.has(el)) found.set(el, source || CHUB_sidebarElementLabel(el));
@@ -3171,7 +3189,7 @@ __ROOT__ .cgxui-qbig-number{
       const ys = [0.25, 0.5, 0.75].map((ratio) => Math.round(vh * ratio));
       for (const x of xs) {
         for (const y of ys) {
-          let el = D.elementFromPoint(x, y);
+          let el = CHUB_hitCacheGet(hitMemo, x, y);
           for (let depth = 0; el && el !== D.body && el !== D.documentElement && depth < 10; depth += 1) {
             const r = el.getBoundingClientRect?.();
             if (r && r.left <= 16 && r.width > 0 && r.width <= 460 && r.height >= Math.max(180, vh * 0.35)) {
@@ -3182,7 +3200,7 @@ __ROOT__ .cgxui-qbig-number{
         }
       }
     } catch {}
-    return Array.from(found.entries()).map(([el, source]) => CHUB_evaluateSidebarCandidate(el, source));
+    return Array.from(found.entries()).map(([el, source]) => CHUB_evaluateSidebarCandidate(el, source, hitMemo));
   }
 
   // Right edge of the actually visible sidebar panel or tiny collapsed rail.
@@ -3378,7 +3396,7 @@ __ROOT__ .cgxui-qbig-number{
     return !!a && !!b && !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
   }
 
-  function CHUB_layoutTopButton(){
+  function CHUB_layoutTopButton(passOut){
     const btn = UTIL_q(SEL_CHUB_TOPBTN);
     if (!btn || !btn.isConnected) return false;
     const mode = CHUB_getTopBtnPlacement();
@@ -3386,6 +3404,8 @@ __ROOT__ .cgxui-qbig-number{
     if (!vw) return false;
     const bw = Math.max(60, Math.round(btn.getBoundingClientRect().width || 95));
     const sidebar = CHUB_resolveVisibleSidebarEdge();
+    // Hand this frame's candidates to the observer step so it need not collect again.
+    if (passOut) passOut.candidates = sidebar.candidates;
     const contentLeft = sidebar.selectedSidebarEdge;
     const contentRight = vw;
     const anchor = CHUB_resolveChatColumnAnchor(sidebar);
@@ -3455,17 +3475,19 @@ __ROOT__ .cgxui-qbig-number{
     if (CHUB_topBtnLayoutRaf) return;
     CHUB_topBtnLayoutRaf = W.requestAnimationFrame(() => {
       CHUB_topBtnLayoutRaf = 0;
-      CHUB_layoutTopButton();
-      CHUB_ensureTopBtnSidebarObserver();
+      const pass = {};
+      CHUB_layoutTopButton(pass);
+      CHUB_ensureTopBtnSidebarObserver(pass.candidates);
     });
   }
 
   // Sidebar open/collapse animates child rails/panels without necessarily
   // changing the stage shell's stale width. Observe every discovered sidebar
   // candidate, including hidden tiny/full variants, and re-target on repair.
-  function CHUB_ensureTopBtnSidebarObserver(){
+  function CHUB_ensureTopBtnSidebarObserver(passCandidates){
     if (typeof ResizeObserver !== 'function') return;
-    const nextTargets = CHUB_collectSidebarCandidates()
+    // Reuse this frame's collection; collect only if the layout step returned early.
+    const nextTargets = (passCandidates || CHUB_collectSidebarCandidates())
       .map((candidate) => candidate.element)
       .filter((el, index, list) => !!el && list.indexOf(el) === index);
     const sameTargets = nextTargets.length === CHUB_topBtnSidebarRoTargets.length

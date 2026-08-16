@@ -6136,8 +6136,30 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     );
   }
 
+  // Native chat-menu discovery is only meaningful where a conversation menu can
+  // exist at all. The two shapes below are the only routes ChatGPT renders a
+  // chat "..." menu on. A Project-list route (/g/<project>/project), a project
+  // root or the home route render project cards and sidebar disclosures
+  // instead — and those carry the very `[data-state="open"]` marker SEL.radixMenu
+  // ends in, so sweeping them buys a querySelectorAll per mutation plus a
+  // rendered-text read per survivor in search of a menu that cannot be there.
+  const NATIVE_CHAT_MENU_ROUTE_RE = /^(?:\/c\/|\/g\/[^/]+\/c\/)/i;
+
+  // Read live instead of cached against a navigation event. The whole predicate
+  // is one regex test over a short string, so a listener-plus-flag mechanism
+  // would cost more than it saves and could go stale; there is nothing to
+  // register, nothing to tear down, and a retry scheduled while the user was
+  // still in a chat sees the Project path the moment it fires.
+  function DOM_isNativeChatMenuRoute() {
+    return NATIVE_CHAT_MENU_ROUTE_RE.test(String(W.location?.pathname || '').trim());
+  }
+
   function DOM_collectNativeMenuCandidates(root) {
     const out = [];
+    // Route gate 1 of 2 — the ENUMERATION boundary. The observer's per-node
+    // sweep and its whole-body fallback both enter here, so off-chat neither
+    // one reaches a single querySelectorAll.
+    if (!DOM_isNativeChatMenuRoute()) return out;
     const seen = new Set();
     const add = (node) => {
       if (!(node instanceof HTMLElement) || seen.has(node)) return;
@@ -6152,8 +6174,25 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
     return out;
   }
 
-  function DOM_nativeChatMenuSignatureScore(menuEl) {
-    const txt = UTIL_normText(menuEl?.innerText || menuEl?.textContent || '');
+  // Strong native-menu markers: exactly the non-loose terms already present in
+  // SEL.radixMenu. The loose `[data-state="open"]` term is deliberately absent
+  // here, because ordinary open Radix disclosures (sidebar expandos, popovers)
+  // carry it and are provably not chat menus.
+  const SEL_NATIVE_MENU_STRONG = '[role="menu"],[data-radix-menu-content],[data-slot*="dropdown"]';
+
+  // Cheap, layout-free structural test. A container carrying a strong marker
+  // qualifies on its own, so a genuine menu still mid-mount — element present,
+  // menu items not yet — is never classified as junk.
+  function DOM_isLikelyNativeChatMenu(menuEl) {
+    if (!(menuEl instanceof HTMLElement)) return false;
+    if (menuEl.matches?.(SEL_NATIVE_MENU_STRONG)) return true;
+    return !!menuEl.querySelector?.(SEL.radixMenuItem);
+  }
+
+  function DOM_nativeChatMenuSignatureScore(menuEl, normalizedText) {
+    const txt = typeof normalizedText === 'string'
+      ? normalizedText
+      : UTIL_normText(menuEl?.innerText || menuEl?.textContent || '');
     const patterns = [
       /share/i,
       /start a group chat/i,
@@ -6169,10 +6208,33 @@ function UI_makeInShellPageShell_LOCAL(titleText, subText, tabText = 'Chats', op
 
   function ENGINE_tryInjectNativeChatMenu(menu, reason = '') {
     if (!(menu instanceof HTMLElement)) return false;
+    // Route gate 2 of 2 — the EVALUATION boundary. Gate 1 stops new discovery,
+    // but ENGINE_scheduleNativeChatMenuInjection arms a rAF and an 80 ms timeout
+    // that land here directly, bypassing enumeration entirely. A retry armed on
+    // a chat route can therefore fire after the user has reached a Project.
+    // Re-checking the route here makes every already-scheduled callback
+    // harmless, which is why no timer needs cancelling or tracking. Counted as
+    // a route miss rather than a candidate: it was never evaluated.
+    if (!DOM_isNativeChatMenuRoute()) {
+      STATE.menuDiag.lastSkipReason = `route-miss:${String(reason || '')}`;
+      return false;
+    }
     STATE.menuDiag.menuCandidatesSeen += 1;
+    // Reject provable non-menus BEFORE any rendered-text access. innerText is
+    // layout-dependent, so during scroll the whole-body fallback used to pay a
+    // forced layout for every open disclosure it swept up. A candidate skipped
+    // here had its signature deliberately NOT evaluated, so signatureMisses is
+    // left alone and lastSignatureSample is not fabricated from text we never
+    // read; lastSkipReason records the distinction for the operator.
+    if (!DOM_isLikelyNativeChatMenu(menu)) {
+      STATE.menuDiag.lastSkipReason = `structure-miss:${String(reason || '')}`;
+      return false;
+    }
+    // One rendered-text read per evaluation, shared by the diagnostic sample
+    // and the signature scorer.
     const txt = UTIL_normText(menu.innerText || menu.textContent || '');
     STATE.menuDiag.lastSignatureSample = txt.slice(0, 120);
-    if (DOM_nativeChatMenuSignatureScore(menu) < 2) {
+    if (DOM_nativeChatMenuSignatureScore(menu, txt) < 2) {
       STATE.menuDiag.signatureMisses += 1;
       STATE.menuDiag.lastSkipReason = `signature-miss:${String(reason || '')}`;
       return false;

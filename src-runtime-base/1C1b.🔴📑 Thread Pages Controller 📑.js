@@ -507,18 +507,26 @@
     }
   }
 
+  // Returns the rect this candidate was measured with when it qualifies as a
+  // divider line, otherwise null. Handing the rect back lets one
+  // getDividerLineEls invocation classify the candidate from the measurement
+  // taken here rather than reading the same element's geometry again. The
+  // predicates, thresholds and their order are unchanged, and the cheap checks
+  // still run before anything is measured, so a dot or a text-bearing node is
+  // still rejected without touching layout. Every caller tests the result for
+  // truthiness, and a rect is always truthy.
   function isDividerLineCandidate(el = null, dividerRect = null) {
-    if (!(el instanceof HTMLElement)) return false;
-    if (!dividerRect) return false;
+    if (!(el instanceof HTMLElement)) return null;
+    if (!dividerRect) return null;
     const text = String(el.textContent || '').trim();
-    if (text) return false;
-    if (el.matches?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot')) return false;
+    if (text) return null;
+    if (el.matches?.('.cgxui-chat-page-divider-dot, .cgxui-pgnw-page-divider-dot')) return null;
     const rect = el.getBoundingClientRect();
-    if (!rect.width || !rect.height) return false;
-    if (rect.width < 24) return false;
-    if (rect.height > 8) return false;
-    if (rect.top < dividerRect.top - 24 || rect.bottom > dividerRect.bottom + 24) return false;
-    return true;
+    if (!rect.width || !rect.height) return null;
+    if (rect.width < 24) return null;
+    if (rect.height > 8) return null;
+    if (rect.top < dividerRect.top - 24 || rect.bottom > dividerRect.bottom + 24) return null;
+    return rect;
   }
 
   function getDividerLineEls(divider = null) {
@@ -540,9 +548,10 @@
     const pushCandidate = (el) => {
       if (!(el instanceof HTMLElement)) return;
       if (seen.has(el)) return;
-      if (!isDividerLineCandidate(el, dividerRect)) return;
+      const rect = isDividerLineCandidate(el, dividerRect);
+      if (!rect) return;
       seen.add(el);
-      candidates.push(el);
+      candidates.push({ el, rect });
     };
 
     for (const sel of preferredSelectors) {
@@ -557,14 +566,20 @@
       for (const el of fallbackNodes) pushCandidate(el);
     }
 
-    const classify = (el) => {
-      const rect = el.getBoundingClientRect();
-      const midX = rect.left + (rect.width / 2);
-      return { el, rect, midX, width: rect.width };
-    };
+    // Classify once, from the rect each candidate was already measured with.
+    // candidates.map(classify) previously ran twice and classify re-read
+    // geometry, so every accepted line was measured three times in one call --
+    // once to validate it and twice to classify it -- with no layout-affecting
+    // write in between, which made two of those three reads pure repetition.
+    // Nothing is retained beyond this invocation: candidates, and every rect in
+    // them, are rebuilt from scratch on the next call, so a later pass (the rAF
+    // settle in particular) still measures fresh geometry.
+    const classified = candidates.map(({ el, rect }) => ({
+      el, rect, midX: rect.left + (rect.width / 2), width: rect.width,
+    }));
 
-    const leftItems = candidates.map(classify).filter((item) => item.midX <= centerX);
-    const rightItems = candidates.map(classify).filter((item) => item.midX >= centerX);
+    const leftItems = classified.filter((item) => item.midX <= centerX);
+    const rightItems = classified.filter((item) => item.midX >= centerX);
     leftItems.sort((a, b) => b.width - a.width);
     rightItems.sort((a, b) => b.width - a.width);
 

@@ -39,6 +39,10 @@
   const runtimeId = Math.random().toString(36).slice(2, 10);
   let visualSequence = 0, acceptedSnapshot = null, unsubscribe = null, observer = null;
   let frameId = 0, retryTimer = 0, retryCount = 0, destroyed = false, publicApi = null;
+  // Non-null ONLY for the duration of the two probe paths inside one
+  // syncSidebar pass. Saved/restored, never read outside a pass, never
+  // carried across frames, routes or snapshots.
+  let passVisibility = null;
   const diagnostics = {
     phase: 'unattached', scans: 0, adoptions: 0, releases: 0, overflowCandidates: 0,
     lastReleaseReason: '', lastChatId: null, lastRouteToken: -1,
@@ -129,9 +133,18 @@
   }
   function candidateFor(anchor, snapshot) {
     if (!snapshotIsPresentable(snapshot) || !(anchor instanceof HTMLElement)) return null;
-    if (!isVisibleAnchor(anchor)) return null;
+    // Pure string route filter first: an anchor for another chat must never pay
+    // getComputedStyle/getClientRects. Both predicates must pass either way, so
+    // the surviving candidate set is unchanged.
     const candidateIdentity = routeIdentityFromHref(anchor.getAttribute('href'));
     if (!candidateIdentity || candidateIdentity.key !== snapshot.routeIdentity?.key) return null;
+    let visible;
+    if (passVisibility && passVisibility.has(anchor)) visible = passVisibility.get(anchor);
+    else {
+      visible = isVisibleAnchor(anchor);
+      if (passVisibility) passVisibility.set(anchor, visible);
+    }
+    if (!visible) return null;
     const source = anchor.querySelector(NATIVE_TITLE_SELECTOR);
     if (!(source instanceof HTMLElement) || !source.isConnected) return null;
     if (source.matches?.(VISUAL_SELECTOR) || source.closest?.(VISUAL_SELECTOR)) return null;
@@ -381,8 +394,15 @@
     ensureStyle();
     const containers = approvedContainers();
     ensureObserver(containers);
-    releaseInvalidSynchronously();
-    const candidates = findCandidates(acceptedSnapshot, containers);
+    // One visibility evaluation per anchor across BOTH probe paths of this pass.
+    // Restored rather than nulled so a nested pass can never strand an outer one.
+    const priorVisibility = passVisibility;
+    passVisibility = new Map();
+    let candidates;
+    try {
+      releaseInvalidSynchronously();
+      candidates = findCandidates(acceptedSnapshot, containers);
+    } finally { passVisibility = priorVisibility; }
     diagnostics.overflowCandidates = Math.max(0, candidates.length - MAX_ADOPTED_ROWS);
     const accepted = candidates.slice(0, MAX_ADOPTED_ROWS);
     const acceptedAnchors = new Set(accepted.map((candidate) => candidate.anchor));
