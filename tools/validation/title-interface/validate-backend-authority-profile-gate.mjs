@@ -40,7 +40,10 @@ const AUTHORITY_SOURCE = fs.readFileSync(AUTHORITY_PATH, "utf8");
 
 const CAPABILITY_CONSTANT = "H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1";
 const CAPABILITY_ATTRIBUTE = "data-h2o-backend-authority-profile-v1";
-const AUTHORITY_ALIAS = "0a4a.backend.request.authority";
+// The injection path carries the alias FILENAME. Pinning the @h2o-id
+// namespace here is what let the unmatchable comparison ship: the attribute
+// was never written and the authority failed closed on every profile.
+const AUTHORITY_ALIAS = "0A4a._Backend_Request_Authority_.js";
 
 const results = [];
 const mutations = [];
@@ -76,8 +79,17 @@ function assertLoaderDelivery(source, expected) {
   assert.equal(count(source, declaration), 1, "capability constant must be declared exactly once");
   assert.equal(count(source, `\"${CAPABILITY_ATTRIBUTE}\"`), 1,
     "profile capability attribute must be emitted exactly once");
-  assert.equal(count(source, `aliasIdRaw === \"${AUTHORITY_ALIAS}\"`), 1,
-    "capability delivery must target only the authority module");
+  assert.equal(count(source, `const BACKEND_AUTHORITY_ALIAS_ID = \"${AUTHORITY_ALIAS}\"`), 1,
+    "capability delivery must pin the canonical 0A4a alias filename");
+  assert.equal(count(source, "normalizeAliasId(aliasIdRaw) === BACKEND_AUTHORITY_ALIAS_ID"), 1,
+    "capability delivery must compare in the namespace the injection path carries");
+  // The defect this replaces: an @h2o-id comparison can never match an alias
+  // filename, so any reintroduction must fail here rather than at live launch.
+  assert.equal(count(source, 'aliasIdRaw === "0a4a.backend.request.authority"'), 0,
+    "the unmatchable @h2o-id comparison must not return");
+  // B: unrelated aliases must not be treated as the authority module.
+  assert.ok(!source.includes(`normalizeAliasId(aliasIdRaw) !== BACKEND_AUTHORITY_ALIAS_ID`),
+    "capability delivery must not be inverted onto unrelated aliases");
   assert.match(
     source,
     new RegExp(`const ${CAPABILITY_CONSTANT} = Object\\.freeze\\(\\{\\s*enabled: ${expected},`),

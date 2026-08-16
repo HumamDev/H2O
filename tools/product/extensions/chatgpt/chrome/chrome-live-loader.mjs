@@ -124,6 +124,9 @@ ${titleContractBridgePrelude}
   const H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1 = Object.freeze({
     enabled: ${BACKEND_AUTHORITY_CAPABILITY},
   });
+  // Canonical alias filename of 0A4a, in the same namespace the injection path
+  // carries. Kept beside the capability value so the two cannot drift apart.
+  const BACKEND_AUTHORITY_ALIAS_ID = "0A4a._Backend_Request_Authority_.js";
   const STATUS_LABEL = ${JSON.stringify(DEV_TITLE)};
   const LOADER_INSTANCE_KEY = "__H2O_EXT_DEV_CTRL_LOADER_V1__";
   if (globalThis[LOADER_INSTANCE_KEY]?.active) {
@@ -3565,7 +3568,11 @@ ${titleContractBridgePrelude}
       if (aliasIdRaw) {
         try { s.dataset.h2oAlias = aliasIdRaw; } catch {}
       }
-      if (aliasIdRaw === "0a4a.backend.request.authority") {
+      // The injection path carries the alias FILENAME, not the module's
+      // @h2o-id namespace. Comparing against the id namespace here could never
+      // match, so the capability attribute was silently never written and the
+      // authority failed closed as profile-not-authorized on every profile.
+      if (normalizeAliasId(aliasIdRaw) === BACKEND_AUTHORITY_ALIAS_ID) {
         // CSP-safe page-world handoff: the external module reads this exact
         // built bit synchronously from document.currentScript and freezes it.
         try {
