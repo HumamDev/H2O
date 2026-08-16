@@ -1302,7 +1302,7 @@
       perEnvelopeSalt: perEnvelopeSalt,
       actorPeer: actorPeer,
       ownerStatus: 'reachable',
-      sourceTag: 'desktop',
+      sourceTag: 'f7-folder-binding-compat',
       relatedCatalogs: [],
       relatedChats: [{ subjectType: 'chat.metadata', subjectId: chatSubjectId }],
       siblingBindings: siblingBindings,

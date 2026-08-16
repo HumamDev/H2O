@@ -5840,7 +5840,7 @@
    * Scope: canonical Desktop SQLite sort_order apply ONLY. Dry-run by default; gated apply. Basis-gated,
    * idempotent (applies the FULL requested order; atomic-on-retry). Emits a receipt via
    * FOLDER_SORTORDER_REORDER_RECEIPT_SCHEMA. Writes ONLY sort_order via store.folders.patch (which routes
-   * through recordWrite). NO folder_bindings, NO DELETE FROM folders, NO tombstone mutation, NO chat
+   * through recordWrite). NO folder_bindings, NO folder-row deletion, NO tombstone mutation, NO chat
    * mutation, NO folder delete/purge, NO F11 allowed-set change. Mirror re-projection is DEFERRED to a
    * separate S2b slice (the F11 render-only rebuild strips sortOrder, and no standalone sortOrder-
    * preserving projection is safely reusable here). Not auto-wired into any import loop; invoked
