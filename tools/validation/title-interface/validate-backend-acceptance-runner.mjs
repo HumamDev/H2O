@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* Offline governed backend-acceptance validator: V1-V13 + mutations. */
+/* Offline governed backend-acceptance validator: V1-V26 + mutations. */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -48,6 +48,13 @@ function callCount(tree, name) {
     if (node.type === 'CallExpression' && node.callee?.type === 'Identifier' && node.callee.name === name) count += 1;
   });
   return count;
+}
+function functionCallCount(tree, functionName, calleeName) {
+  let target = null;
+  walk(tree, (node) => {
+    if (node.type === 'FunctionDeclaration' && node.id?.name === functionName) target = node;
+  });
+  return target ? callCount(target, calleeName) : 0;
 }
 function cliViolations(source) {
   return ['--evaluate', '--expression', '--script', '--javascript'].filter((flag) => source.includes(flag));
@@ -478,6 +485,74 @@ await fixture('V24 safe Phase-1 fields survive while sensitive fields remain exc
   ok(!encoded.includes('messages'), 'backend body stripped');
 });
 
+await fixture('V25 launcher diagnostics retain only bounded allow-listed evidence', async () => {
+  const fromStdout = runner.retainLauncherDiagnostics({
+    status: 2,
+    stdout: 'arbitrary preface\nPROFILE_EXAMPLE_FAILED: safe synthetic reason\n',
+    stderr: '',
+  });
+  eq(fromStdout.launcherName, 'h2o-launch-for-profile', 'fixed launcher identity retained');
+  eq(fromStdout.launcherExitCode, 2, 'nonzero exit retained');
+  eq(fromStdout.launcherStatus, 'GOVERNED_PROFILE_LAUNCH_FAILED', 'failure status retained');
+  eq(fromStdout.launcherDiagnosticCode, 'PROFILE_EXAMPLE_FAILED', 'stdout code retained');
+  eq(fromStdout.launcherDiagnosticLine, 'PROFILE_EXAMPLE_FAILED: safe synthetic reason', 'stdout line retained');
+
+  const fromStderr = runner.retainLauncherDiagnostics({
+    status: 7,
+    stdout: 'unrelated output\n',
+    stderr: 'noise\nCDP_STARTUP_FAILED: safe terminal reason\n',
+  });
+  eq(fromStderr.launcherDiagnosticCode, 'CDP_STARTUP_FAILED', 'stderr code retained');
+  eq(fromStderr.launcherDiagnosticLine, 'CDP_STARTUP_FAILED: safe terminal reason', 'stderr line retained');
+
+  const unclassified = runner.retainLauncherDiagnostics({ status: 9, stdout: 'arbitrary output', stderr: 'plain failure' });
+  eq(unclassified.launcherDiagnosticCode, 'UNCLASSIFIED_LAUNCHER_FAILURE', 'neutral fallback code');
+  eq(unclassified.launcherDiagnosticLine, '', 'arbitrary line discarded');
+  eq(unclassified.launcherExitCode, 9, 'neutral failure retains exit code');
+
+  const success = runner.retainLauncherDiagnostics({
+    status: 0,
+    stdout: 'PROFILE_BUILD_ARTIFACT_CONTRACT_OK profile=synthetic\nLIVE_TEST_ALLOWED profile=synthetic pid=1\n',
+    stderr: '',
+  });
+  eq(success.launcherStatus, 'GOVERNED_PROFILE_LAUNCHED', 'success status unchanged');
+  eq(success.launcherExitCode, 0, 'success exit unchanged');
+  eq(success.launcherDiagnosticCode, 'LIVE_TEST_ALLOWED', 'emitted success diagnostic retained');
+  eq(success.liveTestAllowed, true, 'LIVE_TEST_ALLOWED reached');
+
+  const bounded = runner.retainLauncherDiagnostics({ status: 2, stdout: Array.from({ length: 9 }, (_, i) => (
+    `PROFILE_SYNTHETIC_${i}_FAILED: line ${i}`
+  )).join('\n') });
+  eq(bounded.launcherDiagnosticLines.length, 4, 'diagnostic line count bounded');
+  ok(bounded.launcherDiagnosticLines.every((line) => line.length <= 240), 'diagnostic length bounded');
+});
+
+await fixture('V26 launcher evidence is redacted, neutral when absent, and never retried', async () => {
+  const rawId = '11111111-2222-4333-8444-555555555555';
+  const cases = [
+    'PROFILE_AUTH_FAILED: Authorization: Bearer secret',
+    'PROFILE_COOKIE_FAILED: cookie=session-secret',
+    `PROFILE_CHAT_FAILED: conversation-id=${rawId}`,
+    'PROFILE_TOKEN_FAILED: eyJhbGciOiJIUzI1NiJ9.abcdefghijk.abcdefghijkl',
+  ];
+  for (const line of cases) {
+    const retained = runner.retainLauncherDiagnostics({ status: 2, stderr: `${line}\n` });
+    eq(retained.launcherDiagnosticCode, 'UNCLASSIFIED_LAUNCHER_FAILURE', 'sensitive line becomes neutral');
+    eq(retained.launcherDiagnosticLine, '', 'sensitive line discarded');
+    const evidence = runner.serializeEvidence({ ...retained, launcherRawStdout: line, launcherRawStderr: line });
+    const encoded = JSON.stringify(evidence);
+    ok(!encoded.includes(line), 'raw child output absent from evidence');
+    ok(!encoded.includes(rawId), 'raw conversation identifier absent');
+    ok(!encoded.includes('Bearer secret'), 'Authorization value absent');
+  }
+  const neutral = runner.serializeEvidence(runner.retainLauncherDiagnostics({ status: 12 }));
+  eq(neutral.launcherExitCode, 12, 'unclassified evidence preserves exit');
+  eq(neutral.launcherDiagnosticCode, 'UNCLASSIFIED_LAUNCHER_FAILURE', 'unclassified evidence preserves neutral code');
+  eq(neutral.liveTestAllowed, false, 'missing output never invents LIVE_TEST_ALLOWED');
+  eq(functionCallCount(runnerAst, 'launchGovernedProfile', 'spawnSync'), 1, 'exactly one launcher dispatch site');
+  ok(!/launchGovernedProfile[\s\S]{0,1000}(?:retry|while\s*\(|for\s*\()/i.test(runnerSource), 'no launcher retry loop');
+});
+
 await fixture('Phase-1 evidence mutations M1-M7 are killed', async () => {
   await withMutatedRunner('m1-surfaces', [[
     'const missingSurface = REQUIRED_PHASE_ONE_SURFACES.find((surface) => featureSurfaces[surface] !== true);',
@@ -550,6 +625,50 @@ await fixture('Phase-1 evidence mutations M1-M7 are killed', async () => {
   });
 });
 
+await fixture('Launcher diagnostic-retention mutations M1-M5 are killed', async () => {
+  await withMutatedRunner('launcher-m1-discard', [[
+    '  for (const stream of [result.stdout, result.stderr]) {',
+    '  for (const stream of []) {',
+  ]], async (mutated) => {
+    const value = mutated.retainLauncherDiagnostics({ status: 2, stderr: 'PROFILE_EXAMPLE_FAILED: safe reason' });
+    eq(value.launcherDiagnosticCode, 'UNCLASSIFIED_LAUNCHER_FAILURE', 'M1 discards the emitted diagnostic');
+  });
+
+  await withMutatedRunner('launcher-m2-raw', [[
+    '    launcherDiagnosticLine: safeLauncherDiagnosticLine(input.launcherDiagnosticLine),',
+    '    launcherDiagnosticLine: safeString(input.launcherDiagnosticLine, 2000),',
+  ]], async (mutated) => {
+    const raw = 'PROFILE_AUTH_FAILED: Authorization: Bearer secret';
+    ok(JSON.stringify(mutated.serializeEvidence({ launcherDiagnosticLine: raw })).includes('Bearer secret'),
+      'M2 would store raw launcher output');
+  });
+
+  await withMutatedRunner('launcher-m3-token', [[
+    "  if (!line || LAUNCHER_SENSITIVE_TEXT.test(line) || LAUNCHER_TOKEN_SHAPE.test(line)) return '';",
+    "  if (!line) return '';",
+  ]], async (mutated) => {
+    const raw = 'PROFILE_AUTH_FAILED: Authorization: Bearer secret';
+    const value = mutated.retainLauncherDiagnostics({ status: 2, stderr: raw });
+    ok(JSON.stringify(mutated.serializeEvidence(value)).includes('Bearer secret'), 'M3 would leak token-shaped diagnostic text');
+  });
+
+  await withMutatedRunner('launcher-m4-invent', [[
+    "    launcherDiagnosticCode: emittedCode || (ok ? '' : 'UNCLASSIFIED_LAUNCHER_FAILURE'),",
+    "    launcherDiagnosticCode: emittedCode || (ok ? 'LIVE_TEST_ALLOWED' : 'PROFILE_INVENTED_FAILED'),",
+  ]], async (mutated) => {
+    const failure = mutated.retainLauncherDiagnostics({ status: 2 });
+    const success = mutated.retainLauncherDiagnostics({ status: 0 });
+    eq(failure.launcherDiagnosticCode, 'PROFILE_INVENTED_FAILED', 'M4 invents a failure reason');
+    eq(success.launcherDiagnosticCode, 'LIVE_TEST_ALLOWED', 'M4 invents success evidence');
+  });
+
+  const retryMutation = runnerSource.replace(
+    "  const result = spawnSync(launcher, [profileName, extensionRoot, String(devPort), String(cdpPort)], { encoding: 'utf8' });",
+    "  spawnSync(launcher, [profileName, extensionRoot, String(devPort), String(cdpPort)], { encoding: 'utf8' });\n  const result = spawnSync(launcher, [profileName, extensionRoot, String(devPort), String(cdpPort)], { encoding: 'utf8' });",
+  );
+  eq(functionCallCount(ast(retryMutation), 'launchGovernedProfile', 'spawnSync'), 2, 'M5 introduces a second launcher dispatch');
+});
+
 await fixture('M1-M6 and production-exclusion mutations are killed', async () => {
   const noDecrement = { remaining: 2, used: 0 };
   ok(noDecrement.remaining !== 0 || noDecrement.used !== 2, 'M1');
@@ -563,5 +682,5 @@ await fixture('M1-M6 and production-exclusion mutations are killed', async () =>
   ok(!mockLoader([]).includes('new Set(["0A4b._Backend_Acceptance_Adapter_.js"])'), 'production exclusion mutation');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V24 + mutations)`);
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V26 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');

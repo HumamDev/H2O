@@ -149,6 +149,42 @@ function safeEvidenceCode(value, max = 80) {
   return text;
 }
 
+const LAUNCHER_DIAGNOSTIC_CODE = /^(?:PROFILE|LIVE|FEATURE|EXTENSION|CORRECT_RUNTIME_PORT|RUNTIME_SOURCE|AUTH|CDP)_[A-Z0-9_]+$/;
+const LAUNCHER_DIAGNOSTIC_LINE_MAX = 240;
+const LAUNCHER_DIAGNOSTIC_LINE_LIMIT = 4;
+const LAUNCHER_SENSITIVE_TEXT = /(?:authorization|bearer|cookie|session|access[\s_-]*token|conversation[\s_-]*(?:id|title)|chat[\s_-]*id|message[\s_-]*(?:text|body)|backend[\s_-]*(?:body|response))/i;
+const LAUNCHER_TOKEN_SHAPE = /(?:\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b|\bsk-[a-z0-9_-]{12,}\b|\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b)/i;
+
+function safeLauncherDiagnosticLine(value) {
+  const line = safeString(value, LAUNCHER_DIAGNOSTIC_LINE_MAX).trim();
+  if (!line || LAUNCHER_SENSITIVE_TEXT.test(line) || LAUNCHER_TOKEN_SHAPE.test(line)) return '';
+  const code = String(line.match(/^([A-Z][A-Z0-9_]+)(?=\s|:|=|$)/)?.[1] || '');
+  return LAUNCHER_DIAGNOSTIC_CODE.test(code) ? line : '';
+}
+
+export function retainLauncherDiagnostics(result = {}) {
+  const ok = Number(result.status) === 0;
+  const lines = [];
+  for (const stream of [result.stdout, result.stderr]) {
+    for (const rawLine of String(stream || '').split(/\r?\n/)) {
+      const line = safeLauncherDiagnosticLine(rawLine);
+      if (line) lines.push(line);
+    }
+  }
+  const retained = lines.slice(-LAUNCHER_DIAGNOSTIC_LINE_LIMIT);
+  const terminalLine = retained.at(-1) || '';
+  const emittedCode = String(terminalLine.match(/^([A-Z][A-Z0-9_]+)(?=\s|:|=|$)/)?.[1] || '');
+  return {
+    launcherName: 'h2o-launch-for-profile',
+    launcherExitCode: Number(result.status ?? 1),
+    launcherStatus: ok ? 'GOVERNED_PROFILE_LAUNCHED' : 'GOVERNED_PROFILE_LAUNCH_FAILED',
+    launcherDiagnosticCode: emittedCode || (ok ? '' : 'UNCLASSIFIED_LAUNCHER_FAILURE'),
+    launcherDiagnosticLine: terminalLine,
+    launcherDiagnosticLines: retained,
+    liveTestAllowed: retained.some((line) => /^LIVE_TEST_ALLOWED(?:\s|:|=|$)/.test(line)),
+  };
+}
+
 function safeAuthorityStatus(value) {
   const source = value && typeof value === 'object' ? value : {};
   return {
@@ -339,6 +375,15 @@ export function serializeEvidence(input = {}) {
     logicalUsed: Math.max(0, Number(input.logicalUsed) || 0),
     authenticatedDispatches: Math.max(0, Number(input.authenticatedDispatches) || 0),
     phaseOneCertification: safeString(input.phaseOneCertification, 80),
+    launcherName: safeEvidenceCode(input.launcherName, 80),
+    launcherExitCode: Math.max(0, Number(input.launcherExitCode) || 0),
+    launcherStatus: safeEvidenceCode(input.launcherStatus, 80),
+    launcherDiagnosticCode: safeEvidenceCode(input.launcherDiagnosticCode, 80),
+    launcherDiagnosticLine: safeLauncherDiagnosticLine(input.launcherDiagnosticLine),
+    launcherDiagnosticLines: Array.isArray(input.launcherDiagnosticLines)
+      ? input.launcherDiagnosticLines.map(safeLauncherDiagnosticLine).filter(Boolean).slice(-LAUNCHER_DIAGNOSTIC_LINE_LIMIT)
+      : [],
+    liveTestAllowed: input.liveTestAllowed === true,
     conservativePhysicalUpperBound: Math.max(0, Number(input.conservativePhysicalUpperBound) || 0),
     steps,
     authorityBefore: safeAuthorityStatus(input.authorityBefore),
@@ -632,10 +677,12 @@ export function evaluatePhaseZeroGate({ levelB, sourceClean, loaderSha256, mutex
 export function launchGovernedProfile({ authorityRoot, profileName, extensionRoot, devPort, cdpPort }) {
   const launcher = path.join(path.resolve(authorityRoot), 'h2o-launch-for-profile');
   const result = spawnSync(launcher, [profileName, extensionRoot, String(devPort), String(cdpPort)], { encoding: 'utf8' });
+  const diagnostics = retainLauncherDiagnostics(result);
   return {
     ok: result.status === 0,
-    status: result.status === 0 ? 'GOVERNED_PROFILE_LAUNCHED' : 'GOVERNED_PROFILE_LAUNCH_FAILED',
-    exitCode: Number(result.status ?? 1),
+    status: diagnostics.launcherStatus,
+    exitCode: diagnostics.launcherExitCode,
+    ...diagnostics,
   };
 }
 
@@ -751,6 +798,15 @@ async function main() {
     if (options.phase === 1) {
       if (!options.cdpPort) throw new Error('Phase 1 requires --cdp-port');
       const launched = launchGovernedProfile(options);
+      Object.assign(evidence, {
+        launcherName: launched.launcherName,
+        launcherExitCode: launched.launcherExitCode,
+        launcherStatus: launched.launcherStatus,
+        launcherDiagnosticCode: launched.launcherDiagnosticCode,
+        launcherDiagnosticLine: launched.launcherDiagnosticLine,
+        launcherDiagnosticLines: launched.launcherDiagnosticLines,
+        liveTestAllowed: launched.liveTestAllowed,
+      });
       if (!launched.ok) {
         writeEvidence(path.join(runDir, 'run.json'), { ...evidence, logicalUsed: 0, stoppedEarly: true, stopReason: launched.status });
         process.stderr.write(`${launched.status}\n`);
