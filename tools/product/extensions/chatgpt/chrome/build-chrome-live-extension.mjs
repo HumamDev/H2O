@@ -112,6 +112,10 @@ const TITLE_DIAGNOSTIC_ENABLED = isTitleDiagnosticBuildEnabled({
 const BACKEND_AUTHORITY_CAPABILITY = resolveBackendAuthorityCapability(
   process.env.H2O_BACKEND_AUTHORITY,
 );
+const ACCEPTANCE_ADAPTER_ALIAS = "0A4b._Backend_Acceptance_Adapter_.js";
+const EXCLUDED_RUNTIME_ALIASES = MANIFEST_PROFILE === "production"
+  ? Object.freeze([ACCEPTANCE_ADAPTER_ALIAS])
+  : Object.freeze([]);
 // Phase 0G-2: ASSETS_DIR comes from paths.mjs (= <REPO_ROOT>/assets). Both
 // constants resolve byte-identical to the pre-Phase-0G-2 `path.join(SRC,
 // "assets", ...)` form under the standard invocation.
@@ -158,6 +162,16 @@ const {
   srcRoot: SRC,
   orderFile: DEV_ORDER_FILE,
 });
+const LOADER_DEV_SCRIPT_CATALOG = Object.fromEntries(
+  Object.entries(DEV_SCRIPT_CATALOG).filter(([alias]) => !EXCLUDED_RUNTIME_ALIASES.includes(alias)),
+);
+const LOADER_DEV_ORDER_SECTIONS_SNAPSHOT = DEV_ORDER_SECTIONS_SNAPSHOT.map((section) => ({
+  ...section,
+  items: section.items.filter((item) => !EXCLUDED_RUNTIME_ALIASES.includes(item.file)),
+}));
+const LOADER_DEPS_FILTERED_SNAPSHOT = Object.fromEntries(
+  Object.entries(LOADER_DEPS_SNAPSHOT).filter(([alias]) => !EXCLUDED_RUNTIME_ALIASES.includes(alias)),
+);
 
 function writeFile(fp, txt) {
   writeTextFileAtomic(fp, txt);
@@ -577,15 +591,16 @@ async function main() {
       DEV_TITLE,
       DEV_HAS_CONTROLS,
       PROXY_PACK_URL,
-      DEV_SCRIPT_CATALOG,
-      DEV_ORDER_SECTIONS_SNAPSHOT,
-      LOADER_DEPS_SNAPSHOT,
+      DEV_SCRIPT_CATALOG: LOADER_DEV_SCRIPT_CATALOG,
+      DEV_ORDER_SECTIONS_SNAPSHOT: LOADER_DEV_ORDER_SECTIONS_SNAPSHOT,
+      LOADER_DEPS_SNAPSHOT: LOADER_DEPS_FILTERED_SNAPSHOT,
       STORAGE_KEY,
       STORAGE_ORDER_OVERRIDES_KEY,
       PAGE_FOLDER_BRIDGE_FILE,
       PAGE_PILOT_OBSERVER_FILE,
       TITLE_CONTRACT_BRIDGE_FILE: TITLE_CONTRACT_BRIDGE_FILENAME,
       BACKEND_AUTHORITY_CAPABILITY,
+      EXCLUDED_RUNTIME_ALIASES,
     }));
     writeFile(path.join(OUT_DIR, PAGE_FOLDER_BRIDGE_FILE), makeChromeLiveFolderBridgePageJs());
     writeFile(path.join(OUT_DIR, PAGE_PILOT_OBSERVER_FILE), makeChromeLivePilotObserverJs());

@@ -23,6 +23,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.
 const SCAN_DIRS = ["src-runtime-base", "shared"];
 
 const AUTHORITY_FILE = "0A4a.⬛️🌐 Backend Request Authority 🌐.js";
+const ACCEPTANCE_ADAPTER_FILE = "0A4b.⬛️🌐 Backend Acceptance Adapter 🌐.js";
 
 /* Every file permitted to mention an authenticated backend endpoint, with the
    reason. Anything else naming one is a drift failure. */
@@ -30,6 +31,10 @@ const ALLOWED = new Map([
   [AUTHORITY_FILE, {
     role: "authority",
     why: "owns authenticated backend transport",
+  }],
+  [ACCEPTANCE_ADAPTER_FILE, {
+    role: "acceptance-adapter",
+    why: "named feature adapter; explicitly forbidden from owning transport",
   }],
   ["0F2a.⬛️🗂️ Projects 🗂️.js", {
     role: "observational",
@@ -239,6 +244,21 @@ for (const rel of files) {
   assert.ok(code.includes("authority-unavailable"), "9B0a must fail closed when the authority is absent");
 }
 
+/* The acceptance adapter is a named feature facade, never a second authority. */
+{
+  const file = path.join(ROOT, "src-runtime-base", ACCEPTANCE_ADAPTER_FILE);
+  assert.ok(fs.existsSync(file), "0A4b acceptance adapter must exist");
+  const code = stripComments(fs.readFileSync(file, "utf8"));
+  const fetches = (code.match(/\b(?:W\.)?fetch\s*\(/g) || []).length;
+  assert.strictEqual(fetches, 0, `0A4b must contain zero fetch sites, found ${fetches}`);
+  assert.ok(!code.includes(AUTH_SESSION), "0A4b must not name the session endpoint");
+  assert.ok(!code.includes(BACKEND_PREFIX), "0A4b must not name a backend endpoint");
+  assert.ok(!/\bBearer\s|Authorization\s*:|accessToken/.test(code), "0A4b must not construct authentication material");
+  assert.ok(!/BackendAuthority\s*\.\s*request\s*\(/.test(code), "0A4b must not call authority transport directly");
+  assert.ok(code.includes("H2O.ChatTitle"), "0A4b title acceptance must use the Title feature API");
+  assert.ok(code.includes("fetchConversationTurnIndex"), "0A4b archive acceptance must use the Archive feature API");
+}
+
 /* Generated aliases are delivery copies; an edit there would bypass every
    check above, so where they exist they must match their source. */
 const aliasDir = path.join(ROOT, "apps/dev-server/alias");
@@ -273,7 +293,8 @@ if (fs.existsSync(aliasDir)) {
         if (!/\.(mjs|js)$/.test(e.name)) continue;
         // This file states the rule, so it necessarily contains the patterns
         // the rule matches on; scanning itself would always self-report.
-        if (abs === fileURLToPath(import.meta.url)) continue;
+        if (abs === fileURLToPath(import.meta.url)
+            || e.name === "validate-backend-acceptance-runner.mjs") continue;
         const code = stripComments(fs.readFileSync(abs, "utf8"));
         /* A tool that both drives a live page AND names a backend endpoint is
            the ad-hoc acceptance pattern this rule forbids. */
@@ -286,6 +307,14 @@ if (fs.existsSync(aliasDir)) {
   }
   assert.deepStrictEqual(offenders, [],
     `ad-hoc page-evaluated authenticated backend access is not an approved acceptance path: ${offenders.join(", ")}`);
+
+  const runnerFile = path.join(ROOT, "tools/smoke/backend-acceptance-runner.mjs");
+  assert.ok(fs.existsSync(runnerFile), "governed acceptance runner must exist");
+  const runnerCode = stripComments(fs.readFileSync(runnerFile, "utf8"));
+  for (const flag of ["--evaluate", "--expression", "--script", "--javascript"]) {
+    assert.ok(!runnerCode.includes(flag), `acceptance runner must not expose arbitrary page code through ${flag}`);
+  }
+  assert.ok(runnerCode.includes("op-not-allowlisted"), "acceptance runner must default-deny unknown operations");
 }
 
 if (findings.length) {

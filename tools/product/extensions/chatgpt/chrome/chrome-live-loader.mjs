@@ -88,6 +88,7 @@ export function makeChromeLiveLoaderJs({
   PAGE_PILOT_OBSERVER_FILE,
   TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME,
   BACKEND_AUTHORITY_CAPABILITY = false,
+  EXCLUDED_RUNTIME_ALIASES = [],
 }) {
   // Phase 0H: prefer H2O_BUILD_TS env override (same value the rest of the
   // build chain already honors — proxy-pack `@version`, alias URL `?v=`,
@@ -101,6 +102,10 @@ export function makeChromeLiveLoaderJs({
   const titleContractBridgePrelude = makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE });
   if (typeof BACKEND_AUTHORITY_CAPABILITY !== "boolean") {
     throw new TypeError("BACKEND_AUTHORITY_CAPABILITY must be a boolean");
+  }
+  if (!Array.isArray(EXCLUDED_RUNTIME_ALIASES)
+      || EXCLUDED_RUNTIME_ALIASES.some((value) => typeof value !== "string" || !value.trim())) {
+    throw new TypeError("EXCLUDED_RUNTIME_ALIASES must be an array of non-empty strings");
   }
   return `(() => {
   "use strict";
@@ -1830,6 +1835,10 @@ ${titleContractBridgePrelude}
   const PROXY_PACK_URL = ${JSON.stringify(PROXY_PACK_URL)};
   const DEV_SCRIPT_CATALOG = ${JSON.stringify(DEV_SCRIPT_CATALOG)};
   const DEV_ORDER_SECTIONS = ${JSON.stringify(DEV_ORDER_SECTIONS_SNAPSHOT)};
+  // Build-variant exclusion is immutable and precedes order/toggle handling.
+  // Production uses this established loader boundary to omit acceptance-only
+  // modules even if a proxy pack contains them or stale storage says enabled.
+  const EXCLUDED_RUNTIME_ALIASES = new Set(${JSON.stringify(EXCLUDED_RUNTIME_ALIASES)});
   // Loader V3 Phase 1: declared dependency edges (read-only). Used by
   // v3PredictReport() to simulate tier/wave dispatch when
   // localStorage.H2O_LOADER_V3_WAVE_DIAG === "1". Does NOT affect runtime
@@ -3146,6 +3155,7 @@ ${titleContractBridgePrelude}
     const seen = new Set();
 
     for (const aliasId of catalog.order) {
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
       const meta = catalog.map[aliasId] || {};
       byAlias[aliasId] = {
         name: String(meta.name || aliasId),
@@ -3163,6 +3173,7 @@ ${titleContractBridgePrelude}
       const item = fromPack[i] || {};
       const aliasId = normalizeAliasId(item.aliasId || "");
       if (!aliasId) continue;
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
 
       const base = byAlias[aliasId] || {
         name: aliasId,
@@ -3194,6 +3205,7 @@ ${titleContractBridgePrelude}
     }
 
     for (const aliasId of catalog.order) {
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
       if (seen.has(aliasId)) continue;
       const base = byAlias[aliasId];
       if (!base) continue;

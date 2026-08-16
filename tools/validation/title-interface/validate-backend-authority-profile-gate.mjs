@@ -230,7 +230,7 @@ await check("R1 builder default and strict boolean contract", () => {
     "builder must derive the flag from its dedicated environment value");
   assert.match(BUILDER_SOURCE, /resolveBackendAuthorityCapability\(/,
     "builder must use the strict parser");
-  assert.match(BUILDER_SOURCE, /BACKEND_AUTHORITY_CAPABILITY,\s*\n\s*}\)\);/,
+  assert.match(BUILDER_SOURCE, /BACKEND_AUTHORITY_CAPABILITY,\s*\n\s*(?:[A-Z_]+,\s*\n\s*)*}\)\);/,
     "builder must pass the parsed boolean to loader generation");
 });
 
