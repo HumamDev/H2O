@@ -783,5 +783,41 @@ await fixture('V30 the readiness timeout retains only an allow-listed last not-r
   eq(executed.authenticatedDispatches, 0, 'still zero authenticated dispatches');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V30 + mutations)`);
+/* V31 — pack-supplied alias URLs must be re-homed onto the pack origin the
+   build is port-verified against. A pack stamped by another lane's dev origin
+   otherwise makes the loader fetch module bodies from that lane: its modules
+   load, and any module unique to this build 404s. That is what kept 0A4a and
+   0A4b out of the runtime while every input contract read as correct. */
+await fixture('V31 alias URLs are pinned to the build pack origin, adapter still excluded in production', async () => {
+  const development = mockLoader([]);
+  ok(development.includes('function pinAliasUrlToPackOrigin('), 'loader defines the alias-origin pin');
+  ok(development.includes('requireUrl: pinAliasUrlToPackOrigin('), 'merge site pins pack-supplied alias URLs');
+  // Behavioural check of the emitted helper, isolated from the rest of the loader.
+  const startAt = development.indexOf('function pinAliasUrlToPackOrigin(');
+  let depth = 0;
+  let endAt = -1;
+  for (let i = development.indexOf('{', startAt); i < development.length; i += 1) {
+    if (development[i] === '{') depth += 1;
+    else if (development[i] === '}') { depth -= 1; if (depth === 0) { endAt = i + 1; break; } }
+  }
+  ok(startAt >= 0 && endAt > startAt, 'emitted helper is extractable');
+  const source = development.slice(startAt, endAt);
+  const sandbox = { PROXY_PACK_URL: 'http://127.0.0.1:5517/dev_output/proxy/_paste-pack.ext.txt', URL, result: null };
+  vm.createContext(sandbox);
+  vm.runInContext(`${source}\nresult = {
+    foreign: pinAliasUrlToPackOrigin('http://127.0.0.1:5500/alias/0A4b._Backend_Acceptance_Adapter_.js?v=1'),
+    native: pinAliasUrlToPackOrigin('http://127.0.0.1:5517/alias/0A4a._Backend_Request_Authority_.js?v=2'),
+    unrelated: pinAliasUrlToPackOrigin('http://example.test/other/thing.js')
+  };`, sandbox);
+  eq(sandbox.result.foreign, 'http://127.0.0.1:5517/alias/0A4b._Backend_Acceptance_Adapter_.js?v=1',
+    'a foreign-origin alias URL is re-homed onto the pack origin, path and cache-bust preserved');
+  eq(sandbox.result.native, 'http://127.0.0.1:5517/alias/0A4a._Backend_Request_Authority_.js?v=2',
+    'a same-origin alias URL is left untouched');
+  eq(sandbox.result.unrelated, 'http://example.test/other/thing.js', 'non-alias URLs are not rewritten');
+  // The production contract is unchanged by this fix.
+  const production = mockLoader(['0A4b._Backend_Acceptance_Adapter_.js']);
+  ok(production.includes('new Set(["0A4b._Backend_Acceptance_Adapter_.js"])'), '0A4b remains excluded from production');
+});
+
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V31 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');

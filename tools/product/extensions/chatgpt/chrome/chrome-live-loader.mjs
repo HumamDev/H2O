@@ -3089,6 +3089,26 @@ ${titleContractBridgePrelude}
     return "http://127.0.0.1:5500/alias/" + enc + cacheBust;
   }
 
+  /* The proxy pack carries ABSOLUTE alias URLs stamped by whichever dev origin
+     generated it, which is not necessarily the origin this extension was built
+     and port-verified against. Trusting them verbatim makes the loader fetch
+     module bodies from a foreign lane's dev server: modules that lane happens
+     to have load fine, and any module unique to this build 404s with nothing
+     but a per-script load error. Re-home every pack alias URL onto the pack
+     origin the build is pinned to, preserving the path and cache-bust. */
+  function pinAliasUrlToPackOrigin(rawUrl) {
+    const raw = String(rawUrl || "");
+    if (!raw) return raw;
+    try {
+      const packOrigin = new URL(PROXY_PACK_URL).origin;
+      const candidate = new URL(raw, packOrigin);
+      if (candidate.origin === packOrigin) return raw;
+      if (candidate.pathname.indexOf("/alias/") < 0) return raw;
+      return packOrigin + candidate.pathname + candidate.search;
+    } catch {}
+    return raw;
+  }
+
   function normalizeCatalog(rawCatalog) {
     const map = {};
     const order = [];
@@ -3189,7 +3209,7 @@ ${titleContractBridgePrelude}
         aliasId,
         name: String(item.name || base.name || aliasId),
         runAt: normalizeRunAt(item.runAt || base.runAt || "document-idle"),
-        requireUrl: String(stripDevCacheNoise(item.requireUrl || base.requireUrl || aliasRequireUrl(aliasId))),
+        requireUrl: pinAliasUrlToPackOrigin(String(stripDevCacheNoise(item.requireUrl || base.requireUrl || aliasRequireUrl(aliasId)))),
         tier: String(item.tier || base.tier || "L4").trim() || "L4",
         openEvent: String(item.openEvent || base.openEvent || "").trim(),
       };
