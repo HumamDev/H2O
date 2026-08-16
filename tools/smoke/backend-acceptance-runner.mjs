@@ -46,6 +46,20 @@ export const PHASE_ONE_CHECKS = Object.freeze([
   Object.freeze({ evidenceOp: 'pacing-after', adapterOp: 'pacing-sample' }),
 ]);
 
+/* The governed launcher returns LIVE_TEST_ALLOWED as soon as CDP answers and
+   the session is observed, which is long before the loader has fetched and
+   executed its module set. Sampling the adapter at that instant reports
+   acceptance-runtime-unavailable truthfully but uselessly. This bounded wait
+   is initialization only: it uses the same allow-listed read-only op, issues
+   no backend request, and never becomes an unbounded retry. */
+export const ACCEPTANCE_RUNTIME_READY_TIMEOUT_MS = 10000;
+export const ACCEPTANCE_RUNTIME_READY_INTERVAL_MS = 250;
+const ACCEPTANCE_RUNTIME_NOT_READY_STATUSES = Object.freeze(new Set([
+  'acceptance-runtime-unavailable',
+  'acceptance-registry-unavailable',
+  'chatgpt-target-unavailable',
+]));
+
 // These are the only Runtime.evaluate expressions in this module. Both are
 // fixed, versioned module constants. Operation names and arguments use the
 // structured Runtime.callFunctionOn arguments array below.
@@ -375,6 +389,9 @@ export function serializeEvidence(input = {}) {
     logicalUsed: Math.max(0, Number(input.logicalUsed) || 0),
     authenticatedDispatches: Math.max(0, Number(input.authenticatedDispatches) || 0),
     phaseOneCertification: safeString(input.phaseOneCertification, 80),
+    adapterReadinessStatus: safeEvidenceCode(input.adapterReadinessStatus, 80),
+    adapterReadinessAttempts: Math.max(0, Number(input.adapterReadinessAttempts) || 0),
+    adapterReadinessWaitedMs: Math.max(0, Number(input.adapterReadinessWaitedMs) || 0),
     launcherName: safeEvidenceCode(input.launcherName, 80),
     launcherExitCode: Math.max(0, Number(input.launcherExitCode) || 0),
     launcherStatus: safeEvidenceCode(input.launcherStatus, 80),
@@ -517,9 +534,55 @@ export async function executeAcceptancePhase(options = {}) {
   return { ok: true, status: `PHASE_${phase}_PASS`, steps: evidenceSteps, logicalUsed: budget.used, authorityBefore };
 }
 
+/* Initialization probe, deliberately NOT part of the certified evidence: its
+   result is discarded and the full four-step sequence runs afterwards, so
+   pacing-before still samples state before the real checks rather than before
+   the loader existed. Only "not ready yet" statuses are retried; any other
+   result ends the wait immediately so a genuine fault is not masked by
+   polling. */
+export async function awaitAcceptanceRuntimeReady(options = {}) {
+  const invoke = options.invoke;
+  if (typeof invoke !== 'function') return { ok: false, status: 'acceptance-runtime-timeout', attempts: 0, waitedMs: 0 };
+  const timeoutMs = Number(options.timeoutMs ?? ACCEPTANCE_RUNTIME_READY_TIMEOUT_MS);
+  const intervalMs = Number(options.intervalMs ?? ACCEPTANCE_RUNTIME_READY_INTERVAL_MS);
+  const now = typeof options.now === 'function' ? options.now : () => Date.now();
+  const sleep = typeof options.sleep === 'function'
+    ? options.sleep
+    : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const startedAt = now();
+  let attempts = 0;
+  for (;;) {
+    attempts += 1;
+    const result = await invoke('runtime-presence', {});
+    if (result?.ok === true) {
+      return { ok: true, status: 'acceptance-runtime-ready', attempts, waitedMs: now() - startedAt };
+    }
+    const status = String(result?.status || 'acceptance-runtime-unavailable');
+    if (!ACCEPTANCE_RUNTIME_NOT_READY_STATUSES.has(status)) {
+      return { ok: false, status, attempts, waitedMs: now() - startedAt };
+    }
+    if (now() - startedAt + intervalMs > timeoutMs) {
+      return { ok: false, status: 'acceptance-runtime-timeout', attempts, waitedMs: now() - startedAt };
+    }
+    await sleep(intervalMs);
+  }
+}
+
 export async function executePhaseOneChecks(options = {}) {
   if (typeof options.invoke !== 'function') {
     return { ok: false, status: 'PHASE_1_EVIDENCE_INCOMPLETE', steps: [], logicalUsed: 0, authenticatedDispatches: 0 };
+  }
+  const readiness = await awaitAcceptanceRuntimeReady(options);
+  if (!readiness.ok) {
+    return {
+      ok: false,
+      status: readiness.status,
+      steps: [],
+      readiness,
+      logicalBudget: 0,
+      logicalUsed: 0,
+      authenticatedDispatches: 0,
+    };
   }
   const raw = {};
   const steps = [];
@@ -542,6 +605,7 @@ export async function executePhaseOneChecks(options = {}) {
   return {
     ...certification,
     steps,
+    readiness,
     runtimePresence: input.runtimePresence,
     authorityStatus: input.authorityStatus,
     pacingBefore: input.pacingBefore,
@@ -824,6 +888,9 @@ async function main() {
         logicalUsed: phaseOne.logicalUsed,
         authenticatedDispatches: phaseOne.authenticatedDispatches,
         phaseOneCertification: phaseOne.status,
+        adapterReadinessStatus: phaseOne.readiness?.status,
+        adapterReadinessAttempts: phaseOne.readiness?.attempts,
+        adapterReadinessWaitedMs: phaseOne.readiness?.waitedMs,
         stoppedEarly: phaseOne.ok !== true,
         stopReason: phaseOne.ok === true ? '' : phaseOne.status,
       });

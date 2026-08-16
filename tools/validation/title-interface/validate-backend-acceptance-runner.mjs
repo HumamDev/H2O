@@ -441,7 +441,11 @@ await fixture('V23 complete Phase-1 evidence passes with zero budget and dispatc
     return { ...validPhaseOneEvidence().pacingBefore, sampledAt: sample++ };
   } });
   ok(executed.ok, 'real Phase-1 executor passes');
-  eq(calls.join(','), 'pacing-sample,runtime-presence,authority-status,pacing-sample', 'fixed before/after sequence');
+  // The leading probe is the readiness wait, whose result is discarded; the
+  // certified sequence is the four that follow it, so pacing-before still
+  // samples state before the real checks rather than before the loader ran.
+  eq(calls[0], 'runtime-presence', 'readiness probe runs first and is not certified evidence');
+  eq(calls.slice(1).join(','), 'pacing-sample,runtime-presence,authority-status,pacing-sample', 'fixed before/after sequence');
   eq(executed.steps.map((step) => step.op).join(','),
     'pacing-before,runtime-presence,authority-status,pacing-after', 'evidence labels distinguish samples');
   const recorded = runner.serializeEvidence({ requestedPhase: 1, logicalBudget: 0,
@@ -682,5 +686,80 @@ await fixture('M1-M6 and production-exclusion mutations are killed', async () =>
   ok(!mockLoader([]).includes('new Set(["0A4b._Backend_Acceptance_Adapter_.js"])'), 'production exclusion mutation');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V26 + mutations)`);
+/* V27-V29 — the adapter-readiness wait. The launcher returns before the loader
+   has executed its module set, so this wait is load-bearing for every Phase-1
+   run; it must converge when the adapter appears, stay bounded when it never
+   does, and cost nothing on the backend either way. */
+await fixture('V27 readiness converges inside the window and Phase 1 then proceeds', async () => {
+  const calls = [];
+  let clock = 0;
+  let sample = 2000;
+  const readyAfter = 4; // adapter appears on the 5th probe
+  const executed = await runner.executePhaseOneChecks({
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    invoke: async (op) => {
+      calls.push(op);
+      const presenceProbes = calls.filter((entry) => entry === 'runtime-presence').length;
+      if (op === 'runtime-presence' && presenceProbes <= readyAfter) {
+        return { ok: false, status: 'acceptance-runtime-unavailable' };
+      }
+      if (op === 'runtime-presence') return validPhaseOneEvidence().runtimePresence;
+      if (op === 'authority-status') return validPhaseOneEvidence().authorityStatus;
+      return { ...validPhaseOneEvidence().pacingBefore, sampledAt: sample++ };
+    },
+  });
+  ok(executed.ok, 'Phase 1 proceeds once the adapter appears');
+  eq(executed.status, 'PHASE_1_PASS', 'certification reached after readiness');
+  eq(executed.readiness.status, 'acceptance-runtime-ready', 'readiness reported ready');
+  eq(executed.readiness.attempts, readyAfter + 1, 'readiness retried until the adapter appeared');
+  ok(executed.readiness.waitedMs < runner.ACCEPTANCE_RUNTIME_READY_TIMEOUT_MS, 'converged inside the window');
+  // D: after readiness, the certified order is exactly the four evidence ops.
+  eq(executed.steps.map((step) => step.op).join(','),
+    'pacing-before,runtime-presence,authority-status,pacing-after', 'certified sequence unchanged');
+  // C: readiness polling is free.
+  eq(executed.logicalUsed, 0, 'readiness consumes no logical operation');
+  eq(executed.authenticatedDispatches, 0, 'readiness consumes no authenticated dispatch');
+  eq(calls.filter((op) => op === 'title-read' || op === 'archive-turn-index').length, 0,
+    'readiness never touches a feature/backend op');
+});
+
+await fixture('V28 readiness fails closed at the bound instead of waiting forever', async () => {
+  let clock = 0;
+  const calls = [];
+  const executed = await runner.executePhaseOneChecks({
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    invoke: async (op) => { calls.push(op); return { ok: false, status: 'acceptance-runtime-unavailable' }; },
+  });
+  eq(executed.ok, false, 'never-ready adapter fails closed');
+  eq(executed.status, 'acceptance-runtime-timeout', 'bounded timeout status');
+  eq(executed.steps.length, 0, 'no certified evidence is fabricated on timeout');
+  eq(executed.logicalUsed, 0, 'timeout consumes no logical operation');
+  eq(executed.authenticatedDispatches, 0, 'timeout consumes no authenticated dispatch');
+  ok(clock <= runner.ACCEPTANCE_RUNTIME_READY_TIMEOUT_MS, 'wait never exceeds the declared bound');
+  const maxProbes = Math.ceil(runner.ACCEPTANCE_RUNTIME_READY_TIMEOUT_MS / runner.ACCEPTANCE_RUNTIME_READY_INTERVAL_MS) + 1;
+  ok(calls.length <= maxProbes, `probe count is bounded (${calls.length} <= ${maxProbes})`);
+  eq(calls.every((op) => op === 'runtime-presence'), true, 'only the allow-listed presence op is polled');
+});
+
+await fixture('V29 readiness does not mask a real fault and adds no launch retry', async () => {
+  // A status outside the not-ready set must end the wait immediately rather
+  // than being polled away: an unexpected adapter fault is not a cold start.
+  let clock = 0;
+  const calls = [];
+  const executed = await runner.executePhaseOneChecks({
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    invoke: async (op) => { calls.push(op); return { ok: false, status: 'acceptance-adapter-threw' }; },
+  });
+  eq(executed.status, 'acceptance-adapter-threw', 'a genuine fault surfaces unchanged');
+  eq(calls.length, 1, 'a genuine fault is not retried');
+  // E: the readiness wait is confined to the adapter; it must not have
+  // introduced a second governed launch anywhere in the runner.
+  eq(functionCallCount(runnerAst, 'launchGovernedProfile', 'spawnSync'), 1, 'still exactly one launcher dispatch');
+  eq(runner.phaseBudget(1), 0, 'Phase-1 budget still zero');
+});
+
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V29 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');
