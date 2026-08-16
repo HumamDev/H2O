@@ -58,6 +58,12 @@ const ACCEPTANCE_RUNTIME_NOT_READY_STATUSES = Object.freeze(new Set([
   'acceptance-runtime-unavailable',
   'acceptance-registry-unavailable',
   'chatgpt-target-unavailable',
+  // The adapter can answer before its peer modules finish booting: 0A4b is
+  // ordered ahead of the Title and Archive surfaces it reports on, so an early
+  // probe sees the adapter up and its peers absent. That is the same cold
+  // start the wait exists for, not a fault, so it belongs here rather than
+  // ending the wait on the first sample.
+  'runtime-surface-missing',
 ]));
 
 // These are the only Runtime.evaluate expressions in this module. Both are

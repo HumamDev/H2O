@@ -743,6 +743,28 @@ await fixture('V28 readiness fails closed at the bound instead of waiting foreve
   eq(calls.every((op) => op === 'runtime-presence'), true, 'only the allow-listed presence op is polled');
 });
 
+await fixture('V29b peer-module boot is a not-ready condition, not a fault', async () => {
+  let clock = 0;
+  const calls = [];
+  const executed = await runner.executePhaseOneChecks({
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    invoke: async (op) => {
+      calls.push(op);
+      const probes = calls.filter((entry) => entry === 'runtime-presence').length;
+      // Adapter answers immediately; Title/Archive surfaces appear on probe 3.
+      if (op === 'runtime-presence' && probes <= 2) return { ok: false, status: 'runtime-surface-missing' };
+      if (op === 'runtime-presence') return validPhaseOneEvidence().runtimePresence;
+      if (op === 'authority-status') return validPhaseOneEvidence().authorityStatus;
+      return validPhaseOneEvidence().pacingBefore;
+    },
+  });
+  ok(executed.ok, 'a late peer surface no longer ends the run on the first sample');
+  eq(executed.readiness.status, 'acceptance-runtime-ready', 'readiness converged');
+  eq(executed.readiness.lastObservedNotReadyStatus, 'runtime-surface-missing', 'the boot condition is retained, not discarded');
+  eq(executed.logicalUsed, 0, 'still zero logical operations');
+});
+
 await fixture('V29 readiness does not mask a real fault and adds no launch retry', async () => {
   // A status outside the not-ready set must end the wait immediately rather
   // than being polled away: an unexpected adapter fault is not a cold start.
