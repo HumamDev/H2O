@@ -392,6 +392,7 @@ export function serializeEvidence(input = {}) {
     adapterReadinessStatus: safeEvidenceCode(input.adapterReadinessStatus, 80),
     adapterReadinessAttempts: Math.max(0, Number(input.adapterReadinessAttempts) || 0),
     adapterReadinessWaitedMs: Math.max(0, Number(input.adapterReadinessWaitedMs) || 0),
+    adapterReadinessLastNotReady: safeNotReadyStatus(input.adapterReadinessLastNotReady),
     launcherName: safeEvidenceCode(input.launcherName, 80),
     launcherExitCode: Math.max(0, Number(input.launcherExitCode) || 0),
     launcherStatus: safeEvidenceCode(input.launcherStatus, 80),
@@ -551,21 +552,31 @@ export async function awaitAcceptanceRuntimeReady(options = {}) {
     : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const startedAt = now();
   let attempts = 0;
+  let lastNotReady = '';
   for (;;) {
     attempts += 1;
     const result = await invoke('runtime-presence', {});
     if (result?.ok === true) {
-      return { ok: true, status: 'acceptance-runtime-ready', attempts, waitedMs: now() - startedAt };
+      return { ok: true, status: 'acceptance-runtime-ready', attempts, waitedMs: now() - startedAt, lastObservedNotReadyStatus: lastNotReady };
     }
     const status = String(result?.status || 'acceptance-runtime-unavailable');
     if (!ACCEPTANCE_RUNTIME_NOT_READY_STATUSES.has(status)) {
-      return { ok: false, status, attempts, waitedMs: now() - startedAt };
+      return { ok: false, status, attempts, waitedMs: now() - startedAt, lastObservedNotReadyStatus: lastNotReady };
     }
+    // A timeout that cannot say which of the three not-ready conditions it saw
+    // forces a second live run to learn it. Only the fixed allow-listed codes
+    // are ever retained; nothing observed on the page reaches this field.
+    lastNotReady = status;
     if (now() - startedAt + intervalMs > timeoutMs) {
-      return { ok: false, status: 'acceptance-runtime-timeout', attempts, waitedMs: now() - startedAt };
+      return { ok: false, status: 'acceptance-runtime-timeout', attempts, waitedMs: now() - startedAt, lastObservedNotReadyStatus: lastNotReady };
     }
     await sleep(intervalMs);
   }
+}
+
+export function safeNotReadyStatus(value) {
+  const status = String(value || '');
+  return ACCEPTANCE_RUNTIME_NOT_READY_STATUSES.has(status) ? status : '';
 }
 
 export async function executePhaseOneChecks(options = {}) {
@@ -891,6 +902,7 @@ async function main() {
         adapterReadinessStatus: phaseOne.readiness?.status,
         adapterReadinessAttempts: phaseOne.readiness?.attempts,
         adapterReadinessWaitedMs: phaseOne.readiness?.waitedMs,
+        adapterReadinessLastNotReady: phaseOne.readiness?.lastObservedNotReadyStatus,
         stoppedEarly: phaseOne.ok !== true,
         stopReason: phaseOne.ok === true ? '' : phaseOne.status,
       });

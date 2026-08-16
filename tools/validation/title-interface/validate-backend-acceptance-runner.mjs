@@ -761,5 +761,27 @@ await fixture('V29 readiness does not mask a real fault and adds no launch retry
   eq(runner.phaseBudget(1), 0, 'Phase-1 budget still zero');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V29 + mutations)`);
+await fixture('V30 the readiness timeout retains only an allow-listed last not-ready status', async () => {
+  let clock = 0;
+  const executed = await runner.executePhaseOneChecks({
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    invoke: async () => ({ ok: false, status: 'chatgpt-target-unavailable' }),
+  });
+  eq(executed.status, 'acceptance-runtime-timeout', 'still a bounded timeout');
+  eq(executed.readiness.lastObservedNotReadyStatus, 'chatgpt-target-unavailable', 'last not-ready status retained accurately');
+  const recorded = runner.serializeEvidence({
+    requestedPhase: 1, logicalBudget: 0, logicalUsed: 0, authenticatedDispatches: 0,
+    adapterReadinessLastNotReady: executed.readiness.lastObservedNotReadyStatus,
+  });
+  eq(recorded.adapterReadinessLastNotReady, 'chatgpt-target-unavailable', 'retained through serialization');
+  // Nothing outside the fixed allow-list may ever reach the record.
+  for (const rejected of ['https://chatgpt.com/c/secret', 'Bearer abc.def.ghi', 'acceptance-adapter-threw', '<dom>']) {
+    eq(runner.safeNotReadyStatus(rejected), '', `non-allow-listed value rejected: ${rejected}`);
+  }
+  eq(executed.logicalUsed, 0, 'still zero logical operations');
+  eq(executed.authenticatedDispatches, 0, 'still zero authenticated dispatches');
+});
+
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V30 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');
