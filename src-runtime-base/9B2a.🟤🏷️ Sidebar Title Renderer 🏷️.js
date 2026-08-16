@@ -54,8 +54,8 @@
       snapshot.routeKind === 'chat' &&
       validChatId(snapshot.chatId) &&
       Number.isSafeInteger(snapshot.routeToken) &&
-      typeof snapshot.displayTitle === 'string' &&
-      snapshot.displayTitle.length > 0;
+      typeof snapshot.baseTitle === 'string' &&
+      snapshot.baseTitle.length > 0;
   }
   // Title authority and visible presentation are separate concerns. Canonical
   // convergence grants 9B0a's authority over the row; legacy mode grants none,
@@ -263,8 +263,8 @@
       if (current.source !== source) {
         releaseAdoption(anchor, 'native-node-replaced');
       } else {
-        if (current.visual.textContent !== snapshot.displayTitle) {
-          current.visual.textContent = snapshot.displayTitle;
+        if (current.visual.textContent !== snapshot.baseTitle) {
+          current.visual.textContent = snapshot.baseTitle;
         }
         current.visual.setAttribute('data-h2o-title-route-token', String(snapshot.routeToken));
         current.visual.setAttribute('data-h2o-title-chat-id', snapshot.chatId);
@@ -285,7 +285,10 @@
     visual.setAttribute('data-h2o-title-chat-id', snapshot.chatId);
     visual.setAttribute('data-h2o-title-route-token', String(snapshot.routeToken));
     visual.setAttribute('dir', 'auto');
-    visual.textContent = snapshot.displayTitle;
+    // 9D1a owns the single clickable emoji badge slot. This passive renderer
+    // owns only the canonical title remainder, preventing a native/H2O emoji
+    // from being rendered once in the badge and again in title text.
+    visual.textContent = snapshot.baseTitle;
     if (!insertVisualAfter(source, visual)) {
       restoreAnchorAria(anchor);
       return false;

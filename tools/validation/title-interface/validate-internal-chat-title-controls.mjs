@@ -15,6 +15,23 @@ const rel = {
 };
 const source = Object.fromEntries(Object.entries(rel).map(([key, file]) => [key, fs.readFileSync(path.join(root, file), 'utf8')]));
 
+function extractFunction(text, name) {
+  const marker = `function ${name}(`;
+  const start = text.indexOf(marker);
+  assert.ok(start >= 0, `${name} declaration missing`);
+  const open = text.indexOf(') {', start) + 2;
+  assert.ok(open > start + 1, `${name} body opening missing`);
+  let depth = 0;
+  for (let index = open; index < text.length; index += 1) {
+    if (text[index] === '{') depth += 1;
+    else if (text[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  throw new Error(`${name} body is unterminated`);
+}
+
 const subtabBlock = source.interfaceTab.match(/const INTERFACE_SUBTABS = Object\.freeze\(\[([\s\S]*?)\n\s*\]\);/)?.[1] || '';
 const labels = [...subtabBlock.matchAll(/label:\s*'([^']+)'/g)].map((match) => match[1]);
 assert.deepEqual(labels, ['Chat List', 'Chat Meta', 'Chat Title', 'Internal Chat Title', 'Timestamps'],
@@ -26,10 +43,10 @@ const controlsBlock = source.controls.match(/const INTERNAL_CHAT_TITLE_CONTROLS 
 assert.match(controlsBlock, /type:\s*'range'/, 'width is rendered with the Control Hub range component');
 assert.match(controlsBlock, /label:\s*'Internal chat title width'/, 'width control has the requested label');
 assert.match(controlsBlock, /group:\s*'Layout'/, 'the first extensible section is Layout');
-assert.match(controlsBlock, /help:\s*'Adjust the width of the internal title bar underneath the input\.'/,
-  'width control has the requested helper text');
-assert.match(controlsBlock, /def:\s*DEFAULT_INTERNAL_CHAT_TITLE_WIDTH[\s\S]*min:\s*60[\s\S]*max:\s*100[\s\S]*step:\s*0\.5[\s\S]*unit:\s*'%'/,
-  'width range is 60–100%, step 0.5%, defaulted canonically');
+assert.match(controlsBlock, /help:\s*'Set the minimum width of the internal title bar\. Long titles can expand it automatically up to 90%\.'/,
+  'width control explains its base-width semantics and adaptive cap');
+assert.match(controlsBlock, /def:\s*DEFAULT_INTERNAL_CHAT_TITLE_WIDTH[\s\S]*min:\s*60[\s\S]*max:\s*90[\s\S]*step:\s*0\.5[\s\S]*unit:\s*'%'/,
+  'base-width range is 60–90%, step 0.5%, defaulted canonically');
 assert.match(controlsBlock, /getOwner\(\)\?\.getInternalChatTitleSettings/, 'Control Hub reads through the Interface settings authority');
 assert.match(controlsBlock, /getOwner\(\)\?\.setInternalChatTitleSetting\?\.\('widthPct',\s*value,\s*'control-hub'\)/,
   'Control Hub writes through the Interface settings authority');
@@ -50,8 +67,8 @@ assert.match(source.title, /W\.H2O\?\.Surface\?\.Interface/, '9C1a reads the est
 assert.match(source.title, /api\.getInternalChatTitleSettings\(\)/, '9C1a reads the canonical presentation preference');
 assert.match(source.title, /api\.subscribeInternalChatTitleSettings\(applyInternalChatTitleSettings\)/,
   '9C1a subscribes to live presentation changes');
-assert.match(source.title, /labelEl\?\.style\?\.setProperty\?\.\('--ho-internal-title-width',\s*`\$\{widthPct\}%`\)/,
-  '9C1a applies width only to its owned under-input title element');
+assert.match(source.title, /labelEl\?\.style\?\.setProperty\?\.\('--ho-internal-title-base-width',\s*`\$\{widthPct\}%`\)/,
+  '9C1a applies the persisted base width only to its owned under-input title element');
 assert.match(source.title, /labelEl\?\.setAttribute\?\.\('data-ho-show-project',\s*showProject \? '1' : '0'\)/,
   '9C1a applies Show project as presentation state on its owned title element');
 assert.match(source.title, /\.ho-tab-title-under-input\[data-ho-show-project="0"\]\s+\.ho-title-project\s*\{[\s\S]*?display:\s*none/,
@@ -81,18 +98,48 @@ assert.doesNotMatch(source.title, /localStorage.*internal-chat-title|internal-ch
 
 const visibleRule = source.title.match(/\.ho-tab-title-under-input\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
 assert.match(visibleRule, /position:\s*absolute/, 'the internal title is removed from composer-stack layout flow');
-assert.match(visibleRule, /left:\s*50%[\s\S]*top:\s*calc\(100% \+ 1px\)[\s\S]*transform:\s*translateX\(-50%\)/,
+assert.match(visibleRule, /left:\s*50%[\s\S]*top:\s*calc\(100% \+ 3px\)[\s\S]*transform:\s*translateX\(-50%\)/,
   'the internal title is centered in the native space immediately below its composer host');
-assert.match(visibleRule, /width:\s*min\(100%,\s*max\(var\(--ho-internal-title-width,\s*87\.5%\),\s*min\(320px,\s*100%\)\)\)/,
-  'the internal title derives proportional width from its actual container with a safe floor');
-assert.match(visibleRule, /min-height:\s*22px[\s\S]*height:\s*22px[\s\S]*padding:\s*1px 6px/,
-  'the title uses a compact 22 px native-footer presentation');
+assert.match(visibleRule, /width:\s*min\(90%,\s*var\(--ho-internal-title-rendered-width,\s*var\(--ho-internal-title-base-width,\s*60%\)\)\)/,
+  'the internal title uses a measured adaptive width with a hard container-relative 90% cap');
+assert.match(visibleRule, /min-height:\s*18px[\s\S]*height:\s*18px[\s\S]*padding:\s*0 6px/,
+  'the title uses a slimmer 18 px native-footer presentation');
+assert.match(source.title, /\.ho-title-project\s*\{[\s\S]*?width:\s*var\(--ho-internal-title-project-width, auto\)[\s\S]*?flex:\s*0 0 var\(--ho-internal-title-project-width, auto\)/,
+  'the project segment remains independently fixed and compact while the title drives growth');
+assert.match(source.title, /function measureProjectPresentationWidth\(project, baseOuterWidth\)[\s\S]*Math\.min\(180,[\s\S]*baseOuterWidth[^\n]*\* 0\.4,[\s\S]*naturalWidth\)/,
+  'project presentation width is capped from its natural size and selected base, not adaptive outer growth');
+assert.match(source.title, /\.ho-title-main\s*\{[\s\S]*?flex:\s*1 1 auto[\s\S]*?overflow:\s*hidden/,
+  'the title region receives the remaining adaptive width');
+assert.match(source.title, /\.ho-title-text\s*\{[\s\S]*?white-space:\s*nowrap[\s\S]*?overflow:\s*hidden[\s\S]*?text-overflow:\s*clip/,
+  'very long titles clip on one line without changing canonical text');
+assert.match(source.title, /new W\.ResizeObserver\(\(\) => scheduleAdaptiveInternalTitleWidth\(\)\)[\s\S]*internalTitleResizeObserver\.observe\(host\)/,
+  'adaptive sizing observes only the composer host and coalesces geometry updates');
+assert.match(source.title, /return rangeWidth > 0 \? rangeWidth : \(element\.scrollWidth \|\| 0\)/,
+  'intrinsic title measurement does not mistake allocated flex width for text demand');
+assert.doesNotMatch(source.title, /internalTitleResizeObserver\.observe\((?:labelEl|titleContent)/,
+  'adaptive sizing does not observe its own painted width');
 assert.match(source.title, /\[data-ho-internal-title-host="1"\][\s\S]*position:\s*relative[\s\S]*overflow:\s*visible/,
   'the Title-owned host marker establishes stable composer-relative positioning');
 assert.match(source.title, /let parent = getComposerContainer\(\) \|\| getDisclaimerContainer\(\)/,
   'the actual composer container is the primary native-space host');
 assert.match(source.title, /titleHostEl\.setAttribute\('data-ho-internal-title-host',\s*'1'\)/,
   '9C1a marks only its current composer host for positioning');
+assert.match(source.title, /function isCurrentTitleSurface\(label, host, parent\)[\s\S]*label\?\.isConnected[\s\S]*label\.parentElement === parent[\s\S]*host\?\.isConnected[\s\S]*host === parent/,
+  'mounted state requires one connected title owned by the current connected composer host');
+assert.match(source.title, /if \(labelEl && !isCurrentTitleSurface\(labelEl, titleHostEl, parent\)\)[\s\S]*labelEl = null/,
+  'a detached or replaced composer surface is invalidated before deterministic remount');
+assert.match(source.title, /bodyObserver = new MutationObserver\(\(\) => \{[\s\S]*refreshPresentationSoon\('composer-dom-mutation'\)/,
+  'composer DOM readiness schedules a coalesced presentation remount instead of waiting for title-state changes');
+assert.match(source.title, /if \(destroyed \|\| presentationRefreshRaf\) return[\s\S]*requestAnimationFrame\(\(\) =>/,
+  'repeated SPA mutations coalesce into one lifecycle refresh');
+assert.match(source.title, /W\.addEventListener\('evt:h2o:projects:changed', onProjectsChanged\)/,
+  'canonical Projects readiness drives presentation refresh through the public change signal');
+assert.match(source.title, /function readProjectMeta\(\)[\s\S]*resolveCanonicalProjectMeta\(projectRowsFromStore\(\), id\)/,
+  'project presentation resolves exclusively from canonical Projects rows');
+assert.doesNotMatch(source.title, /title:\s*title \|\| 'Project'/,
+  'unresolved metadata never renders a bare Project placeholder');
+assert.doesNotMatch(extractFunction(source.title, 'readProjectMeta'), /querySelector\(/,
+  'project metadata resolution does not scrape sidebar labels');
 assert.doesNotMatch(source.title, /(?:9B1a|9B2a|document\.title).*--ho-internal-title-width/,
   'the presentation preference does not target tab or sidebar title consumers');
 assert.match(source.title, /openTitleMenu\(/, 'existing Rename/menu flow remains wired');
@@ -141,10 +188,10 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(source.interfaceTab, sandbox, { filename: rel.interfaceTab });
 const api = window.H2O.Surface.Interface;
-assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'missing state defaults to 87.5%');
+assert.equal(api.getInternalChatTitleSettings().widthPct, 60, 'missing state defaults to a 60% base width');
 assert.equal(api.getInternalChatTitleSettings().showProject, true, 'missing state defaults Show project on');
 assert.equal(api.getInternalChatTitleSettings().hideNativeDisclaimer, true, 'missing state defaults Hide disclaimer on');
-assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.widthPct)), { default: 87.5, min: 60, max: 100, step: 0.5 },
+assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.widthPct)), { default: 60, min: 60, max: 90, step: 0.5 },
   'the public setting contract exposes its exact bounds');
 assert.deepEqual(JSON.parse(JSON.stringify(api.internalChatTitleSettingSpec.showProject)), { default: true },
   'the public setting contract exposes the Show project default');
@@ -156,7 +203,7 @@ api.setInternalChatTitleSetting('widthPct', 72.5, 'validator');
 assert.equal(api.getInternalChatTitleSettings().widthPct, 72.5, 'a fractional value survives persisted-state roundtrip');
 assert.equal(JSON.parse(storage.get(api.internalChatTitleSettingSpec.storageKey)).widthPct, 72.5,
   'the canonical owner persists the selected percentage');
-assert.deepEqual(observed, [87.5, 72.5], 'subscribers receive initial and live states');
+assert.deepEqual(observed, [60, 72.5], 'subscribers receive initial and live base-width states');
 unsubscribe();
 api.setInternalChatTitleSetting('showProject', false, 'validator');
 api.setInternalChatTitleSetting('hideNativeDisclaimer', false, 'validator');
@@ -173,15 +220,80 @@ assert.deepEqual(JSON.parse(JSON.stringify(api.getInternalChatTitleSettings())),
   showProject: true,
   hideNativeDisclaimer: true,
 }, 'legacy width-only v1 state additively hydrates both new defaults without losing width');
-api.setInternalChatTitleSetting('widthPct', 100.5, 'validator');
-assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'out-of-range writes fail closed to the accepted default');
+api.setInternalChatTitleSetting('widthPct', 100, 'validator');
+assert.equal(api.getInternalChatTitleSettings().widthPct, 90, 'legacy 100% state clamps to the new 90% cap');
+api.setInternalChatTitleSetting('widthPct', 20, 'validator');
+assert.equal(api.getInternalChatTitleSettings().widthPct, 60, 'values below the base-width floor clamp to 60%');
 storage.set(api.internalChatTitleSettingSpec.storageKey, JSON.stringify({
   widthPct: 'invalid',
   showProject: 'invalid',
   hideNativeDisclaimer: null,
 }));
-assert.equal(api.getInternalChatTitleSettings().widthPct, 87.5, 'invalid stored values fail closed to the accepted default');
+assert.equal(api.getInternalChatTitleSettings().widthPct, 60, 'invalid stored values fail closed to the accepted default');
 assert.equal(api.getInternalChatTitleSettings().showProject, true, 'invalid Show project state fails closed to on');
 assert.equal(api.getInternalChatTitleSettings().hideNativeDisclaimer, true, 'invalid Hide disclaimer state fails closed to on');
+
+const adaptiveSandbox = { Math, Number };
+adaptiveSandbox.globalThis = adaptiveSandbox;
+vm.createContext(adaptiveSandbox);
+vm.runInContext(
+  `${extractFunction(source.title, 'normalizeInternalChatTitleWidth')}\n` +
+  `${extractFunction(source.title, 'computeAdaptiveInternalTitleWidth')}\n` +
+  'globalThis.computeAdaptive = computeAdaptiveInternalTitleWidth;',
+  adaptiveSandbox,
+  { filename: rel.title }
+);
+const computeAdaptive = adaptiveSandbox.computeAdaptive;
+assert.equal(computeAdaptive({ composerWidth: 800, basePct: 60, titleIntrinsicWidth: 250, fixedWidth: 100 }), 480,
+  'a short title remains at the selected base width');
+assert.equal(computeAdaptive({ composerWidth: 800, basePct: 60, titleIntrinsicWidth: 430, fixedWidth: 100 }), 530,
+  'a longer title expands only by the title space it needs');
+assert.equal(computeAdaptive({ composerWidth: 800, basePct: 60, titleIntrinsicWidth: 900, fixedWidth: 100 }), 720,
+  'a very long title stops at 90% of its composer');
+assert.equal(computeAdaptive({ composerWidth: 500, basePct: 75, titleIntrinsicWidth: 600, fixedWidth: 100 }), 450,
+  'a narrow composer retains the same 90% cap');
+assert.equal(api.getInternalChatTitleSettings().widthPct, 60,
+  'adaptive rendering never writes back over the persisted base width');
+
+const lifecycleSandbox = { Array, Map, String };
+lifecycleSandbox.globalThis = lifecycleSandbox;
+vm.createContext(lifecycleSandbox);
+vm.runInContext(
+  `${extractFunction(source.title, 'norm')}\n` +
+  `${extractFunction(source.title, 'normalizeProjectHref')}\n` +
+  `${extractFunction(source.title, 'projectIdentityRoot')}\n` +
+  `${extractFunction(source.title, 'resolveCanonicalProjectMeta')}\n` +
+  `${extractFunction(source.title, 'isCurrentTitleSurface')}\n` +
+  'globalThis.resolveProject = resolveCanonicalProjectMeta; globalThis.isCurrent = isCurrentTitleSurface;',
+  lifecycleSandbox,
+  { filename: rel.title }
+);
+const oldHost = { isConnected: false };
+const oldLabel = { isConnected: false, parentElement: oldHost };
+const currentHost = { isConnected: true };
+const currentLabel = { isConnected: true, parentElement: currentHost };
+assert.equal(lifecycleSandbox.isCurrent(oldLabel, oldHost, currentHost), false,
+  'a detached old title cannot satisfy mounted state');
+assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, currentHost), true,
+  'exact current-host ownership satisfies mounted state');
+assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, { isConnected: true }), false,
+  'returning to the same chat still requires remount when the composer host changed');
+const canonicalRows = [{
+  id: 'g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying',
+  href: '/g/g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying/project',
+  title: '#\ufe0f\u20e3\ud83d\udd35 2. H2O Studying \ud83d\udcda',
+}];
+assert.equal(lifecycleSandbox.resolveProject(canonicalRows, 'g-p-694c441066b08191add4a7c3293f5e7a').title,
+  '#\ufe0f\u20e3\ud83d\udd35 2. H2O Studying \ud83d\udcda',
+  'stable route identity resolves the unique canonical slugged project row');
+assert.equal(lifecycleSandbox.resolveProject([], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'unready canonical project metadata omits the segment');
+assert.equal(lifecycleSandbox.resolveProject([{ ...canonicalRows[0], title: '' }], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'a project row without a canonical name cannot become a bare placeholder');
+assert.equal(lifecycleSandbox.resolveProject([
+  canonicalRows[0],
+  { ...canonicalRows[0], id: `${canonicalRows[0].id}-duplicate`, href: `${canonicalRows[0].href}?duplicate=1` },
+], 'g-p-694c441066b08191add4a7c3293f5e7a'), null,
+  'ambiguous identity-root metadata fails closed rather than reusing a stale name');
 
 console.log('validate-internal-chat-title-controls: ok');

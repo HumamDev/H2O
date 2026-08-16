@@ -1,6 +1,18 @@
 // @version 1.2.0  (Phase 0H: LOADER_BUILD_TS / LOADER_BUILD_ISO honor H2O_BUILD_TS env override)
 import { TITLE_CONTRACT_BRIDGE_FILENAME } from "./title-contract/make-title-contract-bridge.mjs";
 
+export function resolveBackendAuthorityCapability(rawValue) {
+  // A missing value is the bypass-launcher/default case and is deliberately
+  // OFF. Once present, accept only the two canonical strings from the profile
+  // wrapper; JavaScript truthiness must never grant this capability.
+  if (rawValue == null) return false;
+  if (rawValue === "false") return false;
+  if (rawValue === "true") return true;
+  throw new Error(
+    `[H2O] Invalid H2O_BACKEND_AUTHORITY value ${JSON.stringify(rawValue)}; expected true or false.`,
+  );
+}
+
 export function makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME } = {}) {
   if (typeof TITLE_CONTRACT_BRIDGE_FILE !== "string" || !TITLE_CONTRACT_BRIDGE_FILE.trim()) {
     throw new TypeError("TITLE_CONTRACT_BRIDGE_FILE is required");
@@ -75,6 +87,8 @@ export function makeChromeLiveLoaderJs({
   PAGE_FOLDER_BRIDGE_FILE,
   PAGE_PILOT_OBSERVER_FILE,
   TITLE_CONTRACT_BRIDGE_FILE = TITLE_CONTRACT_BRIDGE_FILENAME,
+  BACKEND_AUTHORITY_CAPABILITY = false,
+  EXCLUDED_RUNTIME_ALIASES = [],
 }) {
   // Phase 0H: prefer H2O_BUILD_TS env override (same value the rest of the
   // build chain already honors — proxy-pack `@version`, alias URL `?v=`,
@@ -86,6 +100,13 @@ export function makeChromeLiveLoaderJs({
   const buildTsMs = Number.isFinite(envBuildTs) && envBuildTs > 0 ? envBuildTs : Date.now();
   const buildIso = new Date(buildTsMs).toISOString();
   const titleContractBridgePrelude = makeTitleContractBridgeLoaderPrelude({ TITLE_CONTRACT_BRIDGE_FILE });
+  if (typeof BACKEND_AUTHORITY_CAPABILITY !== "boolean") {
+    throw new TypeError("BACKEND_AUTHORITY_CAPABILITY must be a boolean");
+  }
+  if (!Array.isArray(EXCLUDED_RUNTIME_ALIASES)
+      || EXCLUDED_RUNTIME_ALIASES.some((value) => typeof value !== "string" || !value.trim())) {
+    throw new TypeError("EXCLUDED_RUNTIME_ALIASES must be an array of non-empty strings");
+  }
   return `(() => {
   "use strict";
 ${titleContractBridgePrelude}
@@ -100,6 +121,12 @@ ${titleContractBridgePrelude}
   const LOADER_BUILD_TS = ${buildTsMs};
   const LOADER_BUILD_ISO = ${JSON.stringify(buildIso)};
   const LOADER_LIBRARY_KV_OPS = true;
+  const H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1 = Object.freeze({
+    enabled: ${BACKEND_AUTHORITY_CAPABILITY},
+  });
+  // Canonical alias filename of 0A4a, in the same namespace the injection path
+  // carries. Kept beside the capability value so the two cannot drift apart.
+  const BACKEND_AUTHORITY_ALIAS_ID = "0A4a._Backend_Request_Authority_.js";
   const STATUS_LABEL = ${JSON.stringify(DEV_TITLE)};
   const LOADER_INSTANCE_KEY = "__H2O_EXT_DEV_CTRL_LOADER_V1__";
   if (globalThis[LOADER_INSTANCE_KEY]?.active) {
@@ -1811,6 +1838,10 @@ ${titleContractBridgePrelude}
   const PROXY_PACK_URL = ${JSON.stringify(PROXY_PACK_URL)};
   const DEV_SCRIPT_CATALOG = ${JSON.stringify(DEV_SCRIPT_CATALOG)};
   const DEV_ORDER_SECTIONS = ${JSON.stringify(DEV_ORDER_SECTIONS_SNAPSHOT)};
+  // Build-variant exclusion is immutable and precedes order/toggle handling.
+  // Production uses this established loader boundary to omit acceptance-only
+  // modules even if a proxy pack contains them or stale storage says enabled.
+  const EXCLUDED_RUNTIME_ALIASES = new Set(${JSON.stringify(EXCLUDED_RUNTIME_ALIASES)});
   // Loader V3 Phase 1: declared dependency edges (read-only). Used by
   // v3PredictReport() to simulate tier/wave dispatch when
   // localStorage.H2O_LOADER_V3_WAVE_DIAG === "1". Does NOT affect runtime
@@ -3061,6 +3092,26 @@ ${titleContractBridgePrelude}
     return "http://127.0.0.1:5500/alias/" + enc + cacheBust;
   }
 
+  /* The proxy pack carries ABSOLUTE alias URLs stamped by whichever dev origin
+     generated it, which is not necessarily the origin this extension was built
+     and port-verified against. Trusting them verbatim makes the loader fetch
+     module bodies from a foreign lane's dev server: modules that lane happens
+     to have load fine, and any module unique to this build 404s with nothing
+     but a per-script load error. Re-home every pack alias URL onto the pack
+     origin the build is pinned to, preserving the path and cache-bust. */
+  function pinAliasUrlToPackOrigin(rawUrl) {
+    const raw = String(rawUrl || "");
+    if (!raw) return raw;
+    try {
+      const packOrigin = new URL(PROXY_PACK_URL).origin;
+      const candidate = new URL(raw, packOrigin);
+      if (candidate.origin === packOrigin) return raw;
+      if (candidate.pathname.indexOf("/alias/") < 0) return raw;
+      return packOrigin + candidate.pathname + candidate.search;
+    } catch {}
+    return raw;
+  }
+
   function normalizeCatalog(rawCatalog) {
     const map = {};
     const order = [];
@@ -3127,6 +3178,7 @@ ${titleContractBridgePrelude}
     const seen = new Set();
 
     for (const aliasId of catalog.order) {
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
       const meta = catalog.map[aliasId] || {};
       byAlias[aliasId] = {
         name: String(meta.name || aliasId),
@@ -3144,6 +3196,7 @@ ${titleContractBridgePrelude}
       const item = fromPack[i] || {};
       const aliasId = normalizeAliasId(item.aliasId || "");
       if (!aliasId) continue;
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
 
       const base = byAlias[aliasId] || {
         name: aliasId,
@@ -3159,7 +3212,7 @@ ${titleContractBridgePrelude}
         aliasId,
         name: String(item.name || base.name || aliasId),
         runAt: normalizeRunAt(item.runAt || base.runAt || "document-idle"),
-        requireUrl: String(stripDevCacheNoise(item.requireUrl || base.requireUrl || aliasRequireUrl(aliasId))),
+        requireUrl: pinAliasUrlToPackOrigin(String(stripDevCacheNoise(item.requireUrl || base.requireUrl || aliasRequireUrl(aliasId)))),
         tier: String(item.tier || base.tier || "L4").trim() || "L4",
         openEvent: String(item.openEvent || base.openEvent || "").trim(),
       };
@@ -3175,6 +3228,7 @@ ${titleContractBridgePrelude}
     }
 
     for (const aliasId of catalog.order) {
+      if (EXCLUDED_RUNTIME_ALIASES.has(aliasId)) continue;
       if (seen.has(aliasId)) continue;
       const base = byAlias[aliasId];
       if (!base) continue;
@@ -3513,6 +3567,20 @@ ${titleContractBridgePrelude}
       s.src = withBuildAwareUrl(url);
       if (aliasIdRaw) {
         try { s.dataset.h2oAlias = aliasIdRaw; } catch {}
+      }
+      // The injection path carries the alias FILENAME, not the module's
+      // @h2o-id namespace. Comparing against the id namespace here could never
+      // match, so the capability attribute was silently never written and the
+      // authority failed closed as profile-not-authorized on every profile.
+      if (normalizeAliasId(aliasIdRaw) === BACKEND_AUTHORITY_ALIAS_ID) {
+        // CSP-safe page-world handoff: the external module reads this exact
+        // built bit synchronously from document.currentScript and freezes it.
+        try {
+          s.setAttribute(
+            "data-h2o-backend-authority-profile-v1",
+            H2O_BACKEND_AUTHORITY_PROFILE_CAPABILITY_V1.enabled ? "true" : "false",
+          );
+        } catch {}
       }
 
       const timeoutMs = Math.max(1000, Number(opts?.timeoutMs) || timeoutForPhase(phase));

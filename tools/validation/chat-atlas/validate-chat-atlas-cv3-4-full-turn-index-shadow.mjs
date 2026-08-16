@@ -141,6 +141,31 @@ function extractConstDeclaration(source, name) {
   return matches[0].trimStart();
 }
 
+function extractStatement(source, name) {
+  const prefix = `  const ${name} = `;
+  const start = source.indexOf(prefix);
+  if (start < 0 || source.indexOf(prefix, start + 1) >= 0) {
+    throw new Error(`instrumentation-statement-invalid:${name}`);
+  }
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const ch = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') depth += 1;
+    else if (ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    else if (ch === ';' && depth === 0) return source.slice(start, index + 1).trimStart();
+  }
+  throw new Error(`instrumentation-statement-unclosed:${name}`);
+}
+
 function extractArchiveProviderWiring() {
   const exports = [
     '  archiveBoot.normalizeBackendConversationTurnIndex = (payload, opts = {}) => normalizeBackendConversationTurnIndex(payload, opts);',
@@ -164,8 +189,6 @@ const archiveFunctions = [
   'nowIso',
   'toChatId',
   'stableHash',
-  'readChatGptAccessToken',
-  'nativeConversationHeaders',
   'conversationTurnIndexFailure',
   'conversationTurnIndexIdentity',
   'conversationTurnIndexMessageId',
@@ -178,17 +201,21 @@ const archiveFunctions = [
   'conversationTurnIndexIdentityFingerprint',
   'normalizeBackendConversationTurnIndexUnsafe',
   'normalizeBackendConversationTurnIndex',
+  'backendAuthorityFailureReason',
   'fetchConversationTurnIndex',
 ];
 
 const turnIndexSchemaDeclaration = extractConstDeclaration(archiveSource, 'TURN_INDEX_SCHEMA');
+const backendAuthorityCapabilityDeclaration = extractStatement(archiveSource, 'BACKEND_AUTHORITY_CAPABILITY_FAILURES');
 const archiveProviderWiring = extractArchiveProviderWiring();
 
 const archiveProgram = `
 'use strict';
 const W = globalThis;
+const H2O = (W.H2O = W.H2O || {});
 ${turnIndexSchemaDeclaration}
 const TURN_INDEX_FETCH_TIMEOUT_MS = 12000;
+${backendAuthorityCapabilityDeclaration}
 ${archiveFunctions.map((name) => extractFunction(archiveSource, name)).join('\n')}
 globalThis.__TURN_INDEX_ARCHIVE__ = Object.freeze({
   schema: TURN_INDEX_SCHEMA,
@@ -204,6 +231,7 @@ const H2O = (W.H2O = W.H2O || {});
 const archiveBoot = (H2O.archiveBoot = H2O.archiveBoot || {});
 ${turnIndexSchemaDeclaration}
 const TURN_INDEX_FETCH_TIMEOUT_MS = 12000;
+${backendAuthorityCapabilityDeclaration}
 ${archiveFunctions.map((name) => extractFunction(archiveSource, name)).join('\n')}
 ${archiveProviderWiring}
 globalThis.__TURN_INDEX_ARCHIVE_ACTIVATED__ = Object.freeze({
@@ -382,7 +410,7 @@ function accumulate(counters) {
   for (const key of Object.keys(aggregate)) aggregate[key] += counters[key];
 }
 
-function createArchiveRuntime(fetchImpl = null) {
+function createArchiveRuntime(requestImpl = null) {
   const counters = sideEffectCounters();
   const location = { pathname: `/c/${CHAT_ID}`, href: `https://chatgpt.com/c/${CHAT_ID}`, origin: 'https://chatgpt.com' };
   const sandbox = {
@@ -395,7 +423,12 @@ function createArchiveRuntime(fetchImpl = null) {
     clearTimeout,
     localStorage: storage(counters, 'localStorage'),
     sessionStorage: storage(counters, 'sessionStorage'),
-    fetch: fetchImpl || (() => forbidden(counters, 'networkReads', 'unexpected-fetch')),
+    fetch: () => forbidden(counters, 'networkReads', 'unexpected-raw-fetch'),
+    H2O: {
+      BackendAuthority: {
+        request: requestImpl || (() => forbidden(counters, 'networkReads', 'unexpected-authority-request')),
+      },
+    },
   };
   sandbox.window = sandbox;
   sandbox.self = sandbox;
@@ -580,20 +613,22 @@ function createActivationRuntime(payload) {
     addEventListener,
     removeEventListener,
     dispatchEvent,
-    fetch: async (url, options = {}) => {
-      const method = String(options.method || 'GET').toUpperCase();
-      const call = { url: String(url), method, authorization: String(options.headers?.authorization || '') };
-      networkCalls.push(call);
-      if (method === 'GET') counters.networkReads += 1;
-      else counters.networkWrites += 1;
-      if (call.url === '/api/auth/session') {
-        return { ok: true, json: async () => ({ accessToken: 'ACTIVATION-SECRET-TOKEN' }) };
-      }
-      if (call.url === `/backend-api/conversation/${CHAT_ID}`) {
-        return { ok: true, json: async () => payload };
-      }
-      throw new Error(`unexpected-activation-fetch:${call.url}`);
+    H2O: {
+      BackendAuthority: {
+        async request(spec = {}) {
+          const method = String(spec.method || 'GET').toUpperCase();
+          const call = { resource: String(spec.resource || ''), chatId: String(spec.chatId || ''), method };
+          networkCalls.push(call);
+          if (method === 'GET') counters.networkReads += 1;
+          else counters.networkWrites += 1;
+          if (call.resource === 'conversation' && call.chatId === CHAT_ID) {
+            return { ok: true, status: 'ok', statusCode: 200, body: payload, internalToken: 'ACTIVATION-SECRET-TOKEN' };
+          }
+          throw new Error(`unexpected-activation-authority:${call.resource}:${call.chatId}`);
+        },
+      },
     },
+    fetch: () => forbidden(counters, 'networkReads', 'activation-raw-fetch'),
     XMLHttpRequest: class { constructor() { return forbidden(counters, 'networkReads', 'XMLHttpRequest'); } },
     WebSocket: class { constructor() { return forbidden(counters, 'networkReads', 'WebSocket'); } },
   };
@@ -2150,21 +2185,21 @@ await fixture('returned index respects the privacy boundary', () => {
 
 let providerCounters = null;
 let providerResult = null;
-await fixture('provider performs one session read and one conversation GET', async () => {
+await fixture('provider performs one logical authority conversation operation', async () => {
   const calls = [];
-  const runtime = createArchiveRuntime(async (url, options = {}) => {
-    const method = String(options.method || 'GET').toUpperCase();
-    calls.push({ url: String(url), method, authorization: String(options.headers?.authorization || '') });
+  const runtime = createArchiveRuntime(async (spec = {}) => {
+    const method = String(spec.method || 'GET').toUpperCase();
+    calls.push({ resource: String(spec.resource || ''), chatId: String(spec.chatId || ''), method });
     if (method === 'GET') runtime.counters.networkReads += 1;
     else runtime.counters.networkWrites += 1;
-    if (String(url) === '/api/auth/session') return { ok: true, json: async () => ({ accessToken: 'TOP-SECRET-TOKEN' }) };
-    return { ok: true, json: async () => fullFixture.payload };
+    return { ok: true, status: 'ok', statusCode: 200, body: fullFixture.payload, internalToken: 'TOP-SECRET-TOKEN' };
   });
   providerResult = await runtime.api.fetchConversationTurnIndex(CHAT_ID, { capturedAt: '2026-07-18T00:00:00.000Z' });
   providerCounters = runtime.counters;
-  equal(calls.length, 2);
-  equal(calls.map((call) => call.method), ['GET', 'GET']);
-  equal(calls[1].url, `/backend-api/conversation/${CHAT_ID}`);
+  equal(calls.length, 1);
+  equal(calls.map((call) => call.method), ['GET']);
+  equal(calls[0].resource, 'conversation');
+  equal(calls[0].chatId, CHAT_ID);
   equal(runtime.counters.networkWrites, 0);
 });
 
@@ -2196,7 +2231,7 @@ await fixture('real activation wiring registers provider and dedupes acquisition
   equal(activation.diagnostics().status, 'complete-from-host-payload');
   equal(activation.diagnostics().index.count, 38);
   equal(activation.state.fetchCount, 1);
-  equal(runtime.networkCalls.map((call) => call.method), ['GET', 'GET']);
+  equal(runtime.networkCalls.map((call) => call.method), ['GET']);
   equal(runtime.counters.networkWrites, 0);
   equal(JSON.stringify(activation.diagnostics()).includes('ACTIVATION-SECRET-TOKEN'), false);
 
@@ -2204,7 +2239,7 @@ await fixture('real activation wiring registers provider and dedupes acquisition
   runtime.dispatchEvent(new runtime.context.CustomEvent('evt:h2o:route:changed'));
   await Promise.resolve();
   equal(activation.state.fetchCount, 1);
-  equal(runtime.networkCalls.length, 2);
+  equal(runtime.networkCalls.length, 1);
   equal(activation.canonicalCount(), 0);
   equal(activation.ledgerCount(), 0);
   accumulate(runtime.counters);
@@ -2310,7 +2345,7 @@ await fixture('automatic canary execution remains unused', () => equal(aggregate
 accumulate(archiveRuntime.counters);
 const failures = fixtures.filter((item) => !item.ok);
 console.log(`CV-3.4 full turn index shadow: ${fixtures.length - failures.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failures.length} failures`);
-console.log(`Provider network: session/conversation GET reads ${aggregate.networkReads}, writes ${aggregate.networkWrites}`);
+console.log(`Provider network: logical authority conversation reads ${aggregate.networkReads}, writes ${aggregate.networkWrites}`);
 console.log(`Safety: source setters ${aggregate.sourceSetterCalls}, navigation ${aggregate.navigationMutations}, DOM ${aggregate.domMutations}, user actions ${aggregate.userActions}, storage writes ${aggregate.storageWrites}, canary stages ${aggregate.automaticCanaryExecutions}`);
 for (const failure of failures) console.error(`FAIL ${failure.name}\n${failure.error}`);
 if (failures.length) process.exitCode = 1;

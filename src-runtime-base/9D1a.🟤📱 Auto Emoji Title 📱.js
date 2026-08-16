@@ -25,6 +25,9 @@
     EMOJI: (chatId) => `${NS_DISK}:state:emoji_${UTIL_AE_safeId(chatId)}:v1`,
     EMPTY_ICON: `${NS_DISK}:state:empty-badge-icon:v1`,
     PICKER_GROUPING: `${NS_DISK}:state:picker-grouping:v1`,
+    AUTO_ASSIGN: `${NS_DISK}:state:auto-assign:v1`,
+    SHOW_EMPTY_BADGE: `${NS_DISK}:state:show-empty-badge:v1`,
+    SHOW_HEAT_PILL: `${NS_DISK}:state:show-heat-pill:v1`,
     DONE_LEG:  (chatId) => `ho:autoemoji:done:${chatId}`,
     EMOJI_LEG: (chatId) => `ho:autoemoji:emoji:${chatId}`,
   });
@@ -40,6 +43,10 @@
   const MAX_NATIVE_RENAME_ATTEMPTS = 3;
   const DEFAULT_EMPTY_BADGE_ICON = 'chat-bubble-stack';
   const DEFAULT_PICKER_GROUPING = 'os';
+  const DEFAULT_AUTO_ASSIGN = true;
+  const DEFAULT_SHOW_EMPTY_BADGE = true;
+  const DEFAULT_SHOW_HEAT_PILL = true;
+  const SET_EMOJI_MENU_MARK = 'autoemoji-set-emoji';
   const EMPTY_BADGE_ICON_OPTIONS = Object.freeze([
     Object.freeze(['message-circle', 'Message Circle']),
     Object.freeze(['message-square', 'Message Square']),
@@ -116,6 +123,31 @@
     catch { return DEFAULT_PICKER_GROUPING; }
   }
 
+  function getBooleanSetting(key, fallback = true){
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return !!fallback;
+      if (/^(?:1|true|on|yes)$/i.test(raw)) return true;
+      if (/^(?:0|false|off|no)$/i.test(raw)) return false;
+    } catch {}
+    return !!fallback;
+  }
+
+  function setBooleanSetting(key, value, field, reason){
+    const next = value !== false;
+    try { localStorage.setItem(key, String(next)); } catch {}
+    applySidebarPresentationSettings();
+    const detail = { key: field, [field]: next, reason: reason || field };
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_CANON, { detail })); } catch {}
+    try { window.dispatchEvent(new CustomEvent(EV_AE_SETTINGS_LEG, { detail })); } catch {}
+    schedule();
+    return getAutoEmojiConfig();
+  }
+
+  const getAutomaticallyAssignEmoji = () => getBooleanSetting(KEY_AE_.AUTO_ASSIGN, DEFAULT_AUTO_ASSIGN);
+  const getShowPreEmojiChatIcon = () => getBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, DEFAULT_SHOW_EMPTY_BADGE);
+  const getShowHeatPill = () => getBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, DEFAULT_SHOW_HEAT_PILL);
+
   function setEmptyBadgeIcon(value, options = {}){
     const next = normalizeEmptyBadgeIcon(value);
     try { localStorage.setItem(KEY_AE_.EMPTY_ICON, next); } catch {}
@@ -145,6 +177,9 @@
 
   function getAutoEmojiConfig(){
     return {
+      automaticallyAssignEmoji: getAutomaticallyAssignEmoji(),
+      showPreEmojiChatIcon: getShowPreEmojiChatIcon(),
+      showHeatPill: getShowHeatPill(),
       emptyBadgeIcon: getEmptyBadgeIcon(),
       emptyBadgeIconOptions: getEmptyBadgeIconOptions(),
       pickerGrouping: getPickerGrouping(),
@@ -153,6 +188,9 @@
   }
 
   function applyAutoEmojiSetting(key, value){
+    if (String(key || '') === 'automaticallyAssignEmoji') return setBooleanSetting(KEY_AE_.AUTO_ASSIGN, !!value, 'automaticallyAssignEmoji', 'api-setting');
+    if (String(key || '') === 'showPreEmojiChatIcon') return setBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, !!value, 'showPreEmojiChatIcon', 'api-setting');
+    if (String(key || '') === 'showHeatPill') return setBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, !!value, 'showHeatPill', 'api-setting');
     if (String(key || '') === 'emptyBadgeIcon') return setEmptyBadgeIcon(value, { reason: 'api-setting' });
     if (String(key || '') === 'pickerGrouping') return setPickerGrouping(value, { reason: 'api-setting' });
     return getAutoEmojiConfig();
@@ -167,6 +205,15 @@
         if (mask) badge.style.setProperty('--ho-empty-badge-mask', `url("${mask}")`);
       });
     } catch {}
+  }
+
+  function applySidebarPresentationSettings(){
+    const root = document.documentElement;
+    if (!root) return;
+    root.setAttribute('data-ho-auto-emoji-assignment', getAutomaticallyAssignEmoji() ? '1' : '0');
+    root.setAttribute('data-ho-show-pre-emoji-icon', getShowPreEmojiChatIcon() ? '1' : '0');
+    root.setAttribute('data-ho-show-heat-pill', getShowHeatPill() ? '1' : '0');
+    try { ensureVisibleSidebarBadges(); } catch {}
   }
 
   function chatTitleApi(){
@@ -222,6 +269,7 @@
       chatId,
       emoji,
       source: source || 'auto',
+      emojiOwner: options?.emojiOwner || '',
       priority: priority == null ? 50 : priority,
       confidence: confidence == null ? 0.75 : confidence,
       reason: options?.reason || '9d-emoji-publish',
@@ -239,11 +287,15 @@
     MIG_AE_keys(chatId);
     const state = chatTitleApi()?.getState?.(chatId);
     const emojiSource = String(state?.emojiSource || '');
-    return !!(runtimeDone[chatId] || (state?.emoji && emojiSource && emojiSource !== 'auto'));
+    let persisted = false;
+    try { persisted = localStorage.getItem(KEY_AE_.DONE(chatId)) === '1'; } catch {}
+    return !!(runtimeDone[chatId] || persisted || (state?.emoji && emojiSource));
   };
 
   const setDone = (chatId) => {
-    if (chatId) runtimeDone[chatId] = 1;
+    if (!chatId) return;
+    runtimeDone[chatId] = 1;
+    try { localStorage.setItem(KEY_AE_.DONE(chatId), '1'); } catch {}
   };
 
   const getSavedEmoji = (chatId) => {
@@ -253,10 +305,15 @@
   };
 
   const setSavedEmoji = (chatId, emoji) => {
-    publishEmoji(chatId, emoji, 'native-title', 90, 0.9, { reason: '9d-existing-title-emoji' });
+    publishEmoji(chatId, emoji, 'native-title', 90, 0.9, { emojiOwner: 'native', reason: '9d-existing-title-emoji' });
   };
 
   const EMPTY_BADGE_TEXT = '';
+
+  function isAutomaticEmojiEligible({ autoEnabled, chatId, plainTitle, hasEmoji, done, pending, stableRuns }){
+    return autoEnabled === true && !!chatId && norm(plainTitle).length >= MIN_TITLE_LENGTH &&
+      !hasEmoji && !done && !pending && Number(stableRuns || 0) >= STABLE_RUNS_REQUIRED;
+  }
 
   function stopEmojiEvent(ev){
     ev?.preventDefault?.();
@@ -569,24 +626,54 @@
     return Array.from(s);
   }
 
-  const isEmojiCluster = (cluster) => /\p{Extended_Pictographic}/u.test(cluster || '');
+  const isEmojiCluster = (cluster) => /[\uFE0F\u200D]|\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(cluster || '');
 
-  function getEdgeEmoji(s){
-    const t = norm(s);
-    if (!t) return '';
-    const g = graphemes(t);
-    const first = g[0] || '';
-    const last  = g[g.length - 1] || '';
-    if (isEmojiCluster(first)) return first;
-    if (isEmojiCluster(last)) return last;
-    return '';
+  /* One leading grapheme is the emoji slot; everything after it is the user's
+     title, including a second or trailing emoji. 9B0a owns that rule so
+     persistence and presentation cannot disagree about which grapheme is the
+     slot, and 9D1a consumes that authority instead of carrying a second
+     implementation. The predecessors here inspected and stripped BOTH edges,
+     which silently ate a user's second emoji and could mistake a trailing
+     emoji for the slot; they are gone rather than left available to drift
+     back into a decision path. */
+  function canonicalTitleSlotApi(){
+    const api = window.H2O && window.H2O.ChatTitle;
+    return api && typeof api.takeLeadingEmojiSlot === 'function' ? api : null;
   }
 
-  function stripEdgeEmoji(s){
-    let g = graphemes(s);
-    while (g.length && isEmojiCluster(g[0])) g.shift();
-    while (g.length && isEmojiCluster(g[g.length-1])) g.pop();
-    return norm(g.join(''));
+  function takeLeadingEmojiSlot(value){
+    const canonical = canonicalTitleSlotApi();
+    if (canonical){
+      const parsed = canonical.takeLeadingEmojiSlot(value) || {};
+      return {
+        emoji: parsed.emoji || '',
+        remainder: parsed.remainder || '',
+        hasSlot: !!parsed.hasSlot,
+      };
+    }
+    /* Boot-order fallback only, for the window before 9B0a publishes. It must
+       stay an exact mirror of the canonical algorithm — first grapheme only,
+       never both edges — and the validator pins it so it cannot regress. */
+    const title = norm(value);
+    const parts = graphemes(title);
+    const emoji = parts[0] && isEmojiCluster(parts[0]) ? parts[0] : '';
+    return {
+      emoji,
+      remainder: emoji ? norm(parts.slice(1).join('')) : title,
+      hasSlot: !!emoji,
+    };
+  }
+
+  // Presentation asks only "is the slot occupied?", never "who owns it?", so a
+  // manually typed, natively renamed, imported or H2O-assigned emoji all behave
+  // identically to the user. Ownership stays internal to 9B0a persistence.
+  function leadingEmojiOf(value){
+    return takeLeadingEmojiSlot(value).emoji;
+  }
+
+  function titleRemainderOf(value){
+    const parsed = takeLeadingEmojiSlot(value);
+    return parsed.remainder || norm(value);
   }
 
   function tokenizeTitle(title){
@@ -617,23 +704,9 @@
     return /[\u0590-\u05FF\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]/.test(text || '');
   }
 
-  // IMPORTANT: no invisible marks -> avoids “random letters” issue
-  function formatTitleWithEmoji(plain, emoji){
-    const p = norm(plain);
-    if (!p) return emoji;
-    // RTL: append at end (visually left)
-    if (isRTL(p)) return `${p} ${emoji}`;
-    // LTR: prefix
-    return `${emoji} ${p}`;
-  }
-
   function finishAutoEmoji(chatId, emoji, source, reason, priority, confidence){
     delete runtimePendingEmoji[chatId];
-    publishEmoji(chatId, emoji, source || 'auto-native-rename', priority == null ? 90 : priority, confidence == null ? 0.92 : confidence, {
-      force: true,
-      emit: true,
-      reason: reason || 'auto-emoji-native-rename',
-    });
+    emitAutoEmojiChanged(chatId, emoji, reason || 'emoji-native-persisted');
     setDone(chatId);
     setTimeout(() => {
       ensureBadgeForChat(chatId);
@@ -641,30 +714,63 @@
     }, 80);
   }
 
+  /* Auto Emoji must stop driving renames while the backend is rate limiting
+     the account. 9B0a already refuses those requests without touching the
+     network, but this pump re-enters roughly every 120ms, so without a local
+     pause the runtime spins against a closed door. An explicit user action is
+     still allowed through: it costs no request during cooldown and returns an
+     honest rate-limited status the caller can surface. */
+  let backendPauseUntil = 0;
+
+  function isBackendRateLimited(result){
+    return result?.rateLimited === true
+      || result?.status === 'rate-limited-cooldown'
+      || Number(result?.statusCode || 0) === 429;
+  }
+
+  function noteBackendPause(result){
+    const retryAfterMs = Math.max(0, Number(result?.retryAfterMs || 0) || 0);
+    const until = Date.now() + (retryAfterMs || 60000);
+    if (until > backendPauseUntil) backendPauseUntil = until;
+  }
+
+  function backendPauseActive(){
+    return backendPauseUntil > Date.now();
+  }
+
   function applyNativeAutoEmoji(chatId, plainTitle, emoji, options = {}){
     if (!chatId || !plainTitle || !emoji) return false;
-    if (runtimeNativeRenamePending[chatId]) return true;
-    if ((runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
+    if (backendPauseActive() && options.userInitiated !== true) return false;
+    if (runtimeNativeRenamePending[chatId] && options.userInitiated !== true) return true;
+    if (options.userInitiated === true) runtimeNativeRenameAttempts[chatId] = 0;
+    if (options.userInitiated !== true && (runtimeNativeRenameAttempts[chatId] || 0) >= MAX_NATIVE_RENAME_ATTEMPTS) return false;
 
     const source = options.source || 'auto-native-rename';
     const reason = options.reason || 'auto-emoji-native-rename';
     const priority = options.priority == null ? 90 : options.priority;
     const confidence = options.confidence == null ? 0.92 : options.confidence;
     const api = chatTitleApi();
-    const nextTitle = formatTitleWithEmoji(plainTitle, emoji);
-    if (typeof api?.renameNative !== 'function') {
-      try { console.warn('[H2O.AutoEmojiTitle] native rename API missing'); } catch {}
+    if (typeof api?.setEmojiAndPersist !== 'function') {
+      try { console.warn('[H2O.AutoEmojiTitle] canonical emoji persistence API missing'); } catch {}
       return false;
     }
 
     runtimeNativeRenamePending[chatId] = 1;
-    Promise.resolve(api.renameNative(nextTitle, {
+    Promise.resolve(api.setEmojiAndPersist(chatId, emoji, {
       chatId,
-      userInitiated: true,
+      userInitiated: options.userInitiated === true,
       source: reason,
     })).then((result) => {
       if (result?.ok) {
         finishAutoEmoji(chatId, emoji, source, reason, priority, confidence);
+        return;
+      }
+      /* A rate limit is the backend asking us to stop, so it must not spend
+         this chat's rename budget: the attempt never reached the server, and
+         counting it would abandon the chat for the rest of the session over a
+         condition that clears on its own. Pause the pump instead. */
+      if (isBackendRateLimited(result)) {
+        noteBackendPause(result);
         return;
       }
       runtimeNativeRenameAttempts[chatId] = (runtimeNativeRenameAttempts[chatId] || 0) + 1;
@@ -712,14 +818,142 @@
       .filter(a => extractChatIdFromHref(a.getAttribute('href') || ''));
   }
 
+  function findSidebarExpandoSection(entry){
+    if (!entry) return null;
+    let node = entry.parentElement;
+    while (node && !node.matches?.('nav, aside')) {
+      const className = String(node.className || '');
+      if (className.includes('sidebar-expando-section') && !className.includes('sidebar-expando-section-header')) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function getSidebarSectionName(entry){
+    const section = findSidebarExpandoSection(entry);
+    if (!section) return '';
+    const header = Array.from(section.children)
+      .find((node) => String(node.className || '').includes('sidebar-expando-section-header'));
+    const heading = header?.querySelector?.('h2') || null;
+    return norm(heading?.textContent || '');
+  }
+
+  function isPinnedSidebarSectionName(value){
+    return norm(value) === 'Pinned';
+  }
+
+  function isPinnedSidebarChatRow(entry){
+    if (!entry || !extractChatIdFromHref(entry.getAttribute?.('href') || '')) return false;
+    return isPinnedSidebarSectionName(getSidebarSectionName(entry));
+  }
+
+  function isSidebarChromeTextNode(node){
+    const parent = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+    return !!parent?.closest?.(
+      '.ho-emoji-badge, .ho-emoji-lane, .ho-emoji-picker, .ho-colorbtn, .ho-palette,' +
+      ' [data-trailing-button], .trailing, [aria-hidden="true"], [data-ho-pinned-native-chat-placeholder="1"]'
+    );
+  }
+
+  function findPinnedNativeChatPlaceholder(entry){
+    if (!isPinnedSidebarChatRow(entry)) return null;
+    for (const use of entry.querySelectorAll('svg[aria-hidden="true"] use[href$="#chat"]')) {
+      if (use.closest?.('[data-trailing-button], .trailing, [data-h2o-owner], [data-ho-owner]')) continue;
+      const svg = use.closest('svg');
+      const host = svg?.parentElement || null;
+      if (host && entry.contains(host)) return host;
+    }
+    return null;
+  }
+
+  function clearPinnedEmojiSlotPresentation(entry){
+    if (!entry) return;
+    entry.removeAttribute('data-ho-pinned-emoji-slot');
+    entry.querySelectorAll('[data-ho-pinned-native-chat-placeholder="1"]').forEach((node) => {
+      node.removeAttribute('data-ho-pinned-native-chat-placeholder');
+      node.removeAttribute('data-ho-pinned-native-chat-id');
+      if (node.getAttribute('title') === 'Set emoji for chat') node.removeAttribute('title');
+    });
+  }
+
+  function applyPinnedEmojiSlotPresentation(entry, emoji){
+    if (!isPinnedSidebarChatRow(entry)) {
+      clearPinnedEmojiSlotPresentation(entry);
+      return false;
+    }
+    const nativePlaceholder = findPinnedNativeChatPlaceholder(entry);
+    const chatId = extractChatIdFromHref(entry.getAttribute('href') || '');
+    if (nativePlaceholder) {
+      nativePlaceholder.setAttribute('data-ho-pinned-native-chat-placeholder', '1');
+      nativePlaceholder.setAttribute('data-ho-pinned-native-chat-id', chatId || '');
+      nativePlaceholder.setAttribute('title', 'Set emoji for chat');
+    }
+    entry.setAttribute('data-ho-pinned-emoji-slot', norm(emoji) ? 'real' : 'native');
+    return true;
+  }
+
+  function pinnedNativePlaceholderActivationContext(event){
+    const placeholder = event?.target?.closest?.('[data-ho-pinned-native-chat-placeholder="1"]');
+    if (!placeholder) return null;
+    const anchor = placeholder.closest?.('a[href*="/c/"]');
+    if (!anchor || !isPinnedSidebarChatRow(anchor)) return null;
+    if (anchor.getAttribute('data-ho-pinned-emoji-slot') !== 'native') return null;
+    if (anchor.querySelector(':scope > .ho-emoji-badge:not(.ho-emoji-empty)')) return null;
+    if (findPinnedNativeChatPlaceholder(anchor) !== placeholder) return null;
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    if (!chatId || placeholder.getAttribute('data-ho-pinned-native-chat-id') !== chatId) return null;
+    return { placeholder, anchor, chatId };
+  }
+
+  function suppressPinnedNativePlaceholderActivation(event){
+    const context = pinnedNativePlaceholderActivationContext(event);
+    if (!context) return false;
+    stopEmojiEvent(event);
+    return true;
+  }
+
+  function activatePinnedNativePlaceholder(event){
+    if (event?.button !== 0 || event?.isPrimary === false) return false;
+    const context = pinnedNativePlaceholderActivationContext(event);
+    if (!context) return false;
+    stopEmojiEvent(event);
+    const plainTitle = plainTitleFromAnchor(context.anchor, context.chatId);
+    const rect = context.placeholder.getBoundingClientRect();
+    return openUnifiedTitlePanel({
+      chatId: context.chatId,
+      anchor: context.anchor,
+      sourceEl: context.placeholder,
+      plainTitle,
+      x: rect.left,
+      y: rect.bottom + 6,
+    });
+  }
+
+  function bindPinnedNativePlaceholderActivationOnce(){
+    if (window.__HO_PINNED_NATIVE_EMOJI_BOUND) return;
+    window.__HO_PINNED_NATIVE_EMOJI_BOUND = true;
+    document.addEventListener('pointerdown', activatePinnedNativePlaceholder, true);
+    document.addEventListener('mousedown', suppressPinnedNativePlaceholderActivation, true);
+    document.addEventListener('click', suppressPinnedNativePlaceholderActivation, true);
+  }
+
   function findLeafTitleNode(entry){
     if (!entry) return null;
-    // pick the longest leaf text node
-    const leafs = Array.from(entry.querySelectorAll('*'))
+    // ChatGPT's semantic title container is separate from pinned-row chrome.
+    // Prefer it before the generic fallback so the aria-hidden native #chat
+    // icon can never participate in title parsing or a native PATCH payload.
+    const preferredRoot = entry.querySelector('[data-marquee-text]') ||
+      entry.querySelector('.truncate, [class*="truncate"]') || entry;
+    const leafs = Array.from(preferredRoot.querySelectorAll('*'))
       .filter(el => el.childElementCount === 0)
+      .filter(el => !isSidebarChromeTextNode(el))
       .filter(el => norm(el.textContent).length >= 2);
     leafs.sort((a,b) => norm(b.textContent).length - norm(a.textContent).length);
-    return leafs[0] || null;
+    if (leafs[0]) return leafs[0];
+    const own = norm(preferredRoot.textContent || '');
+    return own && !isSidebarChromeTextNode(preferredRoot) ? preferredRoot : null;
   }
 
   function getTrueTitle(entry){
@@ -799,6 +1033,17 @@ const CSS = `
   cursor: pointer !important;
 }
 
+/* Presentation-only Heat Pill visibility. 9A1b retains all heat state and
+   rendering authority; this setting only hides its existing sidebar surface. */
+html[data-ho-show-heat-pill="0"] nav .ho-colorbtn-side,
+html[data-ho-show-heat-pill="0"] aside .ho-colorbtn-side{
+  display: none !important;
+}
+html[data-ho-show-heat-pill="0"] nav a.ho-has-colorbtn-side,
+html[data-ho-show-heat-pill="0"] aside a.ho-has-colorbtn-side{
+  padding-right: 8px !important;
+}
+
 .ho-emoji-badge{
   box-sizing: border-box !important;
   width: 23px !important;
@@ -835,6 +1080,35 @@ const CSS = `
   mask: var(--ho-empty-badge-mask) center / contain no-repeat !important;
   line-height: 1 !important;
   filter: drop-shadow(0 0 8px rgba(132,198,255,.72)) !important;
+}
+
+/* Themes owns the sidebar canvas, but its generic pseudo-element reset must
+   not erase this owner-marked placeholder glyph. Keep the exception scoped
+   to an exact native chat row and the existing 9D1a sidebar badge surface.
+
+   #stage-slideover-sidebar is listed because the live docked Chats list
+   renders inside it, so Themes clears this glyph through an id-scoped branch
+   of that same reset. Naming the container here is what lets the owner rule
+   outrank it; without it the placeholder stays in the DOM painting nothing. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a[href*="/c/"] > .ho-emoji-badge.ho-emoji-empty[data-ho-emoji-ctx="side"]::before{
+  background: rgba(218,235,255,.96) !important;
+  background-image: none !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Pinned owns one leading visual slot jointly with ChatGPT. The native #chat
+   placeholder remains in the DOM and is hidden only while this exact pinned
+   row has a real canonical H2O/native emoji badge. */
+:is(aside, nav) a[data-ho-pinned-emoji-slot="real"]
+  [data-ho-pinned-native-chat-placeholder="1"]{
+  display: none !important;
+}
+
+:is(aside, nav) a[data-ho-pinned-emoji-slot="native"]
+  [data-ho-pinned-native-chat-placeholder="1"]{
+  cursor: pointer !important;
 }
 
 .ho-emoji-badge.ho-emoji-empty[data-ho-empty-icon="message-circle"]{
@@ -1121,6 +1395,62 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
 
 .ho-emoji-close:active{
   transform: scale(.96) !important;
+}
+
+.ho-emoji-top-actions{
+  position: relative !important;
+  z-index: 2 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-height: 30px !important;
+}
+
+.ho-emoji-remove-action{
+  appearance: none !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 7px !important;
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border: 1px solid var(--ho-sand-btn-border) !important;
+  border-radius: 9px !important;
+  background: var(--ho-sand-btn-bg) !important;
+  color: var(--ho-sand-text) !important;
+  cursor: pointer !important;
+  font: 650 12px/1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+  transition: border-color .14s ease, background .14s ease, opacity .14s ease !important;
+}
+
+.ho-emoji-remove-action svg{
+  width: 14px !important;
+  height: 14px !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 1.8 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+}
+
+.ho-emoji-remove-action:hover:not(:disabled){
+  border-color: var(--ho-sand-sel-border) !important;
+  background: var(--ho-sand-btn-bg-hover) !important;
+}
+
+.ho-emoji-remove-action:disabled{
+  cursor: default !important;
+  opacity: .48 !important;
+}
+
+.ho-emoji-remove-status{
+  min-width: 0 !important;
+  color: var(--ho-sand-text-mute) !important;
+  font: 600 11px/1.25 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif !important;
+}
+
+.ho-emoji-remove-status[data-state="error"]{
+  color: #fca5a5 !important;
 }
 
 .ho-emoji-search{
@@ -1494,22 +1824,6 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     return document.querySelector(`.ho-colorbtn[data-chatid="${CSS.escape(String(chatId || ''))}"]`);
   }
 
-  function applyIntegratedRowByIndex(chatId, idx, sourceEl){
-    const api = getInterfaceApi();
-    const link = findChatAnchorById(chatId, sourceEl);
-    if (!api?.config?.COLORS || !link) return;
-
-    const rowEl = link.closest('.ho-main-row') || link;
-    api.config.COLORS.forEach((def) => {
-      const cls = `ho-row-${def.name}`;
-      rowEl.classList.remove(cls);
-      link.classList.remove(cls);
-    });
-
-    if (idx < 0 || idx >= api.config.COLORS.length) return;
-    rowEl.classList.add(`ho-row-${api.config.COLORS[idx].name}`);
-  }
-
   function refreshIntegratedMetaPalette(palette, chatId){
     const api = getInterfaceApi();
     if (!palette || !api?.store) return;
@@ -1537,7 +1851,6 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
       const idx = Number.parseInt(target.dataset.idx || '0', 10);
       const current = Number(api.store.getRow?.(chatId));
       const next = current === idx ? -1 : idx;
-      applyIntegratedRowByIndex(chatId, next, sourceEl);
       api.store.setRow?.(chatId, next);
     }
     refreshIntegratedMetaPalette(palette, chatId);
@@ -1630,6 +1943,8 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
 
     pickerEl = document.createElement('div');
     pickerEl.className = 'ho-emoji-picker';
+    pickerEl.dataset.chatId = chatId;
+    pickerEl.dataset.hoEmojiPickerAuthority = '9D1a';
     pickerEl.setAttribute('data-cgxui-owner', 'auto-title-palette');
     pickerEl.setAttribute('data-h2o-glass', 'panel');
     pickerEl.setAttribute('data-h2o-skin-surface', 'sand-glass');
@@ -1667,6 +1982,61 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
 
     topbar.appendChild(title);
     topbar.appendChild(close);
+
+    const topActions = document.createElement('div');
+    topActions.className = 'ho-emoji-top-actions';
+
+    const removeEmoji = document.createElement('button');
+    removeEmoji.type = 'button';
+    removeEmoji.className = 'ho-emoji-remove-action';
+    removeEmoji.dataset.hoRemoveEmojiAction = '1';
+    removeEmoji.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M8.5 12h7"/></svg><span>Remove emoji</span>';
+    removeEmoji.setAttribute('aria-label', 'Remove leading title emoji');
+    removeEmoji.disabled = !selectedEmoji;
+
+    const removeStatus = document.createElement('span');
+    removeStatus.className = 'ho-emoji-remove-status';
+    removeStatus.setAttribute('role', 'status');
+    removeStatus.setAttribute('aria-live', 'polite');
+
+    removeEmoji.addEventListener('pointerdown', stopEmojiEvent, true);
+    removeEmoji.addEventListener('click', (ev) => {
+      stopEmojiEvent(ev);
+      if (removeEmoji.disabled || removeEmoji.dataset.pending === '1') return;
+      const api = chatTitleApi();
+      if (typeof api?.removeLeadingEmojiAndPersist !== 'function') {
+        removeStatus.dataset.state = 'error';
+        removeStatus.textContent = 'Native removal is unavailable.';
+        return;
+      }
+      removeEmoji.dataset.pending = '1';
+      removeEmoji.disabled = true;
+      removeStatus.dataset.state = 'pending';
+      removeStatus.textContent = 'Removing…';
+      Promise.resolve(api.removeLeadingEmojiAndPersist(chatId, {
+        chatId,
+        source: 'title-palette-remove-emoji',
+        userInitiated: true,
+      })).then((result) => {
+        if (!result?.ok) {
+          removeStatus.dataset.state = 'error';
+          removeStatus.textContent = `Could not remove emoji (${result?.status || 'unconfirmed'}).`;
+          removeEmoji.disabled = false;
+          return;
+        }
+        delete runtimePendingEmoji[chatId];
+        ensureBadgeForChat(chatId);
+        closePicker();
+      }).catch((err) => {
+        removeStatus.dataset.state = 'error';
+        removeStatus.textContent = `Could not remove emoji (${String(err?.message || 'error')}).`;
+        removeEmoji.disabled = false;
+      }).finally(() => {
+        delete removeEmoji.dataset.pending;
+      });
+    }, true);
+    topActions.appendChild(removeEmoji);
+    topActions.appendChild(removeStatus);
 
     const input = document.createElement('input');
     input.placeholder = 'Search emoji, symbols, food, travel, flags';
@@ -1727,22 +2097,9 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
         reason: 'emoji-picker-native-rename',
         priority: 100,
         confidence: 1,
+        userInitiated: true,
       });
-      if (!submitted) {
-        publishEmoji(chatId, e, 'user-picker', 100, 1, {
-          force: true,
-          emit: true,
-          userInitiated: true,
-          reason: 'emoji-picker-fallback',
-        });
-        delete runtimePendingEmoji[chatId];
-      }
-
-      // LIVE UI update immediately
-      if (badgeEl) {
-        setBadgeDisplay(badgeEl, e, badgeEl.dataset.hoEmojiCtx || '');
-        delete badgeEl.dataset.hoEmojiPending;
-      }
+      if (!submitted) delete runtimePendingEmoji[chatId];
 
       setTimeout(() => {
         ensureBadgeForChat(chatId);
@@ -1816,6 +2173,7 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     });
 
     pickerEl.appendChild(topbar);
+    pickerEl.appendChild(topActions);
     pickerEl.appendChild(search);
     if (metaPalette) pickerEl.appendChild(metaPalette);
     pickerEl.appendChild(grid);
@@ -1852,15 +2210,15 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     if (inSidebar){
       const entry = findSidebarEntry(chatId) || anchor;
       const raw = getTrueTitle(entry) || norm(anchor.textContent || '');
-      return stripEdgeEmoji(raw) || raw;
+      return titleRemainderOf(raw);
     }
     const leaf = findProjectTitleNode(anchor);
     const raw = norm(leaf?.textContent || getFirstTextFromAnchor(anchor) || anchor.textContent || '');
-    return stripEdgeEmoji(raw) || raw;
+    return titleRemainderOf(raw);
   }
 
   function addSuggestedEmojiFromBadge(chatId, plainTitle, badge){
-    const plain = stripEdgeEmoji(norm(plainTitle || getPlainTitleForChatId(chatId, ''))) || norm(plainTitle || '');
+    const plain = titleRemainderOf(norm(plainTitle || getPlainTitleForChatId(chatId, '')));
     const emoji = pickEmojiForTitle(plain) || DEFAULT_EMOJI;
     runtimePendingEmoji[chatId] = emoji;
     setBadgeDisplay(badge, emoji, badge?.dataset?.hoEmojiCtx || '');
@@ -1871,17 +2229,10 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
       reason: 'emoji-badge-add-native-rename',
       priority: 100,
       confidence: 0.96,
+      userInitiated: true,
     });
 
-    if (!submitted) {
-      publishEmoji(chatId, emoji, 'user-badge', 100, 0.96, {
-        force: true,
-        emit: true,
-        userInitiated: true,
-        reason: 'emoji-badge-add-fallback',
-      });
-      delete runtimePendingEmoji[chatId];
-    }
+    if (!submitted) delete runtimePendingEmoji[chatId];
 
     setTimeout(() => {
       ensureBadgeForChat(chatId);
@@ -1900,17 +2251,15 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     if (!chatId) return false;
 
     const plainTitle = plainTitleFromAnchor(anchor, chatId);
-    const savedEmoji = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-    const visibleEmoji = badge.classList.contains('ho-emoji-empty') ? '' : norm(badge.textContent || '');
-
-    if (!savedEmoji && !visibleEmoji) {
-      addSuggestedEmojiFromBadge(chatId, plainTitle, badge);
-      return true;
-    }
-
-    // The unified Title Palette belongs to the chat pill. Once an emoji exists,
-    // the emoji badge only consumes the event so the chat row does not navigate.
-    return true;
+    const r = badge.getBoundingClientRect();
+    return openUnifiedTitlePanel({
+      chatId,
+      anchor,
+      sourceEl: badge,
+      plainTitle,
+      x: r.left,
+      y: r.bottom + 6,
+    });
   }
 
   function openUnifiedTitlePanel(options = {}){
@@ -1948,6 +2297,86 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     return true;
   }
 
+  let lastNativeMenuChatId = '';
+  let nativeMenuAugmentRaf = 0;
+
+  function captureSidebarChatMenuIdentity(event){
+    const trigger = event?.target?.closest?.(
+      'nav button[aria-label*="Open conversation options"], aside button[aria-label*="Open conversation options"]'
+    );
+    if (!trigger) return;
+    const anchor = trigger.closest('a[href*="/c/"]');
+    const chatId = extractChatIdFromHref(anchor?.getAttribute?.('href') || '');
+    lastNativeMenuChatId = chatId || '';
+  }
+
+  function isNativeSidebarChatMenu(menu){
+    if (!(menu instanceof HTMLElement) || !lastNativeMenuChatId) return false;
+    if (menu.matches?.('.ho-title-action-menu,[data-ho-title-menu="1"]') || menu.closest?.('.ho-emoji-picker')) return false;
+    const labels = Array.from(menu.querySelectorAll('[role="menuitem"]')).map((item) => norm(item.textContent || ''));
+    return labels.includes('Rename') && labels.includes('Share') &&
+      labels.some((label) => /^(?:Archive|Delete)$/.test(label));
+  }
+
+  function setNativeMenuItemLabel(item, label){
+    const walker = document.createTreeWalker(item, NodeFilter.SHOW_TEXT);
+    let textNode = walker.nextNode();
+    while (textNode && norm(textNode.nodeValue || '') !== 'Rename') textNode = walker.nextNode();
+    if (textNode) textNode.nodeValue = label;
+    else item.appendChild(Object.assign(document.createElement('span'), { textContent: label }));
+    item.setAttribute('aria-label', label);
+  }
+
+  function injectSetEmojiMenuItem(menu){
+    if (!isNativeSidebarChatMenu(menu)) return false;
+    const currentChatId = lastNativeMenuChatId;
+    const existing = menu.querySelector(`[data-cgxui="${SET_EMOJI_MENU_MARK}"]`);
+    if (existing) {
+      existing.dataset.hoAutoEmojiChatId = currentChatId;
+      return true;
+    }
+    const rename = Array.from(menu.querySelectorAll('[role="menuitem"]'))
+      .find((item) => norm(item.textContent || '') === 'Rename');
+    if (!rename?.parentNode) return false;
+
+    const item = rename.cloneNode(true);
+    item.removeAttribute('id');
+    item.setAttribute('data-cgxui', SET_EMOJI_MENU_MARK);
+    item.setAttribute('data-cgxui-owner', '9D1a');
+    item.setAttribute('data-ho-auto-emoji-menu-item', '1');
+    item.dataset.hoAutoEmojiChatId = currentChatId;
+    item.tabIndex = 0;
+    setNativeMenuItemLabel(item, 'Set emoji');
+
+    const fire = (event) => {
+      stopEmojiEvent(event);
+      const chatId = item.dataset.hoAutoEmojiChatId || '';
+      if (!chatId) return;
+      const r = item.getBoundingClientRect();
+      openUnifiedTitlePanel({ chatId, sourceEl: item, x: r.right + 6, y: r.top });
+    };
+    item.addEventListener('click', fire, true);
+    item.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      fire(event);
+    }, true);
+    rename.parentNode.insertBefore(item, rename.nextSibling);
+    return true;
+  }
+
+  function augmentOpenSidebarChatMenus(){
+    const menus = Array.from(document.querySelectorAll('[role="menu"][data-state="open"], [data-radix-menu-content][data-state="open"]'));
+    menus.forEach(injectSetEmojiMenuItem);
+  }
+
+  function scheduleSidebarMenuAugmentation(){
+    if (nativeMenuAugmentRaf) return;
+    nativeMenuAugmentRaf = requestAnimationFrame(() => {
+      nativeMenuAugmentRaf = 0;
+      augmentOpenSidebarChatMenus();
+    });
+  }
+
   function installUnifiedTitlePanelApi(){
     const root = (window.H2O = window.H2O || {});
     const api = (root.AutoEmojiTitle = root.AutoEmojiTitle || {});
@@ -1955,6 +2384,12 @@ section a.ho-emoji-proj-row .ho-emoji-badge{
     api.openPicker = openUnifiedTitlePanel;
     api.getConfig = getAutoEmojiConfig;
     api.applySetting = applyAutoEmojiSetting;
+    api.getAutomaticallyAssignEmoji = getAutomaticallyAssignEmoji;
+    api.setAutomaticallyAssignEmoji = (value) => setBooleanSetting(KEY_AE_.AUTO_ASSIGN, !!value, 'automaticallyAssignEmoji', 'api-setting');
+    api.getShowPreEmojiChatIcon = getShowPreEmojiChatIcon;
+    api.setShowPreEmojiChatIcon = (value) => setBooleanSetting(KEY_AE_.SHOW_EMPTY_BADGE, !!value, 'showPreEmojiChatIcon', 'api-setting');
+    api.getShowHeatPill = getShowHeatPill;
+    api.setShowHeatPill = (value) => setBooleanSetting(KEY_AE_.SHOW_HEAT_PILL, !!value, 'showHeatPill', 'api-setting');
     api.getEmptyBadgeIcon = getEmptyBadgeIcon;
     api.setEmptyBadgeIcon = (value) => setEmptyBadgeIcon(value, { reason: 'api-set-empty-badge-icon' });
     api.getPickerGrouping = getPickerGrouping;
@@ -1979,8 +2414,7 @@ function getFirstTextFromAnchor(anchor){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane')) return NodeFilter.FILTER_REJECT;
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -1994,7 +2428,7 @@ function getFirstTextFromAnchor(anchor){
  * Remove leading emoji ONLY from the first real text node.
  * Never touches element.innerHTML / leaf.textContent replacements.
  **************************************************************/
-function stripLeadingEmojiFromFirstText(anchor){
+function stripLeadingEmojiFromFirstText(anchor, expectedEmoji){
   if (!anchor) return;
 
   const walker = document.createTreeWalker(
@@ -2004,8 +2438,7 @@ function stripLeadingEmojiFromFirstText(anchor){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane')) return NodeFilter.FILTER_REJECT;
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -2017,10 +2450,10 @@ function stripLeadingEmojiFromFirstText(anchor){
   const before = firstText.nodeValue || '';
   const trimmedLeft = before.replace(/^\s+/, '');
 
-  const edge = getEdgeEmoji(trimmedLeft);
-  if (!edge) return;
+  const parsed = takeLeadingEmojiSlot(trimmedLeft);
+  if (!parsed.emoji || parsed.emoji !== norm(expectedEmoji)) return;
 
-  let after = stripEdgeEmoji(trimmedLeft) || trimmedLeft;
+  let after = parsed.remainder || trimmedLeft;
   after = after.replace(/^\s+/, '');
 
   if (after !== trimmedLeft){
@@ -2037,10 +2470,7 @@ function findFirstRealTextHost(anchor){
       acceptNode(node){
         const v = (node?.nodeValue || '');
         if (!v.trim()) return NodeFilter.FILTER_REJECT;
-        const pe = node.parentElement;
-        if (pe && pe.closest('.ho-emoji-badge, .ho-emoji-lane, .ho-emoji-proj-badge')) {
-          return NodeFilter.FILTER_REJECT;
-        }
+        if (isSidebarChromeTextNode(node)) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       }
     }
@@ -2066,7 +2496,7 @@ function getPlainTitleForChatId(chatId, fallbackPlain){
   const entry = findSidebarEntry(chatId);
   if (entry){
     const t = getTrueTitle(entry);
-    const plain = stripEdgeEmoji(t) || t;
+    const plain = titleRemainderOf(t);
     return plain || fallbackPlain;
   }
   return fallbackPlain;
@@ -2089,7 +2519,7 @@ function openPickerForAnchor(anchor, ev){
 
   // title source: sidebar true title if possible, else first text node from this row
   const rawLocal = getFirstTextFromAnchor(anchor) || norm(anchor.textContent || '');
-  const localPlain = stripEdgeEmoji(rawLocal) || rawLocal;
+  const localPlain = titleRemainderOf(rawLocal);
   const plainTitle = getPlainTitleForChatId(chatId, localPlain);
 
   const r = badge.getBoundingClientRect();
@@ -2192,7 +2622,7 @@ function bindMiddleOpenOnce(){
     const inSidebar = !!a.closest('aside, nav') && !a.closest('main, section');
     const leaf = inSidebar ? findLeafTitleNode(a) : findProjectTitleNode(a);
     const raw = norm(leaf?.textContent || a.textContent || '');
-    const plainTitle = stripEdgeEmoji(raw) || raw;
+    const plainTitle = titleRemainderOf(raw);
 
     // use an existing badge (or create it minimally)
     let badgeEl = a.querySelector('.ho-emoji-badge');
@@ -2233,15 +2663,15 @@ function bindMiddleOpenOnce(){
   const MIN_TITLE_LENGTH = 4;
   const STABLE_RUNS_REQUIRED = 2;
 
-function stripEdgeEmojiFromLeaf(leaf){
+function stripEdgeEmojiFromLeaf(leaf, expectedEmoji){
   if (!leaf) return;
   const cur = (leaf.textContent || '').replace(/^\s+/, '').replace(/\s+/g,' ').trim();
   if (!cur) return;
 
-  const edge = getEdgeEmoji(cur);
-  if (!edge) return;
+  const parsed = takeLeadingEmojiSlot(cur);
+  if (!parsed.emoji || parsed.emoji !== norm(expectedEmoji)) return;
 
-  const next = (stripEdgeEmoji(cur) || cur).replace(/^\s+/, '').replace(/\s+/g,' ').trim();
+  const next = (parsed.remainder || cur).replace(/^\s+/, '').replace(/\s+/g,' ').trim();
   if (leaf.textContent !== next){
     leaf.textContent = '';
     leaf.textContent = next;
@@ -2306,14 +2736,16 @@ function ensureBadgeForProjectListEntry(anchor){
   const trueTitle = norm(leaf.textContent || '');
   if (!trueTitle) return;
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
-    setSavedEmoji(chatId, existingEdge);
+  // Occupied slot, whoever authored it: palette, Auto Emoji, a native rename,
+  // manual typing or a title that predates H2O all land here identically.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
+    setSavedEmoji(chatId, existingLeadingEmoji);
     setDone(chatId);
   }
 
   const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-  const badgeEmoji = existingEdge || saved || '';
+  const badgeEmoji = existingLeadingEmoji || saved || '';
 
   // 4) Create/move badge so it lives INSIDE titleline, before the title leaf
   let badge = anchor.querySelector('.ho-emoji-badge');
@@ -2329,7 +2761,8 @@ function ensureBadgeForProjectListEntry(anchor){
 
   // 5) Display-only: remove emoji from visible leaf text so you never see double
   const cur = norm(leaf.textContent || '');
-  if (getEdgeEmoji(cur)) leaf.textContent = stripEdgeEmoji(cur) || cur;
+  const parsedLeaf = takeLeadingEmojiSlot(cur);
+  if (parsedLeaf.emoji && parsedLeaf.emoji === badgeEmoji) leaf.textContent = parsedLeaf.remainder || cur;
 
   // 6) Bind ONCE: first click adds an emoji; later clicks are consumed.
   if (!badge.dataset.hoEmojiBound){
@@ -2371,24 +2804,47 @@ function ensureBadgeForChat(chatId){
   const entry = findSidebarEntry(chatId);
   if (!entry) return;
 
-  entry.classList.add('ho-emoji-row');
-
   const trueTitle = getTrueTitle(entry);
   if (!trueTitle) return;
 
   const leaf = findLeafTitleNode(entry);
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
-    setSavedEmoji(chatId, existingEdge);
+  // Occupied slot, whoever authored it: palette, Auto Emoji, a native rename,
+  // manual typing or a title that predates H2O all land here identically.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
+    setSavedEmoji(chatId, existingLeadingEmoji);
     setDone(chatId);
   }
 
   const saved = getSavedEmoji(chatId) || runtimePendingEmoji[chatId] || '';
-  const badgeEmoji = existingEdge || saved || '';
+  const badgeEmoji = existingLeadingEmoji || saved || '';
 
   // One badge only (remove duplicates created by rerenders)
   keepOnlyOneBadgeAny(entry, leaf);
+
+  // Pinned rows already own a native leading #chat placeholder. An empty H2O
+  // badge would create two placeholders, so pinned emoji-less rows intentionally
+  // keep only ChatGPT's native slot. A real emoji uses the H2O badge and merely
+  // suppresses that exact native placeholder through the owner marker above.
+  const pinned = isPinnedSidebarChatRow(entry);
+  if (!badgeEmoji && pinned) {
+    entry.querySelectorAll(':scope > .ho-emoji-badge').forEach((node) => node.remove());
+    entry.classList.remove('ho-emoji-row');
+    applyPinnedEmojiSlotPresentation(entry, '');
+    return;
+  }
+
+  // The visibility preference applies only to the empty sidebar placeholder.
+  // Real canonical emoji remain visible regardless of this presentation toggle.
+  if (!badgeEmoji && !getShowPreEmojiChatIcon()) {
+    entry.querySelectorAll(':scope > .ho-emoji-badge.ho-emoji-empty').forEach((node) => node.remove());
+    entry.classList.remove('ho-emoji-row');
+    clearPinnedEmojiSlotPresentation(entry);
+    return;
+  }
+
+  entry.classList.add('ho-emoji-row');
 
   // Badge (create or update)
   let badge = entry.querySelector(':scope .ho-emoji-badge');
@@ -2398,6 +2854,7 @@ function ensureBadgeForChat(chatId){
     entry.insertBefore(badge, entry.firstChild);
   }
   setBadgeDisplay(badge, badgeEmoji, 'side');
+  applyPinnedEmojiSlotPresentation(entry, badgeEmoji);
 
   // Bind once so the emoji control does not trigger row navigation.
   if (!badge.dataset.hoEmojiBound){
@@ -2429,14 +2886,103 @@ function ensureBadgeForChat(chatId){
   }
 
   // Display-only: remove emoji from visible title so you don't see double
-  if (leaf) stripEdgeEmojiFromLeaf(leaf);
-  stripLeadingEmojiFromFirstText(entry);
+  if (leaf) stripEdgeEmojiFromLeaf(leaf, badgeEmoji);
+  stripLeadingEmojiFromFirstText(entry, badgeEmoji);
 }
 
 function ensureVisibleSidebarBadges(){
   findSidebarChatAnchors().forEach((anchor) => {
     const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
     if (chatId) ensureBadgeForChat(chatId);
+  });
+}
+
+/* Sidebar decoration cannot ride the 110ms title/automation debounce alone.
+   That debounce is cleared on every observed mutation, so a page that keeps
+   mutating — a streaming answer, a long conversation mounting — resets it
+   indefinitely and the sidebar never gets decorated at all. The native menu
+   augmentation above already had to be lifted out of that debounce for the
+   same reason; the badge scan needs the same treatment.
+
+   The signature is what keeps this cheap: a scan only runs when the sidebar
+   row set or its decoration state actually changed, so a settled sidebar and
+   a Pre-emoji-off sidebar both come to rest instead of re-scanning per frame.
+   It also covers the boot race — when the sidebar mounts after 9D1a, the row
+   count changes and the existing observer arms this scan, so no readiness
+   timer or polling loop is needed. */
+let sidebarBadgeScanRaf = 0;
+let sidebarBadgeScanSignature = '';
+
+function sidebarBadgeScanState(){
+  const anchors = findSidebarChatAnchors();
+  const rows = anchors.map((anchor) => {
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    const badge = anchor.querySelector(':scope > .ho-emoji-badge');
+    const badgeState = badge ? (badge.classList.contains('ho-emoji-empty') ? 'empty' : 'real') : 'none';
+    const pinnedState = anchor.getAttribute('data-ho-pinned-emoji-slot') || '';
+    const nativeOwned = anchor.querySelector('[data-ho-pinned-native-chat-placeholder="1"]') ? 'native-owned' : '';
+    return `${chatId}:${badgeState}:${pinnedState}:${nativeOwned}`;
+  });
+  return `${anchors.length}:${rows.join('|')}`;
+}
+
+function scheduleSidebarBadgeScan(){
+  if (sidebarBadgeScanRaf) return;
+  sidebarBadgeScanRaf = requestAnimationFrame(() => {
+    sidebarBadgeScanRaf = 0;
+    const signature = sidebarBadgeScanState();
+    if (signature === sidebarBadgeScanSignature) return;
+    sidebarBadgeScanSignature = signature;
+    ensureVisibleSidebarBadges();
+  });
+}
+
+/* Project cards need the same treatment for a sharper reason than the sidebar.
+   The project emoji is only clickable because it is an owned badge: the
+   document-level capture handlers match .ho-emoji-badge[data-ho-emoji-ctx="proj"]
+   and nothing else. Until a card is decorated its leading emoji is still raw
+   title text inside the card anchor, so a click there navigates into the chat
+   instead of opening the palette. Decoration therefore cannot wait behind the
+   110ms auto-assignment debounce, which project-page churn keeps resetting —
+   that gap is exactly the intermittency users see. Presentation runs here;
+   maybeAutoEmojiRename keeps owning auto-assignment semantics. */
+let projectBadgeScanRaf = 0;
+let projectBadgeScanSignature = '';
+
+function isProjectListSurface(){
+  return !isInChatView() && isProjectsAreaPage();
+}
+
+function ensureVisibleProjectListBadges(){
+  ensureStyle();
+  findProjectListAnchors().forEach((anchor) => ensureBadgeForProjectListEntry(anchor));
+}
+
+function projectBadgeScanState(){
+  if (!isProjectListSurface()) return 'off';
+  const anchors = findProjectListAnchors();
+  const rows = anchors.map((anchor) => {
+    const chatId = extractChatIdFromHref(anchor.getAttribute('href') || '');
+    const badge = anchor.querySelector('.ho-emoji-badge[data-ho-emoji-ctx="proj"]');
+    const badgeState = badge
+      ? (badge.classList.contains('ho-emoji-empty') ? 'empty' : `real:${norm(badge.textContent)}`)
+      : 'none';
+    return `${chatId}:${badgeState}`;
+  });
+  // The pathname is part of the signature so Project A -> B -> A re-decorates
+  // instead of resting on the previous project's settled state.
+  return `${location.pathname}:${anchors.length}:${rows.join('|')}`;
+}
+
+function scheduleProjectBadgeScan(){
+  if (projectBadgeScanRaf) return;
+  projectBadgeScanRaf = requestAnimationFrame(() => {
+    projectBadgeScanRaf = 0;
+    const signature = projectBadgeScanState();
+    if (signature === projectBadgeScanSignature) return;
+    projectBadgeScanSignature = signature;
+    if (!isProjectListSurface()) return;
+    ensureVisibleProjectListBadges();
   });
 }
 
@@ -2467,13 +3013,16 @@ function maybeAutoEmojiRename(){
   const trueTitle = getTrueTitle(entry);
   if (!trueTitle) return;
 
-  const existingEdge = getEdgeEmoji(trueTitle);
-  if (existingEdge){
+  // Auto Emoji abstains whenever the slot is already occupied, regardless of
+  // who put the emoji there. A trailing emoji is title content, not a slot,
+  // so it no longer suppresses assignment the way edge parsing made it.
+  const existingLeadingEmoji = leadingEmojiOf(trueTitle);
+  if (existingLeadingEmoji){
     setDone(chatId);
     return;
   }
 
-  const plain = stripEdgeEmoji(trueTitle);
+  const plain = takeLeadingEmojiSlot(trueTitle).remainder;
   if (!plain || plain.length < MIN_TITLE_LENGTH) return;
 
   const state = chatTitleApi()?.getState?.(chatId) || {};
@@ -2488,14 +3037,19 @@ function maybeAutoEmojiRename(){
     return;
   }
 
-  // One-time only
-  if (isDone(chatId)) return;
-
   const st = (chatState[chatId] ||= { last:'', stable:0 });
   if (plain === st.last) st.stable++;
   else { st.last = plain; st.stable = 1; }
 
-  if (st.stable < STABLE_RUNS_REQUIRED) return;
+  if (!isAutomaticEmojiEligible({
+    autoEnabled: getAutomaticallyAssignEmoji(),
+    chatId,
+    plainTitle: plain,
+    hasEmoji: !!storedEmoji,
+    done: isDone(chatId),
+    pending: !!runtimeNativeRenamePending[chatId],
+    stableRuns: st.stable,
+  })) return;
 
   const emoji = pickEmojiForTitle(plain);
   applyNativeAutoEmoji(chatId, plain, emoji, {
@@ -2512,14 +3066,31 @@ function maybeAutoEmojiRename(){
    **************************************************************/
   let t = null;
   function schedule(){
+    // Native Radix menus are short-lived portals. Queue their bounded,
+    // idempotent augmentation immediately so unrelated ChatGPT mutations
+    // cannot keep resetting the slower title/automation debounce forever.
+    scheduleSidebarMenuAugmentation();
+    // Sidebar decoration is subject to the same starvation, so it is queued
+    // off the debounce too. Automatic emoji assignment stays behind the
+    // debounce, where waiting for a stable title is the point.
+    scheduleSidebarBadgeScan();
+    // Project cards share the same starvation problem, and for them the badge
+    // is what makes the emoji clickable at all, so it must not wait either.
+    scheduleProjectBadgeScan();
     clearTimeout(t);
-    t = setTimeout(maybeAutoEmojiRename, 110);
+    t = setTimeout(() => {
+      maybeAutoEmojiRename();
+    }, 110);
   }
 
 function init(){
   installUnifiedTitlePanelApi();
+  applySidebarPresentationSettings();
   bindEmojiDblClickOnce();      // sidebar dblclick
   bindProjectEmojiClickOnce();  // project list click
+  bindPinnedNativePlaceholderActivationOnce();
+  document.addEventListener('pointerdown', captureSidebarChatMenuIdentity, true);
+  window.addEventListener(EV_AE_SETTINGS_CANON, applySidebarPresentationSettings);
 
   const mo = new MutationObserver(schedule);
   mo.observe(document.body, { childList:true, subtree:true });

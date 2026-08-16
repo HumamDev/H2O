@@ -11,6 +11,8 @@
 🟢	0A3a.⬛️🧭 Chat Atlas Core 🧭.js
 🟢	0A3b.⬛️📒 Chat Atlas Ledger 📒.js
 🟢	0A3c.⬛️🔭 Chat Atlas Reveal Engine 🔭.js
+🟢	0A4a.⬛️🌐 Backend Request Authority 🌐.js
+🟢	0A4b.⬛️🌐 Backend Acceptance Adapter 🌐.js
 
 # =========================
 # 🪟 CHAT FLOW
@@ -207,7 +209,7 @@
 🟢	9B1a.🟤🔖 Tab Title 🔖.js
 🟢	9C1a.🟤📌 Title Under Input bar 📌.js
 🟢	9B2a.🟤🏷️ Sidebar Title Renderer 🏷️.js
-🔴	9D1a.🟤📱 Auto Emoji Title 📱.js
+🟢	9D1a.🟤📱 Auto Emoji Title 📱.js
 🔴	9X1a.🟤🧷 Keep Projects Open.js
 🔴	9Z1a.🟤🧼 Hide Disclaimer 🧼.js
 

@@ -495,6 +495,74 @@ html[data-ho-chat-list-activity-style="edge-wide"] .ho-colorbtn.ho-heat-hot::bef
     0 0 14px rgba(255,255,255,0.12) !important;
 }
 
+/* Themes deliberately clears generic sidebar pseudo-elements. Heat Pill is
+   an owned 9A1b control, so restore only its existing paint model instead of
+   weakening the Themes reset or creating a second heat implementation.
+
+   #stage-slideover-sidebar is named in the scope because the live docked Chats
+   list renders inside it and Themes clears the pill through an id-scoped branch
+   of that same reset; without the id here these rules lose the cascade and the
+   pill stays in the DOM painting nothing. Note that background is a transitioned
+   property on .ho-colorbtn::before, so the restored colour lands one transition
+   later — reading it in the same tick as a style change reports the
+   pre-transition value, not a failure to apply. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"] {
+  background: transparent !important;
+  background-image: none !important;
+  border: 1px solid rgba(210,215,225,0.85) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off {
+  border-color: rgba(128,138,148,0.66) !important;
+  box-shadow: none !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm {
+  border-color: rgba(245,248,255,0.96) !important;
+  box-shadow: 0 0 0 1px rgba(245,248,255,0.38), 0 0 10px rgba(245,248,255,0.30) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot {
+  border-color: rgba(255,255,255,0.98) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.42), 0 0 13px rgba(255,255,255,0.36), 0 0 26px rgba(255,255,255,0.18) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before {
+  background: rgba(255,255,255,0.48) !important;
+  box-shadow: inset 0 0 6px rgba(255,255,255,0.62) !important;
+}
+
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"],
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"] {
+  border: 0 !important;
+  box-shadow: none !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-off::before {
+  background: rgba(142,150,160,0.66) !important;
+  box-shadow: none !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-warm::before {
+  background: rgba(142,150,160,0.66) !important;
+  border: 1px solid rgba(255,255,255,0.82) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.14), 0 0 8px rgba(245,248,255,0.30) !important;
+}
+html[data-ho-chat-list-activity-style="edge-strip"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before,
+html[data-ho-chat-list-activity-style="edge-wide"] body[data-ho-theme-enabled="true"]
+  :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar) .ho-colorbtn-side[data-ho-heat-pill-owner="9A1b"].ho-heat-hot::before {
+  background: rgba(255,255,255,0.72) !important;
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.18), 0 0 8px rgba(255,255,255,0.26), 0 0 14px rgba(255,255,255,0.12) !important;
+}
+
 /* =========================================================
    3) Palette UI (popup) + Swatches
    ========================================================= */
@@ -701,6 +769,30 @@ a.ho-has-colorbtn.ho-row-gold  { background-color: rgba(212,175,55,0.12) !import
 a.ho-has-colorbtn.ho-row-red   { background-color: rgba(179,58,58,0.15) !important; }
 a.ho-has-colorbtn.ho-row-blue  { background-color: rgba(70,100,200,0.15) !important; }
 a.ho-has-colorbtn.ho-row-green { background-color: rgba(60,150,90,0.15) !important; }
+
+/* Themes intentionally clears generic sidebar backgrounds with an id-scoped
+   reset. These rules restore only 9A1b-owned, canonically tinted chat rows at
+   greater owner specificity; project/folder/action rows remain untouched. */
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-gold {
+  background: rgba(212,175,55,0.12) !important;
+  background-color: rgba(212,175,55,0.12) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-red {
+  background: rgba(179,58,58,0.15) !important;
+  background-color: rgba(179,58,58,0.15) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-blue {
+  background: rgba(70,100,200,0.15) !important;
+  background-color: rgba(70,100,200,0.15) !important;
+}
+body[data-ho-theme-enabled="true"] :is(aside, nav[aria-label*="chat" i], #stage-slideover-sidebar)
+  a.ho-has-colorbtn-side[data-ho-row-color-owner="9A1b"].ho-row-green {
+  background: rgba(60,150,90,0.15) !important;
+  background-color: rgba(60,150,90,0.15) !important;
+}
 
 /* Default subtle gray highlight for *sidebar* chats with no custom color */
 nav a.ho-has-colorbtn:not(.ho-row-gold):not(.ho-row-red):not(.ho-row-blue):not(.ho-row-green) {
@@ -1129,6 +1221,9 @@ function applyRowByIndex(link, idx) {
   // In project list: use the row container.
   // In sidebar: link itself (no .ho-main-row above).
   const rowEl = link.closest(".ho-main-row") || link;
+  if (link.closest("nav, aside") && !link.closest("main")) {
+    link.dataset.hoRowColorOwner = "9A1b";
+  }
 
   // clear old colors from both container and link
   [rowEl, link].forEach(el => {
@@ -1955,6 +2050,7 @@ function decorateLink(link) {
     : "ho-colorbtn ho-colorbtn-main ho-colorbtn-tail";
 
   btn.dataset.chatid = id;
+  btn.dataset.hoHeatPillOwner = "9A1b";
 
   // make it behave like a button
   btn.setAttribute("role", "button");
@@ -2323,6 +2419,9 @@ const rescan = I.utils.debounce(scanSidebar, 50);
 
 window.addEventListener(I.nav.EVENT, markActiveSidebarLink, true);
 window.addEventListener("h2o:interface:meta-mirror", (event) => {
+  scheduleChatMetaDecorationRefresh(event?.detail?.chatId);
+}, true);
+window.addEventListener("h2o:interface:row-tint-change", (event) => {
   scheduleChatMetaDecorationRefresh(event?.detail?.chatId);
 }, true);
 window.addEventListener("evt:h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
