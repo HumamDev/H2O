@@ -888,5 +888,35 @@ await fixture('V32 owner census is phase-aware and proves attach-phase identity'
     'the phase-blind census rule must not return');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V32 + mutations)`);
+/* V33 — CDP target selection must prefer the conversation tab. The launcher
+   opens the ChatGPT root in a new window while Chrome restores a conversation
+   tab, so an unordered first match attached to the root and the adapter
+   reported identity=false against a page that genuinely had no conversation. */
+await fixture('V33 conversation CDP target is preferred over the root tab', async () => {
+  const ws = (n) => `ws://127.0.0.1:9335/devtools/page/${n}`;
+  const root = { type: 'page', url: 'https://chatgpt.com/', webSocketDebuggerUrl: ws('root') };
+  const chat = { type: 'page', url: 'https://chatgpt.com/c/6928b333-12f4-8328-9e41-6a01def45127', webSocketDebuggerUrl: ws('chat') };
+  const proj = { type: 'page', url: 'https://chatgpt.com/g/g-p-694c441066b08191add4a7c3293f5e7a/c/6928b333-12f4-8328-9e41-6a01def45127', webSocketDebuggerUrl: ws('proj') };
+  const pick = runner.selectChatGptConversationTarget;
+  // A: root enumerated first must not win over a conversation tab.
+  eq(pick([root, chat])?.webSocketDebuggerUrl, ws('chat'), 'A conversation target preferred over root');
+  // B: project-scoped conversations are preferred too.
+  eq(pick([root, proj])?.webSocketDebuggerUrl, ws('proj'), 'B project-scoped conversation preferred');
+  // C: with no conversation present, the previous first-page fallback stands.
+  eq(pick([root])?.webSocketDebuggerUrl, ws('root'), 'C first-qualifying-page fallback preserved');
+  eq(pick([]), undefined, 'C empty target list still yields no target');
+  // D: non-page and non-ChatGPT targets stay excluded.
+  const noise = [
+    { type: 'service_worker', url: 'chrome-extension://ogcjkeaiicglflamhjaaimdhphjlgkbb/bg.js', webSocketDebuggerUrl: ws('sw') },
+    { type: 'page', url: 'https://example.test/c/6928b333-12f4-8328-9e41-6a01def45127', webSocketDebuggerUrl: ws('foreign') },
+    { type: 'page', url: 'https://chatgpt.com/', webSocketDebuggerUrl: '' },
+  ];
+  eq(pick(noise), undefined, 'D non-page, foreign-origin and socket-less targets excluded');
+  eq(pick([...noise, chat])?.webSocketDebuggerUrl, ws('chat'), 'D noise does not displace the conversation target');
+  // The runner must route selection through this helper, not a bare find().
+  ok(runnerSource.includes('const target = selectChatGptConversationTarget(targets);'),
+    'invokeAdapterThroughCdp uses the shared selector');
+});
+
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V33 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');

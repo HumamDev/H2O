@@ -685,12 +685,25 @@ function readJsonHttp(url, timeoutMs = 5000) {
   });
 }
 
+/* The governed launcher opens a new window at the profile's LAUNCH_URL, which
+   is the ChatGPT root, while Chrome may also restore a conversation tab. Two
+   qualifying page targets therefore coexist, and an unordered first match can
+   attach to the root — where currentChatId() correctly degrades to its "path:"
+   fallback and the adapter reports identity=false. Preferring a conversation
+   route also keeps the Phase-2 reads on the conversation the operator sees,
+   rather than whichever tab happened to enumerate first. */
+export function selectChatGptConversationTarget(targets) {
+  const pages = (Array.isArray(targets) ? targets : []).filter((item) => (
+    item?.type === 'page' && /^https:\/\/chatgpt\.com\//.test(String(item?.url || '')) && item?.webSocketDebuggerUrl
+  ));
+  // Matches both /c/<id> and project-scoped /g/<project>/c/<id>.
+  return pages.find((item) => /\/c\/[0-9a-f-]{16,}(?:[/?#]|$)/i.test(String(item.url))) || pages[0];
+}
+
 export async function invokeAdapterThroughCdp({ cdpPort, op, args }) {
   if (!isAllowedAcceptanceOp(op)) return { ok: false, status: 'op-not-allowlisted' };
   const targets = await readJsonHttp(`http://127.0.0.1:${Number(cdpPort)}/json/list`);
-  const target = (Array.isArray(targets) ? targets : []).find((item) => (
-    item?.type === 'page' && /^https:\/\/chatgpt\.com\//.test(String(item?.url || '')) && item?.webSocketDebuggerUrl
-  ));
+  const target = selectChatGptConversationTarget(targets);
   if (!target) return { ok: false, status: 'chatgpt-target-unavailable' };
   const cdp = new CdpClient(target.webSocketDebuggerUrl);
   try {
