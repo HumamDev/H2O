@@ -50,30 +50,47 @@
   function authorityStatus() {
     const authority = H2O.BackendAuthority;
     if (typeof authority?.status !== 'function') {
-      return frozen({ ok: false, status: 'authority-unavailable', reason: 'authority-missing', cooldownMs: 0 });
+      return frozen({
+        ok: false,
+        available: false,
+        status: 'authority-unavailable',
+        reason: 'authority-missing',
+        cooldownMs: 0,
+        supportedOrigin: '',
+        origin: String(W.location?.origin || ''),
+        lockName: '',
+      });
     }
     const status = authority.status() || {};
+    const available = status.available === true;
     return frozen({
-      ok: status.available === true,
-      status: status.available === true ? 'authority-available' : 'authority-unavailable',
+      ok: available,
+      available,
+      status: available ? 'authority-available' : 'authority-unavailable',
       reason: String(status.reason || ''),
       cooldownMs: Math.max(0, Number(status.cooldownMs) || 0),
       supportedOrigin: String(status.supportedOrigin || ''),
       origin: String(status.origin || ''),
+      lockName: String(status.lockName || ''),
     });
   }
 
   function runtimePresence() {
+    const featureSurfaces = frozen({
+      acceptance: typeof H2O.BackendAcceptance?.run === 'function',
+      authority: typeof H2O.BackendAuthority?.status === 'function',
+      title: typeof H2O.ChatTitle?.readNativeTitle === 'function',
+      archive: typeof H2O.archiveBoot?.fetchConversationTurnIndex === 'function',
+      identity: !!currentChatId(),
+    });
+    const ok = featureSurfaces.acceptance && featureSurfaces.authority
+      && featureSurfaces.title && featureSurfaces.archive;
     return frozen({
-      ok: true,
-      status: 'runtime-present',
+      ok,
+      status: ok ? 'runtime-present' : 'runtime-surface-missing',
       version: VERSION,
-      featureSurfaces: frozen({
-        authority: typeof H2O.BackendAuthority?.status === 'function',
-        title: typeof H2O.ChatTitle?.readNativeTitle === 'function',
-        archive: typeof H2O.archiveBoot?.fetchConversationTurnIndex === 'function',
-        identity: !!currentChatId(),
-      }),
+      pageOrigin: String(W.location?.origin || ''),
+      featureSurfaces,
     });
   }
 
@@ -82,6 +99,7 @@
     const authority = authorityStatus();
     return frozen({
       ok: authority.ok,
+      available: authority.available,
       status: authority.status,
       reason: authority.reason,
       cooldownMs: authority.cooldownMs,

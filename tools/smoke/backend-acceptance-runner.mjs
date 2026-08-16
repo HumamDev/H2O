@@ -36,6 +36,15 @@ const PHASE_STEPS = Object.freeze({
   3: Object.freeze(['title-read', 'title-patch', 'title-restore']),
 });
 const PHASE_BUDGETS = Object.freeze({ 0: 0, 1: 0, 2: 2, 3: 3 });
+const PHASE_ONE_ORIGIN = 'https://chatgpt.com';
+const PHASE_ONE_LOCK_NAME = 'h2o.backend-authority.chatgpt.v1';
+const REQUIRED_PHASE_ONE_SURFACES = Object.freeze(['acceptance', 'authority', 'title', 'archive']);
+export const PHASE_ONE_CHECKS = Object.freeze([
+  Object.freeze({ evidenceOp: 'pacing-before', adapterOp: 'pacing-sample' }),
+  Object.freeze({ evidenceOp: 'runtime-presence', adapterOp: 'runtime-presence' }),
+  Object.freeze({ evidenceOp: 'authority-status', adapterOp: 'authority-status' }),
+  Object.freeze({ evidenceOp: 'pacing-after', adapterOp: 'pacing-sample' }),
+]);
 
 // These are the only Runtime.evaluate expressions in this module. Both are
 // fixed, versioned module constants. Operation names and arguments use the
@@ -130,17 +139,116 @@ function safeString(value, max = 160) {
   return String(value == null ? '' : value).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, max);
 }
 
+function safeEvidenceCode(value, max = 80) {
+  const text = safeString(value, max);
+  if (!text) return '';
+  if (!/^[a-z0-9._:-]+$/i.test(text)
+      || /(?:authorization|bearer|cookie|session|token)/i.test(text)
+      || /^[a-z0-9_-]+\.[a-z0-9_-]+\.[a-z0-9_-]+$/i.test(text)
+      || /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(text)) return '[redacted]';
+  return text;
+}
+
 function safeAuthorityStatus(value) {
   const source = value && typeof value === 'object' ? value : {};
   return {
     available: source.available === true || source.ok === true,
-    reason: safeString(source.reason, 80),
+    reason: safeEvidenceCode(source.reason, 80),
     cooldownMs: Math.max(0, Number(source.cooldownMs) || 0),
+  };
+}
+
+function isRecord(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return isRecord(value) && Object.prototype.hasOwnProperty.call(value, key);
+}
+
+export function certifyPhaseOneEvidence(input = {}) {
+  const runtimePresence = isRecord(input.runtimePresence) ? input.runtimePresence : {};
+  const featureSurfaces = isRecord(runtimePresence.featureSurfaces) ? runtimePresence.featureSurfaces : {};
+  const authorityStatus = isRecord(input.authorityStatus) ? input.authorityStatus : {};
+  const pacingBefore = isRecord(input.pacingBefore) ? input.pacingBefore : {};
+  const pacingAfter = isRecord(input.pacingAfter) ? input.pacingAfter : {};
+  const missing = [];
+  if (!isRecord(input.runtimePresence)) missing.push('runtimePresence');
+  if (!hasOwn(runtimePresence, 'ok') || typeof runtimePresence.ok !== 'boolean') missing.push('runtimePresence.ok');
+  if (!hasOwn(runtimePresence, 'pageOrigin') || typeof runtimePresence.pageOrigin !== 'string') missing.push('runtimePresence.pageOrigin');
+  if (!hasOwn(runtimePresence, 'version') || typeof runtimePresence.version !== 'string') missing.push('runtimePresence.version');
+  if (!isRecord(runtimePresence.featureSurfaces)) missing.push('runtimePresence.featureSurfaces');
+  for (const surface of REQUIRED_PHASE_ONE_SURFACES) {
+    if (!hasOwn(featureSurfaces, surface) || typeof featureSurfaces[surface] !== 'boolean') {
+      missing.push(`runtimePresence.featureSurfaces.${surface}`);
+    }
+  }
+  if (!isRecord(input.authorityStatus)) missing.push('authorityStatus');
+  for (const key of ['available']) {
+    if (!hasOwn(authorityStatus, key) || typeof authorityStatus[key] !== 'boolean') missing.push(`authorityStatus.${key}`);
+  }
+  for (const key of ['reason', 'origin', 'supportedOrigin', 'lockName']) {
+    if (!hasOwn(authorityStatus, key) || typeof authorityStatus[key] !== 'string') missing.push(`authorityStatus.${key}`);
+  }
+  if (!hasOwn(authorityStatus, 'cooldownMs') || !Number.isFinite(Number(authorityStatus.cooldownMs))) {
+    missing.push('authorityStatus.cooldownMs');
+  }
+  for (const [name, sample] of [['pacingBefore', pacingBefore], ['pacingAfter', pacingAfter]]) {
+    if (!isRecord(input[name])) missing.push(name);
+    if (!hasOwn(sample, 'available') || typeof sample.available !== 'boolean') missing.push(`${name}.available`);
+    if (!hasOwn(sample, 'reason') || typeof sample.reason !== 'string') missing.push(`${name}.reason`);
+    if (!hasOwn(sample, 'cooldownMs') || !Number.isFinite(Number(sample.cooldownMs))) missing.push(`${name}.cooldownMs`);
+    if (!hasOwn(sample, 'sampledAt') || !Number.isFinite(Number(sample.sampledAt))) missing.push(`${name}.sampledAt`);
+  }
+  for (const key of ['logicalBudget', 'logicalUsed', 'authenticatedDispatches']) {
+    if (!hasOwn(input, key) || !Number.isFinite(Number(input[key]))) missing.push(key);
+  }
+  if (missing.length) return { ok: false, status: 'PHASE_1_EVIDENCE_INCOMPLETE', missing };
+
+  const missingSurface = REQUIRED_PHASE_ONE_SURFACES.find((surface) => featureSurfaces[surface] !== true);
+  if (runtimePresence.ok !== true || missingSurface) {
+    return { ok: false, status: 'RUNTIME_SURFACE_MISSING', missingSurface: missingSurface || 'runtime' };
+  }
+  if (runtimePresence.version !== 'h2o.backend-acceptance.v1') {
+    return { ok: false, status: 'RUNTIME_VERSION_MISMATCH' };
+  }
+  if (runtimePresence.pageOrigin !== PHASE_ONE_ORIGIN
+      || authorityStatus.origin !== PHASE_ONE_ORIGIN
+      || authorityStatus.supportedOrigin !== PHASE_ONE_ORIGIN) {
+    return { ok: false, status: 'AUTHORITY_ORIGIN_MISMATCH' };
+  }
+  if (authorityStatus.available !== true) return { ok: false, status: 'AUTHORITY_UNAVAILABLE' };
+  if (authorityStatus.reason !== '') return { ok: false, status: 'AUTHORITY_STATUS_INVALID' };
+  if (authorityStatus.lockName !== PHASE_ONE_LOCK_NAME) return { ok: false, status: 'AUTHORITY_LOCK_MISMATCH' };
+  if (Number(authorityStatus.cooldownMs) !== 0
+      || Number(pacingBefore.cooldownMs) !== 0
+      || Number(pacingAfter.cooldownMs) !== 0) {
+    return { ok: false, status: 'COOLDOWN_ALREADY_ACTIVE' };
+  }
+  if (pacingBefore.available !== true || pacingAfter.available !== true
+      || pacingBefore.reason !== '' || pacingAfter.reason !== '') {
+    return { ok: false, status: 'PACING_STATE_INVALID' };
+  }
+  if (Number(pacingBefore.sampledAt) <= 0
+      || Number(pacingAfter.sampledAt) < Number(pacingBefore.sampledAt)) {
+    return { ok: false, status: 'PACING_STATE_INVALID' };
+  }
+  if (Number(input.logicalBudget) !== 0 || Number(input.logicalUsed) !== 0
+      || Number(input.authenticatedDispatches) !== 0) {
+    return { ok: false, status: 'PHASE_1_BUDGET_VIOLATION' };
+  }
+  return {
+    ok: true,
+    status: 'PHASE_1_PASS',
+    logicalBudget: 0,
+    logicalUsed: 0,
+    authenticatedDispatches: 0,
   };
 }
 
 export function sanitizeStepResult(op, result, elapsedMs, budgetSnapshot) {
   const source = result && typeof result === 'object' ? result : {};
+  const featureSurfaces = isRecord(source.featureSurfaces) ? source.featureSurfaces : {};
   const classified = classifyFeatureResult(source);
   return {
     op: safeString(op, 48),
@@ -159,6 +267,19 @@ export function sanitizeStepResult(op, result, elapsedMs, budgetSnapshot) {
     turnCount: Math.max(0, Number(source.turnCount) || 0),
     nodeCount: Math.max(0, Number(source.nodeCount) || 0),
     complete: source.complete === true,
+    pageOrigin: safeString(source.pageOrigin, 80),
+    runtimeVersion: safeString(source.version, 80),
+    featureAcceptance: featureSurfaces.acceptance === true,
+    featureAuthority: featureSurfaces.authority === true,
+    featureTitle: featureSurfaces.title === true,
+    featureArchive: featureSurfaces.archive === true,
+    authorityAvailable: source.available === true,
+    reason: safeEvidenceCode(source.reason, 80),
+    origin: safeString(source.origin, 80),
+    supportedOrigin: safeString(source.supportedOrigin, 80),
+    lockName: safeString(source.lockName, 120),
+    cooldownMs: Math.max(0, Number(source.cooldownMs) || 0),
+    sampledAt: Math.max(0, Number(source.sampledAt) || 0),
   };
 }
 
@@ -180,6 +301,19 @@ export function serializeEvidence(input = {}) {
     turnCount: Math.max(0, Number(step.turnCount) || 0),
     nodeCount: Math.max(0, Number(step.nodeCount) || 0),
     complete: step.complete === true,
+    pageOrigin: safeString(step.pageOrigin, 80),
+    runtimeVersion: safeString(step.runtimeVersion, 80),
+    featureAcceptance: step.featureAcceptance === true,
+    featureAuthority: step.featureAuthority === true,
+    featureTitle: step.featureTitle === true,
+    featureArchive: step.featureArchive === true,
+    authorityAvailable: step.authorityAvailable === true,
+    reason: safeEvidenceCode(step.reason, 80),
+    origin: safeString(step.origin, 80),
+    supportedOrigin: safeString(step.supportedOrigin, 80),
+    lockName: safeString(step.lockName, 120),
+    cooldownMs: Math.max(0, Number(step.cooldownMs) || 0),
+    sampledAt: Math.max(0, Number(step.sampledAt) || 0),
   })) : [];
   return {
     schema: RUN_SCHEMA,
@@ -203,6 +337,8 @@ export function serializeEvidence(input = {}) {
     requestedPhase: Math.max(0, Number(input.requestedPhase) || 0),
     logicalBudget: Math.max(0, Number(input.logicalBudget) || 0),
     logicalUsed: Math.max(0, Number(input.logicalUsed) || 0),
+    authenticatedDispatches: Math.max(0, Number(input.authenticatedDispatches) || 0),
+    phaseOneCertification: safeString(input.phaseOneCertification, 80),
     conservativePhysicalUpperBound: Math.max(0, Number(input.conservativePhysicalUpperBound) || 0),
     steps,
     authorityBefore: safeAuthorityStatus(input.authorityBefore),
@@ -334,6 +470,41 @@ export async function executeAcceptancePhase(options = {}) {
     }
   }
   return { ok: true, status: `PHASE_${phase}_PASS`, steps: evidenceSteps, logicalUsed: budget.used, authorityBefore };
+}
+
+export async function executePhaseOneChecks(options = {}) {
+  if (typeof options.invoke !== 'function') {
+    return { ok: false, status: 'PHASE_1_EVIDENCE_INCOMPLETE', steps: [], logicalUsed: 0, authenticatedDispatches: 0 };
+  }
+  const raw = {};
+  const steps = [];
+  for (const check of PHASE_ONE_CHECKS) {
+    const started = Date.now();
+    const result = await options.invoke(check.adapterOp, {});
+    raw[check.evidenceOp] = result;
+    steps.push(sanitizeStepResult(check.evidenceOp, result, Date.now() - started, { used: 0, remaining: 0 }));
+  }
+  const input = {
+    runtimePresence: raw['runtime-presence'],
+    authorityStatus: raw['authority-status'],
+    pacingBefore: raw['pacing-before'],
+    pacingAfter: raw['pacing-after'],
+    logicalBudget: 0,
+    logicalUsed: 0,
+    authenticatedDispatches: 0,
+  };
+  const certification = certifyPhaseOneEvidence(input);
+  return {
+    ...certification,
+    steps,
+    runtimePresence: input.runtimePresence,
+    authorityStatus: input.authorityStatus,
+    pacingBefore: input.pacingBefore,
+    pacingAfter: input.pacingAfter,
+    logicalBudget: 0,
+    logicalUsed: 0,
+    authenticatedDispatches: 0,
+  };
 }
 
 class CdpClient {
@@ -586,21 +757,26 @@ async function main() {
         process.exitCode = 2;
         return;
       }
-      const phaseOneOps = ['runtime-presence', 'authority-status', 'pacing-sample'];
-      const phaseOneSteps = [];
-      for (const op of phaseOneOps) {
-        const started = Date.now();
-        const result = await invokeAdapterThroughCdp({ cdpPort: options.cdpPort, op, args: {} });
-        const step = sanitizeStepResult(op, result, Date.now() - started, { used: 0, remaining: 0 });
-        phaseOneSteps.push(step);
-        if (!result?.ok) {
-          writeEvidence(path.join(runDir, 'run.json'), { ...evidence, steps: phaseOneSteps, logicalUsed: 0, stoppedEarly: true, stopReason: classifyFeatureResult(result).category });
-          process.exitCode = 2;
-          return;
-        }
+      const phaseOne = await executePhaseOneChecks({
+        invoke: (op, args) => invokeAdapterThroughCdp({ cdpPort: options.cdpPort, op, args }),
+      });
+      writeEvidence(path.join(runDir, 'run.json'), {
+        ...evidence,
+        steps: phaseOne.steps,
+        authorityBefore: phaseOne.pacingBefore,
+        authorityAfter: phaseOne.pacingAfter,
+        logicalUsed: phaseOne.logicalUsed,
+        authenticatedDispatches: phaseOne.authenticatedDispatches,
+        phaseOneCertification: phaseOne.status,
+        stoppedEarly: phaseOne.ok !== true,
+        stopReason: phaseOne.ok === true ? '' : phaseOne.status,
+      });
+      if (!phaseOne.ok) {
+        process.stderr.write(`${phaseOne.status}\n`);
+        process.exitCode = 2;
+        return;
       }
       // Explicit hard stop: Phase 1 never falls through to Phase 2.
-      writeEvidence(path.join(runDir, 'run.json'), { ...evidence, steps: phaseOneSteps, logicalUsed: 0, stoppedEarly: false });
       process.stdout.write('PHASE_1_PASS\n');
       return;
     }

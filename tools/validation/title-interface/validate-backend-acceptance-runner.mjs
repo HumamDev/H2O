@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -69,6 +70,44 @@ function mockLoader(excluded) {
     STORAGE_ORDER_OVERRIDES_KEY: 'y', PAGE_FOLDER_BRIDGE_FILE: 'a.js',
     PAGE_PILOT_OBSERVER_FILE: 'b.js', EXCLUDED_RUNTIME_ALIASES: excluded,
   });
+}
+async function withMutatedRunner(label, replacements, fn) {
+  let source = runnerSource;
+  for (const [from, to] of replacements) {
+    ok(source.includes(from), `${label} mutation target exists`);
+    source = source.replace(from, to);
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), `h2o-acceptance-${label}-`));
+  const file = path.join(root, 'runner.mjs');
+  try {
+    fs.writeFileSync(file, source);
+    const mutated = await import(pathToFileURL(file).href + `?mutation=${Date.now()}`);
+    return await fn(mutated);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+function adapterPreservesAuthorityLock(source) {
+  return /lockName:\s*String\(status\.lockName\s*\|\|\s*''\)/.test(source);
+}
+function loadAdapterFixture({ authority = true, title = true, archive = true, cooldownMs = 0 } = {}) {
+  const page = {
+    location: { origin: 'https://chatgpt.com' },
+    H2O: {
+      BackendAuthority: authority ? { status: () => ({
+        available: true,
+        reason: '',
+        origin: 'https://chatgpt.com',
+        supportedOrigin: 'https://chatgpt.com',
+        lockName: 'h2o.backend-authority.chatgpt.v1',
+        cooldownMs,
+      }) } : {},
+      ChatTitle: title ? { readNativeTitle() {} } : {},
+      archiveBoot: archive ? { fetchConversationTurnIndex() {}, getCurrentChatId: () => '' } : {},
+    },
+  };
+  vm.runInNewContext(adapterSource, { window: page, unsafeWindow: page, console, Object, Set, String, Number, Date });
+  return page.H2O.BackendAcceptance;
 }
 
 await fixture('V1/V2 budget decrement and exhaustion', async () => {
@@ -255,6 +294,262 @@ await fixture('V13 fixed Runtime.evaluate expressions', async () => {
   ok(runnerSource.includes('Runtime.callFunctionOn'), 'structured arguments');
 });
 
+function validPhaseOneEvidence() {
+  return {
+    runtimePresence: {
+      ok: true,
+      status: 'runtime-present',
+      pageOrigin: 'https://chatgpt.com',
+      version: 'h2o.backend-acceptance.v1',
+      featureSurfaces: { acceptance: true, authority: true, title: true, archive: true },
+    },
+    authorityStatus: {
+      ok: true,
+      status: 'authority-available',
+      available: true,
+      reason: '',
+      origin: 'https://chatgpt.com',
+      supportedOrigin: 'https://chatgpt.com',
+      lockName: 'h2o.backend-authority.chatgpt.v1',
+      cooldownMs: 0,
+    },
+    pacingBefore: {
+      ok: true, status: 'authority-available', available: true,
+      reason: '', cooldownMs: 0, sampledAt: 1000,
+    },
+    pacingAfter: {
+      ok: true, status: 'authority-available', available: true,
+      reason: '', cooldownMs: 0, sampledAt: 1001,
+    },
+    logicalBudget: 0,
+    logicalUsed: 0,
+    authenticatedDispatches: 0,
+  };
+}
+
+await fixture('V14 runtime-presence missing Title surface cannot pass', async () => {
+  for (const surface of ['acceptance', 'authority', 'title']) {
+    const input = validPhaseOneEvidence();
+    input.runtimePresence.featureSurfaces[surface] = false;
+    const result = runner.certifyPhaseOneEvidence(input);
+    eq(result.ok, false, `missing ${surface} fails`);
+    eq(result.status, 'RUNTIME_SURFACE_MISSING', 'precise category');
+  }
+  const actualMissingTitle = await loadAdapterFixture({ title: false }).run('runtime-presence');
+  eq(actualMissingTitle.ok, false, 'real adapter fails outer result when Title is missing');
+  eq(actualMissingTitle.featureSurfaces.title, false, 'real adapter reports missing Title');
+  const actualMissingAuthority = await loadAdapterFixture({ authority: false }).run('runtime-presence');
+  eq(actualMissingAuthority.ok, false, 'real adapter fails outer result when authority is missing');
+});
+
+await fixture('V15 runtime-presence missing Archive surface cannot pass', async () => {
+  const input = validPhaseOneEvidence();
+  input.runtimePresence.featureSurfaces.archive = false;
+  const result = runner.certifyPhaseOneEvidence(input);
+  eq(result.ok, false, 'missing Archive fails');
+  eq(result.status, 'RUNTIME_SURFACE_MISSING', 'precise category');
+  const actual = await loadAdapterFixture({ archive: false }).run('runtime-presence');
+  eq(actual.ok, false, 'real adapter fails outer result when Archive is missing');
+  eq(actual.featureSurfaces.archive, false, 'real adapter reports missing Archive');
+});
+
+await fixture('V16 unavailable authority cannot pass', async () => {
+  const input = validPhaseOneEvidence();
+  input.authorityStatus.available = false;
+  input.authorityStatus.ok = false;
+  const result = runner.certifyPhaseOneEvidence(input);
+  eq(result.ok, false, 'unavailable authority fails');
+  eq(result.status, 'AUTHORITY_UNAVAILABLE', 'precise category');
+});
+
+await fixture('V17 non-empty authority reason cannot pass', async () => {
+  const input = validPhaseOneEvidence();
+  input.authorityStatus.reason = 'unexpected';
+  const result = runner.certifyPhaseOneEvidence(input);
+  eq(result.ok, false, 'reason fails');
+  eq(result.status, 'AUTHORITY_STATUS_INVALID', 'precise category');
+});
+
+await fixture('V18 wrong page, authority, or supported origin cannot pass', async () => {
+  for (const mutate of [
+    (input) => { input.runtimePresence.pageOrigin = 'https://example.com'; },
+    (input) => { input.authorityStatus.origin = 'https://example.com'; },
+    (input) => { input.authorityStatus.supportedOrigin = 'https://example.com'; },
+  ]) {
+    const input = validPhaseOneEvidence();
+    mutate(input);
+    const result = runner.certifyPhaseOneEvidence(input);
+    eq(result.ok, false, 'origin mismatch fails');
+    eq(result.status, 'AUTHORITY_ORIGIN_MISMATCH', 'precise category');
+  }
+});
+
+await fixture('V19 wrong or missing authority lock name cannot pass', async () => {
+  ok(adapterPreservesAuthorityLock(adapterSource), 'adapter preserves the authority lock name');
+  eq((await loadAdapterFixture().run('authority-status')).lockName,
+    'h2o.backend-authority.chatgpt.v1', 'real adapter returns the lock name');
+  const wrong = validPhaseOneEvidence();
+  wrong.authorityStatus.lockName = 'wrong-lock';
+  eq(runner.certifyPhaseOneEvidence(wrong).status, 'AUTHORITY_LOCK_MISMATCH', 'wrong lock fails');
+  const missing = validPhaseOneEvidence();
+  delete missing.authorityStatus.lockName;
+  eq(runner.certifyPhaseOneEvidence(missing).status, 'PHASE_1_EVIDENCE_INCOMPLETE', 'missing lock fails closed');
+});
+
+await fixture('V20 non-zero or missing cooldown cannot pass', async () => {
+  const active = validPhaseOneEvidence();
+  active.authorityStatus.cooldownMs = 1;
+  eq(runner.certifyPhaseOneEvidence(active).status, 'COOLDOWN_ALREADY_ACTIVE', 'active cooldown fails');
+  const missing = validPhaseOneEvidence();
+  delete missing.authorityStatus.cooldownMs;
+  eq(runner.certifyPhaseOneEvidence(missing).status, 'PHASE_1_EVIDENCE_INCOMPLETE', 'missing cooldown fails closed');
+  eq((await loadAdapterFixture({ cooldownMs: 37 }).run('authority-status')).cooldownMs,
+    37, 'real adapter returns non-zero cooldown without erasing it');
+});
+
+await fixture('V21 missing before pacing sample cannot pass', async () => {
+  const input = validPhaseOneEvidence();
+  delete input.pacingBefore;
+  eq(runner.certifyPhaseOneEvidence(input).status, 'PHASE_1_EVIDENCE_INCOMPLETE', 'missing before sample');
+});
+
+await fixture('V22 missing after pacing sample cannot pass', async () => {
+  const input = validPhaseOneEvidence();
+  delete input.pacingAfter;
+  eq(runner.certifyPhaseOneEvidence(input).status, 'PHASE_1_EVIDENCE_INCOMPLETE', 'missing after sample');
+});
+
+await fixture('V23 complete Phase-1 evidence passes with zero budget and dispatch', async () => {
+  const valid = runner.certifyPhaseOneEvidence(validPhaseOneEvidence());
+  ok(valid.ok, 'complete evidence passes');
+  eq(valid.status, 'PHASE_1_PASS', 'Phase 1 pass');
+  eq(valid.logicalUsed, 0, 'zero logical use');
+  eq(valid.authenticatedDispatches, 0, 'zero authenticated dispatch');
+  let sample = 1000;
+  const calls = [];
+  const executed = await runner.executePhaseOneChecks({ invoke: async (op) => {
+    calls.push(op);
+    if (op === 'runtime-presence') return validPhaseOneEvidence().runtimePresence;
+    if (op === 'authority-status') return validPhaseOneEvidence().authorityStatus;
+    return { ...validPhaseOneEvidence().pacingBefore, sampledAt: sample++ };
+  } });
+  ok(executed.ok, 'real Phase-1 executor passes');
+  eq(calls.join(','), 'pacing-sample,runtime-presence,authority-status,pacing-sample', 'fixed before/after sequence');
+  eq(executed.steps.map((step) => step.op).join(','),
+    'pacing-before,runtime-presence,authority-status,pacing-after', 'evidence labels distinguish samples');
+  const recorded = runner.serializeEvidence({ requestedPhase: 1, logicalBudget: 0,
+    logicalUsed: executed.logicalUsed, authenticatedDispatches: executed.authenticatedDispatches,
+    phaseOneCertification: executed.status, steps: executed.steps,
+    authorityBefore: executed.pacingBefore, authorityAfter: executed.pacingAfter });
+  eq(recorded.steps[0].sampledAt, 1000, 'before pacing sample preserved');
+  eq(recorded.steps[3].sampledAt, 1001, 'after pacing sample preserved');
+  eq(recorded.phaseOneCertification, 'PHASE_1_PASS', 'central certification preserved');
+  eq(recorded.authenticatedDispatches, 0, 'zero authenticated dispatch preserved');
+});
+
+await fixture('V24 safe Phase-1 fields survive while sensitive fields remain excluded', async () => {
+  const rawId = '11111111-2222-4333-8444-555555555555';
+  const runtimeStep = runner.sanitizeStepResult('runtime-presence', {
+    ...validPhaseOneEvidence().runtimePresence,
+    accessToken: 'eyJhbGci.secret', conversationId: rawId, title: 'secret title',
+  }, 1, { used: 0, remaining: 0 });
+  const authorityStep = runner.sanitizeStepResult('authority-status', {
+    ...validPhaseOneEvidence().authorityStatus, cooldownMs: 37, reason: 'Bearer secret',
+    Authorization: 'Bearer secret', cookies: 'session=secret', body: { messages: ['secret'] },
+  }, 1, { used: 0, remaining: 0 });
+  const pacingStep = runner.sanitizeStepResult('pacing-before', validPhaseOneEvidence().pacingBefore,
+    1, { used: 0, remaining: 0 });
+  const evidence = runner.serializeEvidence({ requestedPhase: 1, logicalBudget: 0, logicalUsed: 0,
+    authenticatedDispatches: 0, phaseOneCertification: 'PHASE_1_PASS',
+    steps: [runtimeStep, authorityStep, pacingStep] });
+  eq(evidence.steps[0].pageOrigin, 'https://chatgpt.com', 'page origin retained');
+  eq(evidence.steps[0].featureTitle, true, 'Title surface retained');
+  eq(evidence.steps[0].featureArchive, true, 'Archive surface retained');
+  eq(evidence.steps[1].lockName, 'h2o.backend-authority.chatgpt.v1', 'lock retained');
+  eq(evidence.steps[1].supportedOrigin, 'https://chatgpt.com', 'supported origin retained');
+  eq(evidence.steps[1].cooldownMs, 37, 'cooldown retained without defaulting');
+  eq(evidence.steps[1].reason, '[redacted]', 'token-shaped reason is redacted');
+  eq(evidence.steps[2].sampledAt, 1000, 'pacing timestamp retained');
+  const encoded = JSON.stringify(evidence);
+  ok(!encoded.includes(rawId), 'raw ID stripped');
+  ok(!encoded.includes('Bearer secret'), 'Authorization stripped');
+  ok(!encoded.includes('eyJhbGci'), 'token stripped');
+  ok(!encoded.includes('secret title'), 'title stripped');
+  ok(!encoded.includes('messages'), 'backend body stripped');
+});
+
+await fixture('Phase-1 evidence mutations M1-M7 are killed', async () => {
+  await withMutatedRunner('m1-surfaces', [[
+    'const missingSurface = REQUIRED_PHASE_ONE_SURFACES.find((surface) => featureSurfaces[surface] !== true);',
+    "const missingSurface = '';",
+  ]], async (mutated) => {
+    const input = validPhaseOneEvidence();
+    input.runtimePresence.featureSurfaces.title = false;
+    ok(mutated.certifyPhaseOneEvidence(input).ok, 'M1 would let a missing surface pass');
+  });
+
+  const adapterWithoutLock = adapterSource.replace("      lockName: String(status.lockName || ''),\n", '');
+  ok(!adapterPreservesAuthorityLock(adapterWithoutLock), 'M2 dropping lockName is detected');
+
+  await withMutatedRunner('m3-cooldown', [[
+    '    lockName: safeString(source.lockName, 120),\n    cooldownMs: Math.max(0, Number(source.cooldownMs) || 0),',
+    '    lockName: safeString(source.lockName, 120),',
+  ]], async (mutated) => {
+    const step = mutated.sanitizeStepResult('authority-status', {
+      ...validPhaseOneEvidence().authorityStatus, cooldownMs: 37,
+    }, 1, { used: 0, remaining: 0 });
+    const evidence = mutated.serializeEvidence({ steps: [step] });
+    eq(evidence.steps[0].cooldownMs, 0, 'M3 loses the non-zero cooldown sentinel');
+  });
+
+  const pacingMock = async (op) => {
+    if (op === 'runtime-presence') return validPhaseOneEvidence().runtimePresence;
+    if (op === 'authority-status') return validPhaseOneEvidence().authorityStatus;
+    return validPhaseOneEvidence().pacingBefore;
+  };
+  await withMutatedRunner('m4-before', [[
+    "  Object.freeze({ evidenceOp: 'pacing-before', adapterOp: 'pacing-sample' }),\n",
+    '',
+  ]], async (mutated) => {
+    eq((await mutated.executePhaseOneChecks({ invoke: pacingMock })).status,
+      'PHASE_1_EVIDENCE_INCOMPLETE', 'M4 missing before sample is rejected');
+  });
+  await withMutatedRunner('m5-after', [[
+    "  Object.freeze({ evidenceOp: 'pacing-after', adapterOp: 'pacing-sample' }),\n",
+    '',
+  ]], async (mutated) => {
+    eq((await mutated.executePhaseOneChecks({ invoke: pacingMock })).status,
+      'PHASE_1_EVIDENCE_INCOMPLETE', 'M5 missing after sample is rejected');
+  });
+
+  await withMutatedRunner('m6-incomplete', [[
+    "  if (missing.length) return { ok: false, status: 'PHASE_1_EVIDENCE_INCOMPLETE', missing };",
+    "  if (false) return { ok: false, status: 'PHASE_1_EVIDENCE_INCOMPLETE', missing };",
+  ]], async (mutated) => {
+    const input = validPhaseOneEvidence();
+    delete input.pacingBefore.sampledAt;
+    ok(mutated.certifyPhaseOneEvidence(input).ok, 'M6 would allow incomplete evidence to pass');
+  });
+
+  await withMutatedRunner('m7-redaction', [
+    [
+      '    pageOrigin: safeString(source.pageOrigin, 80),',
+      '    rawConversationId: safeString(source.conversationId, 120),\n    pageOrigin: safeString(source.pageOrigin, 80),',
+    ],
+    [
+      '    pageOrigin: safeString(step.pageOrigin, 80),',
+      '    rawConversationId: safeString(step.rawConversationId, 120),\n    pageOrigin: safeString(step.pageOrigin, 80),',
+    ],
+  ], async (mutated) => {
+    const rawId = '11111111-2222-4333-8444-555555555555';
+    const step = mutated.sanitizeStepResult('runtime-presence', {
+      ...validPhaseOneEvidence().runtimePresence, conversationId: rawId,
+    }, 1, { used: 0, remaining: 0 });
+    ok(JSON.stringify(mutated.serializeEvidence({ steps: [step] })).includes(rawId),
+      'M7 would leak the raw conversation ID');
+  });
+});
+
 await fixture('M1-M6 and production-exclusion mutations are killed', async () => {
   const noDecrement = { remaining: 2, used: 0 };
   ok(noDecrement.remaining !== 0 || noDecrement.used !== 2, 'M1');
@@ -268,5 +563,5 @@ await fixture('M1-M6 and production-exclusion mutations are killed', async () =>
   ok(!mockLoader([]).includes('new Set(["0A4b._Backend_Acceptance_Adapter_.js"])'), 'production exclusion mutation');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V13 + mutations)`);
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V24 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');
