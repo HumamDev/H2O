@@ -727,6 +727,12 @@ export function verifyLevelBOffline({ authorityRoot, profileName, extensionRoot,
   const output = `${result.stdout}\n${result.stderr}`;
   const census = output.match(/PROFILE_BACKEND_AUTHORITY_CENSUS designated=(\d+) running=(\d+)/);
   const extensionId = output.match(/EXTENSION_ID_OK id=([a-p]{32})\b/);
+  // Identity of the designated holder, and the affirmative no-foreign-owner
+  // marker. A foreign running owner already fails the verifier outright with
+  // PROFILE_BACKEND_AUTHORITY_OWNER_CONFLICT; requiring the positive marker
+  // means its absence also fails rather than being assumed away.
+  const holder = output.match(/PROFILE_BACKEND_AUTHORITY_HOLDER=profile=(\S+) path=/);
+  const ownerAvailable = output.match(/PROFILE_BACKEND_AUTHORITY_OWNER_AVAILABLE profile=(\S+) path=/);
   return {
     ok: result.status === 0 && /PROFILE_BUILD_VERIFICATION_PASS/.test(output),
     status: result.status === 0 ? 'LEVEL_B_PASS' : 'LEVEL_B_FAILED',
@@ -736,17 +742,38 @@ export function verifyLevelBOffline({ authorityRoot, profileName, extensionRoot,
     authorityAlignment: /PROFILE_BACKEND_AUTHORITY_ALIGNMENT=MATCH/.test(output) ? 'MATCH' : 'DRIFT',
     designatedCount: Number(census?.[1] || 0),
     runningDesignatedCount: Number(census?.[2] || 0),
+    authorityHolderProfile: String(holder?.[1] || ''),
+    ownerAvailableProfile: String(ownerAvailable?.[1] || ''),
     extensionId: String(extensionId?.[1] || ''),
   };
 }
 
-export function evaluatePhaseZeroGate({ levelB, sourceClean, loaderSha256, mutex }) {
+/* Required owner posture by phase. Phase 1 launches the designated authority
+   browser, so it must begin with none running. Phase 2 does not launch: it
+   attaches to the browser Phase 1 left alive, so exactly one must be running
+   and it must be the requested designated profile. This is deliberately not a
+   blanket "anything running is fine above phase 1" rule. */
+export function requiredRunningDesignatedCount(phaseRaw) {
+  return Number(phaseRaw) >= 2 ? 1 : 0;
+}
+
+export function evaluatePhaseZeroGate({ phase, profileName, levelB, sourceClean, loaderSha256, mutex }) {
   if (!mutex?.ok) return { ok: false, status: mutex?.status || 'ACCEPTANCE_RUN_LOCK_FAILED' };
   if (!levelB?.ok) return { ok: false, status: levelB?.status || 'LEVEL_B_FAILED' };
   if (sourceClean !== true) return { ok: false, status: 'REPO_NOT_CLEAN_AT_CHECKPOINT' };
   if (!/^[a-f0-9]{64}$/.test(String(loaderSha256 || ''))) return { ok: false, status: 'LOADER_SHA_INVALID' };
-  if (levelB.designatedCount !== 1 || levelB.runningDesignatedCount !== 0) {
+  const requiredRunning = requiredRunningDesignatedCount(phase);
+  if (levelB.designatedCount !== 1 || levelB.runningDesignatedCount !== requiredRunning) {
     return { ok: false, status: 'AUTHORITY_OWNER_CENSUS_FAILED' };
+  }
+  if (requiredRunning === 1) {
+    // Attach phases must prove WHICH owner is running, not merely that one is.
+    const requested = String(profileName || '');
+    if (!requested
+        || levelB.authorityHolderProfile !== requested
+        || levelB.ownerAvailableProfile !== requested) {
+      return { ok: false, status: 'AUTHORITY_OWNER_IDENTITY_FAILED' };
+    }
   }
   if (levelB.authorityDesignation !== true || levelB.authorityCapability !== true
       || levelB.authorityAlignment !== 'MATCH') {
@@ -859,6 +886,8 @@ async function main() {
       runningDesignatedCount: levelB.runningDesignatedCount,
     });
     const phaseZero = evaluatePhaseZeroGate({
+      phase: options.phase,
+      profileName: options.profileName,
       levelB,
       sourceClean: evidence.sourceClean,
       loaderSha256: evidence.loaderSha256,

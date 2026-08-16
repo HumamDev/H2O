@@ -841,5 +841,52 @@ await fixture('V31 alias URLs are pinned to the build pack origin, adapter still
   ok(production.includes('new Set(["0A4b._Backend_Acceptance_Adapter_.js"])'), '0A4b remains excluded from production');
 });
 
-console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V31 + mutations)`);
+/* V32 — the owner-census gate is phase-aware. Phase 1 launches the designated
+   authority browser, so none may be running; Phase 2 attaches to the browser
+   Phase 1 left alive, so exactly one must be running AND it must be the
+   requested designated profile. The old phase-blind rule made Phase 2
+   unreachable: alive browser failed the census, stopped browser had nothing to
+   attach to. */
+await fixture('V32 owner census is phase-aware and proves attach-phase identity', async () => {
+  const base = {
+    ok: true, status: 'LEVEL_B_PASS', authorityDesignation: true,
+    authorityCapability: true, authorityAlignment: 'MATCH', designatedCount: 1,
+  };
+  const idle = { ...base, runningDesignatedCount: 0, authorityHolderProfile: 'p', ownerAvailableProfile: 'p' };
+  const attached = { ...base, runningDesignatedCount: 1, authorityHolderProfile: 'p', ownerAvailableProfile: 'p' };
+  const gate = (phase, levelB, profileName = 'p') => runner.evaluatePhaseZeroGate({
+    phase, profileName, levelB, sourceClean: true, loaderSha256: 'a'.repeat(64), mutex: { ok: true },
+  });
+  eq(runner.requiredRunningDesignatedCount(1), 0, 'phase 1 requires an idle authority');
+  eq(runner.requiredRunningDesignatedCount(2), 1, 'phase 2 requires exactly one attached authority');
+  // A: phase 1 + idle -> PASS.   B: phase 1 + running -> FAIL.
+  ok(gate(1, idle).ok, 'A phase 1 with no running owner passes');
+  eq(gate(1, attached).status, 'AUTHORITY_OWNER_CENSUS_FAILED', 'B phase 1 with a running owner fails');
+  // C: phase 2 + exactly one correct owner -> PASS.
+  ok(gate(2, attached).ok, 'C phase 2 with the correct attached owner passes');
+  // D/E: wrong running count.
+  eq(gate(2, idle).status, 'AUTHORITY_OWNER_CENSUS_FAILED', 'D phase 2 with no running owner fails');
+  eq(gate(2, { ...attached, runningDesignatedCount: 2 }).status,
+    'AUTHORITY_OWNER_CENSUS_FAILED', 'E phase 2 with more than one running owner fails');
+  // F: foreign / wrong / unprovable owner identity.
+  eq(gate(2, { ...attached, authorityHolderProfile: 'other' }).status,
+    'AUTHORITY_OWNER_IDENTITY_FAILED', 'F phase 2 with a foreign holder fails');
+  eq(gate(2, { ...attached, ownerAvailableProfile: '' }).status,
+    'AUTHORITY_OWNER_IDENTITY_FAILED', 'F phase 2 without the owner-available marker fails');
+  eq(gate(2, attached, '').status,
+    'AUTHORITY_OWNER_IDENTITY_FAILED', 'F phase 2 without a requested profile fails');
+  // Phase 0 posture is unchanged.
+  ok(gate(0, idle).ok, 'phase 0 still requires an idle authority');
+  eq(gate(0, attached).status, 'AUTHORITY_OWNER_CENSUS_FAILED', 'phase 0 still rejects a running owner');
+  // G: the gate is pure preflight — it dispatches nothing.
+  eq(runner.phaseBudget(2), 2, 'phase 2 budget unchanged at two logical operations');
+  const budget = runner.createLogicalBudget(2);
+  eq(budget.used, 0, 'gate evaluation consumes no logical operation');
+  eq(budget.remaining, 2, 'gate evaluation leaves the full phase-2 budget');
+  // Anti-regression: the phase-blind rule must not come back.
+  ok(!runnerSource.includes('levelB.runningDesignatedCount !== 0'),
+    'the phase-blind census rule must not return');
+});
+
+console.log(`PASS validate-backend-acceptance-runner (${assertions} assertions / ${fixtures} fixtures; V1-V32 + mutations)`);
 console.log('LIVE_BACKEND_REQUEST_COUNT=0');
