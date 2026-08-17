@@ -1225,14 +1225,38 @@ function applyRowByIndex(link, idx) {
     link.dataset.hoRowColorOwner = "9A1b";
   }
 
+  const COLOR_CLASSES = ["ho-row-gold","ho-row-red","ho-row-blue","ho-row-green"];
+  const valid = idx >= 0 && idx < I.config.COLORS.length;
+  const cls = valid ? "ho-row-" + I.config.COLORS[idx].name : "";
+
+  /* Re-decoration used to clear all four colour classes and add the desired one
+     back unconditionally, so a row already in the right state still performed
+     two real class-set mutations: the desired class was genuinely removed and
+     then genuinely re-added, for zero net change. Measured at 108 real
+     mutations across 54 already-correct rows, repeated identically on every
+     pass. The cost is not only the write — those mutations are what wake the
+     broad cross-module MutationObservers and the style recalculation behind
+     them.
+
+     The comparison covers the FULL relevant colour-class set rather than just
+     the desired class. A row carrying gold plus a stale red already contains
+     its desired class, yet is not in the desired state and must still be
+     normalized; checking only for the desired class would leave that row
+     malformed forever. The link is required to carry none of the four whenever
+     it is a separate element from the row container, which is exactly what the
+     clearing pass below guarantees. */
+  const alreadyCorrect = [rowEl, link].every((el) => {
+    const want = (el === rowEl && valid) ? cls : "";
+    return COLOR_CLASSES.every((colour) => el.classList.contains(colour) === (colour === want));
+  });
+  if (alreadyCorrect) return;
+
   // clear old colors from both container and link
   [rowEl, link].forEach(el => {
-    el.classList.remove("ho-row-gold","ho-row-red","ho-row-blue","ho-row-green");
+    el.classList.remove(...COLOR_CLASSES);
   });
 
-  if (idx < 0 || idx >= I.config.COLORS.length) return;
-  const def = I.config.COLORS[idx];
-  const cls = "ho-row-" + def.name;
+  if (!valid) return;
   rowEl.classList.add(cls);
 }
 

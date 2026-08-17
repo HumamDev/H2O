@@ -284,11 +284,14 @@
       originalTitle: originalTitle || title,
 
       createdAt: isoOrEmpty(r.createdAt),
+      createdAtSource: trimString(r.createdAtSource),
       firstSeenAt: isoOrEmpty(r.firstSeenAt),
       lastSeenAt: isoOrEmpty(lastSeenAtRaw),
       updatedAt: isoOrEmpty(r.updatedAt),
       lastMessageAt: isoOrEmpty(r.lastMessageAt),
       lastOpenedAt: isoOrEmpty(r.lastOpenedAt),
+      metadataCapturedAt: isoOrEmpty(r.metadataCapturedAt),
+      metadataSource: trimString(r.metadataSource),
 
       snapshotId: snapshotId || lastSnapshotId,
       lastSnapshotId: lastSnapshotId || snapshotId,
@@ -298,6 +301,9 @@
       turnCount: isFiniteNumber(r.turnCount) ? Math.max(0, Math.trunc(r.turnCount)) : 0,
       answerCount: isFiniteNumber(r.answerCount) ? Math.max(0, Math.trunc(r.answerCount)) : 0,
       userTurnCount: isFiniteNumber(r.userTurnCount) ? Math.max(0, Math.trunc(r.userTurnCount)) : 0,
+      // An absent count sanitizes to 0, so the count alone cannot say whether it
+      // was measured. This is what separates a real count from schema default.
+      userTurnCountSource: trimString(r.userTurnCountSource),
       assistantTurnCount: isFiniteNumber(r.assistantTurnCount) ? Math.max(0, Math.trunc(r.assistantTurnCount)) : 0,
 
       source: {
@@ -360,7 +366,7 @@
   // ── Diff ─────────────────────────────────────────────────────────────────
   function diffFields(prev, next) {
     const changed = [];
-    const top = ['title','titleSource','displayTitle','sourceTitle','pageTitle','originalTitle','createdAt','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','snapshotId','lastSnapshotId','latestSnapshotId','snapshotCount','messageCount','turnCount','answerCount','userTurnCount','assistantTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
+    const top = ['title','titleSource','displayTitle','sourceTitle','pageTitle','originalTitle','createdAt','createdAtSource','firstSeenAt','lastSeenAt','updatedAt','lastMessageAt','lastOpenedAt','metadataCapturedAt','metadataSource','snapshotId','lastSnapshotId','latestSnapshotId','snapshotCount','messageCount','turnCount','answerCount','userTurnCount','userTurnCountSource','assistantTurnCount','href','normalizedHref','linkedAt','linkedFrom','linkSourceHref'];
     for (const f of top) {
       if (JSON.stringify(prev?.[f] ?? null) !== JSON.stringify(next?.[f] ?? null)) changed.push(f);
     }
@@ -400,11 +406,28 @@
     const pageTitle = firstNonPlaceholderTitle([b.pageTitle, b.title, a.pageTitle, a.title, titlePick.title]);
     const originalTitle = firstNonPlaceholderTitle([b.originalTitle, b.title, a.originalTitle, a.title, titlePick.title]);
     const createdAt = pickOlderIso(a.createdAt, b.createdAt);
+    // createdAtSource is evidence about one specific value, so it travels with
+    // the createdAt that actually won rather than merging on its own recency.
+    // A capture that merely preserves an older legacy date must not inherit the
+    // other side's proof, which is what keeps unverified dates unverified.
+    const createdAtSource = !createdAt
+      ? ''
+      : ((createdAt === b.createdAt && trimString(b.createdAtSource))
+        || (createdAt === a.createdAt && trimString(a.createdAtSource))
+        || '');
     const firstSeenAt = pickOlderIso(a.firstSeenAt, b.firstSeenAt);
     const lastSeenAt = pickNewerIso(a.lastSeenAt, b.lastSeenAt);
     const updatedAt = pickNewerIso(a.updatedAt, b.updatedAt);
     const lastMessageAt = pickNewerIso(a.lastMessageAt, b.lastMessageAt);
     const lastOpenedAt = pickNewerIso(a.lastOpenedAt, b.lastOpenedAt);
+    const metadataCapturedAt = pickNewerIso(a.metadataCapturedAt, b.metadataCapturedAt);
+    const aMetadataCapturedMs = dateMs(a.metadataCapturedAt);
+    const bMetadataCapturedMs = dateMs(b.metadataCapturedAt);
+    const metadataSource = bMetadataCapturedMs > aMetadataCapturedMs
+      ? trimString(b.metadataSource)
+      : (aMetadataCapturedMs > bMetadataCapturedMs
+        ? trimString(a.metadataSource)
+        : (trimString(b.metadataSource) || trimString(a.metadataSource)));
     const snapshotId = trimString(b.snapshotId) || trimString(b.lastSnapshotId) || trimString(a.snapshotId) || trimString(a.lastSnapshotId);
     const lastSnapshotId = trimString(b.lastSnapshotId) || trimString(b.snapshotId) || trimString(a.lastSnapshotId) || trimString(a.snapshotId);
     const snapshotCount = options.fullScan === true ? (b.snapshotCount || 0) : (maxNum(a.snapshotCount, b.snapshotCount) || 0);
@@ -412,6 +435,17 @@
     const turnCount = options.fullScan === true ? (b.turnCount || 0) : (maxNum(a.turnCount, b.turnCount) || 0);
     const answerCount = options.fullScan === true ? (b.answerCount || 0) : (maxNum(a.answerCount, b.answerCount) || 0);
     const userTurnCount = options.fullScan === true ? (b.userTurnCount || 0) : (maxNum(a.userTurnCount, b.userTurnCount) || 0);
+    // Proof follows the count that actually won: a retained max-safe value keeps
+    // its own proof, and a lower incoming observation cannot claim it. The
+    // deferred branch-switch lower-count problem stays deferred — this only
+    // stops provenance from drifting away from the value it describes.
+    const userTurnCountSource = options.fullScan === true
+      ? trimString(b.userTurnCountSource)
+      : ((b.userTurnCount || 0) > (a.userTurnCount || 0)
+        ? trimString(b.userTurnCountSource)
+        : ((a.userTurnCount || 0) > (b.userTurnCount || 0)
+          ? trimString(a.userTurnCountSource)
+          : (trimString(b.userTurnCountSource) || trimString(a.userTurnCountSource))));
     const assistantTurnCount = options.fullScan === true ? (b.assistantTurnCount || 0) : (maxNum(a.assistantTurnCount, b.assistantTurnCount) || 0);
     const sourceFirst = trimString(a.source.first) || trimString(b.source.first);
     const seenFrom = uniqueStrings([...(a.source.seenFrom || []), ...(b.source.seenFrom || [])]);
@@ -477,11 +511,14 @@
       pageTitle,
       originalTitle,
       createdAt,
+      createdAtSource,
       firstSeenAt,
       lastSeenAt,
       updatedAt,
       lastMessageAt,
       lastOpenedAt,
+      metadataCapturedAt,
+      metadataSource,
       snapshotId,
       lastSnapshotId: lastSnapshotId || snapshotId,
       latestSnapshotId: lastSnapshotId || snapshotId,
@@ -490,6 +527,7 @@
       turnCount,
       answerCount,
       userTurnCount,
+      userTurnCountSource,
       assistantTurnCount,
       source: { first: sourceFirst, seenFrom },
       project: { projectId, projectName },

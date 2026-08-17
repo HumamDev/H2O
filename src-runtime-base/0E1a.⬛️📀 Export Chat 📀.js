@@ -2100,6 +2100,16 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
 
   }
 
+  /** @helper Keep active Export state aligned with the current route. */
+  function CORE_syncActiveNavigationRoute() {
+    if (!VIEW_shouldShow()) {
+      UI_hideMenu();
+      ACT_clearSelectionsAndExit();
+      return;
+    }
+    UI_scheduleMenuReposition();
+  }
+
   /** @core */
   function CORE_EC_boot() {
     if (W[CLEAN_.INIT_GUARD]) return;
@@ -2128,8 +2138,8 @@ body.qa-light .qa-text{background:#fff;color:#111;border-color:rgba(0,0,0,.06)}
     });
 
     // Light navigation hooks
-    UTIL_on(window, EV_.NAVIGATE, () => UI_scheduleMenuReposition());
-    UTIL_on(window, 'popstate', () => UI_scheduleMenuReposition());
+    UTIL_on(window, EV_.NAVIGATE, CORE_syncActiveNavigationRoute);
+    UTIL_on(window, 'popstate', CORE_syncActiveNavigationRoute);
 
     // Legacy bridge (listen old → re-dispatch canonical)
     const onLegacyMmReady = (e) => { UTIL_emit(EV_.MM_READY, e?.detail); };

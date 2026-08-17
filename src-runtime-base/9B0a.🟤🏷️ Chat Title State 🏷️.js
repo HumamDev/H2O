@@ -539,6 +539,34 @@
     return base ? `${slot} ${base}` : slot;
   }
 
+  /* Canonical boundary for every H2O-owned leading-slot mutation.
+
+     H2O owns at most ONE leading emoji slot, so no operation may ever grow the
+     leading emoji run. The previous assignment path composed its title from a
+     remainder that fell back to the WHOLE decorated title whenever a record
+     could not prove it owned the current slot, so the emoji was prepended
+     beside the one already there. Ownership proof is lost on reload, on
+     hydration, and whenever the recorded emoji no longer matches the title, so
+     retries and reconciliation compounded it: one emoji became two, then three.
+
+     AUTO never adds a second slot beside an existing one, whoever authored it.
+     EXPLICIT palette selection is a replacement: it rewrites exactly the first
+     grapheme slot and preserves the remainder verbatim, which may itself begin
+     with user-authored emoji. Neither branch inserts before an existing slot,
+     and neither deletes text H2O cannot prove it wrote.
+
+     Idempotent by construction: each branch re-parses the slot it just produced
+     and yields the identical title, so applying the same operation ten times
+     equals applying it once. */
+  function composeH2OAssignedTitle(nativeTitle, emoji, options) {
+    const slot = norm(emoji);
+    const parsed = takeLeadingEmojiSlot(nativeTitle);
+    if (!slot) return parsed.title;
+    if (!parsed.hasSlot) return composeNativeTitle(slot, parsed.title);
+    if (options && options.explicit === true) return composeNativeTitle(slot, parsed.remainder);
+    return parsed.title;
+  }
+
   function normalizeEmojiOwner(value) {
     return value === 'h2o' || value === 'native' ? value : '';
   }
@@ -1700,10 +1728,11 @@
     return !!submitted && submitted.title === norm(nativeTitle) && submitted.emoji === parsed.emoji;
   }
 
-  function nativeRemainderForAssignment(rec, nativeTitle) {
-    if (!hasConfirmedOwnedSlot(rec, nativeTitle)) return norm(nativeTitle);
-    return stripLeadingOwnedSlot(nativeTitle, takeLeadingEmojiSlot(nativeTitle).emoji);
-  }
+  /* nativeRemainderForAssignment is deliberately gone. It returned the WHOLE
+     decorated title as the remainder whenever ownership could not be proven,
+     which is precisely how prepending grew the leading emoji run. Title
+     composition for an H2O mutation now has exactly one entry point,
+     composeH2OAssignedTitle, which cannot insert before an existing slot. */
 
   function mutateRecord(rec, reason, mutator) {
     if (!rec || typeof mutator !== 'function') return false;
@@ -1824,10 +1853,14 @@
       nativeBefore = await readNativeConversationTitle(chatId, { signal: opts.signal });
     }
     if (!nativeBefore.ok) {
-      const provisionalRemainder = normalizeEmojiOwner(rec.emojiOwner) === 'native'
+      const provisionalBase = normalizeEmojiOwner(rec.emojiOwner) === 'native'
         ? composeNativeTitle(rec.emoji, rec.baseTitle)
         : rec.baseTitle;
-      const provisionalTitle = composeNativeTitle(emoji, provisionalRemainder || `Chat ${chatId.slice(0, 8)}`);
+      const provisionalTitle = composeH2OAssignedTitle(
+        provisionalBase || `Chat ${chatId.slice(0, 8)}`,
+        emoji,
+        { explicit: opts.userInitiated === true },
+      );
       setPendingEmojiAssignment(rec, {
         emoji,
         title: provisionalTitle,
@@ -1840,8 +1873,25 @@
       }, 'emoji-assignment-awaiting-native-read');
       return { ...nativeBefore, emoji, title: provisionalTitle, pending: true };
     }
-    const remainder = nativeRemainderForAssignment(rec, nativeBefore.title);
-    const desiredNativeTitle = composeNativeTitle(emoji, remainder);
+    const explicitSelection = opts.userInitiated === true;
+    const desiredNativeTitle = composeH2OAssignedTitle(nativeBefore.title, emoji, { explicit: explicitSelection });
+    const desiredParsed = takeLeadingEmojiSlot(desiredNativeTitle);
+    const remainder = desiredParsed.remainder;
+    /* Automatic assignment declined because a leading slot already exists.
+       H2O adds no second slot, and it must not claim ownership of an emoji it
+       did not write, so this returns without recording an H2O submission. */
+    if (!explicitSelection && desiredNativeTitle === nativeBefore.title && desiredParsed.emoji !== emoji) {
+      return {
+        ok: true,
+        status: 'leading-slot-occupied',
+        chatId,
+        emoji: desiredParsed.emoji,
+        requestedEmoji: emoji,
+        title: desiredNativeTitle,
+        baseTitle: remainder,
+        patchCount: 0,
+      };
+    }
     if (nativeBefore.title === desiredNativeTitle) {
       const priorSubmission = normalizeNativeSubmission(rec.lastNativeSubmission);
       const alreadyConfirmed = normalizeEmojiOwner(rec.emojiOwner) === 'h2o' &&
