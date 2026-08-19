@@ -118,8 +118,8 @@ const E1_BASELINE_PATH = ".gitignore";
 // are what the E1 foundation reports today. The foundation may grow, never shrink.
 const E1_RUNTIME_FLOOR = 81;
 const E1_SCOPE_FLOOR = 12;
-const E1_RUNTIME_SCENARIOS = 88;
-const E1_SCOPE_SCENARIOS = 16;
+const E1_RUNTIME_SCENARIOS = 89;
+const E1_SCOPE_SCENARIOS = 18;
 const E1_SNAPSHOT_PATHS = Object.freeze([
   E1_BASELINE_PATH,
   "docs/decisions/ADR-0013-canonical-generated-delivery-ownership.md",
@@ -133,7 +133,7 @@ const ACCEPTED_TITLE_IDENTITIES = Object.freeze({
   // Refreshed for accepted Title Stage 1F (102c77c2, "enable three-surface
   // titles by default"); the previous value was correct at Stage 1D (61a7b51a).
   "src-runtime-base/9B0a.🟤🏷️ Chat Title State 🏷️.js":
-    "8f650b52458b81ff0f7a267b58ab319d571e7516dc6e66f0e7e756b91328bfe7",
+    "7cf611fad8f54bcb66ced9bde3890ebd27e7e600e238000a7744d9ae2dafc717",
   "tools/product/extensions/chatgpt/chrome/title-contract/make-title-contract-bridge.mjs":
     "240b95a7682ad7c26ac1463aba7f74e039ad9e68c9ffd5d3fbd3ff66cb37623f",
   "tools/validation/title-interface/validate-title-contract-bridge-v1.mjs":
