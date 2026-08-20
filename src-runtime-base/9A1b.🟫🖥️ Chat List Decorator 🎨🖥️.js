@@ -2329,12 +2329,21 @@ let hoScanActive = false;
 let hoScanObserver = null;
 let hoScanRecoveryId = 0;
 let hoScanPendingId = 0;
+let hoScanPendingFast = false;
 let hoScanDirty = false;
 let hoScanSettleIds = [];
 
-/* Coalescing window for a burst of requests. The body observer used to own its
-   own debounce; folding it into the scheduler keeps exactly one queue. */
+/* Coalescing windows. The body observer used to own its own debounce; folding
+   it into the scheduler keeps exactly one queue.
+
+   Two tiers, because the two kinds of request have different urgency. Live
+   measurement showed ChatGPT emits ~720 mutation records per 10 s even with H2O
+   suspended, arriving roughly every 120 ms -- wider than a 50 ms window, so
+   every callback became its own pass (274 passes for 274 callbacks) and the
+   coalescer collapsed nothing. Broad DOM churn therefore gets a wider window;
+   semantic requests (route, store, user style, activation) keep the short one. */
 const HO_SCAN_COALESCE_MS = 50;
+const HO_SCAN_DOM_COALESCE_MS = 250;
 
 /* Slow bounded recovery. The old watchdog ran a full ~6.9 ms read pass every
    1.2 s whether or not anything had changed, which on an idle list was pure
@@ -2348,15 +2357,29 @@ const HO_SCAN_RECOVERY_MS = 15000;
 /* One canonical request boundary. Every full-reconciliation trigger funnels
    through here, so N requests inside one window collapse to one pass and no
    trigger family can own an independent queue. */
-function hoRequestScan(_reason) {
+function hoRequestScan(reason) {
   if (!hoScanActive) return;                 // suspended: never queue work
   hoScanDirty = true;
-  if (hoScanPendingId) return;               // exactly one pending flush
-  hoScanPendingId = setTimeout(hoFlushScan, HO_SCAN_COALESCE_MS);
+  const fast = reason !== 'dom';
+  if (hoScanPendingId) {
+    /* An existing deadline is never postponed -- only escalated to the shorter
+       one. Restarting the timer on every request would be a trailing debounce,
+       and under continuous mutation traffic that would starve reconciliation
+       indefinitely rather than bounding it. */
+    if (fast && !hoScanPendingFast) {
+      clearTimeout(hoScanPendingId);
+      hoScanPendingFast = true;
+      hoScanPendingId = setTimeout(hoFlushScan, HO_SCAN_COALESCE_MS);
+    }
+    return;                                  // exactly one pending flush
+  }
+  hoScanPendingFast = fast;
+  hoScanPendingId = setTimeout(hoFlushScan, fast ? HO_SCAN_COALESCE_MS : HO_SCAN_DOM_COALESCE_MS);
 }
 
 function hoFlushScan() {
   hoScanPendingId = 0;
+  hoScanPendingFast = false;
   if (!hoScanActive) { hoScanDirty = false; return; }
   if (!hoScanDirty) return;
   hoScanDirty = false;
@@ -2388,6 +2411,7 @@ function hoSuspendScanLayer() {
   hoScanActive = false;
   hoScanDirty = false;
   if (hoScanPendingId) { clearTimeout(hoScanPendingId); hoScanPendingId = 0; }
+  hoScanPendingFast = false;
   if (hoScanRecoveryId) { clearInterval(hoScanRecoveryId); hoScanRecoveryId = 0; }
   for (const id of hoScanSettleIds) { try { clearTimeout(id); } catch (_) {} }
   hoScanSettleIds = [];

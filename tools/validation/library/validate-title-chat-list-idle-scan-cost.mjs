@@ -180,8 +180,14 @@ function makeEnv(pathname) {
     }
   };
 
+  /* A semantic trigger (activity-style), which must not be delayed behind the
+     broad DOM-churn coalescing window. */
+  const emitSemantic = () => {
+    for (const h of (listeners.get('h2o:interface:activity-style') || []).slice()) { try { h({ type: 'h2o:interface:activity-style', detail: {} }); } catch {} }
+  };
+
   return {
-    win, navigate, advance, emitDomChange, runFrames,
+    win, navigate, advance, emitDomChange, emitSemantic, runFrames,
     passes: () => scanPasses,
     resetPasses: () => { scanPasses = 0; },
     liveIntervals: () => intervals.filter((t) => t.live).length,
@@ -279,6 +285,85 @@ function assertIdleScanContract(makeSubject, tag) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────
+   Phase-2b: bounded coalescing of broad native DOM-mutation churn.
+
+   Live measurement showed ChatGPT emits ~720 mutation records per 10 s even
+   with H2O suspended, arriving roughly every 120 ms. With a 50 ms window every
+   callback became its own pass (274 passes for 274 callbacks), so the coalescer
+   collapsed nothing. A wider window for DOM churn bounds that -- but it must
+   NOT be a resetting debounce, or continuous traffic would postpone the scan
+   forever.
+   ───────────────────────────────────────────────────────────── */
+const DOM_WINDOW_MS = 250;
+const STREAM_MS = 3000;
+const STREAM_SPACING_MS = 120;
+
+function assertBoundedMutationCoalescing(makeSubject, tag) {
+  // C1 — continuous churn must be bounded, and must not starve.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000);
+    s.resetPasses();
+    for (let t = 0; t < STREAM_MS; t += STREAM_SPACING_MS) { s.emitDomChange(1); s.advance(STREAM_SPACING_MS); }
+    s.advance(DOM_WINDOW_MS * 2);
+    const passes = s.passes();
+    const uncoalesced = Math.floor(STREAM_MS / STREAM_SPACING_MS);       // ~25
+    const ideal = Math.floor(STREAM_MS / DOM_WINDOW_MS);                 // ~12
+    check(`${tag} / C1 continuous mutation traffic is bounded, not 1:1`, () => {
+      assert.ok(passes <= ideal + 2, `continuous churn produced ${passes} passes; a ${DOM_WINDOW_MS} ms window should bound it near ${ideal}`);
+    });
+    check(`${tag} / C2 continuous mutation traffic is not starved to zero`, () => {
+      assert.ok(passes >= 2, `continuous churn produced only ${passes} passes; a resetting debounce would starve reconciliation`);
+      assert.ok(passes < uncoalesced, 'coalescing must actually reduce below the uncoalesced rate');
+    });
+  }
+
+  // C3 — a tight burst still collapses to one pass.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000); s.resetPasses();
+    s.emitDomChange(20);
+    s.advance(DOM_WINDOW_MS * 2);
+    check(`${tag} / C3 a 20-mutation burst yields exactly one pass`, () => {
+      assert.equal(s.passes(), 1, `expected exactly 1 pass for one burst, saw ${s.passes()}`);
+    });
+  }
+
+  // C4 — a semantic trigger must not be held behind the DOM window.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000); s.resetPasses();
+    s.emitDomChange(1);            // arms the slow DOM window
+    s.advance(20);
+    s.emitSemantic();              // semantic trigger arrives inside it
+    s.advance(80);                 // well under DOM_WINDOW_MS
+    check(`${tag} / C4 a semantic trigger is not delayed behind DOM coalescing`, () => {
+      assert.ok(s.passes() >= 1, 'a semantic trigger must reconcile on the short deadline, not wait for the DOM window');
+    });
+  }
+
+  // C5 — one pending scheduler and one watchdog, across suspend/resume.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000);
+    s.emitDomChange(5);
+    s.navigate(EXCLUDED);          // suspend with work pending
+    s.resetPasses();
+    s.advance(DOM_WINDOW_MS * 4);
+    check(`${tag} / C5 suspension cancels pending mutation work`, () => {
+      assert.equal(s.passes(), 0, 'a pending coalesced scan must not flush after suspension');
+    });
+    s.navigate(ELIGIBLE);
+    s.advance(500);
+    for (let i = 0; i < 3; i += 1) { s.navigate(EXCLUDED); s.advance(300); s.navigate(ELIGIBLE); s.advance(500); }
+    check(`${tag} / C6 repeated cycles leave exactly one watchdog authority`, () => {
+      assert.equal(s.liveIntervals(), 1, `expected exactly one live interval, saw ${s.liveIntervals()}`);
+      assert.equal(s.fastestLiveIntervalMs(), 15000, 'the only live interval must remain the 15 s recovery watchdog');
+    });
+  }
+}
+
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 const isEligible = (p) => /^\/(?:c\/|g\/[^/]+\/c\/)/.test(p);
 
@@ -290,31 +375,43 @@ function fixtureSubject(install) {
 const compliant = fixtureSubject((env) => {
   const w = env.win;
   const scan = () => { w.document.querySelectorAll('nav a[href], aside a[href], main a[href]'); };
-  let dirty = false, pending = 0, observer = null, watchdog = 0, active = false;
-  const request = () => {
+  let dirty = false, pending = 0, pendingFast = false, observer = null, watchdog = 0, active = false;
+  /* Broad DOM churn coalesces on a wider window; semantic triggers keep the
+     short deadline. The pending handle is never reset by later requests -- only
+     escalated to the shorter deadline -- so continuous traffic cannot starve. */
+  const request = (reason) => {
     if (!active) return;
     dirty = true;
-    if (pending) return;
-    pending = w.setTimeout(() => { pending = 0; if (!dirty || !active) return; dirty = false; scan(); }, 50);
+    const fast = reason !== 'dom';
+    if (pending) {
+      if (fast && !pendingFast) {
+        w.clearTimeout(pending); pendingFast = true;
+        pending = w.setTimeout(flush, 50);
+      }
+      return;
+    }
+    pendingFast = fast;
+    pending = w.setTimeout(flush, fast ? 50 : 250);
   };
+  function flush() { pending = 0; pendingFast = false; if (!dirty || !active) { dirty = false; return; } dirty = false; scan(); }
   const activate = () => {
     if (active) return;
     active = true;
-    observer = new w.MutationObserver(request);
+    observer = new w.MutationObserver(() => request('dom'));
     observer.observe(w.document.body, { childList: true, subtree: true });
-    /* Slow bounded recovery: only reconciles when something is actually dirty. */
-    watchdog = w.setInterval(() => { if (dirty) { dirty = false; scan(); } }, 15000);
-    scan();
+    watchdog = w.setInterval(() => request('recovery'), 15000);
+    request('activate');
   };
   const suspend = () => {
     if (!active) return;
     active = false; dirty = false;
     if (observer) { observer.disconnect(); observer = null; }
     if (watchdog) { w.clearInterval(watchdog); watchdog = 0; }
-    if (pending) { w.clearTimeout(pending); pending = 0; }
+    if (pending) { w.clearTimeout(pending); pending = 0; pendingFast = false; }
   };
   const sync = () => { if (isEligible(w.location.pathname)) activate(); else suspend(); };
   w.addEventListener('ho:navigate', sync);
+  w.addEventListener('h2o:interface:activity-style', () => request('activity-style'));
   sync();
 });
 
@@ -380,12 +477,20 @@ const vacuous = {
   'still-polling (1.2 s watchdog kept)': runIsolated(vacuousStillPolling, 'VACUOUS[still-polling]'),
 };
 
+const reentryControlFailures = (() => {
+  const before = failures.length;
+  assertBoundedMutationCoalescing(compliant, 'CONTROL-COALESCE');
+  return failures.length - before;
+})();
+
 const productStart = failures.length;
 assertIdleScanContract(realSubject, 'PRODUCT');
+assertBoundedMutationCoalescing(realSubject, 'PRODUCT');
 const productFailures = failures.slice(productStart);
 
 console.log(`Checks executed: ${checks}`);
 console.log(`Compliant control failures: ${controlFailures} (must be 0)`);
+console.log(`Coalescing control failures: ${reentryControlFailures} (must be 0)`);
 for (const [name, n] of Object.entries(vacuous)) {
   console.log(`  vacuous rejected: ${n > 0 ? 'yes' : 'NO'}  ${name} (${n} assertion failures)`);
 }
