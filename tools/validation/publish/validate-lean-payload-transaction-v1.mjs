@@ -168,7 +168,34 @@ const APPROVED_CURRENT_PROTECTED_IDENTITIES = Object.freeze({
   ...ANCHOR_PROTECTED_IDENTITIES,
   ...APPROVED_ACTIVATOR_AFTER_IDENTITIES,
 });
-const EXPECTED_SCOPE = 25;
+// Approved Activator alias-inventory authority transition. Exactly this commit, on exactly
+// this parent, changing exactly the Activator validator from exactly these bytes to exactly
+// these bytes. No other Activator-validator transition is approved, before or after it.
+const APPROVED_ACTIVATOR_ALIAS_TRANSITION = "5c4595484da24c6ee22bfbc6437029ba51720c84";
+const APPROVED_ACTIVATOR_ALIAS_PARENT = "9ada9090d1ca46ec11fe1502db1aa0d571a74da0";
+const APPROVED_ACTIVATOR_ALIAS_SUBJECT =
+  "test(publish): refresh activator alias inventory authority";
+const APPROVED_ACTIVATOR_ALIAS_PATHS = Object.freeze([VALIDATOR_REL]);
+const APPROVED_ACTIVATOR_ALIAS_BEFORE_IDENTITY =
+  "2e20998a60bda20d53798637070fe67685e5fa753ba6ecbbc0942cc96b2f1c17";
+const APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY =
+  "178a61d068d9d22bff73774e3587af9518a2965655b852283fb439610847860b";
+// The extension commit that carries that approval is itself a protected transition. Its own
+// commit id and final bytes cannot be hard-coded before it exists, so it is bound structurally
+// by parent, subject, path set and before identity, and its after identity is resolved at
+// runtime exactly as the aeaa870a durability repair already is. This self-reference is
+// permitted only in this one bounded slot.
+const ACTIVATOR_ALIAS_AUTHORITY_SUBJECT =
+  "test(publish): approve activator alias authority transition";
+const ACTIVATOR_ALIAS_AUTHORITY_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const ACTIVATOR_ALIAS_AUTHORITY_BEFORE_IDENTITY =
+  "32834089030d388088b1aa52f2aada66f3df5f3306ba7d8bb1f80cfb6ab43687";
+// Accepted closure after the alias transition: only the Activator validator moves.
+const EXTENDED_PROTECTED_IDENTITIES = Object.freeze({
+  ...APPROVED_CURRENT_PROTECTED_IDENTITIES,
+  [VALIDATOR_REL]: APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY,
+});
+const EXPECTED_SCOPE = 27;
 const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -297,7 +324,7 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
     `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
   const immutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
     .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
-  return typeof repairCommit === "string" && /^[0-9a-f]{40}$/u.test(repairCommit) &&
+  const anchorPlusRepair = typeof repairCommit === "string" && /^[0-9a-f]{40}$/u.test(repairCommit) &&
     repairCommit !== APPROVED_ACTIVATOR_TRANSITION &&
     JSON.stringify(value.protectedHistory ?? []) === JSON.stringify(expectedRepairHistory) &&
     value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
@@ -319,6 +346,66 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
       Object.fromEntries(immutablePaths.map((relative) =>
         [relative, value.headProtectedIdentities?.[relative]])),
       APPROVED_CURRENT_PROTECTED_IDENTITIES, immutablePaths) &&
+    Object.keys(value.headProtectedIdentities ?? {}).length ===
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
+  if (anchorPlusRepair) return true;
+  // Extended era: exactly four protected transitions and nothing else. The anchor activator
+  // transition, the aeaa870a-shaped payload durability repair, the exact approved Activator
+  // alias transition, and the bounded self-transition that carries this approval. Membership
+  // and record content are exact; only ordering is normalised.
+  const aliasAuthorityCommit = value.activatorAliasAuthorityCommit;
+  const expectedExtendedHistory = [...APPROVED_PROTECTED_HISTORY,
+    `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+    `${aliasAuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+  const extendedImmutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
+    .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
+  return typeof repairCommit === "string" && /^[0-9a-f]{40}$/u.test(repairCommit) &&
+    typeof aliasAuthorityCommit === "string" && /^[0-9a-f]{40}$/u.test(aliasAuthorityCommit) &&
+    repairCommit !== APPROVED_ACTIVATOR_TRANSITION &&
+    repairCommit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    aliasAuthorityCommit !== APPROVED_ACTIVATOR_TRANSITION &&
+    aliasAuthorityCommit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    aliasAuthorityCommit !== repairCommit &&
+    JSON.stringify([...(value.protectedHistory ?? [])].sort()) ===
+      JSON.stringify(expectedExtendedHistory) &&
+    // the pre-existing durability repair keeps its original bounded shape
+    value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.payloadDurabilityRepairSubject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.payloadDurabilityRepairPaths ?? []) ===
+      JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS) &&
+    value.payloadDurabilityRepairBeforeIdentity ===
+      APPROVED_CURRENT_PROTECTED_IDENTITIES[PAYLOAD_VALIDATOR_REL] &&
+    // the approved Activator alias transition, bound exactly
+    value.activatorAliasTransitionParent === APPROVED_ACTIVATOR_ALIAS_PARENT &&
+    value.activatorAliasTransitionSubject === APPROVED_ACTIVATOR_ALIAS_SUBJECT &&
+    JSON.stringify(value.activatorAliasTransitionPaths ?? []) ===
+      JSON.stringify([...APPROVED_ACTIVATOR_ALIAS_PATHS]) &&
+    value.activatorAliasTransitionBeforeIdentity ===
+      APPROVED_ACTIVATOR_ALIAS_BEFORE_IDENTITY &&
+    value.activatorAliasTransitionAfterIdentity ===
+      APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY &&
+    // the bounded self-transition carrying this approval
+    value.activatorAliasAuthorityParent === APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    value.activatorAliasAuthoritySubject === ACTIVATOR_ALIAS_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.activatorAliasAuthorityPaths ?? []) ===
+      JSON.stringify([...ACTIVATOR_ALIAS_AUTHORITY_PATHS]) &&
+    value.activatorAliasAuthorityBeforeIdentity ===
+      ACTIVATOR_ALIAS_AUTHORITY_BEFORE_IDENTITY &&
+    typeof value.activatorAliasAuthorityAfterIdentity === "string" &&
+    value.activatorAliasAuthorityAfterIdentity === value.executionPayloadValidatorIdentity &&
+    value.activatorAliasAuthorityAfterIdentity ===
+      value.headProtectedIdentities?.[PAYLOAD_VALIDATOR_REL] &&
+    (value.head !== aliasAuthorityCommit || (
+      value.parent === APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+      value.subject === ACTIVATOR_ALIAS_AUTHORITY_SUBJECT &&
+      JSON.stringify(value.committedPaths ?? []) ===
+        JSON.stringify([...ACTIVATOR_ALIAS_AUTHORITY_PATHS]))) &&
+    // every other protected path stays at the extended accepted closure
+    identityRecordMatches(
+      Object.fromEntries(extendedImmutablePaths.map((relative) =>
+        [relative, value.headProtectedIdentities?.[relative]])),
+      EXTENDED_PROTECTED_IDENTITIES, extendedImmutablePaths) &&
     Object.keys(value.headProtectedIdentities ?? {}).length ===
       PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
 }
@@ -663,11 +750,24 @@ function currentScopeState() {
   const missingFinal = FINAL_PATHS.filter((relative) => !fs.existsSync(path.join(ROOT, relative)));
   const { commits: protectedHistoryCommits, records: protectedHistory } =
     deriveProtectedHistory(ROOT, PAYLOAD_DURABILITY_ANCHOR);
-  const payloadDurabilityRepairCommit = protectedHistoryCommits.length === 2 &&
-    protectedHistoryCommits.includes(APPROVED_ACTIVATOR_TRANSITION)
-    ? protectedHistoryCommits.find((commit) => commit !== APPROVED_ACTIVATOR_TRANSITION)
-    : null;
+  // The two constant-approved commits are known by id; the remaining protected commits are the
+  // runtime-identified payload-validator transitions, told apart by their exact parent. Surfacing
+  // a candidate does not approve it: hasApprovedPayloadAuthority still requires the complete
+  // record set to match exactly, so an unexplained extra commit is still rejected.
+  const runtimeProtectedCommits = protectedHistoryCommits.filter((commit) =>
+    commit !== APPROVED_ACTIVATOR_TRANSITION &&
+    commit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION);
+  const parentOf = (commit) =>
+    git(ROOT, ["rev-parse", `${commit}^`], { allowFailure: true });
+  const payloadDurabilityRepairCommit = runtimeProtectedCommits.find((commit) =>
+    parentOf(commit) === CURRENT_DURABLE_AUTHORITY_BASE) ?? null;
+  const activatorAliasAuthorityCommit = runtimeProtectedCommits.find((commit) =>
+    parentOf(commit) === APPROVED_ACTIVATOR_ALIAS_TRANSITION) ?? null;
   const repairGit = (args) => payloadDurabilityRepairCommit ? git(ROOT, args) : null;
+  const aliasGit = (args) => activatorAliasAuthorityCommit ? git(ROOT, args) : null;
+  const aliasTransitionPresent =
+    protectedHistoryCommits.includes(APPROVED_ACTIVATOR_ALIAS_TRANSITION);
+  const aliasTransitionGit = (args) => aliasTransitionPresent ? git(ROOT, args) : null;
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
     branch: git(ROOT, ["branch", "--show-current"]),
@@ -696,6 +796,31 @@ function currentScopeState() {
       ? gitBlobIdentity(`${payloadDurabilityRepairCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
     payloadDurabilityRepairAfterIdentity: payloadDurabilityRepairCommit
       ? gitBlobIdentity(payloadDurabilityRepairCommit, PAYLOAD_VALIDATOR_REL) : null,
+    activatorAliasTransitionParent:
+      aliasTransitionGit(["rev-parse", `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}^`]),
+    activatorAliasTransitionSubject:
+      aliasTransitionGit(["show", "-s", "--format=%s", APPROVED_ACTIVATOR_ALIAS_TRANSITION]),
+    activatorAliasTransitionPaths: aliasTransitionPresent
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+        APPROVED_ACTIVATOR_ALIAS_TRANSITION, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    activatorAliasTransitionBeforeIdentity: aliasTransitionPresent
+      ? gitBlobIdentity(`${APPROVED_ACTIVATOR_ALIAS_TRANSITION}^`, VALIDATOR_REL) : null,
+    activatorAliasTransitionAfterIdentity: aliasTransitionPresent
+      ? gitBlobIdentity(APPROVED_ACTIVATOR_ALIAS_TRANSITION, VALIDATOR_REL) : null,
+    activatorAliasAuthorityCommit,
+    activatorAliasAuthorityParent:
+      aliasGit(["rev-parse", `${activatorAliasAuthorityCommit}^`]),
+    activatorAliasAuthoritySubject:
+      aliasGit(["show", "-s", "--format=%s", activatorAliasAuthorityCommit]),
+    activatorAliasAuthorityPaths: activatorAliasAuthorityCommit
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+        activatorAliasAuthorityCommit, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    activatorAliasAuthorityBeforeIdentity: activatorAliasAuthorityCommit
+      ? gitBlobIdentity(`${activatorAliasAuthorityCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
+    activatorAliasAuthorityAfterIdentity: activatorAliasAuthorityCommit
+      ? gitBlobIdentity(activatorAliasAuthorityCommit, PAYLOAD_VALIDATOR_REL) : null,
     executionPayloadValidatorIdentity:
       sha256Bytes(fs.readFileSync(path.join(ROOT, PAYLOAD_VALIDATOR_REL))),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
@@ -736,6 +861,12 @@ function baseScope(overrides = {}) {
     payloadDurabilityRepairParent: null, payloadDurabilityRepairSubject: null,
     payloadDurabilityRepairPaths: [], payloadDurabilityRepairBeforeIdentity: null,
     payloadDurabilityRepairAfterIdentity: null, executionPayloadValidatorIdentity: null,
+    activatorAliasTransitionParent: null, activatorAliasTransitionSubject: null,
+    activatorAliasTransitionPaths: [], activatorAliasTransitionBeforeIdentity: null,
+    activatorAliasTransitionAfterIdentity: null, activatorAliasAuthorityCommit: null,
+    activatorAliasAuthorityParent: null, activatorAliasAuthoritySubject: null,
+    activatorAliasAuthorityPaths: [], activatorAliasAuthorityBeforeIdentity: null,
+    activatorAliasAuthorityAfterIdentity: null,
     ...overrides,
   };
 }
@@ -756,6 +887,46 @@ function approvedAuthorityScope(overrides = {}) {
     approvedTransitionBeforeIdentities: { ...APPROVED_ACTIVATOR_BEFORE_IDENTITIES },
     approvedTransitionAfterIdentities: { ...APPROVED_ACTIVATOR_AFTER_IDENTITIES },
     headProtectedIdentities: { ...APPROVED_CURRENT_PROTECTED_IDENTITIES },
+    ...overrides,
+  });
+}
+
+// Fixture identities for the extended (four-transition) authority era. The repair and
+// authority commit ids are fixture values: the real ones are resolved from live history.
+const EXTENDED_REPAIR_COMMIT = "a".repeat(40);
+const EXTENDED_AUTHORITY_COMMIT = "b".repeat(40);
+const EXTENDED_AUTHORITY_IDENTITY = "c".repeat(64);
+function extendedAuthorityScope(overrides = {}) {
+  return approvedAuthorityScope({
+    head: EXTENDED_AUTHORITY_COMMIT,
+    parent: APPROVED_ACTIVATOR_ALIAS_TRANSITION,
+    subject: ACTIVATOR_ALIAS_AUTHORITY_SUBJECT,
+    committedPaths: [...ACTIVATOR_ALIAS_AUTHORITY_PATHS],
+    protectedHistory: [...APPROVED_PROTECTED_HISTORY,
+      `${EXTENDED_REPAIR_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`,
+      `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+      `${EXTENDED_AUTHORITY_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`].sort(),
+    payloadDurabilityRepairCommit: EXTENDED_REPAIR_COMMIT,
+    payloadDurabilityRepairParent: CURRENT_DURABLE_AUTHORITY_BASE,
+    payloadDurabilityRepairSubject: PAYLOAD_DURABLE_AUTHORITY_SUBJECT,
+    payloadDurabilityRepairPaths: [...PAYLOAD_DURABLE_AUTHORITY_PATHS],
+    payloadDurabilityRepairBeforeIdentity:
+      APPROVED_CURRENT_PROTECTED_IDENTITIES[PAYLOAD_VALIDATOR_REL],
+    payloadDurabilityRepairAfterIdentity: EXTENDED_AUTHORITY_IDENTITY,
+    activatorAliasTransitionParent: APPROVED_ACTIVATOR_ALIAS_PARENT,
+    activatorAliasTransitionSubject: APPROVED_ACTIVATOR_ALIAS_SUBJECT,
+    activatorAliasTransitionPaths: [...APPROVED_ACTIVATOR_ALIAS_PATHS],
+    activatorAliasTransitionBeforeIdentity: APPROVED_ACTIVATOR_ALIAS_BEFORE_IDENTITY,
+    activatorAliasTransitionAfterIdentity: APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY,
+    activatorAliasAuthorityCommit: EXTENDED_AUTHORITY_COMMIT,
+    activatorAliasAuthorityParent: APPROVED_ACTIVATOR_ALIAS_TRANSITION,
+    activatorAliasAuthoritySubject: ACTIVATOR_ALIAS_AUTHORITY_SUBJECT,
+    activatorAliasAuthorityPaths: [...ACTIVATOR_ALIAS_AUTHORITY_PATHS],
+    activatorAliasAuthorityBeforeIdentity: ACTIVATOR_ALIAS_AUTHORITY_BEFORE_IDENTITY,
+    activatorAliasAuthorityAfterIdentity: EXTENDED_AUTHORITY_IDENTITY,
+    executionPayloadValidatorIdentity: EXTENDED_AUTHORITY_IDENTITY,
+    headProtectedIdentities: { ...EXTENDED_PROTECTED_IDENTITIES,
+      [PAYLOAD_VALIDATOR_REL]: EXTENDED_AUTHORITY_IDENTITY },
     ...overrides,
   });
 }
@@ -1079,6 +1250,57 @@ function runScopeTests() {
       assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
         ...committedRepair, ...override,
       })), /scope mismatch/u);
+    }
+  });
+  scopeTest("the exact approved activator alias authority sequence is accepted", () => {
+    assert.equal(classifyPayloadScope(extendedAuthorityScope()), "committed-clean");
+    // An ordinary later descendant on main stays acceptable.
+    assert.equal(classifyPayloadScope(extendedAuthorityScope({
+      head: "f".repeat(40), parent: EXTENDED_AUTHORITY_COMMIT,
+      subject: "unrelated later descendant", committedPaths: ["README.md"],
+    })), "committed-clean");
+  });
+  scopeTest("every deviation from the approved activator alias authority sequence is rejected", () => {
+    const wrongAliasHistory = (record) => [...APPROVED_PROTECTED_HISTORY,
+      `${EXTENDED_REPAIR_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`, record,
+      `${EXTENDED_AUTHORITY_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+    for (const override of [
+      // the approved activator alias transition, bound exactly
+      { protectedHistory: wrongAliasHistory(`${"1".repeat(40)}\t${VALIDATOR_REL}`) },
+      { protectedHistory: wrongAliasHistory(
+        `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${PAYLOAD_VALIDATOR_REL}`) },
+      { activatorAliasTransitionParent: "0".repeat(40) },
+      { activatorAliasTransitionSubject: "same shape, unapproved subject" },
+      { activatorAliasTransitionPaths: [PAYLOAD_VALIDATOR_REL, VALIDATOR_REL].sort() },
+      { activatorAliasTransitionBeforeIdentity: "0".repeat(64) },
+      { activatorAliasTransitionAfterIdentity: "0".repeat(64) },
+      // the bounded self-transition that carries the approval
+      { activatorAliasAuthorityParent: "0".repeat(40) },
+      { activatorAliasAuthoritySubject: "same shape, unapproved subject" },
+      { activatorAliasAuthorityPaths: [PAYLOAD_VALIDATOR_REL, VALIDATOR_REL].sort() },
+      { activatorAliasAuthorityBeforeIdentity: "0".repeat(64) },
+      { activatorAliasAuthorityAfterIdentity: "3".repeat(64) },
+      { executionPayloadValidatorIdentity: "4".repeat(64) },
+      // a fifth unexplained protected transition may never coexist
+      { protectedHistory: [...APPROVED_PROTECTED_HISTORY,
+        `${EXTENDED_REPAIR_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`,
+        `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+        `${EXTENDED_AUTHORITY_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`,
+        `${"5".repeat(40)}\t${VALIDATOR_REL}`].sort() },
+      // the closure may not drift
+      { headProtectedIdentities: { ...EXTENDED_PROTECTED_IDENTITIES,
+        [VALIDATOR_REL]: APPROVED_ACTIVATOR_ALIAS_BEFORE_IDENTITY } },
+      { headProtectedIdentities: { ...EXTENDED_PROTECTED_IDENTITIES,
+        [ACTIVATOR_REL]: "0".repeat(64) } },
+      // the earlier durability repair keeps its own bounded shape
+      { payloadDurabilityRepairParent: "0".repeat(40) },
+      { payloadDurabilityRepairSubject: "same shape, unapproved subject" },
+      { payloadDurabilityRepairBeforeIdentity: "0".repeat(64) },
+      // authority is main-branch only
+      { branch: "w3-publish-payload-authority-fixture" },
+    ]) {
+      assert.throws(() => classifyPayloadScope(extendedAuthorityScope(override)),
+        /scope mismatch/u, JSON.stringify(Object.keys(override)));
     }
   });
   scopeTest("full history exposes protected branch and merge-result transitions without rejecting unrelated merges",
