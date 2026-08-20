@@ -38,7 +38,17 @@ const PINNED_QUARANTINE_SHA256 = '6c7c001165d5b3c9bf7b49ee724716e9df3f2e1b57f05e
 /* [2-storage] Storage keys at the time this mission landed. The classification
  * work adds no schema and no migration, so this count must not move. */
 const PINNED_PM_KEY_COUNT = 12;
-const PINNED_RANKING_SHA256 = '8d8c7c8c5a516f42faa6c0f4cb4253d51e5e046fb64fd43dbfb41687d6a9de32';
+/* [5] Re-pinned once, deliberately, by the large-library responsiveness work —
+ * the only change to this block since Phase 2C, and a cost change rather than a
+ * scoring change: the boundary pattern is memoised per query instead of rebuilt
+ * per record, the body is lowercased only once the title tiers have missed, and
+ * each word-boundary test is guarded by the `includes` that a boundary hit
+ * already implies. Tier order, tie-breaks and every score are untouched, which
+ * the ranking validator asserts directly against the shipped helpers rather than
+ * against a copy. The digest keeps doing its job from here — the next
+ * unintended byte still fails. Never re-pin to silence a diff that has not been
+ * proven behaviour-neutral first. */
+const PINNED_RANKING_SHA256 = '1bf67b3eec3b3439da568d7435d2f4b09f0124109c66188f5b56539a546ab59c';
 
 const SRC = fs.readFileSync(path.join(REPO_ROOT, MODULE_REL), 'utf8');
 
