@@ -408,6 +408,63 @@ Native reference baseline (2026-07-11 captures, extension disabled, pollution ga
 - Never use MiniMap behavior to hide Chat Page Divider or title-list bugs.
 - MiniMap divider actions and Chat Page Divider actions remain separate unless a task explicitly changes this contract.
 
+## 9A. Ordered Chat → MiniMap Page Propagation (Option A)
+
+**Status:** specification ADOPTED; product implementation LANDED in the working tree and gated
+GREEN, not yet committed. `1C1b` owns a monotonic per-page Chat revision (`…:ui:chat-pages:rev:…`)
+and stamps it on every Chat → MiniMap push; `1A1b` keeps a `:v2` per-page record
+(`c` collapsed, `ar` applied revision, `lc` local-change-since) and applies a push only when the
+revision is newer than `ar`. `1C1b` binds `evt:h2o:minimap:shell-ready` and replays the Chat
+snapshot through `1A1b.reconcileOnMiniMapReady`, which recovers a push dropped while MiniMap Core
+was unavailable. Gate:
+`tools/validation/chat-atlas/validate-chat-atlas-minimap-page-collapse-directional-flow.mjs`.
+
+**Surface scope.** These ordered-propagation rules govern the **Chrome / ChatGPT runtime surface
+only** (`1C1b`, `1A1b`). Behavioral parity for the Studio MiniMap surface
+(`src-surfaces-base/studio/S1A1b`) is **explicitly deferred** to a separately governed Studio-lane
+assessment, and nothing in this section may be read as asserting or requiring Studio compliance.
+
+For each `(chatId, pageNum)`:
+
+- A Chat collapse or expansion **action** propagates to the corresponding MiniMap page, and it is
+  the *action* that advances the ordering revision, not a change in Chat's stored boolean. A user
+  who re-collapses a page in Chat must outrank a MiniMap-local expansion even though Chat's own
+  value never moved; only a reconciliation **re-assert** re-reads the current revision without
+  advancing it. `1C1b` names its three re-assert sources literally
+  (`chat-pages-controller:refresh`, `chat-pages-controller:title-set`, `reset-all-mechanisms`);
+  every other source is an action.
+- A later **direct MiniMap action** changes MiniMap only, persists locally, and must never write
+  Chat Page Divider state (§9, and the Chat → MiniMap one-way rule).
+- Refresh, route change, rebind, remount and reconciliation **must preserve** that newer
+  MiniMap-local choice when **no newer Chat action** has occurred. Re-asserting current Chat state
+  merely because Chat still holds a value is **forbidden** — that is continuous Chat authority,
+  which this section replaces.
+- A later meaningful Chat action **overrides** the older MiniMap-local choice.
+- A Chat action taken while MiniMap Core is **unavailable** must be **recoverable** once MiniMap
+  becomes available; it must not be lost, and recovery must not require polling or an unbounded
+  retry loop.
+- Collapse and expansion are **symmetric**.
+- One Chat action produces **at most one** effective MiniMap transition — no bounce, recursion or
+  amplification.
+- `chatId` and `pageNum` identity remain **exact** across every hop.
+
+**Ordering, not value comparison.** Distinguishing "a newer Chat action" from "the same Chat state
+re-asserted by a refresh" requires ordering state, because a Chat sequence that collapses then
+expands returns to its original value while still being newer than an intervening MiniMap-local
+action. Value comparison alone cannot express this contract.
+
+**Legacy state.** Pre-existing MiniMap collapsed-page state is **preserved as local**. It must not
+be aligned destructively to Chat on first run; the first subsequent Chat action overrides it in the
+normal way. Migration reads the legacy `:v1` key once and writes the `:v2` record with `ar = 0` and
+`lc = true`; the `:v1` key is **left untouched** so a rollback needs no repair.
+
+**Forbidden reverse writer (both surfaces).** No MiniMap module — Chrome or Studio — may call a Chat
+page-collapse writer from any MiniMap action, handler, observer, callback or reconciliation path.
+Compatibility definitions and exports may exist, but the count of MiniMap-origin internal call sites
+is **zero**. This rule applies to `1A1b` and `S1A1b` alike and is independent of the Studio
+behavioral deferral above.
+
+
 ## 10. Native TOC Rail Rules
 
 - Native TOC Rail is **separate** from MiniMap Core (own module `1A1g`; settings via Control Hub).

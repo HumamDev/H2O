@@ -60,6 +60,13 @@ const RECOGNIZED_PAGES = new Set([
   // pass. Added only after every behavioural assertion above was already green
   // against this build; no assertion was weakened to accept it.
   '695e00856de4d891db0acc0118ac8258f0c89255a13b08c049d90b13e3b21f8b',
+  // Option A ordered Chat -> MiniMap propagation (MECHANISMS_RULES sec.9A).
+  // Adds the per-page Chat revision owner, ordered push metadata and the
+  // shell-ready recovery binding. Registered only after every behavioural
+  // fixture above was already green against this build and after the
+  // refresh-time revision prune was removed; no geometry assertion was
+  // weakened, reordered or relaxed to accept it.
+  '299e0a4584f3f1f4b595ddba32e7a90db57a5c6ff36c2006501c416781946169',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

@@ -244,6 +244,7 @@ function UM_PUBLIC() {
     selectedMiniDividerId: '',
     dividerDrag: null,
     collapsedMiniMapPagesByChat: new Map(),
+    miniMapPageStateByChat: new Map(),
     collapsedChatPagesByChat: new Map(),
     titleListChatPagesByChat: new Map(),
     chatPageStatusCardEl: null,
@@ -2290,13 +2291,143 @@ function UM_PUBLIC() {
     return normalizeChatPageDividersEnabled(storageGetStr(keyChatPageDividers(), '1'), true);
   }
 
+  // ── Ordered Chat -> MiniMap propagation (MECHANISMS_RULES sec.9A) ────────
+  // MiniMap keeps a versioned per-page record: c = collapsed, ar = the Chat
+  // revision it last applied, lc = a MiniMap-local change has happened since
+  // that revision. Chat's revision is opaque here — MiniMap only compares it
+  // with ar and never reads back into Chat.
+  function keyMiniMapPageState(chatId = '') {
+    const safeId = safeChatKeyPart(chatId || resolveChatId());
+    if (!safeId) return '';
+    return `${nsDisk()}:${KEY_COLLAPSED_PAGES_SUFFIX}:${safeId}:v2`;
+  }
+
+  function normalizeMiniMapPageState(raw) {
+    const out = { v: 2, pages: {} };
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    if (Math.max(0, Number(raw.v || 0) || 0) < 2) return out;
+    const pages = raw.pages;
+    if (!pages || typeof pages !== 'object' || Array.isArray(pages)) return out;
+    for (const key of Object.keys(pages)) {
+      const num = Math.max(0, Number(key || 0) || 0);
+      const entry = pages[key];
+      if (!num || !entry || typeof entry !== 'object') continue;
+      out.pages[String(num)] = {
+        c: !!entry.c,
+        ar: Math.max(0, Number(entry.ar || 0) || 0),
+        lc: !!entry.lc,
+      };
+    }
+    return out;
+  }
+
+  function readMiniMapPageState(chatId = '') {
+    const id = String(chatId || resolveChatId()).trim();
+    if (!id) return { v: 2, pages: {} };
+    const cached = S.miniMapPageStateByChat.get(id);
+    if (cached && typeof cached === 'object') return cached;
+    const key = keyMiniMapPageState(id);
+    const state = normalizeMiniMapPageState(key ? storageGetJSON(key, null) : null);
+    if (!Object.keys(state.pages).length) {
+      // PRESERVED_AS_LOCAL: a legacy :v1 collapse is a MiniMap-local choice that
+      // was never aligned to Chat, so it migrates with appliedRev 0 and the
+      // local flag set. The :v1 key is left untouched for rollback.
+      const legacyKey = keyCollapsedPages(id);
+      const legacy = normalizeMiniMapCollapsedPages(legacyKey ? storageGetJSON(legacyKey, []) : []);
+      for (const num of legacy) state.pages[String(num)] = { c: true, ar: 0, lc: true };
+      S.miniMapPageStateByChat.set(id, state);
+      if (legacy.length && key) { try { storageSetJSON(key, state); } catch {} }
+      return state;
+    }
+    S.miniMapPageStateByChat.set(id, state);
+    return state;
+  }
+
+  function writeMiniMapPageState(chatId = '', state = null) {
+    const id = String(chatId || resolveChatId()).trim();
+    if (!id) return false;
+    const key = keyMiniMapPageState(id);
+    if (!key) return false;
+    const next = normalizeMiniMapPageState(state);
+    S.miniMapPageStateByChat.set(id, next);
+    const collapsed = new Set();
+    for (const k of Object.keys(next.pages)) { if (next.pages[k].c) collapsed.add(Number(k)); }
+    S.collapsedMiniMapPagesByChat.set(id, collapsed);
+    try { return !!storageSetJSON(key, next); } catch { return false; }
+  }
+
+  // Ordering metadata is stamped separately from the value write so the
+  // collapsed-set writer keeps its existing two-argument shape.
+  function stampMiniMapPageOrder(chatId = '', pageNum = 0, patch = {}) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    if (!id || !num) return false;
+    const state = readMiniMapPageState(id);
+    const key = String(num);
+    const prev = state.pages[key] || { c: false, ar: 0, lc: false };
+    state.pages[key] = {
+      c: !!prev.c,
+      ar: patch && patch.ar !== undefined ? Math.max(0, Number(patch.ar || 0) || 0) : prev.ar,
+      lc: patch && patch.lc !== undefined ? !!patch.lc : prev.lc,
+    };
+    return writeMiniMapPageState(id, state);
+  }
+
+  function miniMapPageOrderFor(chatId = '', pageNum = 0) {
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    if (!num) return null;
+    const state = readMiniMapPageState(chatId);
+    return state.pages[String(num)] || null;
+  }
+
+  // Readiness recovery for a Chat action that was pushed while MiniMap Core was
+  // unavailable. Nothing is ever written back into Chat.
+  //
+  // Each snapshot entry is either { c, rev } — Chat's value with the revision
+  // that produced it, which goes through the ordinary ordered gate so ordering
+  // alone decides — or a bare boolean, used when the caller has no revision to
+  // offer; that form applies only where MiniMap has made no local change, so a
+  // MiniMap-local choice is still never overwritten.
+  function reconcileOnMiniMapReady(chatId = '', chatCollapsedByPage = null, opts = {}) {
+    const id = String(chatId || resolveChatId()).trim();
+    const snapshot = chatCollapsedByPage && typeof chatCollapsedByPage === 'object'
+      ? chatCollapsedByPage
+      : null;
+    const source = String(opts?.source || 'minimap-ready').trim() || 'minimap-ready';
+    const applied = [];
+    const preserved = [];
+    if (!id || !snapshot) return { ok: false, status: 'input-missing', chatId: id, applied, preserved };
+    for (const key of Object.keys(snapshot)) {
+      const num = Math.max(1, Number(key || 0) || 0);
+      if (!num) continue;
+      const raw = snapshot[key];
+      const ordered = raw && typeof raw === 'object';
+      const desired = ordered ? !!raw.c : !!raw;
+      const entry = miniMapPageOrderFor(id, num);
+      if (ordered) {
+        const rev = Math.max(0, Number(raw.rev || 0) || 0);
+        if (rev <= Math.max(0, Number(entry?.ar || 0) || 0)) { preserved.push(num); continue; }
+        setMiniMapPageCollapsed(num, desired, id, { source, mode: 'chat-sync', chatRev: rev });
+        applied.push(num);
+        continue;
+      }
+      if (entry && (entry.lc || entry.c === desired)) { preserved.push(num); continue; }
+      const nextRev = Math.max(0, Number(entry?.ar || 0) || 0) + 1;
+      setMiniMapPageCollapsed(num, desired, id, { source, mode: 'chat-sync', chatRev: nextRev });
+      applied.push(num);
+    }
+    return { ok: true, status: 'ok', chatId: id, applied, preserved };
+  }
+
   function readCollapsedMiniMapPages(chatId = '') {
     const id = String(chatId || resolveChatId()).trim();
     if (!id) return new Set();
     const cached = S.collapsedMiniMapPagesByChat.get(id);
     if (cached instanceof Set) return new Set(cached);
-    const key = keyCollapsedPages(id);
-    const next = new Set(normalizeMiniMapCollapsedPages(storageGetJSON(key, [])));
+    const state = readMiniMapPageState(id);
+    const pages = [];
+    for (const key of Object.keys(state.pages)) { if (state.pages[key].c) pages.push(Number(key)); }
+    const next = new Set(normalizeMiniMapCollapsedPages(pages));
     S.collapsedMiniMapPagesByChat.set(id, next);
     return new Set(next);
   }
@@ -2304,11 +2435,21 @@ function UM_PUBLIC() {
   function saveCollapsedMiniMapPages(chatId = '', pages = []) {
     const id = String(chatId || resolveChatId()).trim();
     if (!id) return { ok: false, status: 'chat-id-missing', chatId: '', pages: [] };
-    const key = keyCollapsedPages(id);
+    const key = keyMiniMapPageState(id);
     if (!key) return { ok: false, status: 'key-missing', chatId: id, pages: [] };
     const nextPages = normalizeMiniMapCollapsedPages(Array.isArray(pages) ? pages : Array.from(pages || []));
-    S.collapsedMiniMapPagesByChat.set(id, new Set(nextPages));
-    const ok = storageSetJSON(key, nextPages);
+    // Values only. Ordering metadata for the acting page is stamped by the
+    // caller, and every other page keeps the metadata it already had.
+    const state = readMiniMapPageState(id);
+    const wanted = new Set(nextPages);
+    const next = { v: 2, pages: {} };
+    for (const k of Object.keys(state.pages)) {
+      next.pages[k] = { c: wanted.has(Number(k)), ar: state.pages[k].ar, lc: state.pages[k].lc };
+    }
+    for (const num of nextPages) {
+      if (!next.pages[String(num)]) next.pages[String(num)] = { c: true, ar: 0, lc: true };
+    }
+    const ok = writeMiniMapPageState(id, next);
     return {
       ok,
       status: ok ? 'ok' : 'storage-failed',
@@ -2481,16 +2622,59 @@ function UM_PUBLIC() {
       return { ok: false, status: !id ? 'chat-id-missing' : 'page-missing', chatId: id, pageNum: num, collapsed: !!collapsed };
     }
     const nextCollapsed = !!collapsed;
+    // Explicit operation mode. Anything that is not a Chat push is treated as a
+    // MiniMap-local change, which is the pre-Option-A behaviour of every
+    // non-Chat caller: it never consults and never advances appliedRev.
+    const mode = String(arg.opts?.mode || '').trim().toLowerCase() === 'chat-sync' ? 'chat-sync' : 'local';
+    const entry = miniMapPageOrderFor(id, num) || { c: false, ar: 0, lc: false };
+    if (mode === 'chat-sync') {
+      const chatRev = Math.max(0, Number(arg.opts?.chatRev || 0) || 0);
+      // Ordering decides, never a value comparison: a revision that is not
+      // newer than the one already applied cannot overwrite a MiniMap-local
+      // choice, however many times Chat re-asserts it.
+      if (chatRev <= entry.ar) {
+        return {
+          ok: true,
+          status: entry.lc ? 'preserved-minimap-local' : 'stale-chat-revision',
+          chatId: id,
+          pages: getMiniMapCollapsedPages(id),
+          source: String(arg.source || 'core'),
+          pageNum: num,
+          collapsed: !!entry.c,
+          mode,
+          chatRev,
+          appliedRev: entry.ar,
+        };
+      }
+      const set = readCollapsedMiniMapPages(id);
+      if (nextCollapsed) set.add(num);
+      else set.delete(num);
+      const result = saveCollapsedMiniMapPages(id, Array.from(set));
+      stampMiniMapPageOrder(id, num, { ar: chatRev, lc: false });
+      try { applyMiniMapPageCollapsedState(num, nextCollapsed, minimapCol()); } catch {}
+      try { renderMiniDividerOverlay(id); } catch {}
+      return Object.assign({}, result, {
+        source: String(arg.source || 'core'),
+        pageNum: num,
+        collapsed: nextCollapsed,
+        mode,
+        chatRev,
+        appliedRev: chatRev,
+      });
+    }
     const set = readCollapsedMiniMapPages(id);
     if (nextCollapsed) set.add(num);
     else set.delete(num);
     const result = saveCollapsedMiniMapPages(id, Array.from(set));
+    stampMiniMapPageOrder(id, num, { lc: true });
     try { applyMiniMapPageCollapsedState(num, nextCollapsed, minimapCol()); } catch {}
     try { renderMiniDividerOverlay(id); } catch {}
     return Object.assign({}, result, {
       source: String(arg.source || 'core'),
       pageNum: num,
       collapsed: nextCollapsed,
+      mode,
+      appliedRev: entry.ar,
     });
   }
 
@@ -2499,7 +2683,7 @@ function UM_PUBLIC() {
     const id = String(arg.chatId || resolveChatId()).trim();
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const nextCollapsed = !isMiniMapPageCollapsed(num, id);
-    return setMiniMapPageCollapsed(num, nextCollapsed, id, { source: String(arg.source || 'core'), propagate: arg.opts?.propagate });
+    return setMiniMapPageCollapsed(num, nextCollapsed, id, { source: String(arg.source || 'core'), mode: 'local', propagate: arg.opts?.propagate });
   }
 
   function setMiniMapPageLabelStyle(_value, source = 'core') {
@@ -10409,6 +10593,8 @@ function unbindChatPageDividerBridge() {
     scheduleRebuild,
     setMiniMapPageCollapsed,
     toggleMiniMapPageCollapsed,
+    reconcileOnMiniMapReady,
+    getMiniMapPageOrder: miniMapPageOrderFor,
     getDividerPageNum: getChatPageDividerPageNum,
     // Single placement authority: the Thread Pages Controller anchors divider
     // repairs on this exact resolver so no second anchor semantics can exist.
