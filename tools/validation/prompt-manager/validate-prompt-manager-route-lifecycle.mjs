@@ -205,7 +205,19 @@ class El {
     return { left: 0, top: 0, right: w, bottom: h, width: w, height: h, x: 0, y: 0 };
   }
 
-  focus() { if (this.env) this.env.document.activeElement = this; }
+  /* [A11Y] Focus support is deliberately minimal: set activeElement and RECORD
+   * the call. The recording is what lets a test assert that a focus call did
+   * NOT happen — which is the whole contract during route teardown. No Tab
+   * simulation and no event bubbling are added here. */
+  focus() {
+    if (!this.env) return;
+    this.env.focusCalls.push(this);
+    this.env.document.activeElement = this;
+  }
+  blur() {
+    if (this.env && this.env.document.activeElement === this) this.env.document.activeElement = null;
+  }
+  focusCallCount() { return this.env ? this.env.focusCalls.filter(x => x === this).length : 0; }
   click() { this.dispatchEvent({ type: 'click', target: this }); }
 
   addEventListener(type, fn) {
@@ -366,6 +378,7 @@ function makeEnv(source, opts = {}) {
     frames: [],
     observers: [],
     dock: { ready: 0, register: 0, unregister: 0, registered: new Set() },
+    focusCalls: [],
     winListeners: new Map(),
     threw: null,
   };
@@ -904,6 +917,248 @@ function runScenarios(SRC) {
   }
 }
 
+
+/* ══════════════ [A11Y] Focus restoration & disclosure semantics ══════════════
+ * Behavioural coverage for the panel focus lifecycle. Everything drives the
+ * REAL module: the public API opens and closes the panel, and Escape is
+ * dispatched on `document`, where PM actually binds its keydown listener — so
+ * no event bubbling is required and none was added. */
+
+const PANEL_ID = 'cgxui-prmn-panel';
+const SEL_TRIGGER = '[data-cgxui="prmn-btn"]';
+
+/* Boot on a chat route, plant an external element, give it focus, and return
+ * everything a focus assertion needs. */
+function focusEnv(SRC, pathname = '/c/chat-1') {
+  const env = makeEnv(SRC, { pathname });
+  settle(env);
+  const t = env.sandbox.window.H2O?.PM?.prmptmngr?.__test;
+  const api = env.sandbox.window.H2O?.PromptManager;
+  const outside = new El('button', env);
+  outside.setAttribute('id', 'outside-origin');
+  env.body.appendChild(outside);
+  outside.focus();
+  env.focusCalls.length = 0;                       // baseline: measure only what follows
+  return { env, t, api, outside };
+}
+const panelEl = (env) => env.document.querySelector('[data-cgxui="prmn-panel"]');
+const triggerEl = (env) => env.document.querySelector(SEL_TRIGGER);
+const pressEscape = (env) => env.document.dispatchEvent({ type: 'keydown', key: 'Escape', stopPropagation() {}, preventDefault() {} });
+
+function runFocusScenarios(SRC) {
+  console.log('── A11Y. focus restoration & disclosure ──');
+
+  // A — normal open: origin captured once, existing initial focus preserved
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open();
+    settle(env);
+    const focused = env.document.activeElement;
+    check('A11Y-A1 open moves focus into the panel (existing behaviour preserved)', () => {
+      const p = panelEl(env);
+      assert.ok(focused && focused !== outside, 'open must move focus off the external origin');
+      assert.ok(p && p.contains(focused), 'focus must land inside the panel');
+    });
+    check('A11Y-A2 open performs exactly ONE focus transition', () => {
+      assert.equal(env.focusCalls.length, 1,
+        `one opening lifecycle must not focus twice; got ${env.focusCalls.length}`);
+    });
+    check('A11Y-A3 the external origin is not re-focused while open', () => {
+      assert.equal(outside.focusCallCount(), 0);
+    });
+  }
+
+  // B — focusSearch owns its own path and must not double-focus
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    const ok = api.focusSearch();
+    settle(env);
+    check('A11Y-B1 focusSearch focuses the Search input', () => {
+      assert.equal(ok, true, 'focusSearch should report success');
+      const a = env.document.activeElement;
+      assert.ok(a && String(a.getAttribute('data-cgxui') || '').includes('search'),
+        `expected a search input, got ${a && a.getAttribute('data-cgxui')}`);
+    });
+    check('A11Y-B2 focusSearch does not stack a second focus steal', () => {
+      assert.equal(env.focusCalls.length, 1,
+        `focusSearch opens with {focus:false} then focuses once; got ${env.focusCalls.length}`);
+    });
+    check('A11Y-B3 the pre-panel origin is still the restoration target', () => {
+      assert.equal(outside.focusCallCount(), 0, 'origin must not be focused while open');
+    });
+  }
+
+  // C — explicit close restores the origin
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open(); settle(env);
+    api.close(); settle(env);
+    check('A11Y-C1 explicit close restores the pre-open origin', () => {
+      /* Identity is compared INSIDE assert.ok on purpose. Handing two stub
+       * elements to assert.equal makes node:assert deep-serialise both to
+       * build a diff, and these elements reach the whole vm context through
+       * their parent chain — the failure report itself exhausts memory and
+       * the run dies with exit 137 instead of naming the broken contract.
+       * The contract is unchanged: strict object identity. */
+      assert.ok(env.document.activeElement === outside, 'origin must regain focus');
+      assert.equal(outside.focusCallCount(), 1, 'restored exactly once');
+    });
+    check('A11Y-C2 panel is hidden and inert after close', () => {
+      const p = panelEl(env);
+      assert.equal(p.getAttribute('aria-hidden'), 'true');
+      assert.equal(p.hasAttribute('inert'), true);
+    });
+    check('A11Y-C3 aria-expanded returns to false', () => {
+      assert.equal(triggerEl(env).getAttribute('aria-expanded'), 'false');
+    });
+  }
+
+  // D — Escape drives the same shared owner (listener is on document)
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open(); settle(env);
+    pressEscape(env); settle(env);
+    check('A11Y-D1 Escape closes the panel', () => {
+      assert.equal(api.isOpen(), false, 'Escape must close');
+    });
+    check('A11Y-D2 Escape restores the origin through the same owner', () => {
+      assert.ok(env.document.activeElement === outside, 'Escape must restore the origin');
+      assert.equal(outside.focusCallCount(), 1);
+    });
+  }
+
+  // E — detached origin must never be focused
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open(); settle(env);
+    outside.remove();                               // origin leaves the document
+    api.close(); settle(env);
+    check('A11Y-E1 a detached origin is not focused', () => {
+      assert.equal(outside.focusCallCount(), 0, 'must not focus a detached node');
+    });
+    check('A11Y-E2 focus falls back to the PM trigger', () => {
+      assert.ok(env.document.activeElement === triggerEl(env), 'trigger is the safe fallback');
+    });
+  }
+
+  // F — inert / hidden origin must be rejected
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open(); settle(env);
+    outside.setAttribute('inert', '');
+    api.close(); settle(env);
+    check('A11Y-F1 an inert origin is rejected', () => {
+      assert.equal(outside.focusCallCount(), 0);
+    });
+    const two = focusEnv(SRC);
+    two.api.open(); settle(two.env);
+    two.outside.style.display = 'none';             // hidden per the bounded visibility contract
+    two.api.close(); settle(two.env);
+    check('A11Y-F2 a hidden origin is rejected', () => {
+      assert.equal(two.outside.focusCallCount(), 0);
+    });
+  }
+
+  // G — route invalidation must perform NO restoration. The core contract.
+  {
+    const { env, outside } = focusEnv(SRC);
+    env.sandbox.window.H2O.PromptManager.open();
+    settle(env);
+    const trigger = triggerEl(env);
+    const originCallsBefore = outside.focusCallCount();
+    const triggerCallsBefore = trigger.focusCallCount();
+    const timersBefore = liveTimers(env);
+
+    env.window.location.pathname = '/g/project-1/project';
+    env.window.dispatchEvent(new env.sandbox.Event('ho:navigate'));
+    const originCallsSync = outside.focusCallCount();
+    const triggerCallsSync = trigger.focusCallCount();
+
+    check('A11Y-G1 route teardown does not restore the captured origin', () => {
+      assert.equal(originCallsSync, originCallsBefore,
+        'a chat -> Project navigation must never focus the old origin');
+    });
+    check('A11Y-G2 route teardown does not focus the PM trigger', () => {
+      assert.equal(triggerCallsSync, triggerCallsBefore);
+    });
+    check('A11Y-G3 suppression still happens synchronously', () => {
+      assert.equal(visibleCount(env), 0, 'Issue-3 contract must be unaffected');
+      assert.equal(triggerEl(env) ? triggerEl(env).getAttribute('aria-expanded') : 'false', 'false',
+        'a suppressed panel must not claim to be expanded');
+    });
+    settle(env);
+    check('A11Y-G4 no deferred focus task fires after navigation', () => {
+      assert.equal(outside.focusCallCount(), originCallsBefore, 'no delayed restoration');
+      assert.ok(liveTimers(env) <= timersBefore, 'no focus timer was scheduled');
+    });
+  }
+
+  // H — Project -> chat remount must not resurrect a stale origin
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    api.open(); settle(env);
+    navigate(env, '/g/project-1/project'); settle(env);
+    navigate(env, '/c/chat-2'); settle(env);
+    check('A11Y-H1 remount does not focus a stale origin', () => {
+      assert.equal(outside.focusCallCount(), 0);
+    });
+    check('A11Y-H2 state is clean for the next legitimate open', () => {
+      assert.equal(rootCount(env), 1);
+      const tg = triggerEl(env);
+      assert.equal(tg.getAttribute('aria-expanded'), 'false', 'remounted trigger starts collapsed');
+    });
+  }
+
+  // I — repeated cycles: each captures its own origin, nothing accumulates
+  {
+    const { env, api, outside } = focusEnv(SRC);
+    const second = new El('button', env);
+    second.setAttribute('id', 'second-origin');
+    env.body.appendChild(second);
+    const t0 = liveTimers(env), l0 = navListeners(env);
+    api.open(); settle(env); api.close(); settle(env);
+    second.focus();
+    api.open(); settle(env); api.close(); settle(env);
+    check('A11Y-I1 each cycle restores ITS OWN origin', () => {
+      assert.equal(outside.focusCallCount(), 1, 'first cycle restored the first origin once');
+      assert.ok(env.document.activeElement === second, 'second cycle restored the second origin');
+    });
+    check('A11Y-I2 repeated cycles accumulate no timers or listeners', () => {
+      assert.ok(liveTimers(env) <= t0, `timers ${t0} -> ${liveTimers(env)}`);
+      assert.equal(navListeners(env), l0);
+      assert.equal(rootCount(env), 1);
+    });
+  }
+
+  // J — disclosure semantics, and the absence of modal semantics
+  {
+    const { env, api } = focusEnv(SRC);
+    const p = panelEl(env), tg = triggerEl(env);
+    check('A11Y-J1 closed state: hidden, inert, collapsed', () => {
+      assert.equal(p.getAttribute('aria-hidden'), 'true');
+      assert.equal(p.hasAttribute('inert'), true);
+      assert.equal(tg.getAttribute('aria-expanded'), 'false');
+    });
+    api.open(); settle(env);
+    check('A11Y-J2 open state: exposed, non-inert, expanded', () => {
+      assert.equal(p.getAttribute('aria-hidden'), 'false');
+      assert.equal(p.hasAttribute('inert'), false);
+      assert.equal(tg.getAttribute('aria-expanded'), 'true');
+    });
+    check('A11Y-J3 the panel is a named non-modal region', () => {
+      assert.equal(p.getAttribute('role'), 'region', 'non-modal structural role');
+      assert.equal(p.getAttribute('aria-label'), 'Prompt Manager', 'accessible name');
+      assert.ok(!p.hasAttribute('aria-modal'), 'a non-modal panel must not claim aria-modal');
+      assert.notEqual(p.getAttribute('role'), 'dialog', 'the page stays interactive — dialog would be untrue');
+    });
+    check('A11Y-J4 aria-controls resolves to exactly one panel', () => {
+      assert.equal(tg.getAttribute('aria-controls'), PANEL_ID);
+      assert.equal(p.getAttribute('id'), PANEL_ID);
+      assert.equal(env.document.querySelectorAll(`#${PANEL_ID}`).length, 1, 'the id must be unique');
+    });
+  }
+}
+
 let _srcCache = null;
 function readCurrentSourceCached() {
   if (_srcCache == null) _srcCache = readCurrentSource();
@@ -960,6 +1215,10 @@ function main() {
   }
 
   runScenarios(SRC);
+
+  runFocusScenarios(SRC);
+
+
 
   /* Fidelity gate. A harness that cannot see the original defect is not
    * evidence of anything, so this is an assertion, not a diagnostic. */

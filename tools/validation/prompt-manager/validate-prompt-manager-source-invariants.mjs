@@ -3416,6 +3416,85 @@ function main() {
   });
 
 
+
+  /* ── [A11Y] Panel disclosure semantics and focus ownership ──────────────
+   * Behaviour is proven by the route/lifecycle harness. These pin the shape it
+   * depends on: non-modal semantics, one focus owner, and a restoration path
+   * that route teardown cannot reach. */
+
+  check('[A11Y] the panel is a non-modal region, never a dialog', () => {
+    const i = CODE.indexOf('id="${A11Y_PM_PANEL_ID}"');
+    assert.ok(i !== -1, 'panel markup not found');
+    const tpl = CODE.slice(i, i + 300);
+    assert.match(tpl, /role="region"/, 'the panel must carry the non-modal structural role');
+    assert.ok(!/role="dialog"/.test(tpl), 'the page stays interactive — dialog would be untrue');
+    assert.ok(!/aria-modal/.test(CODE), 'aria-modal must never appear: nothing is made inert but the panel');
+  });
+
+  check('[A11Y] no focus trap is introduced', () => {
+    assert.ok(!/focusTrap|trapFocus|FOCUS_TRAP/i.test(CODE),
+      'a non-modal disclosure must not trap focus');
+    assert.ok(!/(body|documentElement)\.setAttribute\('inert'/.test(CODE),
+      'only the panel is inerted — never the page');
+  });
+
+  check('[A11Y] the panel id is stable and singular', () => {
+    assert.match(CODE, /const A11Y_PM_PANEL_ID = `cgxui-\$\{SkID\}-panel`/,
+      'a generated id would break aria-controls across remounts');
+    assert.equal((CODE.match(/id="\$\{A11Y_PM_PANEL_ID\}"/g) || []).length, 1, 'exactly one panel carries the id');
+    assert.equal((CODE.match(/aria-controls="\$\{A11Y_PM_PANEL_ID\}"/g) || []).length, 1, 'exactly one trigger references it');
+  });
+
+  check('[A11Y] aria-expanded is owned by the single panel-state authority', () => {
+    const fn = CODE.match(/const UI_PM_applyPanelState = [\s\S]*?\n  \}, false\);/);
+    assert.ok(fn, 'applyPanelState not found');
+    assert.match(fn[0], /aria-expanded/, 'the state authority must synchronise aria-expanded');
+    assert.equal((CODE.match(/'aria-expanded'/g) || []).length, 1,
+      'aria-expanded must be written in exactly one place, never at the call sites');
+  });
+
+  check('[A11Y] focus restoration belongs to the explicit close path only', () => {
+    const close = CODE.match(/function UI_PM_closePanel\(\) \{[\s\S]*?\n  \}/);
+    assert.ok(close, 'closePanel not found');
+    assert.match(close[0], /A11Y_PM_restoreFocus\(/, 'the explicit close owner restores focus');
+    const aps = CODE.match(/const UI_PM_applyPanelState = [\s\S]*?\n  \}, false\);/)[0];
+    assert.ok(!/A11Y_PM_restoreFocus/.test(aps),
+      'the generic state function is also the route-suppression path — it must never restore focus');
+    assert.match(CODE, /const A11Y_PM_restoreFocus = /, 'exactly one definition');
+    assert.equal((CODE.match(/A11Y_PM_restoreFocus\(/g) || []).length, 1,
+      'exactly one caller — restoration must not be scattered across close buttons');
+  });
+
+  check('[A11Y] the focus origin is captured once, internally, and never exposed', () => {
+    assert.match(CODE, /if \(!UI_PM_isPanelOpen\(\)\) \{\s*PM_FOCUS_ORIGIN = /,
+      'capture must be gated on a real CLOSED -> OPEN transition');
+    assert.ok(!/MOD_OBJ\.api\.[A-Za-z]*[Ff]ocusOrigin/.test(CODE), 'not on the public API');
+    assert.ok(!/setJSON[^\n]*PM_FOCUS_ORIGIN|PM_FOCUS_ORIGIN[^\n]*setJSON/.test(CODE), 'never persisted');
+    assert.ok(!/UTIL_diag[^\n]*PM_FOCUS_ORIGIN/.test(CODE), 'never written to diagnostics');
+  });
+
+  check('[A11Y] restoration never falls back to the composer or the document root', () => {
+    const g = CODE.match(/const A11Y_PM_canFocus = [\s\S]*?\n  \}, false\);/);
+    assert.ok(g, 'canFocus guard not found');
+    assert.match(g[0], /el === D\.body \|\| el === D\.documentElement/, 'body/documentElement rejected');
+    assert.match(g[0], /D\.contains\(el\)/, 'detached elements rejected');
+    assert.match(g[0], /hasAttribute\?\.\('inert'\)/, 'inert subtrees rejected');
+    assert.match(g[0], /aria-hidden/, 'aria-hidden subtrees rejected');
+    const r = CODE.match(/const A11Y_PM_restoreFocus = [\s\S]*?\n  \}, false\);/)[0];
+    assert.ok(!/DOM_getEditableInput|DOM_setInputText/.test(r),
+      'the composer must never be a focus fallback — it would move the caret');
+  });
+
+  check('[A11Y] no focus timer or frame was introduced', () => {
+    const r = CODE.match(/const A11Y_PM_restoreFocus = [\s\S]*?\n  \}, false\);/)[0];
+    const c = CODE.match(/const A11Y_PM_canFocus = [\s\S]*?\n  \}, false\);/)[0];
+    for (const b of [r, c]) {
+      assert.ok(!/setTimeout|requestAnimationFrame|setInterval/.test(b),
+        'focus work must be synchronous — a deferred call could fire after navigation');
+    }
+  });
+
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {

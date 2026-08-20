@@ -185,6 +185,19 @@
   /* [DEFINE][CSS] style id */
   const CSS_PM_STYLE_ID = `cgxui-${SkID}-style`;
 
+  /* [DEFINE][A11Y] Stable panel id and accessible name.
+   *
+   * The id is fixed rather than generated: the single-root architecture means
+   * exactly one panel exists at a time, a generated id would change on every
+   * remount and break the trigger's aria-controls reference, and a stable value
+   * is what a disclosure relationship needs.
+   *
+   * The name is an aria-label because the panel has no visible heading to point
+   * aria-labelledby at. Inventing a hidden heading purely to satisfy the
+   * relationship would add markup nobody sees for no additional benefit. */
+  const A11Y_PM_PANEL_ID = `cgxui-${SkID}-panel`;
+  const A11Y_PM_PANEL_LABEL = 'Prompt Manager';
+
   /* [DEFINE][CFG] knobs */
   const CFG_PM = {
     PANEL_MAX_H: 0.62, // vh
@@ -5262,14 +5275,14 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         wrap.innerHTML = `
           <div ${ATTR_CGXUI}="${UI_PM_BTNBOX}" ${ATTR_CGXUI_OWNER}="${SkID}">
             <button type="button" ${ATTR_CGXUI}="${UI_PM_EXPORT_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}" title="${CFG_PM.EXPORT_BTN_TITLE}">${CFG_PM.EXPORT_BTN_LABEL}</button>
-            <button type="button" ${ATTR_CGXUI}="${UI_PM_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}">Prompts</button>
+            <button type="button" ${ATTR_CGXUI}="${UI_PM_BTN}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-controls="${A11Y_PM_PANEL_ID}" aria-expanded="false">Prompts</button>
             <div ${ATTR_CGXUI}="${UI_PM_QUICK_TRAY}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true"></div>
             <button type="button" ${ATTR_CGXUI}="${UI_PM_QUICK_MODE_DOT}" ${ATTR_CGXUI_OWNER}="${SkID}" title="Quick replies: append only">•</button>
           </div>
 
           <div ${ATTR_CGXUI}="${UI_PM_OVERLAY}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true"></div>
 
-          <div ${ATTR_CGXUI}="${UI_PM_PANEL}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true" inert>
+          <div id="${A11Y_PM_PANEL_ID}" role="region" aria-label="${A11Y_PM_PANEL_LABEL}" ${ATTR_CGXUI}="${UI_PM_PANEL}" ${ATTR_CGXUI_OWNER}="${SkID}" aria-hidden="true" inert>
             <div class="cgxui-${SkID}--status" ${ATTR_CGXUI}="${UI_PM_STATUS}" ${ATTR_CGXUI_OWNER}="${SkID}" role="status" aria-live="polite"></div>
 
             <div ${ATTR_CGXUI}="${UI_PM_MODE_SIMPLE}" ${ATTR_CGXUI_OWNER}="${SkID}">
@@ -5465,7 +5478,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
   /* Applies `open` and returns the resulting open-state. */
   const UI_PM_applyPanelState = (open) => SAFE_try('UI_PM.applyPanelState', () => {
-    const { panel, overlay } = UI_PM_panelNodes();
+    const { root, panel, overlay } = UI_PM_panelNodes();
     if (!panel) return false;
     const on = !!open;
     panel.classList.toggle(UI_PM_CLS_OPEN, on);
@@ -5474,7 +5487,48 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     if (on) panel.removeAttribute('inert');
     else panel.setAttribute('inert', '');
     overlay?.classList?.toggle?.(UI_PM_CLS_OVSHOW, on);
+    /* [A11Y] aria-expanded is synchronised HERE, in the one function that
+     * already owns the open class, aria-hidden, inert and the overlay, so the
+     * disclosure state cannot drift from the visual state. Doing it at the call
+     * sites would mean nine places to keep in agreement — including the route
+     * suppression path, which closes the panel without going through
+     * UI_PM_closePanel and would otherwise leave the trigger claiming the panel
+     * is still open. */
+    const trigger = root ? DOM_q(UI_PM.selOwned(UI_PM_BTN), root) : null;
+    trigger?.setAttribute?.('aria-expanded', on ? 'true' : 'false');
+    /* [A11Y] Any close drops the captured origin. UI_PM_closePanel has already
+     * taken its local copy before calling in, so an explicit close still
+     * restores; a route-suppressed close simply forgets, which prevents both a
+     * stale restoration later and a retained reference to a detached node. */
+    if (!on) PM_FOCUS_ORIGIN = null;
     return on;
+  }, false);
+
+  /* [A11Y] Focus-restoration authority.
+   *
+   * A module-scope reference, never a selector and never persisted: the element
+   * that owned focus immediately before the panel opened. It is INTERNAL — not
+   * on the public API, not in storage, not in diagnostics.
+   *
+   * Captured only on a real CLOSED -> OPEN transition, so re-opening an already
+   * open panel, focusSearch() on an open panel, a re-render, or the editor
+   * taking focus afterwards can never overwrite the legitimate origin. */
+  let PM_FOCUS_ORIGIN = null;
+
+  /* The smallest truthful focusability guard for PM's actual controls — not an
+   * attempt at the full HTML algorithm. Anything uncertain is rejected, because
+   * declining to restore is always safer than focusing the wrong thing. */
+  const A11Y_PM_canFocus = (el, panel) => SAFE_try('A11Y_PM.canFocus', () => {
+    if (!el || typeof el.focus !== 'function') return false;
+    if (el === D.body || el === D.documentElement) return false;
+    if (!D.contains(el)) return false;                       // detached
+    if (panel && (el === panel || panel.contains?.(el))) return false; // inside the panel being hidden
+    if (el.disabled === true) return false;
+    for (let cur = el; cur; cur = cur.parentElement) {
+      if (cur.hasAttribute?.('inert')) return false;
+      if (cur.getAttribute?.('aria-hidden') === 'true') return false;
+    }
+    return DOM_isVisible(el);
   }, false);
 
   const PM_DOCK_getApi = () => W.H2O?.InputDock?.api || null;
@@ -6088,6 +6142,14 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     const { panel } = UI_PM_panelNodes();
     if (!panel) return false;
 
+    /* [A11Y] Capture the focus origin BEFORE the opening lifecycle moves focus,
+     * and only on a genuine CLOSED -> OPEN transition. Re-opening an already
+     * open panel must not overwrite the origin with something the panel itself
+     * focused. */
+    if (!UI_PM_isPanelOpen()) {
+      PM_FOCUS_ORIGIN = SAFE_try('A11Y_PM.captureOrigin', () => D.activeElement || null, null);
+    }
+
     // State first: inert/visibility must be lifted before rendering or focusing.
     UI_PM_applyPanelState(true);
 
@@ -6115,12 +6177,38 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     return UI_PM_isPanelOpen();
   }
 
+  /* [A11Y] Explicit, user-directed close: Escape, the Close buttons, the
+   * overlay click, and the public close/toggle. This is the ONLY path that
+   * restores focus.
+   *
+   * Route-driven suppression calls UI_PM_applyPanelState(false) directly and
+   * therefore never reaches this function — which is the whole point. Restoring
+   * focus during a chat -> Project navigation would either focus a control that
+   * is disappearing with the old route or steal focus from the surface the user
+   * just navigated to. The existing split between closePanel() and
+   * applyPanelState(false) already draws that boundary, so no restoreFocus
+   * option is needed. */
   function UI_PM_closePanel() {
     const { panel } = UI_PM_panelNodes();
     if (!panel) return false;
+    const origin = PM_FOCUS_ORIGIN;
+    PM_FOCUS_ORIGIN = null;          // cleared before restoring: one use, never stale
     UI_PM_applyPanelState(false);
-    return !UI_PM_isPanelOpen();
+    const closed = !UI_PM_isPanelOpen();
+    if (closed) A11Y_PM_restoreFocus(origin, panel);
+    return closed;
   }
+
+  /* Restore to the captured origin when it is still safe, else the PM trigger,
+   * else nothing. The composer is deliberately NOT a fallback: focusing it
+   * would move the caret and change what the user is editing. */
+  const A11Y_PM_restoreFocus = (origin, panel) => SAFE_try('A11Y_PM.restoreFocus', () => {
+    if (A11Y_PM_canFocus(origin, panel)) { origin.focus(); return true; }
+    const root = STATE_PM.ui.root || UI_PM.getRoot();
+    const trigger = root ? DOM_q(UI_PM.selOwned(UI_PM_BTN), root) : null;
+    if (A11Y_PM_canFocus(trigger, panel)) { trigger.focus(); return true; }
+    return false;
+  }, false);
 
   /* ───────────────────────────── ⚫️ LIFECYCLE — INIT / WIRING 📝🔓💥 ───────────────────────────── */
   function CORE_PM_scheduleBootRetry(delayMs = 240) {
