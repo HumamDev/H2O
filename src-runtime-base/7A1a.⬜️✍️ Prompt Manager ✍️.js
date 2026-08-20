@@ -4316,6 +4316,10 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         if (!st.open) { EDITOR_PM.sync(root); return false; }
         ENGINE_PM.setUiMode('edit');
         RENDER_PM.setMode(root, 'edit');
+        /* This is a mode reveal like Settings and Back, and it can run after the
+         * panel already rendered Simple, so the list this mode exposes is drawn
+         * here rather than left as whatever the previous mode had built. */
+        RENDER_PM.renderEdit(root, SEARCH_PM.get());
         EDITOR_PM.sync(root);
         return true;
       }, false);
@@ -6158,11 +6162,24 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
   /* ───────────────────────────── 🪟 PANEL — open/close (module scope) 📝🔓💥 ─────────────────────────────
    * Defined here (not inside boot) so the public API can drive real state
    * synchronously instead of synthesising a click. */
+  /* Render the list the panel is actually showing.
+   *
+   * Simple and Edit are two full renderings of the same library, and exactly one
+   * of them is ever displayed — `setMode` gives the other `display:none`. Building
+   * both meant every open, every keystroke and every mutation constructed a whole
+   * second card list that nothing could see: at 1000 prompts that is roughly half
+   * of ~23,000 panel nodes and about half the render time, paid on every render.
+   *
+   * Nothing needs the hidden list to be kept warm, because every path that
+   * reveals a mode already renders it: the Settings button calls `renderEdit`,
+   * Back calls `renderSimple`, and `EDITOR_PM.restore` renders Edit when it
+   * forces that mode. Content and order are unchanged — this only stops drawing
+   * a list into a hidden container. */
   function UI_PM_renderBoth(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
     if (!root) return;
     const q = SEARCH_PM.get();
-    RENDER_PM.renderSimple(root, q);
-    RENDER_PM.renderEdit(root, q);
+    if (ENGINE_PM.getUiMode() === 'edit') RENDER_PM.renderEdit(root, q);
+    else RENDER_PM.renderSimple(root, q);
   }
 
   function UI_PM_openPanel(opts) {
