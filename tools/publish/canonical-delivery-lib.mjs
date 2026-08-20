@@ -30,6 +30,8 @@ const EXACT_READ_ONLY_GIT_COMMANDS = Object.freeze([
   "config\u0000--path\u0000--get\u0000core.worktree",
 ]);
 const FULL_COMMIT_PATTERN = /^[a-f0-9]{40}$/u;
+// Exactly "<full lowercase 40-hex commit>^{tree}" and nothing else.
+const TREE_OF_COMMIT_PATTERN = /^[a-f0-9]{40}\^\{tree\}$/u;
 export const READ_ONLY_GIT_TIMEOUT_MS = 30_000;
 
 export const EXIT_CODES = Object.freeze({
@@ -321,7 +323,14 @@ export function assertAllowedReadOnlyGitCommand(args) {
   const mergeBaseAllowed = args.length === 4 && args[0] === "merge-base" &&
     args[1] === "--is-ancestor" && FULL_COMMIT_PATTERN.test(args[2]) &&
     (args[3] === "HEAD" || FULL_COMMIT_PATTERN.test(args[3]));
-  if (!EXACT_READ_ONLY_GIT_COMMANDS.includes(key) && !mergeBaseAllowed) {
+  // Resolve the tree of one fully-pinned commit. Batch 2A-R.2 needs this to prove a
+  // stage receipt's recorded source tree against canonical Git objects. Deliberately
+  // narrow: exactly two arguments, a full lowercase 40-hex commit, and the literal
+  // ^{tree} peel. Short SHAs, refs, HEAD-relative syntax, other peel types and any
+  // extra argument stay rejected, and no write capability is widened.
+  const treeOfCommitAllowed = args.length === 2 && args[0] === "rev-parse" &&
+    TREE_OF_COMMIT_PATTERN.test(args[1]);
+  if (!EXACT_READ_ONLY_GIT_COMMANDS.includes(key) && !mergeBaseAllowed && !treeOfCommitAllowed) {
     fail(EXIT_CODES.ELIGIBILITY_MISMATCH,
       "Git execution is restricted to exact shared read-only command shapes", { args });
   }

@@ -195,7 +195,45 @@ const EXTENDED_PROTECTED_IDENTITIES = Object.freeze({
   ...APPROVED_CURRENT_PROTECTED_IDENTITIES,
   [VALIDATOR_REL]: APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY,
 });
-const EXPECTED_SCOPE = 27;
+
+// Batch 2A-R.2 receipt-verification authority. Two independently reviewed commits move the
+// production activator, each bound by exact commit id, parent, subject, single protected path
+// and exact before/after bytes. R.2 also touches canonical-delivery-lib.mjs, which is
+// deliberately outside PROTECTED_PAYLOAD_AUTHORITY_PATHS and therefore never a protected
+// transition here.
+const APPROVED_R2_VERIFICATION_TRANSITION = "72f781bd0eada9b8426667dd7c4a82dbbde46416";
+const APPROVED_R2_VERIFICATION_PARENT = "43cc141bd3d8a7e454965a64f7a73d11c2c7efa7";
+const APPROVED_R2_VERIFICATION_SUBJECT =
+  "feat(publish): complete R.2 standalone explicit-worktree receipt verification";
+const APPROVED_R2_STRICT_DEFAULT_TRANSITION = "ab07ea7808af558d8934571bbfcdf96c7a27b1b8";
+const APPROVED_R2_STRICT_DEFAULT_PARENT = APPROVED_R2_VERIFICATION_TRANSITION;
+const APPROVED_R2_STRICT_DEFAULT_SUBJECT =
+  "fix(publish): make R.2 canonical cleanliness strict by default";
+const APPROVED_R2_TRANSITION_PATHS = Object.freeze([ACTIVATOR_REL]);
+// The activator identity chain across the two approved R.2 commits. Each before identity is
+// the previously approved after identity, so no gap exists in which unreviewed bytes occupied
+// the protected path.
+const APPROVED_R2_VERIFICATION_BEFORE_IDENTITY =
+  "eaac5ba995bd44740d3d1e26878872a3b3e4823f0df09aa27834232656c62db4";
+const APPROVED_R2_VERIFICATION_AFTER_IDENTITY =
+  "4b3ec11240734c7e8afadb2e6e43fb244c2c9f9c3dfc320e6abc5f21bd889e95";
+const APPROVED_R2_STRICT_DEFAULT_BEFORE_IDENTITY = APPROVED_R2_VERIFICATION_AFTER_IDENTITY;
+const APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY =
+  "d6294b060f158bc31f76716c758bbaed198ee823bb12a081c5a52c49de4b0360";
+// The bounded self-transition that carries this approval. Its own commit id and final bytes
+// cannot pre-exist, so it is bound structurally and its after identity is resolved at runtime,
+// exactly as the aeaa870a and d29260c7 self-transitions already are.
+const R2_AUTHORITY_SUBJECT =
+  "test(publish): approve R.2 receipt-verification authority transitions";
+const R2_AUTHORITY_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const R2_AUTHORITY_BEFORE_IDENTITY =
+  "d16fba4321900ef8ef3afccc9936cddcc0ddaa34abaeb58f4b15b83e648408dc";
+// Accepted closure after both R.2 transitions: only the production activator moves again.
+const R2_PROTECTED_IDENTITIES = Object.freeze({
+  ...EXTENDED_PROTECTED_IDENTITIES,
+  [ACTIVATOR_REL]: APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY,
+});
+const EXPECTED_SCOPE = 29;
 const EXPECTED_RUNTIME = 134;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -360,7 +398,8 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
     `${aliasAuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
   const extendedImmutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
     .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
-  return typeof repairCommit === "string" && /^[0-9a-f]{40}$/u.test(repairCommit) &&
+  const anchorPlusAliasAuthority = typeof repairCommit === "string" &&
+    /^[0-9a-f]{40}$/u.test(repairCommit) &&
     typeof aliasAuthorityCommit === "string" && /^[0-9a-f]{40}$/u.test(aliasAuthorityCommit) &&
     repairCommit !== APPROVED_ACTIVATOR_TRANSITION &&
     repairCommit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
@@ -406,6 +445,62 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
       Object.fromEntries(extendedImmutablePaths.map((relative) =>
         [relative, value.headProtectedIdentities?.[relative]])),
       EXTENDED_PROTECTED_IDENTITIES, extendedImmutablePaths) &&
+    Object.keys(value.headProtectedIdentities ?? {}).length ===
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
+  if (anchorPlusAliasAuthority) return true;
+  // R.2 era: exactly seven protected transitions and nothing else. The four already-approved
+  // records, the two exactly-bound R.2 activator transitions, and the bounded self-transition
+  // carrying this approval. Membership and record content are exact; only ordering is normalised.
+  const r2AuthorityCommit = value.r2AuthorityCommit;
+  const expectedR2History = [...APPROVED_PROTECTED_HISTORY,
+    `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+    `${aliasAuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_R2_VERIFICATION_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${APPROVED_R2_STRICT_DEFAULT_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${r2AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+  const r2ImmutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
+    .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
+  const r2TransitionMatches = (evidence, parent, subject, before, after) =>
+    !!evidence && evidence.parent === parent && evidence.subject === subject &&
+    JSON.stringify(evidence.paths ?? []) === JSON.stringify([...APPROVED_R2_TRANSITION_PATHS]) &&
+    evidence.beforeIdentity === before && evidence.afterIdentity === after;
+  return typeof r2AuthorityCommit === "string" && /^[0-9a-f]{40}$/u.test(r2AuthorityCommit) &&
+    ![APPROVED_ACTIVATOR_TRANSITION, APPROVED_ACTIVATOR_ALIAS_TRANSITION,
+      APPROVED_R2_VERIFICATION_TRANSITION, APPROVED_R2_STRICT_DEFAULT_TRANSITION,
+      repairCommit, aliasAuthorityCommit].includes(r2AuthorityCommit) &&
+    JSON.stringify([...(value.protectedHistory ?? [])].sort()) ===
+      JSON.stringify(expectedR2History) &&
+    // the two earlier self-transitions keep their original bounded shapes
+    value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.payloadDurabilityRepairSubject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    value.activatorAliasTransitionAfterIdentity === APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY &&
+    value.activatorAliasAuthorityParent === APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    value.activatorAliasAuthoritySubject === ACTIVATOR_ALIAS_AUTHORITY_SUBJECT &&
+    // both approved R.2 activator transitions, each bound exactly
+    r2TransitionMatches(value.r2VerificationTransition,
+      APPROVED_R2_VERIFICATION_PARENT, APPROVED_R2_VERIFICATION_SUBJECT,
+      APPROVED_R2_VERIFICATION_BEFORE_IDENTITY, APPROVED_R2_VERIFICATION_AFTER_IDENTITY) &&
+    r2TransitionMatches(value.r2StrictDefaultTransition,
+      APPROVED_R2_STRICT_DEFAULT_PARENT, APPROVED_R2_STRICT_DEFAULT_SUBJECT,
+      APPROVED_R2_STRICT_DEFAULT_BEFORE_IDENTITY, APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY) &&
+    // the bounded self-transition carrying this approval
+    value.r2AuthorityParent === APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
+    value.r2AuthoritySubject === R2_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.r2AuthorityPaths ?? []) === JSON.stringify([...R2_AUTHORITY_PATHS]) &&
+    value.r2AuthorityBeforeIdentity === R2_AUTHORITY_BEFORE_IDENTITY &&
+    typeof value.r2AuthorityAfterIdentity === "string" &&
+    value.r2AuthorityAfterIdentity === value.executionPayloadValidatorIdentity &&
+    value.r2AuthorityAfterIdentity === value.headProtectedIdentities?.[PAYLOAD_VALIDATOR_REL] &&
+    (value.head !== r2AuthorityCommit || (
+      value.parent === APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
+      value.subject === R2_AUTHORITY_SUBJECT &&
+      JSON.stringify(value.committedPaths ?? []) === JSON.stringify([...R2_AUTHORITY_PATHS]))) &&
+    // every other protected path stays at the R.2 accepted closure
+    identityRecordMatches(
+      Object.fromEntries(r2ImmutablePaths.map((relative) =>
+        [relative, value.headProtectedIdentities?.[relative]])),
+      R2_PROTECTED_IDENTITIES, r2ImmutablePaths) &&
     Object.keys(value.headProtectedIdentities ?? {}).length ===
       PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
 }
@@ -756,7 +851,9 @@ function currentScopeState() {
   // record set to match exactly, so an unexplained extra commit is still rejected.
   const runtimeProtectedCommits = protectedHistoryCommits.filter((commit) =>
     commit !== APPROVED_ACTIVATOR_TRANSITION &&
-    commit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION);
+    commit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    commit !== APPROVED_R2_VERIFICATION_TRANSITION &&
+    commit !== APPROVED_R2_STRICT_DEFAULT_TRANSITION);
   const parentOf = (commit) =>
     git(ROOT, ["rev-parse", `${commit}^`], { allowFailure: true });
   const payloadDurabilityRepairCommit = runtimeProtectedCommits.find((commit) =>
@@ -768,6 +865,18 @@ function currentScopeState() {
   const aliasTransitionPresent =
     protectedHistoryCommits.includes(APPROVED_ACTIVATOR_ALIAS_TRANSITION);
   const aliasTransitionGit = (args) => aliasTransitionPresent ? git(ROOT, args) : null;
+  const r2AuthorityCommit = runtimeProtectedCommits.find((commit) =>
+    parentOf(commit) === APPROVED_R2_STRICT_DEFAULT_TRANSITION) ?? null;
+  const r2AuthorityGit = (args) => r2AuthorityCommit ? git(ROOT, args) : null;
+  const r2Present = (commit) => protectedHistoryCommits.includes(commit);
+  const r2TransitionEvidence = (commit) => (r2Present(commit) ? Object.freeze({
+    parent: git(ROOT, ["rev-parse", `${commit}^`]),
+    subject: git(ROOT, ["show", "-s", "--format=%s", commit]),
+    paths: lines(["diff-tree", "--no-commit-id", "--name-only", "-r", commit,
+      "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS]),
+    beforeIdentity: gitBlobIdentity(`${commit}^`, ACTIVATOR_REL),
+    afterIdentity: gitBlobIdentity(commit, ACTIVATOR_REL),
+  }) : null);
   return {
     head: git(ROOT, ["rev-parse", "HEAD"]),
     branch: git(ROOT, ["branch", "--show-current"]),
@@ -821,6 +930,19 @@ function currentScopeState() {
       ? gitBlobIdentity(`${activatorAliasAuthorityCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
     activatorAliasAuthorityAfterIdentity: activatorAliasAuthorityCommit
       ? gitBlobIdentity(activatorAliasAuthorityCommit, PAYLOAD_VALIDATOR_REL) : null,
+    r2VerificationTransition: r2TransitionEvidence(APPROVED_R2_VERIFICATION_TRANSITION),
+    r2StrictDefaultTransition: r2TransitionEvidence(APPROVED_R2_STRICT_DEFAULT_TRANSITION),
+    r2AuthorityCommit,
+    r2AuthorityParent: r2AuthorityGit(["rev-parse", `${r2AuthorityCommit}^`]),
+    r2AuthoritySubject: r2AuthorityGit(["show", "-s", "--format=%s", r2AuthorityCommit]),
+    r2AuthorityPaths: r2AuthorityCommit
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r", r2AuthorityCommit,
+        "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    r2AuthorityBeforeIdentity: r2AuthorityCommit
+      ? gitBlobIdentity(`${r2AuthorityCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
+    r2AuthorityAfterIdentity: r2AuthorityCommit
+      ? gitBlobIdentity(r2AuthorityCommit, PAYLOAD_VALIDATOR_REL) : null,
     executionPayloadValidatorIdentity:
       sha256Bytes(fs.readFileSync(path.join(ROOT, PAYLOAD_VALIDATOR_REL))),
     parent: git(ROOT, ["rev-parse", "HEAD^"]),
@@ -867,6 +989,9 @@ function baseScope(overrides = {}) {
     activatorAliasAuthorityParent: null, activatorAliasAuthoritySubject: null,
     activatorAliasAuthorityPaths: [], activatorAliasAuthorityBeforeIdentity: null,
     activatorAliasAuthorityAfterIdentity: null,
+    r2VerificationTransition: null, r2StrictDefaultTransition: null,
+    r2AuthorityCommit: null, r2AuthorityParent: null, r2AuthoritySubject: null,
+    r2AuthorityPaths: [], r2AuthorityBeforeIdentity: null, r2AuthorityAfterIdentity: null,
     ...overrides,
   };
 }
@@ -927,6 +1052,45 @@ function extendedAuthorityScope(overrides = {}) {
     executionPayloadValidatorIdentity: EXTENDED_AUTHORITY_IDENTITY,
     headProtectedIdentities: { ...EXTENDED_PROTECTED_IDENTITIES,
       [PAYLOAD_VALIDATOR_REL]: EXTENDED_AUTHORITY_IDENTITY },
+    ...overrides,
+  });
+}
+
+// Fixture identities for the R.2 (seven-transition) era.
+const R2_FIXTURE_AUTHORITY_COMMIT = "d".repeat(40);
+const R2_FIXTURE_AUTHORITY_IDENTITY = "e".repeat(64);
+function r2AuthorityScope(overrides = {}) {
+  const evidence = (parent, subject, before, after) => Object.freeze({
+    parent, subject, paths: [...APPROVED_R2_TRANSITION_PATHS],
+    beforeIdentity: before, afterIdentity: after,
+  });
+  return extendedAuthorityScope({
+    head: R2_FIXTURE_AUTHORITY_COMMIT,
+    parent: APPROVED_R2_STRICT_DEFAULT_TRANSITION,
+    subject: R2_AUTHORITY_SUBJECT,
+    committedPaths: [...R2_AUTHORITY_PATHS],
+    protectedHistory: [...APPROVED_PROTECTED_HISTORY,
+      `${EXTENDED_REPAIR_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`,
+      `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+      `${EXTENDED_AUTHORITY_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`,
+      `${APPROVED_R2_VERIFICATION_TRANSITION}\t${ACTIVATOR_REL}`,
+      `${APPROVED_R2_STRICT_DEFAULT_TRANSITION}\t${ACTIVATOR_REL}`,
+      `${R2_FIXTURE_AUTHORITY_COMMIT}\t${PAYLOAD_VALIDATOR_REL}`].sort(),
+    r2VerificationTransition: evidence(APPROVED_R2_VERIFICATION_PARENT,
+      APPROVED_R2_VERIFICATION_SUBJECT, APPROVED_R2_VERIFICATION_BEFORE_IDENTITY,
+      APPROVED_R2_VERIFICATION_AFTER_IDENTITY),
+    r2StrictDefaultTransition: evidence(APPROVED_R2_STRICT_DEFAULT_PARENT,
+      APPROVED_R2_STRICT_DEFAULT_SUBJECT, APPROVED_R2_STRICT_DEFAULT_BEFORE_IDENTITY,
+      APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY),
+    r2AuthorityCommit: R2_FIXTURE_AUTHORITY_COMMIT,
+    r2AuthorityParent: APPROVED_R2_STRICT_DEFAULT_TRANSITION,
+    r2AuthoritySubject: R2_AUTHORITY_SUBJECT,
+    r2AuthorityPaths: [...R2_AUTHORITY_PATHS],
+    r2AuthorityBeforeIdentity: R2_AUTHORITY_BEFORE_IDENTITY,
+    r2AuthorityAfterIdentity: R2_FIXTURE_AUTHORITY_IDENTITY,
+    executionPayloadValidatorIdentity: R2_FIXTURE_AUTHORITY_IDENTITY,
+    headProtectedIdentities: { ...R2_PROTECTED_IDENTITIES,
+      [PAYLOAD_VALIDATOR_REL]: R2_FIXTURE_AUTHORITY_IDENTITY },
     ...overrides,
   });
 }
@@ -1250,6 +1414,54 @@ function runScopeTests() {
       assert.throws(() => classifyPayloadScope(approvedAuthorityScope({
         ...committedRepair, ...override,
       })), /scope mismatch/u);
+    }
+  });
+  scopeTest("the exact approved R.2 receipt-verification sequence is accepted", () => {
+    assert.equal(classifyPayloadScope(r2AuthorityScope()), "committed-clean");
+    assert.equal(classifyPayloadScope(r2AuthorityScope({
+      head: "a".repeat(40), parent: R2_FIXTURE_AUTHORITY_COMMIT,
+      subject: "unrelated later descendant", committedPaths: ["README.md"],
+    })), "committed-clean");
+  });
+  scopeTest("every deviation from the approved R.2 authority sequence is rejected", () => {
+    const bend = (key, patch) => ({ [key]: { ...r2AuthorityScope()[key], ...patch } });
+    const history = (extra) => [...r2AuthorityScope().protectedHistory, extra].sort();
+    for (const override of [
+      // each approved R.2 transition, bound exactly
+      bend("r2VerificationTransition", { parent: "0".repeat(40) }),
+      bend("r2VerificationTransition", { subject: "same shape, unapproved subject" }),
+      bend("r2VerificationTransition", { paths: [ACTIVATOR_REL, PACKAGE_REL].sort() }),
+      bend("r2VerificationTransition", { beforeIdentity: "0".repeat(64) }),
+      bend("r2VerificationTransition", { afterIdentity: "0".repeat(64) }),
+      bend("r2StrictDefaultTransition", { parent: "0".repeat(40) }),
+      bend("r2StrictDefaultTransition", { subject: "same shape, unapproved subject" }),
+      bend("r2StrictDefaultTransition", { paths: [ACTIVATOR_REL, PACKAGE_REL].sort() }),
+      bend("r2StrictDefaultTransition", { beforeIdentity: "0".repeat(64) }),
+      bend("r2StrictDefaultTransition", { afterIdentity: "0".repeat(64) }),
+      { r2VerificationTransition: null },
+      { r2StrictDefaultTransition: null },
+      // the bounded self-transition
+      { r2AuthorityParent: "0".repeat(40) },
+      { r2AuthoritySubject: "same shape, unapproved subject" },
+      { r2AuthorityPaths: [PAYLOAD_VALIDATOR_REL, ACTIVATOR_REL].sort() },
+      { r2AuthorityBeforeIdentity: "0".repeat(64) },
+      { r2AuthorityAfterIdentity: "9".repeat(64) },
+      { executionPayloadValidatorIdentity: "9".repeat(64) },
+      // an eighth unexplained protected transition may never coexist
+      { protectedHistory: history(`${"8".repeat(40)}\t${ACTIVATOR_REL}`) },
+      { protectedHistory: history(`${"8".repeat(40)}\t${PACKAGE_REL}`) },
+      // the closure may not drift
+      { headProtectedIdentities: { ...R2_PROTECTED_IDENTITIES,
+        [ACTIVATOR_REL]: APPROVED_R2_VERIFICATION_BEFORE_IDENTITY } },
+      { headProtectedIdentities: { ...R2_PROTECTED_IDENTITIES,
+        [PACKAGE_REL]: "0".repeat(64) } },
+      { headProtectedIdentities: { ...R2_PROTECTED_IDENTITIES,
+        [PACKAGE_LOCK_REL]: "0".repeat(64) } },
+      // authority is main-branch only
+      { branch: "w3-publish-source-authority-r2-fixture" },
+    ]) {
+      assert.throws(() => classifyPayloadScope(r2AuthorityScope(override)),
+        /scope mismatch/u, JSON.stringify(Object.keys(override)));
     }
   });
   scopeTest("the exact approved activator alias authority sequence is accepted", () => {
