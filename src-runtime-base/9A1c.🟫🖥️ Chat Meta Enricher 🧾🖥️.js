@@ -25,11 +25,16 @@
   // above, but this guard also protects the case where the decorator booted
   // first (e.g. on a chat URL) and then a later script-load somehow re-runs
   // this IIFE on a non-list surface.
-  const _path9A1c = (typeof location !== 'undefined' && typeof location.pathname === 'string') ? location.pathname : '';
-  if (/^\/(?:auth|settings|admin)(?:\/|$)/i.test(_path9A1c)) {
-    try { console.info('[Meta] surface skip:', _path9A1c); } catch (_) {}
-    return;
-  }
+  // Surface eligibility is LIVE route state, mirroring 9A1b. The module body
+  // always evaluates so the Registry subscription, the storage bridge and the
+  // boot sentinel are established for the document's lifetime; only the
+  // route-specific presentation layer (the self-heal interval and the main-list
+  // observer) is gated, so an excluded-first load no longer disables metadata
+  // for good and a later SPA navigation resumes it without a document reload.
+  const HO_META_EXCLUDED_SURFACE_RE = /^\/(?:auth|settings|admin)(?:\/|$)/i;
+  const hoMetaCurrentPath = () =>
+    (typeof location !== 'undefined' && typeof location.pathname === 'string') ? location.pathname : '';
+  const hoMetaSurfaceEligible = () => !HO_META_EXCLUDED_SURFACE_RE.test(hoMetaCurrentPath());
 
   const I = window.H2O.interface;
   let selfHealStarted = false;
@@ -1907,35 +1912,67 @@ const html = `
     window.addEventListener('storage', onRegistryStorageEvent, false);
   }
 
-    if (!selfHealStarted) {
-  selfHealStarted = true;
+  /* Route-specific expensive layer.
+
+     The Registry subscription and the storage bridge above are core: they are
+     cheap, product-wide, and must survive route changes so a resume does not
+     have to rebuild durable state. Only the self-heal interval and the main-list
+     observer are torn down off-route. selfHealStarted is retained as the
+     one-shot marker for first activation; hoMetaSelfHealId is the live handle. */
+  let hoMetaSelfHealId = 0;
+
+  function hoMetaActivate() {
+    if (hoMetaSelfHealId) return;            // already active -- exactly once
+    selfHealStarted = true;
 
     // ✅ Self-heal: if main list renders without meta rows, re-kick
-setInterval(() => {
-  if (I.lock.locked()) return;
-  if (Date.now() < HO_META_SKIP_UNTIL) return;
-  if (!isProjectPagePath()) return;
+    hoMetaSelfHealId = setInterval(() => {
+      if (I.lock.locked()) return;
+      if (Date.now() < HO_META_SKIP_UNTIL) return;
+      if (!isProjectPagePath()) return;
 
-  const links = listProjectCardLinks();
-  if (!links.length) return;
+      const links = listProjectCardLinks();
+      if (!links.length) return;
 
-  const sample = [...links].slice(0, 6);
-  const missing = sample.some(link => {
-    const wrapper = link.querySelector(':scope > div') || link.firstElementChild;
-    const leftCol = wrapper?.querySelector(':scope > div') || wrapper?.firstElementChild || wrapper;
-    return leftCol && !leftCol.querySelector(':scope > .ho-meta-row');
-  });
+      const sample = [...links].slice(0, 6);
+      const missing = sample.some(link => {
+        const wrapper = link.querySelector(':scope > div') || link.firstElementChild;
+        const leftCol = wrapper?.querySelector(':scope > div') || wrapper?.firstElementChild || wrapper;
+        return leftCol && !leftCol.querySelector(':scope > .ho-meta-row');
+      });
 
-  if (missing) kickMetaResync();
-}, 900);
+      if (missing) kickMetaResync();
+    }, 900);
 
-}
-  requestAnimationFrame(() => {
-    bindObserver();
-    bindRegistrySubscription();
-    kickMetaResync();
-    try { I.pin.schedule(sortMainListByPins); } catch {}
-  });
+    requestAnimationFrame(() => {
+      if (!hoMetaSurfaceEligible()) return;
+      bindObserver();
+      kickMetaResync();
+      try { I.pin.schedule(sortMainListByPins); } catch {}
+    });
+  }
+
+  function hoMetaSuspend() {
+    if (hoMetaSelfHealId) { clearInterval(hoMetaSelfHealId); hoMetaSelfHealId = 0; }
+    try { observer?.disconnect(); } catch {}
+    observer = null;
+    root = null;                             // force a fresh bind on resume
+  }
+
+  function hoMetaSyncToRoute() {
+    if (hoMetaSurfaceEligible()) hoMetaActivate();
+    else hoMetaSuspend();
+  }
+
+  /* Core, document-lifetime: established on every surface so a resume never has
+     to rebuild it. */
+  bindRegistrySubscription();
+
+  /* One route subscription per document, on the same Interface Kernel authority
+     9A1b uses. No History patch, no polling, no rAF route loop. */
+  window.addEventListener(I.nav.EVENT, hoMetaSyncToRoute, true);
+  window.addEventListener('popstate', hoMetaSyncToRoute, true);
+  hoMetaSyncToRoute();
 })();
 
 window.__h2o_interface_meta_booted = true;

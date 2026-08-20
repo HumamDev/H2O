@@ -25,11 +25,17 @@
   // navigation back to a chat surface won't re-run the IIFE, but in current
   // chatgpt.com flows the user lands directly on a chat or home URL and only
   // visits /settings as a leaf surface, so a coarse path skip is acceptable.
-  const _path9A1b = (typeof location !== 'undefined' && typeof location.pathname === 'string') ? location.pathname : '';
-  if (/^\/(?:auth|settings|admin)(?:\/|$)/i.test(_path9A1b)) {
-    try { console.info('[Decorator] surface skip:', _path9A1b); } catch (_) {}
-    return;
-  }
+  // Surface eligibility is LIVE route state, not module-load state. The module
+  // body always evaluates, so its document-lifetime authority (styles, handlers,
+  // diagnostics, boot sentinel) exists even when the first paint is an excluded
+  // surface. Only the expensive layer -- the periodic scan and the body-subtree
+  // observer -- is gated, and it is driven by the Interface Kernel ho:navigate
+  // authority rather than by a one-shot startup path test, so an excluded-first
+  // document recovers on SPA navigation without re-evaluating this IIFE.
+  const HO_EXCLUDED_SURFACE_RE = /^\/(?:auth|settings|admin)(?:\/|$)/i;
+  const hoCurrentPath = () =>
+    (typeof location !== 'undefined' && typeof location.pathname === 'string') ? location.pathname : '';
+  const hoSurfaceEligible = () => !HO_EXCLUDED_SURFACE_RE.test(hoCurrentPath());
 
   const I = window.H2O.interface;
   const ACTIVITY_STYLE_KEY = "ho:chat-list-activity-style";
@@ -2309,21 +2315,49 @@ window.addEventListener(ACTIVITY_STYLE_EVENT, (event) => {
   }
 }, true);
 
-scanSidebar();
-
-
 // ✅ FORCE rescans because ChatGPT lists are virtualized / lazy-rendered
 let hoForceTick = 0;
 
-setInterval(() => {
-  if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
+/* Lifecycle-owned expensive layer.
+
+   Both handles start empty so an excluded-first document holds no scan
+   authority at all, and activate is idempotent so repeated eligible route
+   events cannot stack a second interval or a second observer. Suspending
+   clears both, which is what makes the transition to /settings stop the
+   background work instead of merely hiding its output. */
+let hoScanIntervalId = 0;
+let hoScanObserver = null;
+
+function hoActivateScanLayer() {
+  if (hoScanIntervalId) return;              // already active -- exactly once
+  hoScanIntervalId = setInterval(() => {
+    if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
+    scanSidebar();
+  }, 1200);
+  if (!hoScanObserver) {
+    hoScanObserver = new MutationObserver(I.utils.debounce(scanSidebar, 50));
+    hoScanObserver.observe(document.body, { childList: true, subtree: true });
+  }
   scanSidebar();
-}, 1200);
+  requestAnimationFrame(scanSidebar);
+  setTimeout(scanSidebar, 600);
+  setTimeout(scanSidebar, 1500);
+}
 
+function hoSuspendScanLayer() {
+  if (hoScanIntervalId) { clearInterval(hoScanIntervalId); hoScanIntervalId = 0; }
+  if (hoScanObserver) { try { hoScanObserver.disconnect(); } catch (_) {} hoScanObserver = null; }
+  /* Close an open palette so no route-ineligible row UI keeps operating. This
+     is presentation state only -- no stored colour or pin state is touched. */
+  try {
+    if (hoOpenPalette && hoOpenPalette.classList.contains("show")) hoOpenPalette.classList.remove("show");
+  } catch (_) {}
+}
 
-requestAnimationFrame(scanSidebar);
-setTimeout(scanSidebar, 600);
-setTimeout(scanSidebar, 1500);
+function hoSyncScanLayerToRoute() {
+  if (hoSurfaceEligible()) hoActivateScanLayer();
+  else hoSuspendScanLayer();
+}
 
 
 
@@ -2435,11 +2469,8 @@ document.addEventListener("auxclick", e => {
      ───────────────────────────────────────── */
 
   // ---- observe DOM ----
-const rescan = I.utils.debounce(scanSidebar, 50);
-  const mo = new MutationObserver(rescan);
-  mo.observe(document.body, { childList: true, subtree: true });
-
-  scanSidebar();
+  // The body-subtree observer and the initial scan are owned by
+  // hoActivateScanLayer so they can be disconnected again on an excluded route.
 
 window.addEventListener(I.nav.EVENT, markActiveSidebarLink, true);
 window.addEventListener("h2o:interface:meta-mirror", (event) => {
@@ -2450,6 +2481,17 @@ window.addEventListener("h2o:interface:row-tint-change", (event) => {
 }, true);
 window.addEventListener("evt:h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
 window.addEventListener("h2o:library:cross-surface-sync", handleCrossSurfaceMetaRefresh, true);
+/* One route subscription per document. The Interface Kernel dispatches
+   ho:navigate synchronously after the real pushState/replaceState, so this
+   handler reads the already-updated location.pathname. No History patch, no
+   polling, no rAF loop and no additional route observer is introduced. */
+window.addEventListener(I.nav.EVENT, hoSyncScanLayerToRoute, true);
+window.addEventListener('popstate', hoSyncScanLayerToRoute, true);
+hoSyncScanLayerToRoute();
+
+/* The sentinel now means "decorator core authority is established", which is
+   true on every surface. 9A1c depends on it, so it must not encode the
+   accident of which route the document happened to load on. */
 window.__h2o_interface_decorator_booted = true;
 
 // Diagnostics: snapshot of decorator state. Call from the DevTools console as
