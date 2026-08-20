@@ -1336,7 +1336,7 @@ function scheduleChatMetaDecorationRefresh(chatId) {
     const ids = Array.from(hoMetaRefreshIds);
     hoMetaRefreshIds.clear();
     if (!ids.length) {
-      scanSidebar();
+      hoRequestScan('meta-full-refresh');
       return;
     }
     ids.forEach(refreshChatMetaDecorations);
@@ -2311,7 +2311,7 @@ function scanSidebar() {
 window.addEventListener(ACTIVITY_STYLE_EVENT, (event) => {
   applyActivityStyle(event?.detail?.style);
   if (!(hoOpenPalette && hoOpenPalette.classList.contains("show"))) {
-    requestAnimationFrame(scanSidebar);
+    hoRequestScan('activity-style');
   }
 }, true);
 
@@ -2325,27 +2325,72 @@ let hoForceTick = 0;
    events cannot stack a second interval or a second observer. Suspending
    clears both, which is what makes the transition to /settings stop the
    background work instead of merely hiding its output. */
-let hoScanIntervalId = 0;
+let hoScanActive = false;
 let hoScanObserver = null;
+let hoScanRecoveryId = 0;
+let hoScanPendingId = 0;
+let hoScanDirty = false;
+let hoScanSettleIds = [];
+
+/* Coalescing window for a burst of requests. The body observer used to own its
+   own debounce; folding it into the scheduler keeps exactly one queue. */
+const HO_SCAN_COALESCE_MS = 50;
+
+/* Slow bounded recovery. The old watchdog ran a full ~6.9 ms read pass every
+   1.2 s whether or not anything had changed, which on an idle list was pure
+   waste once CV-3.48 had already driven the write cost to zero. A fallback is
+   still needed because the observer watches childList/subtree but NOT
+   attributes, so an attribute-only recycle (an href swapped on a reused anchor)
+   produces no signal any other trigger sees. This runs rarely and reconciles
+   through the same coalescer. */
+const HO_SCAN_RECOVERY_MS = 15000;
+
+/* One canonical request boundary. Every full-reconciliation trigger funnels
+   through here, so N requests inside one window collapse to one pass and no
+   trigger family can own an independent queue. */
+function hoRequestScan(_reason) {
+  if (!hoScanActive) return;                 // suspended: never queue work
+  hoScanDirty = true;
+  if (hoScanPendingId) return;               // exactly one pending flush
+  hoScanPendingId = setTimeout(hoFlushScan, HO_SCAN_COALESCE_MS);
+}
+
+function hoFlushScan() {
+  hoScanPendingId = 0;
+  if (!hoScanActive) { hoScanDirty = false; return; }
+  if (!hoScanDirty) return;
+  hoScanDirty = false;
+  if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
+  scanSidebar();
+}
 
 function hoActivateScanLayer() {
-  if (hoScanIntervalId) return;              // already active -- exactly once
-  hoScanIntervalId = setInterval(() => {
-    if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
-    scanSidebar();
-  }, 1200);
+  if (hoScanActive) return;                  // already active -- exactly once
+  hoScanActive = true;
   if (!hoScanObserver) {
-    hoScanObserver = new MutationObserver(I.utils.debounce(scanSidebar, 50));
+    hoScanObserver = new MutationObserver(() => hoRequestScan('dom'));
     hoScanObserver.observe(document.body, { childList: true, subtree: true });
   }
-  scanSidebar();
-  requestAnimationFrame(scanSidebar);
-  setTimeout(scanSidebar, 600);
-  setTimeout(scanSidebar, 1500);
+  if (!hoScanRecoveryId) {
+    hoScanRecoveryId = setInterval(() => hoRequestScan('recovery'), HO_SCAN_RECOVERY_MS);
+  }
+  /* Reconcile now, then two bounded settling requests for ChatGPT's lazy
+     rendering. These are requests, not direct passes, so they coalesce with any
+     DOM activity happening at the same time instead of stacking. */
+  hoRequestScan('activate');
+  hoScanSettleIds = [
+    setTimeout(() => hoRequestScan('activate-settle-1'), 600),
+    setTimeout(() => hoRequestScan('activate-settle-2'), 1500),
+  ];
 }
 
 function hoSuspendScanLayer() {
-  if (hoScanIntervalId) { clearInterval(hoScanIntervalId); hoScanIntervalId = 0; }
+  hoScanActive = false;
+  hoScanDirty = false;
+  if (hoScanPendingId) { clearTimeout(hoScanPendingId); hoScanPendingId = 0; }
+  if (hoScanRecoveryId) { clearInterval(hoScanRecoveryId); hoScanRecoveryId = 0; }
+  for (const id of hoScanSettleIds) { try { clearTimeout(id); } catch (_) {} }
+  hoScanSettleIds = [];
   if (hoScanObserver) { try { hoScanObserver.disconnect(); } catch (_) {} hoScanObserver = null; }
   /* Close an open palette so no route-ineligible row UI keeps operating. This
      is presentation state only -- no stored colour or pin state is touched. */
