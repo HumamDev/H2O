@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -66,6 +67,7 @@ function makeStorage(seed = {}) {
   const map = new Map(Object.entries(seed));
   return {
     failWrites: false,
+    writeError: null,
     failEnumeration: false,
     /* [2C] Per-key write failure. `failWrites` fails everything, which cannot
      * express "the SECOND of two stores failed" — the exact case the import
@@ -75,7 +77,10 @@ function makeStorage(seed = {}) {
     writes: 0,
     getItem(k) { return map.has(k) ? map.get(k) : null; },
     setItem(k, v) {
-      if (this.failWrites) throw new Error('QuotaExceededError (mock)');
+      /* [2-storage] An injected exception shape, when supplied, is thrown
+       * verbatim so the classifier sees a real name/code. Default null keeps
+       * every earlier case on the original generic error. */
+      if (this.failWrites) throw (this.writeError || new Error('QuotaExceededError (mock)'));
       if (this.failWriteFor && this.failWriteFor(String(k))) {
       /* [2C-closure] A storage layer that writes and STILL throws. Independent
        * review found the rollback trusting the return value and reporting a
@@ -2413,7 +2418,7 @@ function main() {
     const i = src.indexOf('const commitPromptUsage = (id) => {');
     assert.notEqual(i, -1, 'commitPromptUsage not found');
     const block = src.slice(i, src.indexOf('\n      };', i));
-    assert.match(block, /FEEDBACK_PM\.say\('Storage write failed', 'error', root\)/);
+    assert.match(block, /FEEDBACK_PM_writeFailure\(\w+, root\)/);
     assert.doesNotMatch(block, /DOM_setInputText/, 'must not re-insert');
     assert.doesNotMatch(block, /closePanel/, 'must not change panel lifecycle on failure');
   });
@@ -3235,6 +3240,187 @@ function main() {
     assert.equal(store.getItem(quickKey2C(c.t)), legacyQuick, 'legacy Quick bytes untouched');
     assert.equal(store.writes, writes, 'and no write was attempted at all');
   });
+
+
+  /* ── [2-storage] Classified write-failure faults ────────────────────────
+   * The write path used to collapse quota, blocked storage, an unencodable
+   * value and an unrecognised throw into one boolean, so the user got one
+   * sentence for four unrelated conditions. These cases drive the SHIPPED
+   * classifier over the SHIPPED persistence path and assert both halves of the
+   * contract: the right kind is reported, and nothing about the stored library
+   * moves. Classification must fail closed — a message that merely mentions
+   * quota is not a quota exception. */
+
+  const KEY_P = 'h2o:prm:cgx:prmptmngr:state:prompts:v1';
+  const KEY_Q = 'h2o:prm:cgx:prmptmngr:state:quick:v1';
+  const namedError = (name, extra = {}) => Object.assign(new Error(`${name} (injected)`), { name }, extra);
+
+  /* Boot with a seeded library, arm a fault, attempt one commit, and report
+   * everything an assertion could want about what survived. */
+  function writeFault({ error = null, list = null, key = KEY_P, quick = false } = {}) {
+    const seedP = [{ id: 'p1', title: 'Kept', body: 'Body', type: 'prompt', favorite: false, createdAt: 1, updatedAt: 1 }];
+    const seedQ = [{ id: 'q1', text: 'Kept quick', order: 0, createdAt: 1, updatedAt: 1 }];
+    const store = makeStorage({ [KEY_P]: JSON.stringify(seedP), [KEY_Q]: JSON.stringify(seedQ) });
+    const { t, emitted } = loadModule(store);
+    const beforeBytes = store.getItem(key);
+    const beforeState = plain(quick ? t.state.data.quick : t.state.data.prompts);
+    const beforeFailures = t.diag.counters.writeFailures;
+    const beforeWrites = store.writes;
+    const eventsBefore = changedEvents(emitted).length;
+
+    if (error) { store.failWrites = true; store.writeError = error; }
+    const candidate = list || (quick
+      ? seedQ.concat([{ id: 'q2', text: 'New quick', order: 1, createdAt: 2, updatedAt: 2 }])
+      : seedP.concat([{ id: 'p2', title: 'New', body: 'B', type: 'prompt', favorite: false, createdAt: 2, updatedAt: 2 }]));
+    const res = quick ? t.engine.commitQuickResult(candidate) : t.engine.commitPromptsResult(candidate);
+    store.failWrites = false; store.writeError = null;
+
+    return {
+      t, store, res,
+      bytesUnchanged: store.getItem(key) === beforeBytes,
+      stateUnchanged: JSON.stringify(plain(quick ? t.state.data.quick : t.state.data.prompts)) === JSON.stringify(beforeState),
+      newEvents: changedEvents(emitted).length - eventsBefore,
+      failuresDelta: t.diag.counters.writeFailures - beforeFailures,
+      writesDelta: store.writes - beforeWrites,
+    };
+  }
+
+  const assertRefusedSafely = (o, expectedKind, label) => {
+    assert.equal(o.res.ok, false, `${label}: the write must be refused`);
+    assert.equal(o.res.kind, expectedKind, `${label}: expected kind ${expectedKind}, got ${o.res.kind}`);
+    assert.ok(o.stateUnchanged, `${label}: the authoritative in-memory list must be untouched`);
+    assert.ok(o.bytesUnchanged, `${label}: the stored bytes must be untouched`);
+    assert.equal(o.newEvents, 0, `${label}: a refused write must emit no changed event`);
+    assert.equal(o.failuresDelta, 1, `${label}: the write-failure counter must advance exactly once`);
+    assert.equal(o.t.state.dataError, true, `${label}: dataError must latch`);
+  };
+
+  check('[2-storage] A: QuotaExceededError classifies as quota and changes nothing', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    assertRefusedSafely(writeFault({ error: namedError('QuotaExceededError') }), K.quota, 'quota-by-name');
+  });
+
+  check('[2-storage] A2: the legacy numeric quota code is honoured', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    assertRefusedSafely(writeFault({ error: Object.assign(new Error('quota'), { name: 'Error', code: 22 }) }), K.quota, 'quota-by-code-22');
+    assertRefusedSafely(writeFault({ error: Object.assign(new Error('quota'), { name: 'Error', code: 1014 }) }), K.quota, 'quota-by-code-1014');
+  });
+
+  check('[2-storage] B: SecurityError classifies as blocked and changes nothing', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    assertRefusedSafely(writeFault({ error: namedError('SecurityError') }), K.blocked, 'blocked-security');
+    assertRefusedSafely(writeFault({ error: namedError('InvalidStateError') }), K.blocked, 'blocked-invalid-state');
+  });
+
+  check('[2-storage] C: an unencodable value classifies as serialization', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    const circular = [];
+    circular.push(circular);                       // Array.isArray holds; stringify throws
+    const o = writeFault({ list: circular });
+    assertRefusedSafely(o, K.serialization, 'serialization');
+  });
+
+  check('[2-storage] C2: a serialization failure never reaches localStorage', () => {
+    const circular = [];
+    circular.push(circular);
+    const o = writeFault({ list: circular });
+    assert.equal(o.writesDelta, 0,
+      'setItem must not be attempted when the value could not be encoded');
+  });
+
+  check('[2-storage] D: an unrecognised throw stays UNKNOWN and is never guessed', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    assertRefusedSafely(writeFault({ error: new Error('something else entirely') }), K.unknown, 'unknown');
+    /* Fail-closed proof: an error whose MESSAGE mentions quota but whose name
+     * and code do not must NOT be promoted to quota. */
+    const o = writeFault({ error: new Error('QuotaExceededError (simulated)') });
+    assert.equal(o.res.kind, K.unknown,
+      'a message mentioning quota is not evidence of quota — classification must fail closed');
+  });
+
+  check('[2-storage] the Quick library refuses and preserves identically', () => {
+    const K = loadModule(makeStorage()).t.writeKinds;
+    assertRefusedSafely(writeFault({ error: namedError('QuotaExceededError'), key: KEY_Q, quick: true }), K.quota, 'quick-quota');
+    assertRefusedSafely(writeFault({ error: namedError('SecurityError'), key: KEY_Q, quick: true }), K.blocked, 'quick-blocked');
+  });
+
+  check('[2-storage] a successful write still adopts, emits and reports ok', () => {
+    const o = writeFault({});                       // no fault armed
+    assert.equal(o.res.ok, true, 'an unfaulted commit must succeed');
+    /* Two, not one: the commit path deliberately emits the canonical event
+     * and its legacy alias. The contract under test is that a refusal emits
+     * NEITHER, which the fault cases assert as 0. */
+    assert.equal(o.newEvents, 2, 'success emits the canonical and legacy changed events');
+    assert.equal(o.failuresDelta, 0, 'success must not touch the failure counter');
+    assert.ok(!o.stateUnchanged, 'success must adopt the candidate');
+  });
+
+  check('[2-storage] every kind maps to a distinct, truthful message', () => {
+    const { t } = loadModule(makeStorage());
+    const K = t.writeKinds;
+    const msgs = [K.quota, K.blocked, K.serialization, K.unknown].map(k => t.writeMessage(k));
+    assert.equal(new Set(msgs).size, 4, 'the four kinds must not share copy');
+    for (const m of msgs) {
+      assert.ok(m.length > 0 && m.length < 200, `message must be concise: ${m}`);
+      assert.ok(/unchanged/i.test(m), `message must state the library is unchanged: ${m}`);
+      assert.ok(!/\bsaved\b/i.test(m), `a failure message must not read as success: ${m}`);
+      /* PM cannot know remaining localStorage headroom, so it must never imply it. */
+      assert.ok(!/\d+\s*%/.test(m) && !/\d+\s*(KB|MB|GB)/i.test(m),
+        `message must not claim capacity it cannot measure: ${m}`);
+    }
+    assert.ok(/full/i.test(t.writeMessage(K.quota)), 'quota copy should name the full store');
+    assert.ok(/Export Library/.test(t.writeMessage(K.quota)), 'quota copy should offer the recovery action');
+    assert.ok(/unavailable|blocked/i.test(t.writeMessage(K.blocked)), 'blocked copy should name the cause');
+    assert.equal(t.writeMessage('not-a-kind'), t.writeMessage(K.unknown),
+      'an unrecognised kind must fall back to the generic message, never throw');
+  });
+
+  check('[2-storage] the classifier itself fails closed on junk input', () => {
+    const { t } = loadModule(makeStorage());
+    const K = t.writeKinds;
+    for (const junk of [null, undefined, {}, 'QuotaExceededError', 0, new Error('')]) {
+      assert.equal(t.classifyWriteError(junk), K.unknown, `junk must classify UNKNOWN: ${String(junk)}`);
+    }
+  });
+
+
+
+  /* ── [2-storage] Reorder silent-failure negative control ────────────────
+   * The proven defect this mission closes: a refused reorder write returned in
+   * silence, so the arrow looked dead. A test that only asserts the fix would
+   * pass just as happily against a harness that cannot see the defect, so the
+   * PRE-FIX bytes are read from Git object authority and required to exhibit
+   * it. argv array, never a shell — the module path contains emoji. */
+  check('[2-storage] negative control: pre-fix reorder was silent, current reports', () => {
+    const PRE_FIX = '424e9b9be4618a29fbfe582e9a46287cc0e915c6';
+    let before;
+    try {
+      before = execFileSync('git', ['show', `${PRE_FIX}:${MODULE_REL}`],
+        { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    } catch (e) {
+      assert.fail(`could not read pre-fix bytes from ${PRE_FIX}: ${e.message}`);
+    }
+
+    const reorderBlock = (text) => {
+      const i = text.indexOf('const moveBtn = e.target.closest');
+      assert.ok(i !== -1, 'reorder handler not found');
+      const end = text.indexOf('const starBtn = e.target.closest', i);
+      return text.slice(i, end > i ? end : i + 3000);
+    };
+
+    const oldBlock = reorderBlock(before);
+    assert.match(oldBlock, /if \(!ENGINE_PM\.commitPrompts\(next\)\) return;/,
+      'pre-fix reorder should show the silent return — the defect this closes');
+    assert.ok(!/FEEDBACK_PM_writeFailure|FEEDBACK_PM\.say\('Storage write failed'/.test(oldBlock),
+      'pre-fix reorder reported nothing on a refused write (defect reproduced)');
+
+    const newBlock = reorderBlock(readModuleSource());
+    assert.ok(!/if \(!ENGINE_PM\.commitPrompts\(next\)\) return;/.test(newBlock),
+      'the silent return must be gone');
+    assert.match(newBlock, /FEEDBACK_PM_writeFailure\(/,
+      'the current reorder must report a refused write');
+  });
+
 
   console.log('');
   console.log(`PASS ${PASS.length}`);

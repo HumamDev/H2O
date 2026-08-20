@@ -35,6 +35,9 @@ const PINNED_QUARANTINE_SHA256 = '6c7c001165d5b3c9bf7b49ee724716e9df3f2e1b57f05e
 // rules at all. Pinning the digest of the ranking block — the constants through
 // to the move-availability authority — makes any drift a hard failure rather
 // than a scoring change nobody notices until a list looks subtly wrong.
+/* [2-storage] Storage keys at the time this mission landed. The classification
+ * work adds no schema and no migration, so this count must not move. */
+const PINNED_PM_KEY_COUNT = 12;
 const PINNED_RANKING_SHA256 = '8d8c7c8c5a516f42faa6c0f4cb4253d51e5e046fb64fd43dbfb41687d6a9de32';
 
 const SRC = fs.readFileSync(path.join(REPO_ROOT, MODULE_REL), 'utf8');
@@ -310,7 +313,7 @@ function main() {
   });
 
   check('save/commit paths report success truthfully', () => {
-    for (const fn of ['savePrompts', 'saveQuick', 'saveHistory', 'saveDrafts', 'savePasted']) {
+    for (const fn of ['savePromptsResult', 'saveQuickResult', 'saveHistory', 'saveDrafts', 'savePasted']) {
       assert.match(CODE, new RegExp(`${fn}\\(list\\)\\s*\\{\\s*return SAFE_try`),
         `${fn} must return its storage result`);
     }
@@ -373,8 +376,8 @@ function main() {
 
   check('commit adopts state BEFORE emitting the changed event', () => {
     for (const [fnName, stateField, persistFn] of [
-      ['savePrompts', 'STATE_PM.data.prompts', 'persistPrompts'],
-      ['saveQuick', 'STATE_PM.data.quick', 'persistQuick'],
+      ['savePromptsResult', 'STATE_PM.data.prompts', 'persistPrompts'],
+      ['saveQuickResult', 'STATE_PM.data.quick', 'persistQuick'],
     ]) {
       const fn = CODE.match(new RegExp(`${fnName}\\(list\\)\\s*\\{[\\s\\S]*?\\n    \\},`));
       assert.ok(fn, `${fnName} body not found`);
@@ -393,9 +396,11 @@ function main() {
         `${fnName}: state adoption must precede event publication — a synchronous ` +
         'listener would otherwise observe the replaced array');
 
-      // A failed persist must short-circuit before adoption/emit.
-      assert.match(body, new RegExp(`if \\(!ENGINE_PM\\.${persistFn}\\(next\\)\\) return false;`),
-        `${fnName} must abort on a failed write before adopting or emitting`);
+        // A failed persist must short-circuit before adoption/emit. The
+        // classified path returns the failing result itself rather than false.
+        const iShort = body.indexOf('if (!res.ok) return res;');
+        assert.ok(iShort >= 0 && iShort < iAdopt,
+          `${fnName} must abort on a failed write before adopting or emitting`);
     }
   });
 
@@ -1150,8 +1155,8 @@ function main() {
   check('[2A] the editor persists only through the approved commit helpers', () => {
     const ed = CODE.match(/const EDITOR_PM = \{[\s\S]*?\n  \};/);
     assert.ok(ed, 'EDITOR_PM block not found');
-    assert.match(ed[0], /ENGINE_PM\.commitPrompts\(/, 'prompt writes must use commitPrompts');
-    assert.match(ed[0], /ENGINE_PM\.commitQuick\(/, 'quick writes must use commitQuick');
+    assert.match(ed[0], /ENGINE_PM\.commitPromptsResult\(/, 'prompt writes must use commitPromptsResult');
+    assert.match(ed[0], /ENGINE_PM\.commitQuickResult\(/, 'quick writes must use commitQuickResult');
     // No direct storage access from the editor.
     assert.doesNotMatch(ed[0], /UTIL_storage\.set/, 'editor must not write storage directly');
     assert.doesNotMatch(ed[0], /localStorage/, 'editor must not touch localStorage directly');
@@ -1160,10 +1165,12 @@ function main() {
   check('[2A] a failed editor commit never reports success', () => {
     const ed = CODE.match(/const EDITOR_PM = \{[\s\S]*?\n  \};/)[0];
     // Every commit call in the editor is guarded and returns false on failure.
-    const guards = ed.match(/if \(!ENGINE_PM\.commit(Prompts|Quick)\([^)]*\)\)\s*\{[^}]*return false;/g) || [];
+    /* Scoped to STORAGE-write guards. A bare `if (!x.ok)` also matches the
+     * editor's validation guard, which never touches storage. */
+    const guards = ed.match(/if \(!\w+\.ok\)\s*\{[^}]*FEEDBACK_PM_writeFailure\([^)]*\);[^}]*return false;/g) || [];
     assert.ok(guards.length >= 4, `expected >=4 guarded commits, found ${guards.length}`);
     for (const g of guards) {
-      assert.match(g, /'Storage write failed', 'error'/, 'failure must raise an error-kind status');
+      assert.match(g, /FEEDBACK_PM_writeFailure\(\w+, root\)/, 'failure must raise the shared classified status');
     }
   });
 
@@ -1260,7 +1267,7 @@ function main() {
   check('[2A] duplicate persists before adopting and leaves no phantom', () => {
     const dup = CODE.match(/if \(act === 'duplicate'\)[\s\S]*?\n          \}/);
     assert.ok(dup, 'duplicate handler not found');
-    assert.match(dup[0], /if \(!ENGINE_PM\.commitPrompts\(next\)\)/, 'must persist before adopting');
+    assert.match(dup[0], /const \w+ = ENGINE_PM\.commitPromptsResult\(next\);/, 'must persist before adopting');
     assert.match(dup[0], /ENGINE_PM_buildDuplicate\(/);
     assert.match(dup[0], /ENGINE_PM_insertAfterId\(/);
   });
@@ -1410,7 +1417,7 @@ function main() {
   check('[fix] favourite write failure reports through FEEDBACK_PM', () => {
     const tf = CODE.match(/const toggleFavorite = [\s\S]*?\n      \};/);
     assert.ok(tf, 'toggleFavorite not found');
-    assert.match(tf[0], /if \(!ENGINE_PM\.commitPrompts\(next\)\) \{[\s\S]*?FEEDBACK_PM\.say\('Storage write failed', 'error', root\);[\s\S]*?return false;/,
+    assert.match(tf[0], /const \w+ = ENGINE_PM\.commitPromptsResult\(next\);[\s\S]*?if \(!\w+\.ok\) \{[\s\S]*?FEEDBACK_PM_writeFailure\(\w+, root\);[\s\S]*?return false;/,
       'a failed favourite commit must raise persistent error feedback');
     // the unknown-id early return must stay silent — it never attempted a write
     const early = tf[0].slice(0, tf[0].indexOf('const now'));
@@ -1465,7 +1472,7 @@ function main() {
     const body = SAVE[0];
     const tail = body.slice(body.indexOf('const list = STATE_PM.data.prompts'));
     const guardIdx = tail.indexOf("st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)");
-    const commitIdx = tail.indexOf('ENGINE_PM.commitPrompts(next)');
+    const commitIdx = tail.indexOf('ENGINE_PM.commitPromptsResult(next)');
     assert.ok(guardIdx !== -1, 'the prompt save path must guard the stale target');
     assert.ok(commitIdx !== -1 && guardIdx < commitIdx,
       'the guard must precede the commit, never follow it');
@@ -1475,7 +1482,7 @@ function main() {
     const body = SAVE[0];
     const q = body.slice(body.indexOf("if (st.kind === 'quick')"), body.indexOf('const title ='));
     const guardIdx = q.indexOf("st.mode === 'edit' && !EDITOR_PM_hasTarget(list, st.id)");
-    const commitIdx = q.indexOf('ENGINE_PM.commitQuick(next)');
+    const commitIdx = q.indexOf('ENGINE_PM.commitQuickResult(next)');
     assert.ok(guardIdx !== -1, 'the quick save path must guard the stale target');
     assert.ok(commitIdx !== -1 && guardIdx < commitIdx, 'guard precedes commit');
   });
@@ -1494,7 +1501,7 @@ function main() {
     const p = body.slice(body.indexOf('const plist = STATE_PM.data.prompts'));
     const guardIdx = p.indexOf('!EDITOR_PM_hasTarget(plist, st.id)');
     const filterIdx = p.indexOf('plist.filter(');
-    const commitIdx = p.indexOf('ENGINE_PM.commitPrompts(next)');
+    const commitIdx = p.indexOf('ENGINE_PM.commitPromptsResult(next)');
     assert.ok(guardIdx !== -1, 'the prompt delete path must guard the stale target');
     assert.ok(guardIdx < filterIdx, 'the guard must precede candidate construction');
     assert.ok(guardIdx < commitIdx, 'the guard must precede the commit');
@@ -1505,7 +1512,7 @@ function main() {
     const q = body.slice(body.indexOf("if (st.kind === 'quick')"), body.indexOf('const plist ='));
     const guardIdx = q.indexOf('!EDITOR_PM_hasTarget(list, st.id)');
     const filterIdx = q.indexOf('.filter(q => q && q.id !== st.id)');
-    const commitIdx = q.indexOf('ENGINE_PM.commitQuick(next)');
+    const commitIdx = q.indexOf('ENGINE_PM.commitQuickResult(next)');
     assert.ok(guardIdx !== -1, 'the quick delete path must guard the stale target');
     assert.ok(guardIdx < filterIdx, 'the guard must precede candidate construction');
     assert.ok(guardIdx < commitIdx, 'the guard must precede the commit');
@@ -1919,7 +1926,7 @@ function main() {
   check('[2B] usage counts insertion only, and never writes updatedAt', () => {
     const cu = CODE.match(/const commitPromptUsage = \(id\) => \{[\s\S]*?\n      \};/)[0];
     assert.match(cu, /ENGINE_PM_touchPromptUsage\(STATE_PM\.data\.prompts, id, UTIL_now\(\)\)/);
-    assert.match(cu, /FEEDBACK_PM\.say\('Storage write failed', 'error', root\)/);
+    assert.match(cu, /FEEDBACK_PM_writeFailure\(\w+, root\)/);
     assert.doesNotMatch(cu, /updatedAt/, 'usage is not an edit');
     // the Phase-1 updatedAt-on-use helper is gone
     assert.doesNotMatch(CODE, /touchPromptUpdatedAt/);
@@ -2084,7 +2091,7 @@ function main() {
     const block = CODE.slice(i, end > i ? end : i + 2400);
     const guard = block.indexOf('if (!slot || slot.id !== id || !slot[dir])');
     const reorder = block.indexOf('ENGINE_PM_reorderVisible(');
-    const commit = block.indexOf('ENGINE_PM.commitPrompts(');
+    const commit = block.indexOf('ENGINE_PM.commitPromptsResult(');
     const flash = block.indexOf('RENDER_PM.flashMoved(');
     assert.ok(guard !== -1, 'handler guard missing');
     assert.ok(guard < reorder, 'guard precedes ENGINE_PM_reorderVisible');
@@ -3324,6 +3331,90 @@ function main() {
       rsSlice('function CORE_PM_finishBoot() {', 'function CORE_PM_boot()')),
       'no new observer was introduced by the suppression work');
   });
+
+
+  /* ── [2-storage] Classified write-failure invariants ────────────────────
+   * Behaviour is proven by the storage-safety fault injection. These pin the
+   * shape that behaviour depends on: one shared reporting path, no silent
+   * refusal, no stale global error, and no capacity claim. */
+
+  check('[2-storage] no user-facing persistence path fails silently', () => {
+    /* Every commit*Result guard in a UI handler must report. The oracle is the
+     * absence of the old shape: a refused commit that simply returns. */
+    assert.doesNotMatch(CODE, /if \(!ENGINE_PM\.commit(Prompts|Quick)\(next\)\) return;/,
+      'a refused commit must never return without telling the user');
+    const guards = CODE.match(/if \(!w[a-z]\.ok\)\s*\{[^}]*\}/g) || [];
+    assert.ok(guards.length >= 8, `expected the classified guards, found ${guards.length}`);
+    for (const g of guards) {
+      assert.match(g, /FEEDBACK_PM_writeFailure\(/,
+        `every classified write guard must report through the shared helper: ${g.slice(0, 60)}`);
+    }
+  });
+
+  check('[2-storage] the reorder handler reports a refused write', () => {
+    const i = CODE.indexOf('const moveBtn = e.target.closest');
+    assert.ok(i !== -1, 'reorder handler not found');
+    const block = CODE.slice(i, CODE.indexOf('const starBtn = e.target.closest', i));
+    const commit = block.indexOf('ENGINE_PM.commitPromptsResult(');
+    const report = block.indexOf('FEEDBACK_PM_writeFailure(');
+    assert.ok(commit !== -1, 'reorder must persist through the classified commit');
+    assert.ok(report !== -1 && report > commit,
+      'reorder must report the refusal after attempting the write — this is the Issue closed here');
+  });
+
+  check('[2-storage] the generic duplicated failure literal is gone', () => {
+    const hits = (CODE.match(/FEEDBACK_PM\.say\('Storage write failed'/g) || []);
+    assert.equal(hits.length, 0,
+      `the duplicated generic literal must be replaced by the classified helper; found ${hits.length}`);
+    assert.equal((CODE.match(/const FEEDBACK_PM_writeFailure = /g) || []).length, 1,
+      'exactly one shared write-failure reporter');
+  });
+
+  check('[2-storage] classification is per-attempt, never a module-level last error', () => {
+    assert.doesNotMatch(CODE, /lastWriteError|LAST_WRITE_ERROR|STATE_PM\.lastWrite/,
+      'a stale global last-error field would describe the wrong attempt');
+    /* The kind is carried on the result object each attempt returns. */
+    assert.match(CODE, /const UTIL_writeFail = \(kind, error\) =>/, 'per-attempt failure factory missing');
+    assert.match(CODE, /setJSONResult\(key, obj\)/, 'classified write missing');
+  });
+
+  check('[2-storage] serialization is classified separately from the storage write', () => {
+    const fn = CODE.match(/setJSONResult\(key, obj\) \{[\s\S]*?\n    \},/);
+    assert.ok(fn, 'setJSONResult not found');
+    const body = fn[0];
+    const iSer = body.indexOf('PM_WRITE_SERIALIZATION');
+    const iSet = body.indexOf('localStorage.setItem');
+    assert.ok(iSer !== -1 && iSet !== -1 && iSer < iSet,
+      'serialization must be resolved before any setItem is attempted');
+    assert.match(body, /UTIL_classifyWriteError\(e\)/, 'the setItem catch must classify');
+  });
+
+  check('[2-storage] no message claims storage capacity PM cannot measure', () => {
+    for (const name of ['PM_MSG_WRITE_QUOTA', 'PM_MSG_WRITE_BLOCKED', 'PM_MSG_WRITE_SERIALIZATION', 'PM_MSG_WRITE_UNKNOWN']) {
+      const m = CODE.match(new RegExp(`const ${name} = '([^']*)'`));
+      assert.ok(m, `${name} missing`);
+      assert.ok(!/\d+\s*%/.test(m[1]) && !/\d+\s*(KB|MB|GB)/i.test(m[1]),
+        `${name} must not state capacity: ${m[1]}`);
+    }
+    assert.doesNotMatch(CODE, /navigator\.storage|storage\.estimate\(/,
+      'PM must not read an origin-wide estimate and present it as localStorage headroom');
+  });
+
+  check('[2-storage] the public API is unchanged and the surface stays internal', () => {
+    const api = CODE.match(/MOD_OBJ\.api\.\w+ = /g) || [];
+    assert.equal(api.length, 6, `the public API must stay at six methods, found ${api.length}`);
+    assert.match(CODE, /if \(W\.__H2O_PM_TEST__ === true\) \{/, 'the test surface must stay flag-gated');
+    const gate = CODE.indexOf('if (W.__H2O_PM_TEST__ === true) {');
+    assert.ok(CODE.indexOf('writeKinds:') > gate, 'writeKinds must live behind the test gate');
+    assert.ok(CODE.indexOf('writeMessage:') > gate, 'writeMessage must live behind the test gate');
+  });
+
+  check('[2-storage] no storage schema key was added or renamed', () => {
+    const keys = (CODE.match(/const KEY_PM_[A-Z0-9_]+ = /g) || []).length;
+    assert.equal(keys, PINNED_PM_KEY_COUNT,
+      `storage key count changed (${keys} vs ${PINNED_PM_KEY_COUNT}) — this mission adds no schema and no migration`);
+  });
+
 
   console.log('');
   console.log(`PASS ${PASS.length}`);

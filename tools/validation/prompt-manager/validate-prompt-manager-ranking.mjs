@@ -585,7 +585,7 @@ function main() {
   check('[source] a usage-persistence failure reports without undoing the insert', () => {
     const i = SRC.indexOf('const commitPromptUsage = (id) => {');
     const block = SRC.slice(i, SRC.indexOf('\n      };', i));
-    assert.match(block, /FEEDBACK_PM\.say\('Storage write failed', 'error', root\)/,
+    assert.match(block, /FEEDBACK_PM_writeFailure\(\w+, root\)/,
       'a failed usage write must be reported persistently');
     assert.doesNotMatch(block, /DOM_setInputText|closePanel/,
       'the already-successful insertion must not be re-run or undone');
@@ -1046,7 +1046,7 @@ function main() {
     assert.doesNotMatch(block, /ENGINE_PM_canMovePromptView/, 'and not a divergent rule');
     const guard = block.indexOf('if (!slot || slot.id !== id || !slot[dir])');
     const reorder = block.indexOf('ENGINE_PM_reorderVisible(');
-    const commit = block.indexOf('ENGINE_PM.commitPrompts(');
+    const commit = block.indexOf('ENGINE_PM.commitPromptsResult(');
     const flash = block.indexOf('RENDER_PM.flashMoved(');
     assert.ok(guard !== -1 && guard < reorder && guard < commit && guard < flash,
       'the guard precedes reorder, commit and flash');

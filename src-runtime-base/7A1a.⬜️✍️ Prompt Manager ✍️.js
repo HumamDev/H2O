@@ -293,6 +293,41 @@
   // { id, text, createdAt }
 
   /* ───────────────────────────── 🟩 TOOLS — UTILITIES 📄🔓💧 ───────────────────────────── */
+
+  /* [STORE] Write-failure kinds.
+   *
+   * A boolean `false` told every caller the same thing whatever went wrong, so
+   * the user got one generic sentence for four unrelated conditions. These kinds
+   * are INTERNAL: each classifies a single write attempt and travels with that
+   * attempt's own result object. There is deliberately no module-level "last
+   * error" field — a nested or later write would make such a field describe the
+   * wrong attempt, which is exactly the staleness this design avoids. */
+  const PM_WRITE_OK = 'ok';
+  const PM_WRITE_QUOTA = 'quota';
+  const PM_WRITE_BLOCKED = 'blocked';
+  const PM_WRITE_SERIALIZATION = 'serialization';
+  const PM_WRITE_UNKNOWN = 'unknown';
+
+  /* Classify a setItem exception. Fails closed: only an exception actually
+   * carrying the recognised quota or blocked signature is labelled as such, and
+   * anything else stays UNKNOWN rather than being guessed at. Legacy numeric
+   * codes are accepted alongside the modern DOMException names because the name
+   * is absent on some engines (22 = QuotaExceededError,
+   * 1014 = NS_ERROR_DOM_QUOTA_REACHED). */
+  const UTIL_classifyWriteError = (e) => {
+    const name = String((e && e.name) || '');
+    const code = Number(e && e.code);
+    if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return PM_WRITE_QUOTA;
+    if (code === 22 || code === 1014) return PM_WRITE_QUOTA;
+    if (name === 'SecurityError' || name === 'InvalidAccessError' || name === 'InvalidStateError') {
+      return PM_WRITE_BLOCKED;
+    }
+    return PM_WRITE_UNKNOWN;
+  };
+
+  const UTIL_writeOk = () => ({ ok: true, kind: PM_WRITE_OK, error: null });
+  const UTIL_writeFail = (kind, error) => ({ ok: false, kind, error: error || null });
+
   const UTIL_storage = {
     getStr(key, fallback = null) { try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; } },
     setStr(key, val) { try { localStorage.setItem(key, String(val)); return true; } catch { return false; } },
@@ -301,7 +336,35 @@
       if (s == null) return fallback;
       try { return JSON.parse(s); } catch { return fallback; }
     },
-    setJSON(key, obj) { try { localStorage.setItem(key, JSON.stringify(obj)); return true; } catch { return false; } },
+    /* [STORE] Classified write. Serialization and the storage write are two
+     * separate try blocks ON PURPOSE: a single catch around both cannot tell a
+     * value that could not be encoded from a store that could not accept it,
+     * and that distinction is the whole point of this path. When serialization
+     * fails no setItem is attempted at all, so the stored bytes are untouched.
+     *
+     * JSON.stringify returns undefined (without throwing) for undefined and for
+     * a lone function, so the string check is a real serialization failure and
+     * not defensive padding. */
+    setJSONResult(key, obj) {
+      let text;
+      try {
+        text = JSON.stringify(obj);
+      } catch (e) {
+        return UTIL_writeFail(PM_WRITE_SERIALIZATION, e);
+      }
+      if (typeof text !== 'string') {
+        return UTIL_writeFail(PM_WRITE_SERIALIZATION, new Error('value is not serializable'));
+      }
+      try {
+        localStorage.setItem(key, text);
+        return UTIL_writeOk();
+      } catch (e) {
+        return UTIL_writeFail(UTIL_classifyWriteError(e), e);
+      }
+    },
+    /* Boolean spelling retained so every existing caller and its pinned
+     * contract are unchanged; it is now a thin projection of setJSONResult. */
+    setJSON(key, obj) { return UTIL_storage.setJSONResult(key, obj).ok; },
     del(key) { try { localStorage.removeItem(key); return true; } catch { return false; } },
 
     /* [STORE] Raw read that distinguishes "absent" from "present but malformed".
@@ -1998,6 +2061,34 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
    * and the failure must not scroll away under a 2.5-second timeout. */
   const PM_MSG_TARGET_GONE = 'Item no longer exists';
 
+  /* [STORE] Classified write-failure messages.
+   *
+   * Every one states the same two facts first — the change was NOT saved, and
+   * the existing library is untouched — because the commit path guarantees both
+   * and because that is what the user actually needs to know. The cause is named
+   * only when the exception genuinely supports it; UNKNOWN says only that
+   * storage failed.
+   *
+   * Deliberately absent: any remaining-capacity claim. The browser does not
+   * expose localStorage headroom, so "N MB left" or "N% full" would be invented.
+   * Export is offered as a safety step, not promised to succeed — portability
+   * stays bounded by its own size limit. */
+  /* The word "saved" is avoided on purpose. A failure line containing it reads
+   * ambiguously beside the success line "Saved", and an existing editor gate
+   * asserts a failure message never matches /saved/i. "Could not save" carries
+   * the same meaning without the collision. */
+  const PM_MSG_WRITE_QUOTA = 'Could not save — site storage is full. Your library is unchanged. Export Library, then remove entries you no longer need.';
+  const PM_MSG_WRITE_BLOCKED = 'Could not save — browser storage is unavailable or blocked for this site. Your library is unchanged.';
+  const PM_MSG_WRITE_SERIALIZATION = 'Could not save — this change could not be encoded for storage. Your library is unchanged.';
+  const PM_MSG_WRITE_UNKNOWN = 'Could not save — storage write failed. Your library is unchanged.';
+
+  const PM_MSG_writeFailure = (kind) => {
+    if (kind === PM_WRITE_QUOTA) return PM_MSG_WRITE_QUOTA;
+    if (kind === PM_WRITE_BLOCKED) return PM_MSG_WRITE_BLOCKED;
+    if (kind === PM_WRITE_SERIALIZATION) return PM_MSG_WRITE_SERIALIZATION;
+    return PM_MSG_WRITE_UNKNOWN;
+  };
+
   /* Dirty comparison against the pristine draft. Field-wise rather than
    * serialized so key order can never produce a phantom dirty state. */
   const EDITOR_PM_isDirty = (kind, initial, draft) => {
@@ -2249,13 +2340,30 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     return { ok: true, list: rd.value };
   };
 
-  /* [ENGINE][STORE] Record a failed write uniformly. */
-  const ENGINE_PM_noteWriteFailure = (where) => {
+  /* [ENGINE][STORE] Record a failed write uniformly.
+   *
+   * The counter and dataError semantics are unchanged. The diagnostic line now
+   * carries the classified KIND only — never the payload, the stored value or
+   * the raw exception text — so a diagnostic dump can never leak Prompt or
+   * Quick Reply content that a user wrote. */
+  const ENGINE_PM_noteWriteFailure = (where, kind) => {
     DIAG.counters.writeFailures += 1;
     STATE_PM.dataError = true;
-    UTIL_diagErr(where, 'localStorage write failed');
+    const k = String(kind || PM_WRITE_UNKNOWN);
+    UTIL_diagErr(where, `localStorage write failed (${k})`);
     return false;
   };
+
+  /* Persist a candidate list under one key and return the CLASSIFIED result of
+   * that single attempt. Callers that only need a boolean keep using the
+   * existing persist, save and commit spellings; callers that must explain the
+   * failure to the user take the result object instead. */
+  const ENGINE_PM_persistListResult = (where, key, list) => SAFE_try(where, () => {
+    const next = Array.isArray(list) ? list : [];
+    const res = UTIL_storage.setJSONResult(key, next);
+    if (!res.ok) ENGINE_PM_noteWriteFailure(where, res.kind);
+    return res;
+  }, UTIL_writeFail(PM_WRITE_UNKNOWN, null));
 
   const ENGINE_PM = {
     /* [MIGRATE] Legacy `ho:pm:*` keys → namespaced keys. Non-destructive.
@@ -2648,23 +2756,17 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     /* [STORE] Raw persistence — writes bytes only.
      * Never adopts state and never emits. Kept separate from the commit path so
      * that state adoption always precedes event publication. */
+    persistPromptsResult(list) {
+      return ENGINE_PM_persistListResult('ENGINE_PM.persistPrompts', KEY_PM_STATE_PROMPTS_V1, list);
+    },
+    persistQuickResult(list) {
+      return ENGINE_PM_persistListResult('ENGINE_PM.persistQuick', KEY_PM_STATE_QUICK_V1, list);
+    },
     persistPrompts(list) {
-      return SAFE_try('ENGINE_PM.persistPrompts', () => {
-        const next = Array.isArray(list) ? list : [];
-        if (!UTIL_storage.setJSON(KEY_PM_STATE_PROMPTS_V1, next)) {
-          return ENGINE_PM_noteWriteFailure('ENGINE_PM.persistPrompts');
-        }
-        return true;
-      }, false);
+      return ENGINE_PM.persistPromptsResult(list).ok;
     },
     persistQuick(list) {
-      return SAFE_try('ENGINE_PM.persistQuick', () => {
-        const next = Array.isArray(list) ? list : [];
-        if (!UTIL_storage.setJSON(KEY_PM_STATE_QUICK_V1, next)) {
-          return ENGINE_PM_noteWriteFailure('ENGINE_PM.persistQuick');
-        }
-        return true;
-      }, false);
+      return ENGINE_PM.persistQuickResult(list).ok;
     },
 
     /* [STORE] Commit — the single ordering that callers and listeners rely on:
@@ -2682,22 +2784,36 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
      *
      * savePrompts/saveQuick are the public spelling of this same commit; they
      * are NOT raw writes. Use persist* when bytes-only is genuinely intended. */
-    savePrompts(list) {
+    savePromptsResult(list) {
       return SAFE_try('ENGINE_PM.savePrompts', () => {
         const next = Array.isArray(list) ? list : [];
-        if (!ENGINE_PM.persistPrompts(next)) return false;
+        const res = ENGINE_PM.persistPromptsResult(next);
+        if (!res.ok) return res;                   // nothing adopted, nothing emitted
         STATE_PM.data.prompts = next;              // adopt BEFORE publishing
         UTIL_emitPmChanged({ what: 'prompts' });
-        return true;
-      }, false);
+        return res;
+      }, UTIL_writeFail(PM_WRITE_UNKNOWN, null));
+    },
+    savePrompts(list) {
+      return ENGINE_PM.savePromptsResult(list).ok;
+    },
+    /* commit*Result carries the classified failure to the UI so the user can be
+     * told WHY. commit* keeps the boolean contract every existing caller and
+     * pinned invariant already relies on. A non-array candidate never reaches
+     * storage, so it is an UNKNOWN refusal rather than a storage condition. */
+    commitPromptsResult(nextList) {
+      if (!Array.isArray(nextList)) return UTIL_writeFail(PM_WRITE_UNKNOWN, null);
+      return ENGINE_PM.savePromptsResult(nextList);
+    },
+    commitQuickResult(nextList) {
+      if (!Array.isArray(nextList)) return UTIL_writeFail(PM_WRITE_UNKNOWN, null);
+      return ENGINE_PM.saveQuickResult(nextList);
     },
     commitPrompts(nextList) {
-      if (!Array.isArray(nextList)) return false;
-      return ENGINE_PM.savePrompts(nextList);
+      return ENGINE_PM.commitPromptsResult(nextList).ok;
     },
     commitQuick(nextList) {
-      if (!Array.isArray(nextList)) return false;
-      return ENGINE_PM.saveQuick(nextList);
+      return ENGINE_PM.commitQuickResult(nextList).ok;
     },
 
     getAutoSend() {
@@ -3041,14 +3157,18 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       }, []);
     },
     // Commit: persist → adopt → emit (see the ordering note on savePrompts).
-    saveQuick(list) {
+    saveQuickResult(list) {
       return SAFE_try('ENGINE_PM.saveQuick', () => {
         const next = Array.isArray(list) ? list : [];
-        if (!ENGINE_PM.persistQuick(next)) return false;
+        const res = ENGINE_PM.persistQuickResult(next);
+        if (!res.ok) return res;                   // nothing adopted, nothing emitted
         STATE_PM.data.quick = next;                // adopt BEFORE publishing
         UTIL_emitPmChanged({ what: 'quick' });
-        return true;
-      }, false);
+        return res;
+      }, UTIL_writeFail(PM_WRITE_UNKNOWN, null));
+    },
+    saveQuick(list) {
+      return ENGINE_PM.saveQuickResult(list).ok;
     },
 
     getUiMode() { return UTIL_storage.getStr(KEY_PM_UI_MODE_V1, 'simple') || 'simple'; },
@@ -3744,6 +3864,16 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
    * keystrokes, short enough that the list still feels immediate. */
   const PM_SEARCH_RENDER_MS = 80;
 
+  /* [STORE] The single reporting path for a refused Prompt/Quick write.
+   *
+   * Every user-facing persistence caller routes its classified result here
+   * instead of repeating a literal, so the four kinds can never drift apart
+   * between call sites and no path can quietly say nothing. `res` is the result
+   * of THAT attempt — no module-level error state is consulted. */
+  const FEEDBACK_PM_writeFailure = (res, root) => FEEDBACK_PM.say(
+    PM_MSG_writeFailure(res && res.kind), 'error', root,
+  );
+
   const FEEDBACK_PM = {
     el(root = (STATE_PM.ui.root || UI_PM.getRoot())) {
       return root ? DOM_q(UI_PM.selOwned(UI_PM_STATUS), root) : null;
@@ -4227,7 +4357,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             ? list.concat([{ id: UTIL_cryptoId(), text, order: list.length, createdAt: now, updatedAt: now }])
             : list.map(x => (x && x.id === st.id) ? { ...x, text, updatedAt: now } : x);
           // Truthful persistence: a failed commit keeps the editor and the values.
-          if (!ENGINE_PM.commitQuick(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+          const wq = ENGINE_PM.commitQuickResult(next);
+          if (!wq.ok) { FEEDBACK_PM_writeFailure(wq, root); return false; }
           EDITOR_PM.close(root);
           RENDER_PM.renderEdit(root, SEARCH_PM.get());
           RENDER_PM.renderQuickTray(root);
@@ -4248,7 +4379,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         const next = (st.mode === 'create')
           ? list.concat([{ id: UTIL_cryptoId(), title, body, favorite, type, createdAt: now, updatedAt: now }])
           : list.map(x => (x && x.id === st.id) ? { ...x, title, body, favorite, type, updatedAt: now } : x);
-        if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+        const wp = ENGINE_PM.commitPromptsResult(next);
+        if (!wp.ok) { FEEDBACK_PM_writeFailure(wp, root); return false; }
         EDITOR_PM.close(root);
         UI_PM_renderBoth(root);
         FEEDBACK_PM.say('Saved', 'info', root);
@@ -4279,7 +4411,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           const next = list
             .filter(q => q && q.id !== st.id)
             .map((q, i) => ({ ...q, order: i }));
-          if (!ENGINE_PM.commitQuick(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+          const wq = ENGINE_PM.commitQuickResult(next);
+          if (!wq.ok) { FEEDBACK_PM_writeFailure(wq, root); return false; }
           EDITOR_PM.close(root);
           RENDER_PM.renderEdit(root, SEARCH_PM.get());
           RENDER_PM.renderQuickTray(root);
@@ -4297,7 +4430,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           return false;
         }
         const next = plist.filter(x => x && x.id !== st.id);
-        if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return false; }
+        const wp = ENGINE_PM.commitPromptsResult(next);
+        if (!wp.ok) { FEEDBACK_PM_writeFailure(wp, root); return false; }
         EDITOR_PM.close(root);
         UI_PM_renderBoth(root);
         FEEDBACK_PM.say('Deleted', 'info', root);
@@ -4859,6 +4993,16 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       deleteArmMs: PM_DELETE_ARM_MS,
       statusClearMs: PM_STATUS_CLEAR_MS,
       readKinds: Object.freeze({ absent: PM_READ_ABSENT, corrupt: PM_READ_CORRUPT, valid: PM_READ_VALID }),
+      /* Write-failure surface, mirroring readKinds above. Exposes the kind
+       * vocabulary and the kind->message mapping so validators can drive the
+       * shipped classifier and the shipped copy rather than a transcription.
+       * Internal test surface only — the six-method public API is unchanged. */
+      writeKinds: Object.freeze({
+        ok: PM_WRITE_OK, quota: PM_WRITE_QUOTA, blocked: PM_WRITE_BLOCKED,
+        serialization: PM_WRITE_SERIALIZATION, unknown: PM_WRITE_UNKNOWN,
+      }),
+      writeMessage: PM_MSG_writeFailure,
+      classifyWriteError: UTIL_classifyWriteError,
       keys: Object.freeze({
         prompts: KEY_PM_STATE_PROMPTS_V1,
         quick: KEY_PM_STATE_QUICK_V1,
@@ -6488,13 +6632,13 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           createdAt: now,
           updatedAt: now,
         }]);
-        const ok = ENGINE_PM.commitPrompts(next);
-        return { ok, created: ok, duplicate: false };
+        const w = ENGINE_PM.commitPromptsResult(next);
+        return { ok: w.ok, created: w.ok, duplicate: false, write: w };
       };
 
       /* Report a conversion outcome on the shared status line. */
       const reportConversion = (res) => {
-        if (!res || !res.ok) { FEEDBACK_PM.say('Storage write failed', 'error', root); return; }
+        if (!res || !res.ok) { FEEDBACK_PM_writeFailure(res && res.write, root); return; }
         FEEDBACK_PM.say(res.duplicate ? 'Already saved' : 'Saved', 'info', root);
       };
 
@@ -6512,8 +6656,9 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
        * in-memory list keeps its previous, accurate usage values. */
       const commitPromptUsage = (id) => {
         const next = ENGINE_PM_touchPromptUsage(STATE_PM.data.prompts, id, UTIL_now());
-        if (!ENGINE_PM.commitPrompts(next)) {
-          FEEDBACK_PM.say('Storage write failed', 'error', root);
+        const wu = ENGINE_PM.commitPromptsResult(next);
+        if (!wu.ok) {
+          FEEDBACK_PM_writeFailure(wu, root);
           return false;
         }
         return true;
@@ -6525,12 +6670,13 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         if (!list.some(p => p && p.id === id)) return false;
         const now = UTIL_now();
         const next = list.map(p => (p && p.id === id) ? { ...p, favorite: !p.favorite, updatedAt: now } : p);
-        if (!ENGINE_PM.commitPrompts(next)) {
+        const wf = ENGINE_PM.commitPromptsResult(next);
+        if (!wf.ok) {
           /* [2A-fix] Report only a genuine write failure. An unknown id returned
            * false above without ever attempting a commit, so it stays silent.
            * The visible favourite state is unchanged because the re-render below
            * is skipped — persistence semantics are untouched. */
-          FEEDBACK_PM.say('Storage write failed', 'error', root);
+          FEEDBACK_PM_writeFailure(wf, root);
           return false;
         }
         UI_PM_renderBoth(root);
@@ -6810,7 +6956,12 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
             const next = ENGINE_PM_reorderVisible(STATE_PM.data.prompts, visibleIds, id, dir);
             if (!next) return;                          // boundary / rejected input → no-op
-            if (!ENGINE_PM.commitPrompts(next)) return; // persist before adopting
+            /* [2-storage] Persist before adopting. A refused write used to
+             * return here in silence, which made the arrow look dead; it now
+             * reports the same classified failure as every sibling path.
+             * Order and focus are untouched because nothing was adopted. */
+            const wr = ENGINE_PM.commitPromptsResult(next);
+            if (!wr.ok) { FEEDBACK_PM_writeFailure(wr, root); return; }
 
             UI_PM_renderBoth(root);
             const movedEl = listEdit.querySelector(`.cgxui-${SkID}--item[data-id="${CSS.escape(id)}"]`);
@@ -6861,7 +7012,8 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
             const copy = ENGINE_PM_buildDuplicate(p, UTIL_cryptoId(), now);
             const next = ENGINE_PM_insertAfterId(STATE_PM.data.prompts, p.id, copy);
             // Persist before adopting: a failed commit must leave no phantom.
-            if (!ENGINE_PM.commitPrompts(next)) { FEEDBACK_PM.say('Storage write failed', 'error', root); return; }
+            const wd = ENGINE_PM.commitPromptsResult(next);
+            if (!wd.ok) { FEEDBACK_PM_writeFailure(wd, root); return; }
             UI_PM_renderBoth(root);
             FEEDBACK_PM.say('Duplicated', 'info', root);
             return;
