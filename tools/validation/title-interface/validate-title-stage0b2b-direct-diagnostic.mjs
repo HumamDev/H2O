@@ -81,8 +81,12 @@ function assertTitleState() {
   }
   assert.equal(run("git", ["diff", "--name-only", "HEAD", "--", "config/dev-order.tsv"]).trim(), "", "dev-order.tsv changed");
   const order = read("config/dev-order.tsv");
-  for (const prefix of ["9B0a", "9B1a", "9C1a"]) assert(new RegExp(`^🟢\\t${prefix}\\.`, "m").test(order), `${prefix} must remain enabled`);
-  assert(/^🔴\t9D1a\./m.test(order), "9D1a must remain disabled");
+  // 9D1a joined the enabled set in a594c87d (feat(title): add auto emoji and
+  // sidebar emoji controls, 2026-08-12), which shipped Auto Emoji Title and
+  // flipped this exact toggle; it has stayed enabled through every later
+  // dev-order change. The pin moves with it rather than being dropped, so the
+  // canonical toggle state is still asserted here.
+  for (const prefix of ["9B0a", "9B1a", "9C1a", "9D1a"]) assert(new RegExp(`^🟢\\t${prefix}\\.`, "m").test(order), `${prefix} must remain enabled`);
 }
 
 function manifestFor(enabled, options = {}) {
