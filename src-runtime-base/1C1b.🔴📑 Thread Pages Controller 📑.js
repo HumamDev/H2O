@@ -28,6 +28,9 @@
   const EV_CORE_INDEX_UPDATED = 'evt:h2o:core:index:updated';
   const EV_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
   const EV_MM_TOGGLE_PAGE_COLLAPSED = 'evt:h2o:minimap:toggle-page-collapsed';
+  // 1A1d dispatches this prefixed name only, so binding one name yields
+  // exactly one effective reconciliation per readiness transition.
+  const EV_MM_SHELL_READY = 'evt:h2o:minimap:shell-ready';
   const EV_ROUTE_CHANGED = 'evt:h2o:route:changed';
   const EV_VISIT_STATE_MODE_CHANGED = 'evt:h2o:chat-pages:visit-state-mode-changed';
   const ATTR_CHAT_PAGE_HIDDEN = 'data-cgxui-chat-page-hidden';
@@ -99,6 +102,7 @@
     collapsedPagesByChat: new Map(),
     titleListPagesByChat: new Map(),
     collapsedPageDriversByChat: new Map(),
+    chatPageRevsByChat: new Map(),
     collapsedPageModesByChat: new Map(),
     detachedPageHostsByChat: new Map(),
     bridgeOff: null,
@@ -802,6 +806,86 @@
     const safeId = safeChatKeyPart(chatId || resolveChatId());
     return safeId ? `${nsDisk()}:ui:chat-pages:collapsed:${safeId}:v1` : '';
   }
+
+  // ── Ordered Chat -> MiniMap propagation (MECHANISMS_RULES sec.9A) ─────────
+  // Chat owns a monotonic per-page revision. A Chat *intent action* advances it
+  // even when the action re-asserts the boolean Chat already holds — the user
+  // re-collapsing a page is newer intent than an older MiniMap-local expansion.
+  // Refresh, restoration and read-only reconciliation do NOT advance it; they
+  // read the current revision so an unchanged revision cannot overwrite a newer
+  // MiniMap-local choice. Chat never reads MiniMap's applied revision.
+  function keyChatPageRevs(chatId = '') {
+    const safeId = safeChatKeyPart(chatId || resolveChatId());
+    return safeId ? `${nsDisk()}:ui:chat-pages:rev:${safeId}:v1` : '';
+  }
+
+  function readChatPageRevs(chatId = '') {
+    const id = String(chatId || resolveChatId()).trim();
+    if (!id) return {};
+    const cached = S.chatPageRevsByChat.get(id);
+    if (cached && typeof cached === 'object') return cached;
+    let raw = null;
+    try { raw = storageGetJSON(keyChatPageRevs(id), null); } catch { raw = null; }
+    const out = {};
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw)) {
+        const num = Math.max(0, Number(k || 0) || 0);
+        if (!num || !v || typeof v !== 'object') continue;
+        out[String(num)] = { r: Math.max(0, Number(v.r || 0) || 0), s: !!v.s };
+      }
+    }
+    S.chatPageRevsByChat.set(id, out);
+    return out;
+  }
+
+  function writeChatPageRevs(chatId = '', revs = {}) {
+    const id = String(chatId || resolveChatId()).trim();
+    if (!id) return false;
+    S.chatPageRevsByChat.set(id, revs);
+    try { return !!storageSetJSON(keyChatPageRevs(id), revs); } catch { return false; }
+  }
+
+  // The ordering event is a Chat *action*, not a Chat value change. A user who
+  // re-collapses a page in Chat must outrank a MiniMap-local expansion even
+  // though Chat's own boolean never moved. The only calls that must NOT advance
+  // are reconciliation re-asserts, which merely replay state Chat already holds.
+  // 1C1b has exactly three such sources, all literal and all listed here.
+  const CHAT_REV_REASSERT_SOURCES = new Set([
+    'chat-pages-controller:refresh',
+    'chat-pages-controller:title-set',
+    'reset-all-mechanisms',
+  ]);
+
+  function isChatRevReassertSource(source = '') {
+    return CHAT_REV_REASSERT_SOURCES.has(String(source || '').trim());
+  }
+
+  // Current revision for (chatId, pageNum). Called from the single visuals
+  // path, so the atomic-transaction and the engine/pagination writers are both
+  // covered without a second collapse implementation. Revision 0 means "Chat
+  // has never acted on this page"; a re-assert reads without advancing.
+  function chatPageRevFor(pageNum = 0, chatId = '', opts = {}) {
+    const id = String(chatId || resolveChatId()).trim();
+    const num = Math.max(1, Number(pageNum || 0) || 0);
+    if (!id || !num) return 0;
+    const revs = readChatPageRevs(id);
+    const key = String(num);
+    const prev = revs[key] || { r: 0, s: false };
+    if (isChatRevReassertSource(opts?.source)) return Math.max(0, Number(prev.r || 0) || 0);
+    let current = false;
+    try { current = !!isPageCollapsed(num, id); } catch { current = false; }
+    revs[key] = { r: Math.max(0, Number(prev.r || 0) || 0) + 1, s: current };
+    writeChatPageRevs(id, revs);
+    return revs[key].r;
+  }
+
+  // Revision history is deliberately NOT pruned by refresh-time page discovery.
+  // collectKnownPageNums returns a PARTIAL union during bind, route restoration
+  // and fresh load — the pagination ledger is empty and no dividers exist yet —
+  // so an expanded page with real history would be dropped while MiniMap keeps
+  // its appliedRev, and the next genuine Chat action would arrive with a lower
+  // revision and be rejected as stale. Growth is bounded by pages-ever-seen per
+  // chat, the same bound the MiniMap :v2 record already accepts.
 
   function keyTitleListPages(chatId = '') {
     const safeId = safeChatKeyPart(chatId || resolveChatId());
@@ -6009,11 +6093,21 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     if (!num || !id) return { ok: false, status: 'page-missing' };
+    // The atomic transaction is a genuine Chat action, so it enters the same
+    // ordered lane as the visuals push. Advancing twice for one user action is
+    // harmless: MiniMap only ever compares "newer than what I applied".
+    //
+    // The revision is resolved OUTSIDE the propagation guard on purpose. If the
+    // ordering owner is unreachable the push still goes out unordered, exactly
+    // as it did before this section existed — a missing revision must never
+    // turn into a dropped propagation.
+    const source = 'chat-page-divider:atomic-transaction';
+    let chatRev = 0;
+    try { chatRev = Math.max(0, Number(chatPageRevFor(num, id, { source }) || 0) || 0); } catch { chatRev = 0; }
+    const pushOpts = { source, propagate: true };
+    if (chatRev > 0) { pushOpts.mode = 'chat-sync'; pushOpts.chatRev = chatRev; }
     try {
-      MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, !!collapsed, id, {
-        source: 'chat-page-divider:atomic-transaction',
-        propagate: true,
-      });
+      MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, !!collapsed, id, pushOpts);
       return { ok: true, status: 'propagated', pageNum: num, collapsed: !!collapsed };
     } catch {
       return { ok: false, status: 'minimap-unavailable', pageNum: num };
@@ -9312,7 +9406,9 @@
       // Collapse stamped every host it hid with page-num + hidden attrs, so
       // restore sweeps those stamps directly.
       if (!collapsed) sweepPageHiddenDomState(num);
-      try { MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, collapsed, id, { source: String(opts?.source || 'chat-sync').trim() || 'chat-sync', propagate: true }); } catch {}
+      const pushSource = String(opts?.source || 'chat-sync').trim() || 'chat-sync';
+      const chatRev = chatPageRevFor(num, id, { source: pushSource });
+      try { MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, collapsed, id, { source: pushSource, mode: 'chat-sync', chatRev, propagate: true }); } catch {}
     }
     try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
     scheduleDividerVisualRefresh(id, 0);
@@ -11559,6 +11655,28 @@
       } catch {}
     };
 
+    S.onMiniMapShellReady = () => {
+      // MiniMap became available: replay the pages it may have missed. Each
+      // entry carries the revision Chat already holds — read, never advanced,
+      // because readiness is not a new Chat action — so the ordered gate in
+      // 1A1b applies only genuinely-missed actions and leaves a MiniMap-local
+      // choice with nothing newer behind it untouched.
+      try {
+        const id = resolveChatId();
+        if (!id) return;
+        const snapshot = {};
+        for (const pageNum of collectKnownPageNums(id)) {
+          const num = Math.max(1, Number(pageNum || 0) || 0);
+          if (!num) continue;
+          snapshot[String(num)] = {
+            c: !!isPageCollapsed(num, id),
+            rev: chatPageRevFor(num, id, { source: 'chat-pages-controller:refresh' }),
+          };
+        }
+        MM_CORE_PAGES()?.reconcileOnMiniMapReady?.(id, snapshot, { source: 'minimap-ready' });
+      } catch {}
+    };
+
     S.onMiniMapTogglePageCollapsed = (ev) => {
       const pageNum = Math.max(1, Number(ev?.detail?.pageNum || 0) || 0);
       if (!pageNum) return;
@@ -11576,6 +11694,7 @@
     window.addEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated);
     window.addEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated);
     window.addEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed);
+    window.addEventListener(EV_MM_SHELL_READY, S.onMiniMapShellReady);
     window.addEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged);
     window.addEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true);
     window.addEventListener(EV_VISIT_STATE_MODE_CHANGED, S.onVisitStateModeChanged, true);
@@ -11608,6 +11727,7 @@
     try { window.removeEventListener(EV_CORE_INDEX_UPDATED, S.onCoreIndexUpdated); } catch {}
     try { window.removeEventListener(EV_CORE_TURN_UPDATED, S.onCoreTurnUpdated); } catch {}
     try { window.removeEventListener(EV_MM_TOGGLE_PAGE_COLLAPSED, S.onMiniMapTogglePageCollapsed); } catch {}
+    try { window.removeEventListener(EV_MM_SHELL_READY, S.onMiniMapShellReady); } catch {}
     try { window.removeEventListener(EV_PAGE_CFG_CHANGED, S.onPaginationConfigChanged); } catch {}
     try { window.removeEventListener(EV_ROUTE_CHANGED, S.onRouteChanged, true); } catch {}
     try { window.removeEventListener(EV_VISIT_STATE_MODE_CHANGED, S.onVisitStateModeChanged, true); } catch {}
@@ -11628,6 +11748,7 @@
     S.onPaginationPageChanged = null;
     S.onPaginationConfigChanged = null;
     S.onMiniMapTogglePageCollapsed = null;
+    S.onMiniMapShellReady = null;
     S.onRouteChanged = null;
     S.onVisitStateModeChanged = null;
     if (S.visitState.deferredTimer) {
