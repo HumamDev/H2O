@@ -1768,26 +1768,55 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
   /* Word-boundary containment. Both sides are already lowercased by the caller.
    * A query that cannot express a boundary (punctuation-only, say) simply
-   * reports false and the plain `includes` tiers still apply. */
+   * reports false and the plain `includes` tiers still apply.
+   *
+   * The compiled pattern depends on nothing but `qLower`, and a single ranking
+   * pass asks the same question once per title and once per body, so a one-slot
+   * memo keyed on the query turns up to 2N compilations per keystroke into one.
+   * The key IS the entire input that determines the pattern, so there is nothing
+   * to invalidate. The regex carries no `g` flag, so `test` keeps no `lastIndex`
+   * state between records. A pattern that fails to compile leaves both slots
+   * untouched, so the next call recompiles rather than answering with a regex
+   * built for a different query. */
+  let PM_WB_RE_KEY = null;
+  let PM_WB_RE = null;
   const ENGINE_PM_hasWordBoundary = (hayLower, qLower) => {
     if (!hayLower || !qLower) return false;
     return SAFE_try('ENGINE_PM_hasWordBoundary', () => {
-      const re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${ENGINE_PM_escapeRegex(qLower)}`, 'u');
-      return re.test(hayLower);
+      if (PM_WB_RE_KEY !== qLower) {
+        PM_WB_RE = new RegExp(`(?:^|[^\\p{L}\\p{N}])${ENGINE_PM_escapeRegex(qLower)}`, 'u');
+        PM_WB_RE_KEY = qLower;
+      }
+      return PM_WB_RE.test(hayLower);
     }, false);
   };
 
-  /* Highest matching tier only — tiers never stack. 0 means "exclude". */
+  /* Highest matching tier only — tiers never stack. 0 means "exclude".
+   *
+   * The body is lowercased only once the title tiers have all missed. Bodies are
+   * the long side of a record, and every tier above them is decided from the
+   * title alone, so folding a whole library's bodies before asking the cheap
+   * title questions is work the result never depends on.
+   *
+   * `includes` also guards each word-boundary test. The boundary pattern is
+   * `(?:^|[^\p{L}\p{N}])` followed by the escaped query, so a boundary hit
+   * always contains the query as a substring: `includes` false means the
+   * boundary tier cannot match either, and the tier below it is the one the
+   * original chain already fell through to. Non-matching records — the majority
+   * of any real search — therefore answer with a plain substring scan instead of
+   * a Unicode-property regex. Tier order, and so the score, is unchanged. */
   const ENGINE_PM_rankBase = (rec, qLower) => {
     const title = String(rec && rec.title != null ? rec.title : '').toLowerCase();
-    const body = String(rec && rec.body != null ? rec.body : '').toLowerCase();
     if (title === qLower) return PM_RANK_TITLE_EXACT;
     if (title.startsWith(qLower)) return PM_RANK_TITLE_PREFIX;
-    if (ENGINE_PM_hasWordBoundary(title, qLower)) return PM_RANK_TITLE_WORD;
-    if (title.includes(qLower)) return PM_RANK_TITLE_INCLUDES;
+    if (title.includes(qLower)) {
+      if (ENGINE_PM_hasWordBoundary(title, qLower)) return PM_RANK_TITLE_WORD;
+      return PM_RANK_TITLE_INCLUDES;
+    }
+    const body = String(rec && rec.body != null ? rec.body : '').toLowerCase();
+    if (!body.includes(qLower)) return PM_RANK_NO_MATCH;
     if (ENGINE_PM_hasWordBoundary(body, qLower)) return PM_RANK_BODY_WORD;
-    if (body.includes(qLower)) return PM_RANK_BODY_INCLUDES;
-    return PM_RANK_NO_MATCH;
+    return PM_RANK_BODY_INCLUDES;
   };
 
   /* Recency is a single bucket: the 7-day and 30-day boosts never stack. */

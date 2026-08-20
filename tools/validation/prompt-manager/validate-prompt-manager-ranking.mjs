@@ -1054,6 +1054,54 @@ function main() {
       'the clicked occurrence is resolved positionally');
   });
 
+  /* ══════════ RANKING COST SHAPE ══════════
+   * Operation counts, never timings, so these mean the same thing on any
+   * machine. They exist because ranking is the one PM path a keystroke re-runs
+   * across the whole library: a change that reintroduces per-record pattern
+   * compilation stays functionally correct while silently multiplying that cost
+   * by the library size, and no functional case above would notice. */
+  check('[cost] the boundary pattern compiles once per query pass, not once per record', () => {
+    const { t: rt, sandbox } = load();
+    // `RegExp` is a realm intrinsic, not an own property of the sandbox object,
+    // so it has to be read from inside the context. The module resolves it from
+    // its global at call time, so a counting stand-in installed as an own
+    // property shadows the intrinsic and observes the shipped call site.
+    const RealRegExp = vm.runInContext('RegExp', sandbox);
+    let built = 0;
+    function CountingRegExp(...a) { built++; return new RealRegExp(...a); }
+    CountingRegExp.prototype = RealRegExp.prototype;
+    sandbox.RegExp = CountingRegExp;
+    try {
+      const list = [];
+      for (let i = 0; i < 400; i++) {
+        list.push(P(`r${i}`, `title ${i} zulu`, `body ${i} zulu text that does not match the query`));
+      }
+      built = 0;
+      rt.rankPrompts(list, 'zulu', NOW);
+      assert.ok(built <= 2, `expected at most 2 pattern builds for one pass over 400 records, saw ${built}`);
+      const first = built;
+      rt.rankPrompts(list, 'zulu', NOW);
+      assert.equal(built, first, 'a repeated identical query rebuilds no pattern');
+    } finally { sandbox.RegExp = RealRegExp; }
+  });
+  check('[cost] a changed query still recompiles, so the memo cannot answer for the wrong query', () => {
+    const rec = P('a', 'alpha beta', 'gamma delta');
+    assert.equal(score(rec, 'beta'), R.titleWord + 0);
+    assert.equal(score(rec, 'delta'), R.bodyWord + 0);
+    assert.equal(score(rec, 'beta'), R.titleWord + 0);
+  });
+  check('[invariant] a word-boundary hit always contains the query as a substring', () => {
+    // The `includes` guard in rankBase is sound only while this holds.
+    const cases = [['alpha beta', 'beta'], ['x-ray vision', 'ray'], ['(paren) word', 'paren'],
+      ['tab\tsep', 'sep'], ['emoji 🎬 clap', 'clap'], ['ünïcode wörd', 'wörd'], ['a.b.c', 'b']];
+    for (const [hay, q] of cases) {
+      const hl = hay.toLowerCase(), ql = q.toLowerCase();
+      if (t.hasWordBoundary(hl, ql)) {
+        assert.ok(hl.includes(ql), `boundary hit for "${q}" in "${hay}" must imply containment`);
+      }
+    }
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {
