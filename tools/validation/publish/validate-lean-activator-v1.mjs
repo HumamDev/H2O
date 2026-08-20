@@ -2124,14 +2124,14 @@ async function runRuntimeTests(api) {
         `real publisher receipt rejected: ${codeOf(result)} ${String(result.stderr).trim()}`);
       const payload = JSON.parse(result.stdout);
       // Alias evidence measured from the CURRENT_BASE publisher fixture:
-      // src-runtime-base has 154 regular files (153 JavaScript sources),
-      // dev-order has 249 physical rows and 153 active entries, and loader-deps
+      // src-runtime-base has 156 regular files (155 JavaScript sources),
+      // dev-order has 251 physical rows and 155 active entries, and loader-deps
       // describes 153 scripts. The staged alias manifest therefore contains
-      // 153 regular files and the same 5 compatibility symlinks.
+      // 155 regular files and the same 5 compatibility symlinks.
       assert.deepEqual(publishedReceipt.validatorResult.alias,
-        { aliasCount: 158, regularFileCount: 153, symlinkCount: 5 });
-      assert.equal(payload.stage.aliases.aliasCount, 158);
-      assert.equal(payload.stage.aliases.regularFileCount, 153);
+        { aliasCount: 160, regularFileCount: 155, symlinkCount: 5 });
+      assert.equal(payload.stage.aliases.aliasCount, 160);
+      assert.equal(payload.stage.aliases.regularFileCount, 155);
       assert.equal(payload.stage.aliases.symlinkCount, 5);
       assert.equal(fs.readFileSync(published.receiptPath).equals(receiptBefore), true);
       const stagedManifestsAfter = JSON.stringify(Object.fromEntries(
