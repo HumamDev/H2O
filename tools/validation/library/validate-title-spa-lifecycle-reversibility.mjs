@@ -56,6 +56,8 @@ function check(name, fn) {
 function makeEnv(pathname) {
   const intervals = [];
   const observers = [];
+  const frames = [];
+  const macrotasks = [];
   const routeListeners = new Map();
 
   const el = () => {
@@ -82,10 +84,15 @@ function makeEnv(pathname) {
     return node;
   };
 
+  /* A distinct <main> element: 9A1b observes document.body while 9A1c observes
+     getRoot() === main, so observers can be attributed by target rather than by
+     construction order. */
+  const mainEl = el();
   const doc = {
     body: el(), head: el(), documentElement: el(), title: 'ChatGPT', readyState: 'complete',
     createElement: () => el(), createTextNode: () => el(), createDocumentFragment: () => el(),
-    querySelector: () => null, querySelectorAll: () => [], getElementById: () => null,
+    querySelector: (sel) => (String(sel) === 'main' ? mainEl : null),
+    querySelectorAll: () => [], getElementById: () => null,
     getElementsByTagName: () => [], addEventListener() {}, removeEventListener() {}, contains: () => false,
   };
 
@@ -96,11 +103,14 @@ function makeEnv(pathname) {
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     setInterval(fn, ms) { intervals.push({ fn, ms, live: true }); return intervals.length; },
     clearInterval(id) { const t = intervals[id - 1]; if (t) t.live = false; },
-    setTimeout() { return 0; }, clearTimeout() {},
-    requestAnimationFrame() { return 0; }, cancelAnimationFrame() {},
+    setTimeout(fn) { if (typeof fn === 'function') macrotasks.push(fn); return 0; }, clearTimeout() {},
+    /* Real queue. The offline gate previously dropped rAF callbacks, which hid
+       9A1c's rAF-bound bindObserver() entirely; flushFrames() executes them. */
+    requestAnimationFrame(fn) { if (typeof fn === 'function') frames.push(fn); return frames.length; },
+    cancelAnimationFrame() {},
     MutationObserver: class {
-      constructor(cb) { this.cb = cb; this.observing = false; observers.push(this); }
-      observe() { this.observing = true; }
+      constructor(cb) { this.cb = cb; this.observing = false; this.target = null; observers.push(this); }
+      observe(target) { this.observing = true; this.target = target; }
       disconnect() { this.observing = false; }
       takeRecords() { return []; }
     },
@@ -148,12 +158,35 @@ function makeEnv(pathname) {
     }
   };
 
+  /* Drain queued animation frames (and any timeouts they schedule). Bounded so a
+     self-rescheduling callback cannot hang the gate. */
+  const flushFrames = (rounds = 3) => {
+    for (let i = 0; i < rounds; i += 1) {
+      const pendingFrames = frames.splice(0, frames.length);
+      const pendingTasks = macrotasks.splice(0, macrotasks.length);
+      for (const fn of pendingFrames) { try { fn(0); } catch { /* callback faults are not this gate's subject */ } }
+      for (const fn of pendingTasks) { try { fn(); } catch { /* as above */ } }
+      if (!frames.length && !macrotasks.length) break;
+    }
+  };
+
   return {
-    win, navigate,
+    win, navigate, flushFrames,
     liveIntervals: () => intervals.filter((t) => t.live).length,
     activeObservers: () => observers.filter((o) => o.observing).length,
     totalIntervalsEverCreated: () => intervals.length,
     totalObserversEverCreated: () => observers.length,
+    /* 9A1c observes <main>; 9A1b observes document.body. */
+    mainObservers: () => observers.filter((o) => o.observing && o.target === mainEl).length,
+    mainObserversEverCreated: () => observers.filter((o) => o.target === mainEl).length,
+    /* The production re-entry path: 9A1c's own observer callback IS schedule(),
+       which calls bindObserver() as its first action. */
+    fireMetaObserverCallback: () => {
+      const owned = observers.filter((o) => o.target === mainEl);
+      const victim = owned[owned.length - 1];
+      if (victim && typeof victim.cb === 'function') { try { victim.cb([], victim); } catch { /* ignore */ } }
+      return !!victim;
+    },
   };
 }
 
@@ -232,6 +265,52 @@ function assertReversibleLifecycle(makeSubject, tag) {
   }
 }
 
+/* ─────────────────────────────────────────────────────────────
+   Re-entry contract (added after live acceptance).
+
+   Suspension must be DURABLE. 9A1c keeps its Registry subscription and storage
+   bridge alive across route changes by design, and those core paths can still
+   call schedule() / kickMetaResync() while the route is ineligible. Both call
+   bindObserver() as their first action, so a disconnected main-list observer was
+   silently reconstructed within ~150 ms of suspending -- proven live, invisible
+   to the original harness because it never executed queued animation frames.
+   ───────────────────────────────────────────────────────────── */
+function assertDurableSuspension(makeSubject, tag) {
+  const s = makeSubject(ELIGIBLE_PROJECT_CHAT);
+  s.flushFrames();                       // let rAF-bound bindObserver() actually run
+
+  check(`${tag} / R1 eligible: main-list observer is bound after frames run`, () => {
+    assert.equal(s.mainObservers(), 1, 'exactly one main-list observer must be observing on an eligible surface');
+  });
+
+  s.navigate(EXCLUDED);
+  s.flushFrames();
+  const everAtSuspend = s.mainObserversEverCreated();
+  check(`${tag} / R2 suspend: main-list observer disconnected`, () => {
+    assert.equal(s.mainObservers(), 0, 'suspension must disconnect the main-list observer');
+  });
+
+  /* Core activity that legitimately survives the route change. */
+  s.fireMetaObserverCallback();
+  s.flushFrames();
+  s.fireMetaObserverCallback();
+  s.flushFrames();
+
+  check(`${tag} / R3 off-route re-entry must not rebind the observer`, () => {
+    assert.equal(s.mainObservers(), 0, 'no main-list observer may be observing while the route is ineligible');
+  });
+  check(`${tag} / R4 off-route re-entry must not construct a new observer`, () => {
+    assert.equal(s.mainObserversEverCreated(), everAtSuspend,
+      'suspension must be durable: no new main-list observer may be constructed off-route');
+  });
+
+  s.navigate(ELIGIBLE_PROJECT_CHAT);
+  s.flushFrames();
+  check(`${tag} / R5 resume restores exactly one main-list observer`, () => {
+    assert.equal(s.mainObservers(), 1, 'resume must restore exactly one main-list observer');
+  });
+}
+
 /* Real product subject. */
 function realSubject(startPath) {
   const env = makeEnv(startPath);
@@ -243,6 +322,10 @@ function realSubject(startPath) {
     navigate: env.navigate,
     liveIntervals: env.liveIntervals,
     activeObservers: env.activeObservers,
+    flushFrames: env.flushFrames,
+    mainObservers: env.mainObservers,
+    mainObserversEverCreated: env.mainObserversEverCreated,
+    fireMetaObserverCallback: env.fireMetaObserverCallback,
     evaluations: () => evaluations,
     initialEvaluations: () => initial,
   };
@@ -261,6 +344,10 @@ function fixtureSubject(behaviour) {
       navigate: env.navigate,
       liveIntervals: env.liveIntervals,
       activeObservers: env.activeObservers,
+      flushFrames: env.flushFrames,
+      mainObservers: env.mainObservers,
+      mainObserversEverCreated: env.mainObserversEverCreated,
+      fireMetaObserverCallback: env.fireMetaObserverCallback,
       evaluations: () => evaluations,
       initialEvaluations: () => evaluations,
     };
@@ -269,21 +356,37 @@ function fixtureSubject(behaviour) {
 
 const isEligible = (p) => /^\/(?:c\/|g\/[^/]+\/c\/)/.test(p);
 
-/* Compliant: eligibility is live state; suspend/resume is idempotent. */
+/* Compliant: eligibility is live state; suspend/resume is idempotent; and the
+   rAF-bound main-list observer defends itself, so a surviving core path cannot
+   rebind it while the route is ineligible. */
 const compliant = fixtureSubject((env) => {
   const w = env.win;
   let intervalId = 0;
-  let observer = null;
+  let bodyObserver = null;
+  let mainObserver = null;
+
+  /* The durable boundary: the low-level bind refuses off-route, so every present
+     and future caller inherits the rule. */
+  const bindMain = () => {
+    if (!isEligible(w.location.pathname)) return;
+    if (mainObserver) return;
+    const main = w.document.querySelector('main');
+    if (!main) return;
+    mainObserver = new w.MutationObserver(() => bindMain());   // callback re-enters, as production does
+    mainObserver.observe(main, { childList: true, subtree: true });
+  };
+
   const activate = () => {
     if (intervalId) return;                       // exactly-once
     intervalId = w.setInterval(() => {}, 1200);
-    observer = new w.MutationObserver(() => {});
-    observer.observe(w.document.body, { childList: true, subtree: true });
+    bodyObserver = new w.MutationObserver(() => {});
+    bodyObserver.observe(w.document.body, { childList: true, subtree: true });
+    w.requestAnimationFrame(bindMain);
   };
   const suspend = () => {
-    if (!intervalId) return;
-    w.clearInterval(intervalId); intervalId = 0;
-    if (observer) { observer.disconnect(); observer = null; }
+    if (intervalId) { w.clearInterval(intervalId); intervalId = 0; }
+    if (bodyObserver) { bodyObserver.disconnect(); bodyObserver = null; }
+    if (mainObserver) { mainObserver.disconnect(); mainObserver = null; }
   };
   const sync = () => { if (isEligible(w.location.pathname)) activate(); else suspend(); };
   w.addEventListener('ho:navigate', sync);
@@ -314,6 +417,29 @@ const vacuousLeaky = fixtureSubject((env) => {
       observer.observe(w.document.body, { childList: true, subtree: true });
     }
   };
+  w.addEventListener('ho:navigate', sync);
+  sync();
+});
+
+/* Vacuous 5: suspends, but a surviving core path rebinds the observer off-route
+   -- exactly the live-proven defect. Must be rejected. */
+const vacuousRebinder = fixtureSubject((env) => {
+  const w = env.win;
+  let intervalId = 0;
+  let observer = null;
+  const main = w.document.querySelector('main');
+  const bind = () => {                       // no eligibility guard -- the defect
+    if (observer) return;
+    observer = new w.MutationObserver(() => bind());
+    observer.observe(main, { childList: true, subtree: true });
+  };
+  const activate = () => { if (!intervalId) intervalId = w.setInterval(() => {}, 1200); w.requestAnimationFrame(bind); };
+  const suspend = () => {
+    if (intervalId) { w.clearInterval(intervalId); intervalId = 0; }
+    if (observer) { observer.disconnect(); observer = null; }
+    w.requestAnimationFrame(bind);           // surviving core path rebinds
+  };
+  const sync = () => { if (isEligible(w.location.pathname)) activate(); else suspend(); };
   w.addEventListener('ho:navigate', sync);
   sync();
 });
@@ -351,9 +477,20 @@ for (const [name, fixture] of Object.entries({
   failures.length = before;   // expected rejections are not gate failures
 }
 
+/* ── 2b. Re-entry contract: control must pass, rebinder must be rejected. ──── */
+const reentryControlFailures = countFailuresFor('reentry-control', () => assertDurableSuspension(compliant, 'CONTROL-REENTRY'));
+let reentryVacuousRejected = 0;
+{
+  const before = failures.length;
+  assertDurableSuspension(vacuousRebinder, 'VACUOUS[off-route rebinder]');
+  reentryVacuousRejected = failures.length - before;
+  failures.length = before;
+}
+
 /* ── 3. The real subject: this is the RED contract. ────────────────────────── */
 const productFailuresStart = failures.length;
 assertReversibleLifecycle(realSubject, 'PRODUCT');
+assertDurableSuspension(realSubject, 'PRODUCT');
 const productFailures = failures.slice(productFailuresStart);
 
 /* ── Report ───────────────────────────────────────────────────────────────── */
@@ -362,12 +499,18 @@ const vacuityOk = Object.values(vacuousResults).every((n) => n > 0);
 
 console.log(`Checks executed: ${checks}`);
 console.log(`Compliant control failures: ${compliantFailures} (must be 0)`);
+console.log(`Re-entry control failures: ${reentryControlFailures} (must be 0)`);
+console.log(`  vacuous rejected: ${reentryVacuousRejected > 0 ? 'yes' : 'NO'}  off-route rebinder (${reentryVacuousRejected} assertion failures)`);
 for (const [name, n] of Object.entries(vacuousResults)) {
   console.log(`  vacuous rejected: ${n > 0 ? 'yes' : 'NO'}  ${name} (${n} assertion failures)`);
 }
 console.log(`Product failures: ${productFailures.length}`);
 for (const f of productFailures) console.log(`  RED  ${f.name}\n       ${f.message.split('\n')[0]}`);
 
+if (reentryControlFailures !== 0 || reentryVacuousRejected === 0) {
+  console.error('\nHARNESS FAILURE: the re-entry contract does not discriminate (control must pass, rebinder must fail).');
+  process.exit(2);
+}
 if (!controlOk) {
   console.error('\nHARNESS FAILURE: the compliant control did not go green; the gate is not discriminating.');
   process.exit(2);

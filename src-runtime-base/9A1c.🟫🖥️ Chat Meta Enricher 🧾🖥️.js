@@ -1674,6 +1674,17 @@ const html = `
   }
 
   function bindObserver(){
+    /* Durable suspension boundary.
+
+       The Registry subscription and the storage bridge intentionally survive
+       route changes, and both schedule() and kickMetaResync() call this function
+       as their first action. Without this check a core event arriving while the
+       route is ineligible reconstructs the main-list observer within a frame of
+       suspending -- observed live as everCreated 4 -> 5 while pathname was
+       /settings. Guarding the low-level authority rather than each caller means
+       every present and future call site inherits the rule. */
+    if (!hoMetaSurfaceEligible()) return;
+
     const newRoot = getRoot();
     if (newRoot === root && observer) return;
 
@@ -1830,7 +1841,10 @@ const html = `
 
     requestAnimationFrame(() => {
       bindObserver();
-      bindRegistrySubscription();
+      bindRegistrySubscription();          // core: cheap, product-wide, survives routes
+      /* Route-specific presentation work. renderMetaInProjectList walks the
+         project card list, so it must not run once the route is ineligible. */
+      if (!hoMetaSurfaceEligible()) return;
       I.lock.with(() => {
         requestOpenChatMetaSync('route-raf');
         renderMetaInProjectList();
