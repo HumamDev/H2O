@@ -810,13 +810,18 @@ export function deriveCanonicalFoundation(repository = REPOSITORY_ROOT) {
 
 export function verifyStageReceipt(receiptPath, {
   environment = process.env,
-  // R.2 boundary. Standalone verification is read-only, so an explicit-worktree receipt
-  // may be verified while canonical carries unrelated in-flight work. Every
-  // mutation-capable caller MUST pass true: the verification exception exists for
-  // reading evidence, never for earning the right to mutate. Defaulting to false keeps
-  // standalone verification permissive; requiring an explicit opt-in at each mutating
-  // call site means a new caller cannot silently inherit the exception.
-  requireCanonicalClean = false,
+  // R.2 boundary, strict by default. Canonical working-copy cleanliness is required
+  // unless a caller explicitly opts out, and only ONE caller is approved to do so: the
+  // standalone read-only --verify-stage-receipt route, where an explicit-worktree
+  // receipt may be verified while canonical carries unrelated in-flight work.
+  //
+  // The default is strict because of how each choice fails. If a future mutation-capable
+  // caller forgets this option, strict-by-default rejects a dirty canonical — a loud,
+  // immediately visible failure that is safe while broken. The inverse default would
+  // instead let that caller silently inherit the exception and accept work it should
+  // have refused, with no error and no failing test. The exception is narrow; the rule
+  // is strictness, so the default encodes the rule.
+  requireCanonicalClean = true,
 } = {}) {
   assertNoDestinationOverrides(environment);
   const parsed = parseReceipt(receiptPath);
@@ -2729,7 +2734,9 @@ export async function runLeanActivator({ argv = process.argv.slice(2), environme
     return inspectActivationIntent(argv[1], { environment });
   }
   if (argv.length === 2 && argv[0] === "--verify-stage-receipt") {
-    return verifyStageReceipt(argv[1], { environment });
+    // The one approved read-only exception: standalone verification performs no
+    // mutation, so an explicit-worktree receipt may be verified on a dirty canonical.
+    return verifyStageReceipt(argv[1], { environment, requireCanonicalClean: false });
   }
   fail("invalid-arguments", "P2 accepts only stage verification or activation-intent prepare/inspect commands.", { argv });
 }
