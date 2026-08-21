@@ -123,6 +123,12 @@ const P3C_INTEGRATION_SUBJECT = "test(publish): authorize final current-main Tit
 const P3C_INTEGRATION_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+const STUDIO_PUBLICATION_BASE_HEAD = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
+const STUDIO_PUBLICATION_AUTHORITY_PATHS = Object.freeze([
+  PUBLISHER_REL, ACTIVATOR_REL, PAYLOAD_MODULE_REL,
+  "tools/validation/publish/validate-lean-publisher-v1.mjs",
+  VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 // Current-main activator baseline. Protected publication authority remained
 // unchanged while main advanced through later non-publish repository work.
@@ -151,8 +157,8 @@ const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 61;
-const EXPECTED_RUNTIME = 225;
+const EXPECTED_SCOPE = 62;
+const EXPECTED_RUNTIME = 229;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
@@ -170,23 +176,33 @@ const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
   // P3C-A2 adds the read-only canonical-verification symbols.
   "ACTIVATION_RECEIPT_MODE",
   "ACTIVATION_RECEIPT_SCHEMA_VERSION",
+  "ROLLBACK_RECEIPT_MODE",
   "activationReceiptPath",
+  "appendRollbackCompleteRecord",
+  "appendRollbackStateRecord",
   "planP3cRecovery",
   "TRANSACTION_MODE",
   "transactionDirectory",
   "verifyCanonicalAgainstReceipt",
   "appendAcceptedRecord",
   "buildActivationReceipt",
+  "buildRollbackReceipt",
   "canonicalUnitPaths",
   "createOwnedIncomingRoot",
   "ensureTransactionDirectory",
   "prepareIncomingTree",
   "promoteReleaseWithJournal",
   "publishActivationReceipt",
+  "publishRollbackReceipt",
   "readTransactionChain",
   "recomputeIncomingManifest",
   "releaseIncomingOwnership",
   "reverseRelease",
+  "reverseRollbackUnit",
+  "rollbackReceiptPath",
+  "rollbackRetiredPath",
+  "rollbackUnitToPrevious",
+  "TARGET_AWARE_RECEIPT_SCHEMA_VERSION",
 ].sort());
 
 const temporaryRoots = [];
@@ -344,6 +360,10 @@ function classifyScope(state) {
   const value = Object.fromEntries(Object.entries(state).map(([key, item]) =>
     [key, Array.isArray(item) ? [...item].sort() : item]));
   if (value.staged.length) scopeError("P0/P1 source scope rejects staged paths", value);
+  const studioPublicationRound = value.head === STUDIO_PUBLICATION_BASE_HEAD &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    JSON.stringify(value.modifiedTracked) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS);
+  if (studioPublicationRound) return "studio-publication-authority-uncommitted";
   const dirty = JSON.stringify(value.modifiedTracked) === JSON.stringify([PACKAGE_REL]) &&
     JSON.stringify(value.untracked) === JSON.stringify([ACTIVATOR_REL, VALIDATOR_REL].sort()) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
@@ -1293,6 +1313,13 @@ function runScopeTests() {
     }
     assert.throws(() => classifyScope({}), /TypeError|scope mismatch/u);
   });
+  scopeTest("exact uncommitted Studio publication-authority round is admitted", () => {
+    assert.equal(classifyScope(baseDirtyScope({
+      head: STUDIO_PUBLICATION_BASE_HEAD,
+      modifiedTracked: [...STUDIO_PUBLICATION_AUTHORITY_PATHS],
+      staged: [], untracked: [],
+    })), "studio-publication-authority-uncommitted");
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -1330,7 +1357,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-final-sync-uncommitted", "p3c-final-sync-committed",
     "p3c-integration-uncommitted", "p3c-integration-committed",
     "current-baseline-uncommitted", "current-baseline-committed",
-    "classifier-durability-uncommitted", "historical-intent-fix-uncommitted"]
+    "classifier-durability-uncommitted", "historical-intent-fix-uncommitted",
+    "studio-publication-authority-uncommitted"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -1442,7 +1470,7 @@ function installIgnoredPublisherInputs(repository) {
   }
 }
 
-function createRealPublisherBoundaryFixture(label) {
+function createRealPublisherBoundaryFixture(label, { studioAuthority = false } = {}) {
   const top = tempRoot(label);
   const repository = path.join(top, "publisher boundary with spaces 🧪");
   execFileSync("git", ["clone", "--quiet", "--local", ROOT, repository], {
@@ -1464,8 +1492,21 @@ function createRealPublisherBoundaryFixture(label) {
   copyFile(path.join(ROOT, ACTIVATOR_REL), path.join(repository, ACTIVATOR_REL));
   copyFile(path.join(ROOT, CANONICAL_LIB_REL), path.join(repository, CANONICAL_LIB_REL));
   copyFile(path.join(ROOT, PAYLOAD_MODULE_REL), path.join(repository, PAYLOAD_MODULE_REL));
+  if (studioAuthority) {
+    copyFile(path.join(ROOT, PUBLISHER_REL), path.join(repository, PUBLISHER_REL));
+    const canonicalMain = authoritativeMainWorktree();
+    const previousStudio = path.join(canonicalMain,
+      "apps", "extensions", "chatgpt", "chrome", "studio-launcher");
+    assert.equal(fs.statSync(previousStudio).isDirectory(), true,
+      "a real legacy Studio launcher is required for rollback fixtures");
+    const fixtureChrome = path.join(repository, "apps", "extensions", "chatgpt", "chrome");
+    fs.mkdirSync(fixtureChrome, { recursive: true });
+    fs.cpSync(previousStudio, path.join(fixtureChrome, "studio-launcher"),
+      { recursive: true, dereference: false });
+  }
   installIgnoredPublisherInputs(repository);
-  git(repository, ["add", ACTIVATOR_REL, CANONICAL_LIB_REL, PAYLOAD_MODULE_REL]);
+  git(repository, ["add", ACTIVATOR_REL, CANONICAL_LIB_REL, PAYLOAD_MODULE_REL,
+    ...(studioAuthority ? [PUBLISHER_REL] : [])]);
   if (git(repository, ["diff", "--cached", "--name-only"])) {
     git(repository, ["commit", "-q", "-m", "fixture: current read-only activator"]);
   }
@@ -1478,8 +1519,12 @@ function createRealPublisherBoundaryFixture(label) {
   };
 }
 
-function runRealPublisher(fixture) {
-  const result = spawnSync(process.execPath, [fixture.publisher, "--stage-only"], {
+function runRealPublisher(fixture, { studio = false } = {}) {
+  const head = git(fixture.repository, ["rev-parse", "HEAD"]);
+  const args = studio
+    ? [fixture.publisher, "--stage-only", "--target", "studio-launcher", "--authorized-head", head]
+    : [fixture.publisher, "--stage-only"];
+  const result = spawnSync(process.execPath, args, {
     cwd: fixture.repository,
     env: cleanEnvironment(),
     encoding: "utf8",
@@ -1500,6 +1545,7 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
       cwd: top, encoding: "utf8", timeout: 120_000,
     });
     git(repository, ["sparse-checkout", "set", "--no-cone", "/package.json", "/tools/publish/",
+      "/tools/product/", "/tools/paths.mjs", "/config/extension-keys.json",
       "/fixture-source/", "/apps/dev-server/generated.js"]);
     git(repository, ["checkout", "--quiet", "-B", "main", "HEAD"]);
   } else {
@@ -1508,6 +1554,12 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
     copyFile(path.join(ROOT, "tools/publish/canonical-delivery-lib.mjs"),
       path.join(repository, "tools/publish/canonical-delivery-lib.mjs"));
     copyFile(path.join(ROOT, PUBLISHER_REL), path.join(repository, PUBLISHER_REL));
+    copyFile(path.join(ROOT, "tools/product/studio/pack-studio.mjs"),
+      path.join(repository, "tools/product/studio/pack-studio.mjs"));
+    copyFile(path.join(ROOT, "tools/product/extensions/chatgpt/chrome/chrome-extension-keys.mjs"),
+      path.join(repository, "tools/product/extensions/chatgpt/chrome/chrome-extension-keys.mjs"));
+    copyFile(path.join(ROOT, "tools/paths.mjs"), path.join(repository, "tools/paths.mjs"));
+    copyFile(path.join(ROOT, "config/extension-keys.json"), path.join(repository, "config/extension-keys.json"));
   }
   git(repository, ["config", "user.name", "Lean Activator Validator"]);
   git(repository, ["config", "user.email", "lean-activator@example.invalid"]);
@@ -1522,7 +1574,8 @@ function createRepositoryFixture(label, { withFoundation = true } = {}) {
   fs.mkdirSync(path.join(repository, "apps", "dev-server"), { recursive: true });
   fs.writeFileSync(path.join(repository, "apps", "dev-server", "generated.js"), "// generated fixture\n");
   git(repository, ["add", "--sparse", ACTIVATOR_REL, PUBLISHER_REL, "tools/publish/canonical-delivery-lib.mjs",
-    PAYLOAD_MODULE_REL, "fixture-source", "apps/dev-server/generated.js"]);
+    PAYLOAD_MODULE_REL, "tools/product", "tools/paths.mjs", "config/extension-keys.json",
+    "fixture-source", "apps/dev-server/generated.js"]);
   git(repository, ["commit", "-q", "-m", "fixture: activator source"]);
   assert.equal(git(repository, ["status", "--porcelain=v1"]), "");
   return { top, repository, activator: path.join(repository, ACTIVATOR_REL) };
@@ -1927,6 +1980,16 @@ async function runAuthorityModelTests() {
 }
 
 async function runRuntimeTests(api) {
+  await test("activator independently pins one-unit Studio and legacy Dev Controls targets", () => {
+    assert.deepEqual(api.activatorTargetPolicy("dev-controls-oauth-google").logicalUnits,
+      ["alias", "dev_output", "extension"]);
+    const studio = api.activatorTargetPolicy("studio-launcher");
+    assert.deepEqual(studio.outputFamilies, ["extension"]);
+    assert.deepEqual(studio.logicalUnits, ["studio_launcher"]);
+    assert.equal(studio.expectedExtensionId, "bpobkkppdlldlkccaehmpfclmkhiemhg");
+    assert.throws(() => api.activatorTargetPolicy("receipt-selected-path"),
+      (error) => error?.code === "publication-target-not-accepted");
+  });
   const canonicalApi = await import(
     `${pathToFileURL(path.join(ROOT, CANONICAL_LIB_REL)).href}?p22-validator=${Date.now()}`);
   await test("activator imports the exact accepted canonical-library capability set", () => {
@@ -2409,7 +2472,7 @@ async function runRuntimeTests(api) {
     assert.equal(fs.existsSync(expected), false);
     const payload = JSON.parse(result.stdout);
     assert.deepEqual(Object.keys(payload.canonicalFoundation.futureSubpaths).sort(),
-      ["activation-intents", "activations", "rollbacks", "transactions"]);
+      ["activation-intents", "activations", "rollback-intents", "rollbacks", "transactions"]);
     assert.equal(path.basename(payload.canonicalFoundation.publisherLock), ".h2o-publisher-lock");
   });
   await test("symlinked canonical anchor is rejected without following or changing it", () => {
@@ -3446,6 +3509,7 @@ async function runRuntimeTests(api) {
   });
 
   await runP3cA1Tests();
+  await runStudioPublicationAuthorityTests();
 }
 
 /* ------------------------------------------------------------------------- *
@@ -3485,6 +3549,136 @@ async function createActivationFixture(label, { mutateStage = null } = {}) {
     activate: (options = {}) => api.activateReceipt(stage.receiptPath, intent.intentPath,
       { environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, ...options }),
   };
+}
+
+async function createStudioPublicationFixture(label) {
+  const fixture = createRealPublisherBoundaryFixture(`studio-${label}`, { studioAuthority: true });
+  const stage = runRealPublisher(fixture, { studio: true });
+  assert.equal(stage.result.status, 0, stage.result.stderr);
+  assert.ok(stage.receiptPath, "Studio publisher did not produce a receipt");
+  const stageReceipt = JSON.parse(fs.readFileSync(stage.receiptPath, "utf8"));
+  const api = await importFixtureActivator(fixture, `studio-${label}`);
+  const payload = await import(`${pathToFileURL(path.join(fixture.repository, PAYLOAD_MODULE_REL)).href
+  }?studio=${encodeURIComponent(label)}-${Date.now()}`);
+  const intent = api.prepareActivationIntent(stage.receiptPath, {
+    environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, randomBytes: FIXED_RANDOM_BYTES,
+  });
+  const repository = fs.realpathSync.native(fixture.repository);
+  const units = payload.canonicalUnitPaths(repository, intent.activationId, {
+    targetId: "studio-launcher", extensionVariant: "studio-launcher",
+  });
+  return {
+    fixture, stage, stageReceipt, api, payload, intent, units,
+    anchor: path.join(fs.realpathSync.native(fixture.top), ".h2o-canonical-delivery"),
+    activate: (options = {}) => api.activateReceipt(stage.receiptPath, intent.intentPath,
+      { environment: cleanEnvironment(), now: FIXED_ACTIVATION_DATE, ...options }),
+  };
+}
+
+async function runStudioPublicationAuthorityTests() {
+  await test("Studio publication promotes one unit and records the retained legacy generation", async () => {
+    const context = await createStudioPublicationFixture("promotion-success");
+    const [unit] = context.units;
+    const previous = context.payload.recomputeIncomingManifest(unit.livePath, "");
+    assert.equal(previous.treeDigest, context.stageReceipt.canonicalBaseline.treeDigest);
+    assert.equal(context.stageReceipt.canonicalBaseline.provenanceStatus, "legacy-unreceipted");
+    const result = context.activate();
+    const receipt = JSON.parse(fs.readFileSync(result.activationReceiptPath, "utf8"));
+    assert.equal(result.ok, true);
+    assert.equal(receipt.publicationTarget, "studio-launcher");
+    assert.equal(receipt.generationId, context.stageReceipt.generationId);
+    assert.equal(receipt.expectedExtensionId, "bpobkkppdlldlkccaehmpfclmkhiemhg");
+    assert.equal(receipt.canonicalOutputPath, unit.livePath);
+    assert.equal(receipt.previousCanonicalIdentities.studio_launcher.previousTreeDigest,
+      previous.treeDigest);
+    assert.equal(receipt.previousCanonicalIdentities.studio_launcher.previousProvenanceStatus,
+      "legacy-unreceipted");
+    assert.equal(receipt.previousCanonicalIdentities.studio_launcher.rollbackCandidateAvailable, true);
+    assert.equal(context.payload.recomputeIncomingManifest(unit.retiredPath, "").treeDigest,
+      previous.treeDigest);
+    assert.equal(context.payload.recomputeIncomingManifest(unit.livePath, "").treeDigest,
+      receipt.promotedCanonicalIdentities.studio_launcher.treeDigest);
+    assert.equal(fs.existsSync(path.join(unit.livePath,
+      "surfaces", "studio", "renderer", "chat-renderer.studio.js")), true);
+    for (const flag of ["runtimeActivationPerformed", "browserReloadPerformed",
+      "deploymentPerformed", "releasePerformed"]) assert.equal(receipt[flag], false, flag);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("Studio rollback requires the exact immutable intent and retains both generations", async () => {
+    const context = await createStudioPublicationFixture("rollback-success");
+    const activation = context.activate();
+    const accepted = JSON.parse(fs.readFileSync(activation.activationReceiptPath, "utf8"));
+    const intent = context.api.prepareStudioRollbackIntent(activation.activationReceiptPath, {
+      environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE,
+      randomBytes: SECOND_RANDOM_BYTES,
+    });
+    const copiedIntent = path.join(context.fixture.top, "copied-rollback-intent.json");
+    fs.copyFileSync(intent.rollbackIntentPath, copiedIntent);
+    expectActivatorError(() => context.api.executeStudioRollback(
+      activation.activationReceiptPath, copiedIntent, { environment: cleanEnvironment() }),
+    "rollback-intent-invalid");
+    const result = context.api.executeStudioRollback(activation.activationReceiptPath,
+      intent.rollbackIntentPath, { environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE });
+    const rollback = JSON.parse(fs.readFileSync(result.rollbackReceiptPath, "utf8"));
+    const [unit] = context.units;
+    assert.equal(result.ok, true);
+    assert.equal(rollback.publicationTarget, "studio-launcher");
+    assert.equal(rollback.sourceActivationReceiptSha256, activation.activationReceiptSha256);
+    assert.equal(rollback.rolledBackFromGenerationId, accepted.generationId);
+    assert.equal(rollback.restoredToDigest,
+      accepted.previousCanonicalIdentities.studio_launcher.previousTreeDigest);
+    assert.equal(context.payload.recomputeIncomingManifest(unit.livePath, "").treeDigest,
+      rollback.restoredToDigest);
+    assert.equal(context.payload.recomputeIncomingManifest(result.retainedReplacementPath, "").treeDigest,
+      rollback.rolledBackFromDigest);
+    assert.equal(rollback.runtimeActivationPerformed, false);
+    assert.equal(rollback.browserReloadPerformed, false);
+    disposeTemporaryRoot(context.fixture.top);
+  });
+
+  await test("interrupted and unreceipted Studio rollbacks recover to the accepted generation", async () => {
+    const context = await createStudioPublicationFixture("rollback-recovery");
+    const activation = context.activate();
+    const accepted = JSON.parse(fs.readFileSync(activation.activationReceiptPath, "utf8"));
+    const [unit] = context.units;
+    const firstIntent = context.api.prepareStudioRollbackIntent(activation.activationReceiptPath, {
+      environment: cleanEnvironment(), now: SECOND_ACTIVATION_DATE,
+      randomBytes: SECOND_RANDOM_BYTES,
+    });
+    expectActivatorError(() => context.api.executeStudioRollback(activation.activationReceiptPath,
+      firstIntent.rollbackIntentPath, {
+        environment: cleanEnvironment(),
+        hooks: { afterRetireCurrent: () => { throw new Error("fixture interruption"); } },
+      }), "rollback-failed");
+    const firstRecovered = context.api.recoverStudioRollback(firstIntent.rollbackId,
+      firstIntent.rollbackIntentPath, { environment: cleanEnvironment() });
+    assert.equal(firstRecovered.reversedToAcceptedGeneration, true);
+    assert.equal(context.payload.recomputeIncomingManifest(unit.livePath, "").treeDigest,
+      accepted.promotedCanonicalIdentities.studio_launcher.treeDigest);
+
+    const later = new Date("2026-08-03T09:31:00.000Z");
+    const laterBytes = () => Buffer.from("c3d4e5f6a1b2", "hex");
+    const secondIntent = context.api.prepareStudioRollbackIntent(activation.activationReceiptPath, {
+      environment: cleanEnvironment(), now: later, randomBytes: laterBytes,
+    });
+    expectActivatorError(() => context.api.executeStudioRollback(activation.activationReceiptPath,
+      secondIntent.rollbackIntentPath, {
+        environment: cleanEnvironment(),
+        hooks: { receiptFailureInjection: (point) => {
+          if (point === "before-temp-open") throw new Error("fixture rollback receipt failure");
+        } },
+      }), "rollback-receipt-publication-failed");
+    assert.equal(context.payload.recomputeIncomingManifest(unit.livePath, "").treeDigest,
+      accepted.promotedCanonicalIdentities.studio_launcher.treeDigest);
+    assert.equal(context.payload.recomputeIncomingManifest(unit.retiredPath, "").treeDigest,
+      accepted.previousCanonicalIdentities.studio_launcher.previousTreeDigest);
+    const secondRecovered = context.api.recoverStudioRollback(secondIntent.rollbackId,
+      secondIntent.rollbackIntentPath, { environment: cleanEnvironment() });
+    assert.equal(secondRecovered.reversedToAcceptedGeneration, true);
+    assert.equal(secondRecovered.rollbackPerformed, false);
+    disposeTemporaryRoot(context.fixture.top);
+  });
 }
 
 function leaseDirectory(anchor) {
@@ -5230,6 +5424,10 @@ function runStructuralTests() {
     assert.match(source, /argv\.length === 4 && argv\[0\] === "--activate-receipt" &&\s*argv\[2\] === "--activation-intent"/u);
     assert.match(source, /activation-intent-required/u);
     assert.doesNotMatch(source, /prepareActivationIntent\([^)]*\)[^;]*;\s*\n\s*return activateReceipt/u);
+    assert.match(source,
+      /argv\.length === 4 && argv\[0\] === "--rollback-receipt" && argv\[2\] === "--rollback-intent"/u);
+    assert.match(source,
+      /argv\.length === 4 && argv\[0\] === "--recover-rollback" && argv\[2\] === "--rollback-intent"/u);
   });
   structural("canonical comparison is exported but production canonical verification remains fixture-only", () => {
     assert.match(source, /export function compareTrees/u);
@@ -5319,7 +5517,7 @@ function runStructuralTests() {
     assert.doesNotMatch(source, /F_FULLFSYNC|powerLossDurabilityGuaranteed:\s*true/u);
   });
   structural("module documents lock mutations and the canonical-library Git trust boundary", () => {
-    assert.match(source, /publisher-lock\s*\n\/\/ support directory and lock lifecycle/u);
+    assert.match(source, /publisher lock, canonical lease, append-only journals, and durable receipts/u);
     assert.match(source, /CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY/u);
     assert.match(source, /share one pinned executable, sanitized environment, and exact read-only argv boundary/u);
   });
@@ -5440,11 +5638,14 @@ function runStructuralTests() {
       /\bas\s+\w+\s*[,}][^;]*from\s+["'][^"']*lean-payload-transaction/u,
       /export\s+\*\s+from\s+["'][^"']*lean-payload-transaction/u,
     ]) assert.doesNotMatch(source, pattern);
-    // P3C-B1 legitimately imports the pure recovery planner. Rollback receipts
-    // and the low-level rename/restore primitives stay out of the edge entirely.
+    // Rollback remains behind this same exact import edge; the activator never
+    // gains raw rename capability.
     assert.equal(imported.includes("planP3cRecovery"), true);
-    for (const deferred of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
-      "restoreUnit", "renameCanonicalEntry", "retireLiveTree", "promoteIncomingTree"]) {
+    for (const admitted of ["publishRollbackReceipt", "appendRollbackCompleteRecord",
+      "rollbackUnitToPrevious", "reverseRollbackUnit"]) {
+      assert.equal(imported.includes(admitted), true, admitted);
+    }
+    for (const deferred of ["restoreUnit", "renameCanonicalEntry", "retireLiveTree", "promoteIncomingTree"]) {
       assert.equal(imported.includes(deferred), false, deferred);
     }
   });
@@ -5469,11 +5670,12 @@ function runStructuralTests() {
     // The activator never gains rename capability.
     assert.doesNotMatch(source, /fs\.rename(?:Sync)?\s*\(/u);
     assert.doesNotMatch(source, /fs\.promises\.rename\s*\(/u);
-    // Exactly one rename site, inside renameCanonicalEntry, with three callers.
+    // Exactly one rename site, inside renameCanonicalEntry; promotion,
+    // reversal, rollback, and rollback recovery all use that single gate.
     assert.equal((payloadSource.match(/fs\.renameSync\(/gu) || []).length, 1);
     assert.doesNotMatch(payloadSource, /fs\.promises\.rename\s*\(/u);
     assert.equal((payloadSource.match(/function renameCanonicalEntry\(\{/gu) || []).length, 1);
-    assert.equal((payloadSource.match(/renameCanonicalEntry\(\{/gu) || []).length - 1, 3);
+    assert.equal((payloadSource.match(/renameCanonicalEntry\(\{/gu) || []).length - 1, 8);
   });
   structural("the activator gate and payload module pin identical approved roots", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
@@ -5541,7 +5743,7 @@ function runStructuralTests() {
     // The activator never hand-writes an accepted record.
     assert.doesNotMatch(source, /transactionState:\s*["'`]accepted["'`]/u);
   });
-  structural("rollback and pruning remain unreachable while recovery is identity-only", () => {
+  structural("direct rollback stays unreachable while governed rollback requires immutable intent evidence", () => {
     const cli = source.slice(source.indexOf("export async function runLeanActivator"));
     for (const command of ["--recover", "--rollback", "--prune"]) {
       assert.ok(cli.includes(command), command);
@@ -5625,13 +5827,13 @@ function runStructuralTests() {
     const deriveAt = authority.indexOf("transactionDirectory(foundation.root");
     assert.ok(validateAt > 0 && deriveAt > validateAt,
       "the activation identity must be validated before any path is derived");
-    // Rollback and pruning remain unavailable after B1.
+    // The legacy direct rollback spelling and pruning remain unavailable.
     assert.match(cli, /mutation-command-not-implemented/u);
     for (const command of ["--rollback", "--prune"]) assert.ok(cli.includes(command), command);
   });
-  structural("recovery uses only approved payload helpers and never publishes a receipt", () => {
+  structural("legacy activation recovery uses only approved helpers and never publishes a receipt", () => {
     const start = source.indexOf("* P3C-B1 — deterministic recovery");
-    const end = source.indexOf("export async function runLeanActivator");
+    const end = source.indexOf("* Governed Studio rollback", start);
     assert.ok(start > 0 && end > start, "the recovery region must be locatable");
     const region = source.slice(start, end);
     // Never fabricates or republishes a receipt.
@@ -5714,13 +5916,19 @@ function runStructuralTests() {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
     assert.match(payloadSource, /export const ACTIVATION_RECEIPT_SCHEMA_VERSION = 2;/u);
   });
-  structural("the reported activation slice is exactly P3C-A3", () => {
+  structural("the validator reports both the legacy activation slice and governed Studio rollback", () => {
     assert.match(validatorSource, /activationSlice: "P3C-A3",/u);
     assert.doesNotMatch(validatorSource, /activationSlice: "P3C-(A1|A2|B1|B2)"/u);
-    // Rollback and pruning remain unavailable after A3.
+    assert.match(validatorSource, /studioPublicationAuthorityImplemented: true,/u);
+    assert.match(validatorSource, /rollbackImplemented: true,/u);
+    // Direct rollback and pruning remain unavailable; only the separately
+    // intent-authorized high-level Studio routes are admitted.
     const cli = source.slice(source.indexOf("export async function runLeanActivator"));
     assert.match(cli, /mutation-command-not-implemented/u);
     for (const command of ["--rollback", "--prune"]) assert.ok(cli.includes(command), command);
+    assert.match(cli, /prepareStudioRollbackIntent\(argv\[1\]/u);
+    assert.match(cli, /executeStudioRollback\(argv\[1\], argv\[3\]/u);
+    assert.match(cli, /recoverStudioRollback\(argv\[1\], argv\[3\]/u);
     assert.doesNotMatch(cli, /rollbackUnitToPrevious|reverseRollbackUnit|publishRollbackReceipt/u);
   });
   structural("P3A adds no package command and keeps the four-path scope", () => {
@@ -5753,11 +5961,12 @@ async function main() {
     structuralAssertions: structuralResults.length,
     activationImplemented: true,
     activationSlice: "P3C-A3",
+    studioPublicationAuthorityImplemented: true,
     canonicalProductionVerificationImplemented: true,
     twoProcessLeaseContentionProven: true,
     recoveryImplemented: true,
     recoveryForwardGuessingPerformed: false,
-    rollbackImplemented: false,
+    rollbackImplemented: true,
     canonicalProductionInspected: false,
     transactionDescription: "transactionally recoverable three-tree promotion",
   })}\n`);

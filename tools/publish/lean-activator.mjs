@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 // Lean canonical activator — Batch 2 P0/P1 plus P2 coordination foundation.
 //
-// This module verifies a Batch 1 stage-only publication receipt and independently
-// recomputes every staged manifest. It contains no payload activation, backup,
-// promotion, rollback, recovery mutation, pruning, browser, network,
-// or push capability. P2/P2.1 may create the inherited Batch 1 publisher-lock
-// support directory and lock lifecycle, the independently pinned external
-// coordination anchor, activation-intents directory, one no-replace intent
-// journal, and only the temporary journal file owned by that invocation.
+// This module verifies a stage-only publication receipt and independently
+// recomputes every staged manifest. Its governed mutation surface is limited to
+// target-pinned promotion/recovery and separately authorized Studio rollback;
+// it contains no pruning, browser, network, reload, deployment, release, or push
+// capability. All coordination and payload mutation remains behind the shared
+// publisher lock, canonical lease, append-only journals, and durable receipts.
 
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -26,6 +25,12 @@ import {
   verifyLease,
 } from "./canonical-delivery-lib.mjs";
 import { acquireLock, releaseLock } from "./lean-publisher.mjs";
+import { getExtensionId } from "../product/extensions/chatgpt/chrome/chrome-extension-keys.mjs";
+import {
+  ARCHIVE_WORKBENCH_OUT_FILES,
+  compareArchiveWorkbenchToSource,
+  parseStudioHtmlScriptRefs,
+} from "../product/studio/pack-studio.mjs";
 // P3C-1a: the one explicit production import edge to the payload-transaction
 // module. Exact named symbols only — no namespace, default, aliased or dynamic
 // import. The payload module stays Node-builtins-only and never sees the lease.
@@ -34,18 +39,28 @@ import {
   ACTIVATION_RECEIPT_SCHEMA_VERSION,
   activationReceiptPath,
   appendAcceptedRecord,
+  appendRollbackCompleteRecord,
+  appendRollbackStateRecord,
   buildActivationReceipt,
+  buildRollbackReceipt,
   canonicalUnitPaths,
   createOwnedIncomingRoot,
   ensureTransactionDirectory,
   prepareIncomingTree,
   promoteReleaseWithJournal,
   publishActivationReceipt,
+  publishRollbackReceipt,
   planP3cRecovery,
   readTransactionChain,
   recomputeIncomingManifest,
   releaseIncomingOwnership,
+  ROLLBACK_RECEIPT_MODE,
   reverseRelease,
+  reverseRollbackUnit,
+  rollbackReceiptPath,
+  rollbackRetiredPath,
+  rollbackUnitToPrevious,
+  TARGET_AWARE_RECEIPT_SCHEMA_VERSION,
   TRANSACTION_MODE,
   transactionDirectory,
   verifyCanonicalAgainstReceipt,
@@ -55,6 +70,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPOSITORY_ROOT = path.resolve(HERE, "..", "..");
 // The Batch 1 STAGE publication receipt schema. Not the activation receipt.
 export const RECEIPT_SCHEMA_VERSION = 1;
+export const TARGET_AWARE_STAGE_RECEIPT_SCHEMA_VERSION = 2;
 export const RECEIPT_BASENAME = "publication-receipt.json";
 export const STAGING_PREFIX = "h2o-publish-stage-";
 export const FOUNDATION_COMMITS = Object.freeze([
@@ -84,6 +100,7 @@ export const FUTURE_TREE_STATES = Object.freeze([
 export const FUTURE_COORDINATION_SUBPATHS = Object.freeze([
   "activation-intents",
   "activations",
+  "rollback-intents",
   "rollbacks",
   // P3A publishes append-only activation transaction records here. Declaring it
   // keeps the coordination surface and the constant from diverging.
@@ -91,10 +108,54 @@ export const FUTURE_COORDINATION_SUBPATHS = Object.freeze([
 ]);
 export const FUTURE_PROMOTION_DESCRIPTION = "transactionally recoverable three-tree promotion";
 export const ACTIVATION_INTENT_SCHEMA_VERSION = 1;
+export const TARGET_AWARE_ACTIVATION_INTENT_SCHEMA_VERSION = 2;
 export const ACTIVATION_INTENT_MODE = "activation-intent";
 export const ACTIVATION_INTENT_PURPOSE = "canonical-activation";
+export const ROLLBACK_INTENT_SCHEMA_VERSION = 1;
+export const ROLLBACK_INTENT_MODE = "rollback-intent";
+export const ROLLBACK_INTENT_PURPOSE = "studio-launcher-previous-generation-rollback";
 // Pinned from the accepted Batch 1/1.1 publisher contract, not from receipt input.
 export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
+export const DEV_CONTROLS_TARGET = "dev-controls-oauth-google";
+export const STUDIO_LAUNCHER_TARGET = "studio-launcher";
+export const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
+const STUDIO_LAUNCHER_SHELL_FILES = Object.freeze([
+  "README.txt", "bg.js", "manifest.json",
+  "icons/icon16.png", "icons/icon32.png", "icons/icon48.png", "icons/icon128.png",
+  "icons/icon256.png", "icons/icon512.png", "icons/icon1024.png", "icons/manifest-icons.json",
+]);
+const STUDIO_REQUIRED_ORDER = Object.freeze([
+  "platform/selectors.contract.js",
+  "platform/html-sanitizer.js",
+  "renderer/chat-renderer.studio.js",
+  "studio.js",
+]);
+const ACTIVATOR_TARGETS = Object.freeze({
+  [DEV_CONTROLS_TARGET]: Object.freeze({
+    targetId: DEV_CONTROLS_TARGET,
+    stageReceiptSchemaVersion: RECEIPT_SCHEMA_VERSION,
+    outputFamilies: Object.freeze(["alias", "devOutput", "extension"]),
+    logicalUnits: Object.freeze(["alias", "dev_output", "extension"]),
+    extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+    expectedExtensionId: null,
+    exactCanonicalHeadRequired: false,
+  }),
+  [STUDIO_LAUNCHER_TARGET]: Object.freeze({
+    targetId: STUDIO_LAUNCHER_TARGET,
+    stageReceiptSchemaVersion: TARGET_AWARE_STAGE_RECEIPT_SCHEMA_VERSION,
+    outputFamilies: Object.freeze(["extension"]),
+    logicalUnits: Object.freeze(["studio_launcher"]),
+    extensionVariant: STUDIO_LAUNCHER_TARGET,
+    expectedExtensionId: STUDIO_LAUNCHER_EXTENSION_ID,
+    exactCanonicalHeadRequired: true,
+  }),
+});
+
+export function activatorTargetPolicy(targetId = DEV_CONTROLS_TARGET) {
+  const policy = ACTIVATOR_TARGETS[targetId];
+  if (!policy) fail("publication-target-not-accepted", "Receipt target is not independently admitted.", { targetId });
+  return policy;
+}
 export const CANONICAL_DELIVERY_LIB_TRUST_BOUNDARY =
   "canonical-delivery-lib and activator share one pinned executable, sanitized environment, and exact read-only argv boundary; activator independently pins every returned authority path";
 export { sanitizedGitEnvironment, TRUSTED_GIT_EXECUTABLE_IDENTITY };
@@ -465,9 +526,13 @@ function parseReceipt(receiptPath) {
 }
 
 function requireReceiptShape(receipt) {
-  if (receipt.schemaVersion !== RECEIPT_SCHEMA_VERSION) {
+  const targetId = receipt.schemaVersion === RECEIPT_SCHEMA_VERSION &&
+    !Object.prototype.hasOwnProperty.call(receipt, "publicationTarget")
+    ? DEV_CONTROLS_TARGET : receipt.publicationTarget;
+  const policy = activatorTargetPolicy(targetId);
+  if (receipt.schemaVersion !== policy.stageReceiptSchemaVersion) {
     fail("receipt-schema-version", "Unsupported publication receipt schema version.", {
-      expected: RECEIPT_SCHEMA_VERSION,
+      expected: policy.stageReceiptSchemaVersion,
       observed: receipt.schemaVersion,
     });
   }
@@ -475,6 +540,25 @@ function requireReceiptShape(receipt) {
   for (const field of ["activationPerformed", "browserReloadPerformed", "browserCanaryPerformed", "pushPerformed"]) {
     if (receipt[field] !== false) {
       fail("receipt-boundary-field", `Receipt field ${field} must be exactly false.`, { field, observed: receipt[field] });
+    }
+  }
+  if (policy.targetId === STUDIO_LAUNCHER_TARGET) {
+    for (const field of ["runtimeActivationPerformed", "deploymentPerformed", "releasePerformed"]) {
+      if (receipt[field] !== false) {
+        fail("receipt-boundary-field", `Studio receipt field ${field} must be exactly false.`, {
+          field, observed: receipt[field],
+        });
+      }
+    }
+    if (receipt.authorizedHead !== receipt.approvedHead || receipt.authorizedHead !== receipt.sourceAuthority?.head) {
+      fail("receipt-authorized-head", "Studio receipt must bind one exact authorized canonical source HEAD.");
+    }
+    if (receipt.expectedExtensionId !== policy.expectedExtensionId ||
+        !/^[a-f0-9]{64}$/u.test(receipt.generationId ?? "")) {
+      fail("receipt-studio-authority", "Studio receipt extension or generation identity is invalid.");
+    }
+    if (!sameJson(receipt.outputFamilies, [...policy.outputFamilies]) || !plainObject(receipt.canonicalBaseline)) {
+      fail("receipt-studio-authority", "Studio receipt target families or canonical baseline are invalid.");
     }
   }
   for (const field of ["repository", "branch", "approvedHead", "buildTimestamp", "stagingRoot"] ) {
@@ -489,9 +573,9 @@ function requireReceiptShape(receipt) {
     fail("receipt-validator-failed", "Publisher receipt does not record a successful staged-output validation.");
   }
   if (!extensionVariantIsSafe(receipt.stagedExtensionVariant) ||
-      receipt.stagedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+      receipt.stagedExtensionVariant !== policy.extensionVariant) {
     fail("receipt-extension-variant", "Receipt extension variant must equal the independently pinned Batch 1 variant.", {
-      expected: ACCEPTED_EXTENSION_VARIANT,
+      expected: policy.extensionVariant,
       observed: receipt.stagedExtensionVariant,
     });
   }
@@ -499,7 +583,7 @@ function requireReceiptShape(receipt) {
       typeof receipt.lock.ownerId !== "string" || !receipt.lock.ownerId) {
     fail("receipt-schema-invalid", "Receipt lock evidence is incomplete.");
   }
-  for (const family of OUTPUT_FAMILIES) {
+  for (const family of policy.outputFamilies) {
     if (!plainObject(receipt.manifests[family]) || !Array.isArray(receipt.manifests[family].entries)) {
       fail("receipt-manifest-missing", "Receipt manifest data is missing.", { family });
     }
@@ -507,9 +591,13 @@ function requireReceiptShape(receipt) {
       fail("receipt-manifest-missing", "Receipt manifest summary is missing.", { family });
     }
   }
+  return policy;
 }
 
-function expectedStagePaths(stagingRoot) {
+function expectedStagePaths(stagingRoot, policy = activatorTargetPolicy()) {
+  if (policy.targetId === STUDIO_LAUNCHER_TARGET) {
+    return Object.freeze({ extension: path.join(stagingRoot, "artifacts", STUDIO_LAUNCHER_TARGET) });
+  }
   return Object.freeze({
     alias: path.join(stagingRoot, "server", "alias"),
     devOutput: path.join(stagingRoot, "server", "dev_output"),
@@ -518,7 +606,7 @@ function expectedStagePaths(stagingRoot) {
   });
 }
 
-function verifyStagePaths(parsed, receipt) {
+function verifyStagePaths(parsed, receipt, policy) {
   const temporaryRoot = realAware(os.tmpdir());
   assertDirectory(receipt.stagingRoot, "staging-root-missing");
   const stagingRoot = realAware(receipt.stagingRoot);
@@ -534,7 +622,7 @@ function verifyStagePaths(parsed, receipt) {
       stagingRoot,
     });
   }
-  const expected = expectedStagePaths(stagingRoot);
+  const expected = expectedStagePaths(stagingRoot, policy);
   for (const [name, expectedPath] of Object.entries(expected)) {
     if (typeof receipt.outputPaths[name] !== "string" || realAware(receipt.outputPaths[name]) !== realAware(expectedPath)) {
       fail("staged-output-path-mismatch", "Receipt output path does not match the fixed Batch 1 staging layout.", {
@@ -544,9 +632,11 @@ function verifyStagePaths(parsed, receipt) {
       });
     }
   }
-  assertDirectory(expected.alias, "staged-output-missing");
-  assertDirectory(expected.devOutput, "staged-output-missing");
-  assertRegularFile(expected.proxyPack, "staged-proxy-pack-missing");
+  if (policy.targetId === DEV_CONTROLS_TARGET) {
+    assertDirectory(expected.alias, "staged-output-missing");
+    assertDirectory(expected.devOutput, "staged-output-missing");
+    assertRegularFile(expected.proxyPack, "staged-proxy-pack-missing");
+  }
   assertDirectory(expected.extension, "staged-output-missing");
   return { stagingRoot, declaredStagingRoot: path.resolve(receipt.stagingRoot), outputPaths: expected };
 }
@@ -678,7 +768,7 @@ function verifyAliases(aliasRoot, manifest, source, worktrees, authorizedSourceR
   return Object.freeze({ aliasCount: entries.length, regularFileCount, symlinkCount, entries });
 }
 
-function verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot = null) {
+function verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot = null, policy = activatorTargetPolicy()) {
   // Explicit-worktree stages legitimately embed their selected source path in generated
   // metadata. Exempt exactly the one worktree the verified sourceAuthority names —
   // matched by discovered-root identity, never by raw receipt text or prefix — and keep
@@ -691,11 +781,8 @@ function verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot = 
     stage.stagingRoot,
     realAware(stage.declaredStagingRoot),
   ])];
-  const files = [
-    ...listFilesRecursive(stage.outputPaths.alias),
-    ...listFilesRecursive(stage.outputPaths.devOutput),
-    ...listFilesRecursive(stage.outputPaths.extension),
-  ];
+  const files = policy.outputFamilies.flatMap((family) =>
+    listFilesRecursive(stage.outputPaths[family]));
   for (const filename of files) {
     if (!TEXT_OUTPUT_PATTERN.test(filename) || fs.lstatSync(filename).isSymbolicLink()) continue;
     const text = fs.readFileSync(filename, "utf8");
@@ -715,7 +802,71 @@ function verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot = 
   }
 }
 
-function verifyRequiredOutputs(stage, receipt) {
+function extensionIdFromManifestKey(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  let bytes;
+  try { bytes = Buffer.from(value, "base64"); } catch { return null; }
+  if (!bytes.length) return null;
+  const alphabet = "abcdefghijklmnop";
+  const digest = crypto.createHash("sha256").update(bytes).digest().subarray(0, 16);
+  return [...digest].map((byte) => alphabet[byte >> 4] + alphabet[byte & 15]).join("");
+}
+
+function verifyStudioRequiredOutputs(stage, receipt, source, manifest, authorizedSourceRoot = null) {
+  const expectedFiles = [...STUDIO_LAUNCHER_SHELL_FILES,
+    ...ARCHIVE_WORKBENCH_OUT_FILES.map((name) => `surfaces/studio/${name}`)]
+    .sort((left, right) => left.localeCompare(right, "en"));
+  const prefix = path.relative(stage.stagingRoot, stage.outputPaths.extension).split(path.sep).join("/");
+  const actualFiles = manifest.entries.map((entry) => {
+    if (entry.type !== "file" || !entry.path.startsWith(`${prefix}/`)) {
+      fail("studio-stage-entry", "Studio manifest permits only regular files beneath its fixed target root.", {
+        path: entry.path, type: entry.type,
+      });
+    }
+    return entry.path.slice(prefix.length + 1);
+  }).sort((left, right) => left.localeCompare(right, "en"));
+  if (!sameJson(actualFiles, expectedFiles) ||
+      actualFiles.some((relative) => relative.split("/").some((segment) => segment.startsWith(".")))) {
+    const expected = new Set(expectedFiles);
+    const actual = new Set(actualFiles);
+    fail("studio-stage-file-set", "Studio artifact differs from the independently pinned file set.", {
+      missing: expectedFiles.filter((name) => !actual.has(name)),
+      unexpected: actualFiles.filter((name) => !expected.has(name)),
+    });
+  }
+
+  let extensionManifest;
+  try {
+    extensionManifest = JSON.parse(fs.readFileSync(path.join(stage.outputPaths.extension, "manifest.json"), "utf8"));
+  } catch { fail("studio-stage-manifest", "Studio launcher manifest is not valid JSON."); }
+  const derivedId = extensionIdFromManifestKey(extensionManifest.key);
+  if (extensionManifest?.manifest_version !== 3 || extensionManifest?.background?.service_worker !== "bg.js" ||
+      Object.prototype.hasOwnProperty.call(extensionManifest, "content_scripts") ||
+      getExtensionId(STUDIO_LAUNCHER_TARGET) !== STUDIO_LAUNCHER_EXTENSION_ID ||
+      derivedId !== STUDIO_LAUNCHER_EXTENSION_ID || receipt.expectedExtensionId !== derivedId) {
+    fail("studio-stage-manifest", "Studio launcher manifest or stable extension identity is invalid.", {
+      derivedId,
+    });
+  }
+  const packed = compareArchiveWorkbenchToSource(authorizedSourceRoot?.real ?? source.repository,
+    stage.outputPaths.extension);
+  if (!packed.matches) fail("studio-stage-source-drift", "Packed Studio differs from the authorized source.");
+  const html = fs.readFileSync(path.join(stage.outputPaths.extension, "surfaces", "studio", "studio.html"), "utf8");
+  const refs = parseStudioHtmlScriptRefs(html);
+  const positions = STUDIO_REQUIRED_ORDER.map((name) => refs.indexOf(name));
+  if (positions.some((index) => index < 0) || positions.some((index, offset) => offset > 0 && index <= positions[offset - 1])) {
+    fail("studio-stage-load-order", "Studio selectors, sanitizer, Renderer and orchestration order is invalid.", {
+      positions,
+    });
+  }
+  return Object.freeze({ manifestVersion: 3, extensionId: derivedId,
+    requiredLoadOrder: [...STUDIO_REQUIRED_ORDER] });
+}
+
+function verifyRequiredOutputs(stage, receipt, policy, source, manifests, authorizedSourceRoot = null) {
+  if (policy.targetId === STUDIO_LAUNCHER_TARGET) {
+    return verifyStudioRequiredOutputs(stage, receipt, source, manifests.extension, authorizedSourceRoot);
+  }
   for (const relative of REQUIRED_EXTENSION_FILES) {
     const filename = path.join(stage.outputPaths.extension, relative);
     assertRegularFile(filename, "staged-extension-required-file");
@@ -744,6 +895,58 @@ function verifyRequiredOutputs(stage, receipt) {
     });
   }
   return { proxyMarker, loaderMarker: receipt.buildTimestamp, manifestVersion: manifest.manifest_version };
+}
+
+function studioGenerationId(receipt, sourceAuthority, artifactManifest) {
+  return sha256Bytes(JSON.stringify({
+    targetId: STUDIO_LAUNCHER_TARGET,
+    sourceCommit: sourceAuthority.head,
+    sourceTree: sourceAuthority.tree,
+    artifactTreeDigest: artifactManifest.treeDigest,
+    buildMarker: receipt.buildTimestamp,
+  }));
+}
+
+function verifyStudioCanonicalBaseline(receipt, repository) {
+  const baseline = receipt.canonicalBaseline;
+  if (!plainObject(baseline) || !["present", "absent"].includes(baseline.state)) {
+    fail("studio-canonical-baseline", "Studio receipt canonical baseline is invalid.");
+  }
+  const canonicalPath = path.join(repository, "apps", "extensions", "chatgpt", "chrome", STUDIO_LAUNCHER_TARGET);
+  if (realAware(baseline.canonicalPath ?? "") !== realAware(canonicalPath)) {
+    fail("studio-canonical-baseline", "Studio baseline path differs from independent canonical authority.");
+  }
+  let stat = null;
+  try { stat = fs.lstatSync(canonicalPath); } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  if (baseline.state === "absent") {
+    if (stat || baseline.treeDigest !== null || baseline.fileCount !== 0 || !sameJson(baseline.manifest, [])) {
+      fail("studio-canonical-baseline-drift", "Canonical Studio baseline no longer matches recorded absence.");
+    }
+    return Object.freeze({ ...baseline, canonicalPath });
+  }
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail("studio-canonical-baseline-drift", "Recorded canonical Studio generation is absent or unsafe.");
+  }
+  const observed = buildIndependentManifest(canonicalPath, canonicalPath);
+  if (observed.treeDigest !== baseline.treeDigest || observed.fileCount !== baseline.fileCount ||
+      !sameJson(observed.entries, baseline.manifest)) {
+    fail("studio-canonical-baseline-drift", "Canonical Studio generation changed after staging.", {
+      expected: baseline.treeDigest,
+      observed: observed.treeDigest,
+    });
+  }
+  if (!['legacy-unreceipted', 'governed-receipt'].includes(baseline.provenanceStatus)) {
+    fail("studio-canonical-provenance", "Studio previous-generation provenance status is not accepted.");
+  }
+  if (baseline.provenanceStatus === "legacy-unreceipted" &&
+      (baseline.generationId !== null || baseline.publicationReceiptPath !== null ||
+       baseline.publicationReceiptSha256 !== null)) {
+    fail("studio-canonical-provenance", "Legacy Studio baseline must not fabricate generation provenance.");
+  }
+  return Object.freeze({ ...baseline, canonicalPath, treeDigest: observed.treeDigest,
+    fileCount: observed.fileCount, manifest: Object.freeze(observed.entries.map((entry) => Object.freeze({ ...entry }))) });
 }
 
 function assertUnsymlinkedAuthorityPath(target) {
@@ -825,7 +1028,7 @@ export function verifyStageReceipt(receiptPath, {
 } = {}) {
   assertNoDestinationOverrides(environment);
   const parsed = parseReceipt(receiptPath);
-  requireReceiptShape(parsed.receipt);
+  const policy = requireReceiptShape(parsed.receipt);
   // Mode must be known before preflight, because canonical working-copy cleanliness is
   // required for legacy and canonical receipts but not for explicit-worktree ones.
   const declaredAuthority = requireSourceAuthorityShape(parsed.receipt);
@@ -847,7 +1050,14 @@ export function verifyStageReceipt(receiptPath, {
       observed: receipt.branch,
     });
   }
-  if (sourceMode === "explicit-worktree") {
+  if (policy.exactCanonicalHeadRequired) {
+    if (receipt.approvedHead !== source.approvedHead || receipt.authorizedHead !== source.approvedHead) {
+      fail("receipt-head-mismatch", "Studio stage authority must equal the exact current canonical main HEAD.", {
+        expected: source.approvedHead,
+        observed: receipt.authorizedHead,
+      });
+    }
+  } else if (sourceMode === "explicit-worktree") {
     // Canonical may advance after staging; the approved head must stay reachable from
     // current main. Force-moves, rebase-aways and unrelated branches therefore reject.
     if (!gitIsAncestor(REPOSITORY_ROOT, receipt.approvedHead, source.approvedHead)) {
@@ -868,16 +1078,20 @@ export function verifyStageReceipt(receiptPath, {
   const sourceAuthority = declaredAuthority
     ? verifySourceAuthorityAgainstGit(declaredAuthority, source, canonicalCommonDir)
     : null;
-  const stage = verifyStagePaths(parsed, receipt);
+  if (policy.exactCanonicalHeadRequired &&
+      (!sourceAuthority || sourceAuthority.head !== source.approvedHead || sourceAuthority.tree !== source.sourceTree)) {
+    fail("source-authority-head-mismatch", "Studio artifact source must equal exact current canonical main authority.", {
+      sourceHead: sourceAuthority?.head ?? null,
+      canonicalHead: source.approvedHead,
+    });
+  }
+  const stage = verifyStagePaths(parsed, receipt, policy);
   const worktrees = discoverWorktreeRoots(source.repository);
   // Only now, after sourceAuthority is structurally verified against canonical Git
   // objects, may its worktree be exempted from foreign-path provenance.
   const authorizedSourceRoot = authorizedSourceWorktree(sourceAuthority, worktrees);
-  const manifests = {
-    alias: verifyManifestFamily("alias", stage.outputPaths.alias, stage.stagingRoot, receipt),
-    devOutput: verifyManifestFamily("devOutput", stage.outputPaths.devOutput, stage.stagingRoot, receipt),
-    extension: verifyManifestFamily("extension", stage.outputPaths.extension, stage.stagingRoot, receipt),
-  };
+  const manifests = Object.fromEntries(policy.outputFamilies.map((family) => [family,
+    verifyManifestFamily(family, stage.outputPaths[family], stage.stagingRoot, receipt)]));
   const actualTotal = Object.values(manifests).reduce((sum, manifest) => sum + manifest.fileCount, 0);
   if (receipt.fileCounts.total !== actualTotal) {
     fail("staged-file-count-drift", "Total staged file count differs from the receipt.", {
@@ -885,11 +1099,19 @@ export function verifyStageReceipt(receiptPath, {
       actual: actualTotal,
     });
   }
-  const aliases = verifyAliases(stage.outputPaths.alias, manifests.alias, source,
-    worktrees.map((item) => item.real), authorizedSourceRoot);
-  verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot);
-  const markers = verifyRequiredOutputs(stage, receipt);
+  const aliases = policy.targetId === DEV_CONTROLS_TARGET
+    ? verifyAliases(stage.outputPaths.alias, manifests.alias, source,
+      worktrees.map((item) => item.real), authorizedSourceRoot)
+    : null;
+  verifyNoEmbeddedPaths(stage, source, worktrees, authorizedSourceRoot, policy);
+  const markers = verifyRequiredOutputs(stage, receipt, policy, source, manifests, authorizedSourceRoot);
   const canonical = deriveCanonicalFoundation(source.repository);
+  const canonicalBaseline = policy.targetId === STUDIO_LAUNCHER_TARGET
+    ? verifyStudioCanonicalBaseline(receipt, source.repository) : null;
+  if (policy.targetId === STUDIO_LAUNCHER_TARGET &&
+      studioGenerationId(receipt, sourceAuthority, manifests.extension) !== receipt.generationId) {
+    fail("studio-generation-id", "Studio generation ID differs from independently recomputed authority.");
+  }
   if (realAware(receipt.lock.directory) !== realAware(canonical.publisherLock)) {
     fail("receipt-lock-mismatch", "Receipt lock path does not match the shared Batch 1 publisher lock.", {
       expected: canonical.publisherLock,
@@ -915,7 +1137,16 @@ export function verifyStageReceipt(receiptPath, {
       manifests,
       aliases,
       markers,
+      publicationTarget: policy.targetId,
+      outputFamilies: [...policy.outputFamilies],
+      logicalUnits: [...policy.logicalUnits],
       extensionVariant: receipt.stagedExtensionVariant,
+      expectedExtensionId: policy.expectedExtensionId,
+      generationId: receipt.generationId ?? null,
+      canonicalBaseline,
+      sourceRemote: receipt.remote,
+      sourceAuthorityMode: sourceAuthority?.mode ?? sourceMode,
+      sourceAuthorityWorktree: sourceAuthority?.worktreeRoot ?? source.repository,
       buildMarker: receipt.buildTimestamp,
     },
     canonicalFoundation: canonical,
@@ -1023,13 +1254,17 @@ function expectedStateFlags(state) {
 export function evaluateFutureTransaction(model) {
   const reasons = [];
   if (!plainObject(model)) return Object.freeze({ acceptable: false, reasons: ["model-invalid"] });
+  let policy;
+  try { policy = activatorTargetPolicy(model.publicationTarget ?? DEV_CONTROLS_TARGET); } catch {
+    return Object.freeze({ acceptable: false, reasons: ["publication-target-not-accepted"] });
+  }
   if (model.rollbackScope !== "whole-release") reasons.push("whole-release-rollback-required");
   if (model.journalResolved !== true) reasons.push("transaction-journal-unresolved");
   if (model.finalReceiptDurable !== true) reasons.push("final-receipt-not-durable");
   if (typeof model.activationId !== "string" || !model.activationId) reasons.push("activation-id-missing");
   if (!plainObject(model.trees)) reasons.push("tree-records-missing");
   const treeRecords = plainObject(model.trees) ? model.trees : {};
-  for (const family of OUTPUT_FAMILIES) {
+  for (const family of policy.outputFamilies) {
     const tree = treeRecords[family];
     if (!plainObject(tree)) {
       reasons.push(`${family}:record-missing`);
@@ -1053,8 +1288,8 @@ export function evaluateFutureTransaction(model) {
     }
     if (tree.activationId !== model.activationId) reasons.push(`${family}:generation-mismatch`);
   }
-  if (!OUTPUT_FAMILIES.every((family) => treeRecords[family]?.state === "verified")) {
-    reasons.push("all-three-trees-not-verified");
+  if (!policy.outputFamilies.every((family) => treeRecords[family]?.state === "verified")) {
+    reasons.push("all-target-trees-not-verified");
   }
   return Object.freeze({ acceptable: reasons.length === 0, reasons: Object.freeze([...new Set(reasons)]) });
 }
@@ -1311,21 +1546,21 @@ function extensionVariantIsSafe(value) {
 function canonicalTreeRecords(verification, activationId) {
   const repository = verification.source.repository;
   const extensionVariant = verification.stage.extensionVariant;
+  const policy = activatorTargetPolicy(verification.stage.publicationTarget ?? DEV_CONTROLS_TARGET);
   if (!extensionVariantIsSafe(extensionVariant)) {
     fail("receipt-extension-variant", "Verified receipt extension variant is not a safe canonical path segment.");
   }
-  if (extensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  if (extensionVariant !== policy.extensionVariant) {
     fail("receipt-extension-variant", "Verified receipt extension variant differs from the independent authority.", {
-      expected: ACCEPTED_EXTENSION_VARIANT,
+      expected: policy.extensionVariant,
       observed: extensionVariant,
     });
   }
-  const lives = [
-    ["alias", path.join(repository, "apps", "dev-server", "alias")],
-    ["dev_output", path.join(repository, "apps", "dev-server", "dev_output")],
-    ["extension", path.join(repository, "apps", "extensions", "chatgpt", "chrome", extensionVariant)],
-  ];
-  return lives.map(([logicalName, livePath]) => {
+  const lives = canonicalUnitPaths(repository, activationId, {
+    targetId: policy.targetId,
+    extensionVariant: policy.extensionVariant,
+  });
+  return lives.map(({ logicalName, livePath }) => {
     const siblings = futureSiblingNames(path.basename(livePath), activationId);
     return {
       logicalName,
@@ -1350,6 +1585,9 @@ function verificationIdentity(verification) {
     manifests: verification.stage.manifests,
     buildMarker: verification.stage.buildMarker,
     markers: verification.stage.markers,
+    publicationTarget: verification.stage.publicationTarget,
+    generationId: verification.stage.generationId,
+    canonicalBaseline: verification.stage.canonicalBaseline,
     extensionVariant: verification.stage.extensionVariant,
   });
 }
@@ -1423,6 +1661,11 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
   } catch {
     return unresolved("intent-malformed");
   }
+  const targetId = journal.publicationTarget ?? DEV_CONTROLS_TARGET;
+  let targetPolicy;
+  try { targetPolicy = activatorTargetPolicy(targetId); } catch {
+    return unresolved("intent-target-mismatch");
+  }
   // 1: the intent must belong to this canonical repository and branch. Its
   // generation identity is historical evidence, however, so HEAD, tree and Git
   // executable are compared to the receipt and transaction below rather than
@@ -1433,7 +1676,7 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("intent-foreign-source");
   }
   if (journal.acceptedExtensionVariant !== undefined &&
-      journal.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+      journal.acceptedExtensionVariant !== targetPolicy.extensionVariant) {
     return unresolved("intent-variant-mismatch");
   }
   // 2-3: a durable activation receipt must exist at the derived path and verify.
@@ -1451,8 +1694,11 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("receipt-malformed");
   }
   const receiptSha256 = sha256Bytes(receiptBytes);
-  if (receipt?.schemaVersion !== ACTIVATION_RECEIPT_SCHEMA_VERSION ||
+  const expectedReceiptSchema = targetId === DEV_CONTROLS_TARGET
+    ? ACTIVATION_RECEIPT_SCHEMA_VERSION : TARGET_AWARE_RECEIPT_SCHEMA_VERSION;
+  if (receipt?.schemaVersion !== expectedReceiptSchema ||
       receipt?.mode !== ACTIVATION_RECEIPT_MODE || receipt?.activationId !== activationId ||
+      (receipt?.publicationTarget ?? DEV_CONTROLS_TARGET) !== targetId ||
       receipt.activationPerformed !== true || receipt.reloadPerformed !== false ||
       receipt.canaryPerformed !== false || receipt.pushPerformed !== false) {
     return unresolved("receipt-identity-mismatch");
@@ -1470,10 +1716,15 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
       receipt.branch !== journal.branch || receipt.approvedHead !== journal.approvedHead ||
       receipt.sourceTree !== journal.sourceTree ||
       !sameJson(receipt.stableGitIdentity, journal.gitExecutable) ||
-      receipt.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT ||
+      receipt.acceptedExtensionVariant !== targetPolicy.extensionVariant ||
       realAware(receipt.stageReceiptPath ?? "") !== realAware(journal.stageReceiptPath ?? "") ||
       receipt.stageReceiptSha256 !== journal.stageReceiptSha256 ||
       receipt.buildMarker !== journal.buildMarker) {
+    return unresolved("receipt-source-mismatch");
+  }
+  if (targetId === STUDIO_LAUNCHER_TARGET &&
+      (receipt.generationId !== journal.generationId ||
+       !sameJson(receipt.canonicalBaseline, journal.canonicalBaseline))) {
     return unresolved("receipt-source-mismatch");
   }
   // 6-8: a contiguous chain whose terminal record is accepted and binds this receipt.
@@ -1498,8 +1749,14 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
       terminal.intentSha256 !== sha256Bytes(bytes) ||
       realAware(terminal.stageReceiptPath ?? "") !== realAware(journal.stageReceiptPath ?? "") ||
       terminal.stageReceiptSha256 !== journal.stageReceiptSha256 ||
-      terminal.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT ||
+      (terminal.publicationTarget ?? DEV_CONTROLS_TARGET) !== targetId ||
+      terminal.acceptedExtensionVariant !== targetPolicy.extensionVariant ||
       terminal.buildMarker !== journal.buildMarker) {
+    return unresolved("transaction-foreign");
+  }
+  if (targetId === STUDIO_LAUNCHER_TARGET &&
+      (terminal.generationId !== journal.generationId ||
+       !sameJson(terminal.canonicalBaseline, journal.canonicalBaseline))) {
     return unresolved("transaction-foreign");
   }
   if (terminal.transactionState !== "accepted") return unresolved("transaction-not-accepted");
@@ -1553,8 +1810,10 @@ function assertEveryIntentResolved(intentsDirectory, foundation, source, { envir
 }
 
 function buildActivationIntent(verification, activationId, createdAt) {
-  return {
-    schemaVersion: ACTIVATION_INTENT_SCHEMA_VERSION,
+  const targetId = verification.stage.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const journal = {
+    schemaVersion: targetId === DEV_CONTROLS_TARGET
+      ? ACTIVATION_INTENT_SCHEMA_VERSION : TARGET_AWARE_ACTIVATION_INTENT_SCHEMA_VERSION,
     mode: ACTIVATION_INTENT_MODE,
     purpose: ACTIVATION_INTENT_PURPOSE,
     activationId,
@@ -1594,10 +1853,25 @@ function buildActivationIntent(verification, activationId, createdAt) {
     },
     trees: canonicalTreeRecords(verification, activationId),
   };
+  if (targetId === STUDIO_LAUNCHER_TARGET) {
+    journal.publicationTarget = targetId;
+    journal.generationId = verification.stage.generationId;
+    journal.canonicalBaseline = verification.stage.canonicalBaseline;
+    journal.expectedExtensionId = verification.stage.expectedExtensionId;
+    journal.runtimeActivationPerformed = false;
+    journal.deploymentPerformed = false;
+    journal.releasePerformed = false;
+  }
+  return journal;
 }
 
 export function classifyRecoveryState(journal, expected = {}) {
-  if (!plainObject(journal) || journal.schemaVersion !== ACTIVATION_INTENT_SCHEMA_VERSION ||
+  const targetId = journal?.publicationTarget ?? DEV_CONTROLS_TARGET;
+  let targetPolicy;
+  try { targetPolicy = activatorTargetPolicy(targetId); } catch { targetPolicy = null; }
+  const expectedSchema = targetId === DEV_CONTROLS_TARGET
+    ? ACTIVATION_INTENT_SCHEMA_VERSION : TARGET_AWARE_ACTIVATION_INTENT_SCHEMA_VERSION;
+  if (!plainObject(journal) || !targetPolicy || journal.schemaVersion !== expectedSchema ||
       journal.mode !== ACTIVATION_INTENT_MODE || journal.purpose !== ACTIVATION_INTENT_PURPOSE ||
       typeof journal.activationId !== "string" || !ACTIVATION_ID_PATTERN.test(journal.activationId)) {
     return Object.freeze({ classification: "foreign-or-unowned-journal", code: "foreign-or-unowned-journal" });
@@ -1611,9 +1885,9 @@ export function classifyRecoveryState(journal, expected = {}) {
       journal.canaryPerformed !== false || journal.pushPerformed !== false) {
     return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
   }
-  if (!Array.isArray(journal.trees) || journal.trees.length !== 3 ||
+  if (!Array.isArray(journal.trees) || journal.trees.length !== targetPolicy.logicalUnits.length ||
       JSON.stringify(journal.trees.map((tree) => tree?.logicalName).sort()) !==
-        JSON.stringify(["alias", "dev_output", "extension"])) {
+        JSON.stringify([...targetPolicy.logicalUnits].sort())) {
     return Object.freeze({ classification: "contradictory-journal", code: "contradictory-journal" });
   }
   const allowedPrevious = new Set(["unknown", "absent", "present"]);
@@ -1719,6 +1993,13 @@ export function inspectActivationIntent(intentPath, { environment = process.env 
       journal.buildMarker !== verified.stage.buildMarker ||
       !sameJson(journal.stageManifests, verified.stage.manifests)) {
     fail("activation-intent-stage-changed", "Staged evidence no longer matches the durable intent.");
+  }
+  if ((journal.publicationTarget ?? DEV_CONTROLS_TARGET) !== verified.stage.publicationTarget ||
+      (verified.stage.publicationTarget === STUDIO_LAUNCHER_TARGET &&
+       (journal.generationId !== verified.stage.generationId ||
+        !sameJson(journal.canonicalBaseline, verified.stage.canonicalBaseline) ||
+        journal.expectedExtensionId !== verified.stage.expectedExtensionId))) {
+    fail("activation-intent-stage-changed", "Target-aware staged authority no longer matches the intent.");
   }
   const expectedTrees = canonicalTreeRecords(verified, journal.activationId);
   for (const expectedTree of expectedTrees) {
@@ -1830,14 +2111,17 @@ export const ACTIVATION_LEASE_LANE = "activation";
  * leaves this closure.
  */
 export function withCanonicalLease({
-  foundation, source, activationId, leaseApi = null, buildTs = null,
+  foundation, source, activationId, targetId = DEV_CONTROLS_TARGET, leaseApi = null, buildTs = null,
 }, callback) {
   validateActivationId(activationId);
   const api = leaseApi ?? { acquireLease, verifyLease, releaseLease };
   // The lease binds the exact canonical extension variant this activation may
   // publish, derived from the same pinned unit table the promotion uses.
-  const extensionUnit = canonicalUnitPaths(source.repository, activationId)
-    .find((unit) => unit.logicalName === "extension");
+  const policy = activatorTargetPolicy(targetId);
+  const extensionUnit = canonicalUnitPaths(source.repository, activationId, {
+    targetId: policy.targetId,
+    extensionVariant: policy.extensionVariant,
+  }).find((unit) => unit.family === "extension");
   let held = null;
   try {
     held = api.acquireLease({
@@ -1924,6 +2208,12 @@ export function freshActivationRevalidation(receiptPath, intentPath, {
   if (journal.buildMarker !== verification.stage.buildMarker) {
     fail("activation-intent-build-marker", "Intent build marker differs from the verified stage.");
   }
+  if ((journal.publicationTarget ?? DEV_CONTROLS_TARGET) !== verification.stage.publicationTarget ||
+      (verification.stage.publicationTarget === STUDIO_LAUNCHER_TARGET &&
+       (journal.generationId !== verification.stage.generationId ||
+        !sameJson(journal.canonicalBaseline, verification.stage.canonicalBaseline)))) {
+    fail("activation-intent-target-mismatch", "Intent target or Studio baseline differs from fresh stage verification.");
+  }
   if (!sameJson(journal.gitExecutable, verification.source.gitExecutable)) {
     fail("activation-intent-git-identity", "Intent stable Git identity differs from the current attestation.");
   }
@@ -1972,7 +2262,8 @@ export function activateReceipt(receiptPath, intentPath, {
   const source = verification.source;
 
   return withPublisherLock(foundation, source, (lock) => withCanonicalLease(
-    { foundation, source, activationId, leaseApi, buildTs: verification.stage.buildMarker },
+    { foundation, source, activationId, targetId: verification.stage.publicationTarget,
+      leaseApi, buildTs: verification.stage.buildMarker },
     (lease) => {
       // Re-establish everything under both exclusions before any mutation.
       const revalidated = freshActivationRevalidation(receiptPath, intentPath, { environment });
@@ -1982,7 +2273,11 @@ export function activateReceipt(receiptPath, intentPath, {
       }
       lease.verify();
 
-      const units = canonicalUnitPaths(source.repository, activationId);
+      const policy = activatorTargetPolicy(verification.stage.publicationTarget);
+      const units = canonicalUnitPaths(source.repository, activationId, {
+        targetId: policy.targetId,
+        extensionVariant: policy.extensionVariant,
+      });
       const { directory } = ensureTransactionDirectory(foundation.root, activationId);
       const guards = {
         verifyLock: () => assertPublisherLockStillOwned(foundation.publisherLock, lock),
@@ -2008,6 +2303,8 @@ export function activateReceipt(receiptPath, intentPath, {
         Object.entries(prepared).map(([name, value]) => [name, value.promotionIdentity]));
       const release = promoteReleaseWithJournal({
         units, activationId, directory, baseRecord, ownerId: lock.ownerId, guards, expectedDigests,
+        expectedPrevious: policy.targetId === STUDIO_LAUNCHER_TARGET
+          ? { studio_launcher: verification.stage.canonicalBaseline } : {},
         // Fixture-only interruption points; production callers pass no hooks.
         hooks,
       });
@@ -2039,6 +2336,14 @@ export function activateReceipt(receiptPath, intentPath, {
           comparedAgainst: "prepared-incoming-identity",
         });
       }
+      const previousCanonicalIdentities = buildPreviousGenerationEvidence({
+        units, chain, promotedIdentities, expectedDigests,
+        buildMarker: verification.stage.buildMarker,
+        canonicalBaseline: verification.stage.canonicalBaseline,
+      });
+      const rollbackAvailable = policy.targetId === STUDIO_LAUNCHER_TARGET
+        ? previousCanonicalIdentities.studio_launcher?.rollbackCandidateAvailable === true
+        : true;
       const receipt = buildActivationReceipt({
         activationId,
         transactionRecordPath: chain.records[chain.records.length - 1].path,
@@ -2053,17 +2358,30 @@ export function activateReceipt(receiptPath, intentPath, {
         stagedIdentities: verification.stage.manifests,
         incomingIdentities: Object.fromEntries(Object.entries(prepared)
           .map(([name, value]) => [name, { treeDigest: value.treeDigest, fileCount: value.fileCount }])),
-        previousCanonicalIdentities: buildPreviousGenerationEvidence({
-          units, chain, promotedIdentities, expectedDigests,
-          buildMarker: verification.stage.buildMarker,
-        }),
+        previousCanonicalIdentities,
         promotedCanonicalIdentities: promotedIdentities,
         canonicalVerification,
         promotionPrimitive: "fail-closed-two-rename",
         preparedAt: now.toISOString(), promotedAt: now.toISOString(),
         verifiedAt: now.toISOString(), acceptedAt: now.toISOString(),
-        rollbackAvailable: true,
+        rollbackAvailable,
         rollbackCandidates: Object.fromEntries(units.map((unit) => [unit.logicalName, unit.retiredPath])),
+        publicationTarget: policy.targetId,
+        generationId: verification.stage.generationId,
+        sourceRemote: verification.stage.sourceRemote,
+        sourceAuthorityMode: verification.stage.sourceAuthorityMode,
+        sourceAuthorityWorktree: verification.stage.sourceAuthorityWorktree,
+        expectedExtensionId: verification.stage.expectedExtensionId,
+        canonicalOutputPath: units.find((unit) => unit.family === "extension")?.livePath,
+        canonicalBaseline: verification.stage.canonicalBaseline,
+        artifactManifest: verification.stage.manifests.extension,
+        artifactFileCount: verification.stage.manifests.extension.fileCount,
+        artifactTreeDigest: verification.stage.manifests.extension.treeDigest,
+        lockLeaseCorrelation: {
+          publisherLockOwnerId: lock.ownerId,
+          canonicalLeaseSessionId: lease.sessionId,
+        },
+        publicationOutcome: "accepted",
       });
       if (hooks.beforeReceipt) hooks.beforeReceipt();
 
@@ -2117,7 +2435,7 @@ export function activateReceipt(receiptPath, intentPath, {
  * available.
  */
 export function buildPreviousGenerationEvidence({
-  units, chain, promotedIdentities, expectedDigests, buildMarker,
+  units, chain, promotedIdentities, expectedDigests, buildMarker, canonicalBaseline = null,
 }) {
   const folded = foldChainTreeStates(chain);
   return Object.fromEntries(units.map((unit) => {
@@ -2153,7 +2471,9 @@ export function buildPreviousGenerationEvidence({
       // recorded as unknown rather than fabricated. Rollback verifies the
       // candidate by recomputed tree digest, which is stronger.
       previousBuildMarker: null,
-      previousRequiredFiles: unit.logicalName === "extension" ? requiredPresent : null,
+      previousRequiredFiles: unit.family === "extension" ? requiredPresent : null,
+      previousGenerationId: canonicalBaseline?.generationId ?? null,
+      previousProvenanceStatus: canonicalBaseline?.provenanceStatus ?? null,
       retiredCandidatePath: present ? unit.retiredPath : null,
       promotedTreeDigest: promotedIdentities[unit.logicalName]?.treeDigest ?? null,
       promotedFileCount: promotedIdentities[unit.logicalName]?.fileCount ?? null,
@@ -2165,7 +2485,7 @@ export function buildPreviousGenerationEvidence({
 }
 
 function buildActivationBaseRecord({ journal, verification, fresh, units, lockOwnerId }) {
-  return {
+  const record = {
     activationId: journal.activationId, sequence: 1, previousRecordSha256: null,
     createdAt: journal.createdAt,
     intentPath: fresh.intentPath, intentSha256: fresh.intentSha256,
@@ -2184,6 +2504,12 @@ function buildActivationBaseRecord({ journal, verification, fresh, units, lockOw
       livePath: unit.livePath, incomingPath: unit.incomingPath, retiredPath: unit.retiredPath,
     })),
   };
+  if (verification.stage.publicationTarget === STUDIO_LAUNCHER_TARGET) {
+    record.publicationTarget = STUDIO_LAUNCHER_TARGET;
+    record.generationId = verification.stage.generationId;
+    record.canonicalBaseline = verification.stage.canonicalBaseline;
+  }
+  return record;
 }
 
 /**
@@ -2220,8 +2546,11 @@ export function verifyCanonicalFromReceipt(receiptPath, {
     fail("activation-receipt-malformed", "Activation receipt is not valid JSON.");
   }
   // 11: schema and mode are exact.
-  if (receipt?.schemaVersion !== ACTIVATION_RECEIPT_SCHEMA_VERSION ||
-      receipt?.mode !== ACTIVATION_RECEIPT_MODE) {
+  const receiptTarget = receipt?.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const targetPolicy = activatorTargetPolicy(receiptTarget);
+  const expectedReceiptSchema = receiptTarget === DEV_CONTROLS_TARGET
+    ? ACTIVATION_RECEIPT_SCHEMA_VERSION : TARGET_AWARE_RECEIPT_SCHEMA_VERSION;
+  if (receipt?.schemaVersion !== expectedReceiptSchema || receipt?.mode !== ACTIVATION_RECEIPT_MODE) {
     fail("activation-receipt-mode-invalid", "Activation receipt schema or mode is not exact.", {
       schemaVersion: receipt?.schemaVersion ?? null, mode: receipt?.mode ?? null,
     });
@@ -2247,9 +2576,9 @@ export function verifyCanonicalFromReceipt(receiptPath, {
     fail("activation-receipt-git-identity", "Receipt stable Git identity differs from the current attestation.");
   }
   // 9: accepted extension variant.
-  if (receipt.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  if (receipt.acceptedExtensionVariant !== targetPolicy.extensionVariant) {
     fail("activation-receipt-extension-variant", "Receipt variant is not the independently pinned variant.", {
-      expected: ACCEPTED_EXTENSION_VARIANT, observed: receipt.acceptedExtensionVariant ?? null,
+      expected: targetPolicy.extensionVariant, observed: receipt.acceptedExtensionVariant ?? null,
     });
   }
 
@@ -2290,12 +2619,18 @@ export function verifyCanonicalFromReceipt(receiptPath, {
 
   // 16-19: units are internally derived, never taken from the receipt, and every
   // live tree is independently manifested and compared against this stage.
-  const units = canonicalUnitPaths(source.repository, receipt.activationId);
+  const units = canonicalUnitPaths(source.repository, receipt.activationId, {
+    targetId: targetPolicy.targetId,
+    extensionVariant: targetPolicy.extensionVariant,
+  });
   const result = verifyCanonicalAgainstReceipt(units, receipt, {
     expectedBuildMarker: receipt.buildMarker,
     repository: source.repository,
-    requiredFiles: REQUIRED_EXTENSION_FILES,
-    extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+    requiredFiles: targetPolicy.targetId === STUDIO_LAUNCHER_TARGET
+      ? ["manifest.json", "bg.js", "surfaces/studio/renderer/chat-renderer.studio.js",
+          "surfaces/studio/S0D3e. 🎬 Transcript Studio Host - Studio.js"]
+      : REQUIRED_EXTENSION_FILES,
+    extensionVariant: targetPolicy.extensionVariant,
   });
   return Object.freeze({
     ok: true,
@@ -2458,6 +2793,12 @@ export function freshRecoveryAuthority(activationId, { environment = process.env
   if (!head || head.mode !== TRANSACTION_MODE || head.activationId !== activationId) {
     fail("recovery-transaction-foreign", "Transaction evidence is foreign to this activation.");
   }
+  if (chain.records.some((entry) => String(entry.record?.transactionState ?? "").startsWith("rollback-"))) {
+    fail("rollback-recovery-specific-command-required",
+      "Rollback transactions require the explicit rollback-recovery authority.");
+  }
+  const targetId = head.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const targetPolicy = activatorTargetPolicy(targetId);
   if (realAware(head.repositoryRealpath ?? "") !== source.repository ||
       realAware(head.authorizedWorktreeRealpath ?? "") !== source.repository) {
     fail("recovery-transaction-foreign", "Transaction evidence belongs to another repository.");
@@ -2469,7 +2810,7 @@ export function freshRecoveryAuthority(activationId, { environment = process.env
   if (!sameJson(head.stableGitIdentity, source.gitExecutable)) {
     fail("recovery-git-identity", "Transaction Git identity differs from the current attestation.");
   }
-  if (head.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  if (head.acceptedExtensionVariant !== targetPolicy.extensionVariant) {
     fail("recovery-extension-variant", "Transaction variant is not the independently pinned variant.");
   }
   // The immutable intent and the stage receipt must still be exactly what this
@@ -2509,7 +2850,11 @@ export function freshRecoveryAuthority(activationId, { environment = process.env
   }
   return Object.freeze({
     activationId, source, foundation, directory, chain, head, receipt,
-    units: canonicalUnitPaths(source.repository, activationId),
+    targetPolicy,
+    units: canonicalUnitPaths(source.repository, activationId, {
+      targetId: targetPolicy.targetId,
+      extensionVariant: targetPolicy.extensionVariant,
+    }),
   });
 }
 
@@ -2521,7 +2866,8 @@ export function recoverActivation(activationId, {
   const { source, foundation, directory, units } = authority;
 
   return withPublisherLock(foundation, source, (lock) => withCanonicalLease(
-    { foundation, source, activationId, leaseApi, buildTs: authority.head.buildMarker },
+    { foundation, source, activationId, targetId: authority.targetPolicy.targetId,
+      leaseApi, buildTs: authority.head.buildMarker },
     (lease) => {
       // Re-establish everything under both exclusions before deciding anything.
       const revalidated = freshRecoveryAuthority(activationId, { environment });
@@ -2555,8 +2901,11 @@ export function recoverActivation(activationId, {
           canonicalVerification = verifyCanonicalAgainstReceipt(units, receipt.receipt, {
             expectedBuildMarker: receipt.receipt.buildMarker,
             repository: source.repository,
-            requiredFiles: REQUIRED_EXTENSION_FILES,
-            extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+            requiredFiles: authority.targetPolicy.targetId === STUDIO_LAUNCHER_TARGET
+              ? ["manifest.json", "bg.js", "surfaces/studio/renderer/chat-renderer.studio.js",
+                  "surfaces/studio/S0D3e. 🎬 Transcript Studio Host - Studio.js"]
+              : REQUIRED_EXTENSION_FILES,
+            extensionVariant: authority.targetPolicy.extensionVariant,
           });
           canonicalVerified = canonicalVerification.ok === true;
         } catch (error) {
@@ -2689,7 +3038,7 @@ export function recoverActivation(activationId, {
 
 /** The journal base record recovery continues from, re-owned by this lock. */
 function recoveryBaseRecord(head, lockOwnerId) {
-  return {
+  const record = {
     activationId: head.activationId, sequence: 1, previousRecordSha256: null,
     createdAt: head.createdAt,
     intentPath: head.intentPath, intentSha256: head.intentSha256,
@@ -2704,9 +3053,675 @@ function recoveryBaseRecord(head, lockOwnerId) {
     transactionState: head.transactionState,
     trees: (head.trees ?? []).map((tree) => ({ ...tree })),
   };
+  if ((head.publicationTarget ?? DEV_CONTROLS_TARGET) !== DEV_CONTROLS_TARGET) {
+    record.publicationTarget = head.publicationTarget;
+    record.generationId = head.generationId;
+    record.canonicalBaseline = head.canonicalBaseline;
+  }
+  return record;
+}
+
+/* ------------------------------------------------------------------------- *
+ * Governed Studio rollback
+ *
+ * Rollback is deliberately separate from publication. Preparation writes one
+ * immutable intent and execution requires both that intent and the accepted
+ * Studio publication receipt. Neither operation reloads Chrome.
+ * ------------------------------------------------------------------------- */
+
+function readJsonFile(filename, code) {
+  assertRegularFile(filename, code);
+  const bytes = fs.readFileSync(filename);
+  try {
+    return Object.freeze({ value: JSON.parse(bytes.toString("utf8")), bytes,
+      sha256: sha256Bytes(bytes), path: path.resolve(filename) });
+  } catch {
+    fail(code, "Authority document is not valid JSON.", { filename });
+  }
+}
+
+function studioRollbackRequiredFiles() {
+  // A retained legacy-unreceipted launcher legitimately predates newly added
+  // Studio modules. Its complete recorded manifest/digest is the byte authority;
+  // only the stable launcher and Studio entry points are required structurally.
+  return ["manifest.json", "bg.js", "surfaces/studio/studio.html", "surfaces/studio/studio.js"];
+}
+
+/** Read-only proof of one accepted Studio generation and its retained prior. */
+export function freshStudioRollbackAuthority(receiptPath, { environment = process.env } = {}) {
+  assertNoDestinationOverrides(environment);
+  const source = collectSourcePreflight(REPOSITORY_ROOT);
+  const foundation = deriveCanonicalFoundation(source.repository);
+  assertApprovedProductionRoot({
+    repository: source.repository, cockpitProRoot: path.dirname(source.repository),
+    anchorRoot: foundation.root,
+  });
+  const document = readJsonFile(receiptPath, "rollback-activation-receipt-invalid");
+  const receipt = document.value;
+  if (receipt.publicationTarget !== STUDIO_LAUNCHER_TARGET ||
+      receipt.mode !== ACTIVATION_RECEIPT_MODE || receipt.schemaVersion !==
+        TARGET_AWARE_RECEIPT_SCHEMA_VERSION ||
+      receipt.runtimeActivationPerformed !== false || receipt.browserReloadPerformed !== false) {
+    fail("rollback-activation-receipt-invalid", "Rollback requires an accepted target-aware Studio receipt.");
+  }
+  if (realAware(receipt.repositoryRealpath ?? "") !== source.repository ||
+      realAware(receipt.authorizedWorktreeRealpath ?? "") !== source.repository ||
+      receipt.branch !== source.branch || !gitIsAncestor(source.repository, receipt.approvedHead, source.approvedHead) ||
+      !sameJson(receipt.stableGitIdentity, source.gitExecutable)) {
+    fail("rollback-activation-receipt-source-mismatch",
+      "Accepted Studio receipt is not an ancestor under current canonical source authority.");
+  }
+  if (realAware(document.path) !==
+      realAware(activationReceiptPath(foundation.root, receipt.activationId))) {
+    fail("rollback-activation-receipt-location", "Accepted receipt is outside canonical receipt authority.");
+  }
+  const policy = activatorTargetPolicy(STUDIO_LAUNCHER_TARGET);
+  const units = canonicalUnitPaths(source.repository, receipt.activationId, {
+    targetId: policy.targetId, extensionVariant: policy.extensionVariant,
+  });
+  if (units.length !== 1 || units[0].logicalName !== "studio_launcher") {
+    fail("rollback-target-policy-mismatch", "Studio rollback policy must resolve exactly one canonical unit.");
+  }
+  const unit = units[0];
+  const chain = readTransactionChain(transactionDirectory(foundation.root, receipt.activationId));
+  if (!chain.present || chain.records.length === 0) {
+    fail("rollback-transaction-missing", "Accepted Studio transaction evidence is missing.");
+  }
+  const terminal = chain.records[chain.records.length - 1].record;
+  if (terminal.transactionState !== "accepted" ||
+      terminal.activationReceiptSha256 !== document.sha256 ||
+      (terminal.publicationTarget ?? DEV_CONTROLS_TARGET) !== STUDIO_LAUNCHER_TARGET) {
+    fail("rollback-transaction-mismatch", "Accepted transaction does not bind this Studio receipt.");
+  }
+  const folded = foldChainTreeStates(chain);
+  const evidence = receipt.previousCanonicalIdentities?.studio_launcher;
+  if (!plainObject(evidence) || evidence.previousState !== "present" ||
+      evidence.rollbackCandidateAvailable !== true ||
+      typeof evidence.previousTreeDigest !== "string" || evidence.previousTreeDigest.length === 0 ||
+      !Array.isArray(evidence.previousManifest)) {
+    fail("rollback-no-previous-generation", "Receipt has no verified prior Studio generation to restore.");
+  }
+  if (folded.studio_launcher?.previousIdentity !== evidence.previousTreeDigest) {
+    fail("rollback-evidence-chain-disagreement", "Receipt and transaction disagree about the prior generation.");
+  }
+  if (realAware(evidence.retiredCandidatePath ?? "") !== realAware(unit.retiredPath)) {
+    fail("rollback-candidate-path-not-derived", "Prior candidate path is not the activation-owned retired sibling.");
+  }
+  const candidate = recomputeIncomingManifest(unit.retiredPath, "");
+  if (candidate.treeDigest !== evidence.previousTreeDigest ||
+      candidate.fileCount !== evidence.previousFileCount ||
+      !sameJson(candidate.entries, evidence.previousManifest)) {
+    fail("rollback-candidate-drift", "Retained prior Studio generation has drifted.");
+  }
+  for (const required of studioRollbackRequiredFiles()) {
+    if (!candidate.entries.some((entry) => entry.path === required)) {
+      fail("rollback-candidate-required-file", "Retained prior Studio generation is incomplete.", { required });
+    }
+  }
+  const promoted = receipt.promotedCanonicalIdentities?.studio_launcher;
+  const live = recomputeIncomingManifest(unit.livePath, "");
+  // artifactTreeDigest is the complete stage-root-prefixed manifest identity;
+  // promoted.treeDigest is the same verified bytes under the prefix-free live
+  // canonical root and is therefore the only directly comparable live digest.
+  if (!plainObject(promoted) || live.treeDigest !== promoted.treeDigest) {
+    fail("rollback-current-generation-drift", "Current Studio generation differs from accepted publication.");
+  }
+  return Object.freeze({
+    source, foundation, policy, receipt, receiptPath: document.path,
+    receiptSha256: document.sha256, chain, unit, candidate, live, evidence, promoted,
+    canonicalVerification: Object.freeze({ verified: true, treeDigest: live.treeDigest }),
+  });
+}
+
+function rollbackIntentDirectory(foundation) {
+  return foundation.futureSubpaths["rollback-intents"];
+}
+
+function rollbackIntentPath(foundation, rollbackId) {
+  validateActivationId(rollbackId);
+  return path.join(rollbackIntentDirectory(foundation), `${rollbackId}.json`);
+}
+
+function buildStudioRollbackIntent(authority, rollbackId, createdAt) {
+  return {
+    schemaVersion: ROLLBACK_INTENT_SCHEMA_VERSION,
+    mode: ROLLBACK_INTENT_MODE,
+    purpose: ROLLBACK_INTENT_PURPOSE,
+    rollbackId,
+    createdAt,
+    publicationTarget: STUDIO_LAUNCHER_TARGET,
+    sourceActivationId: authority.receipt.activationId,
+    sourceActivationReceiptPath: authority.receiptPath,
+    sourceActivationReceiptSha256: authority.receiptSha256,
+    repositoryRealpath: authority.source.repository,
+    authorizedWorktreeRealpath: authority.source.repository,
+    branch: authority.source.branch,
+    rollbackAuthorityHead: authority.source.approvedHead,
+    rollbackAuthorityTree: authority.source.sourceTree,
+    stableGitIdentity: authority.source.gitExecutable,
+    rolledBackFromGenerationId: authority.receipt.generationId,
+    expectedCurrentDigest: authority.live.treeDigest,
+    restoredGenerationId: authority.evidence.previousGenerationId ?? null,
+    expectedPreviousDigest: authority.candidate.treeDigest,
+    expectedCanonicalPath: authority.unit.livePath,
+    expectedPreviousPath: authority.unit.retiredPath,
+    previousProvenanceStatus: authority.evidence.previousProvenanceStatus ?? "legacy-unreceipted",
+    rollbackPerformed: false,
+    runtimeActivationPerformed: false,
+    browserReloadPerformed: false,
+    deploymentPerformed: false,
+    releasePerformed: false,
+  };
+}
+
+function inspectStudioRollbackIntent(intentPath, authority) {
+  const document = readJsonFile(intentPath, "rollback-intent-invalid");
+  const intent = document.value;
+  validateActivationId(intent?.rollbackId);
+  if (realAware(document.path) !== realAware(rollbackIntentPath(authority.foundation, intent.rollbackId)) ||
+      intent.schemaVersion !== ROLLBACK_INTENT_SCHEMA_VERSION || intent.mode !== ROLLBACK_INTENT_MODE ||
+      intent.purpose !== ROLLBACK_INTENT_PURPOSE || intent.publicationTarget !== STUDIO_LAUNCHER_TARGET) {
+    fail("rollback-intent-invalid", "Rollback intent identity or canonical location is invalid.");
+  }
+  const expected = buildStudioRollbackIntent(authority, intent.rollbackId, intent.createdAt);
+  if (!sameJson(intent, expected)) {
+    fail("rollback-intent-mismatch", "Rollback intent no longer matches accepted publication authority.");
+  }
+  return Object.freeze({ intent, intentPath: document.path, intentSha256: document.sha256 });
+}
+
+function assertRollbackIntentsResolved(directory, foundation) {
+  if (assertRealDirectoryOrAbsent(directory, "rollback-intents-symlink", "rollback-intents-invalid") === "absent") {
+    return true;
+  }
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const match = entry.name.match(/^(\d{8}T\d{9}Z-[a-f0-9]{12})\.json$/u);
+    if (!entry.isFile() || !match || !ACTIVATION_ID_PATTERN.test(match[1])) {
+      fail("rollback-intent-entry-invalid", "Rollback-intents contains an unrecognized entry.", { entry: entry.name });
+    }
+    const document = readJsonFile(path.join(directory, entry.name), "rollback-intent-invalid");
+    const rollbackId = document.value?.rollbackId;
+    const receipt = rollbackReceiptPath(foundation.root, rollbackId);
+    let resolved = false;
+    try {
+      const rollback = readJsonFile(receipt, "rollback-receipt-invalid");
+      resolved = rollback.value?.mode === ROLLBACK_RECEIPT_MODE &&
+        rollback.value?.rollbackIntentSha256 === document.sha256;
+    } catch {
+      resolved = false;
+    }
+    if (!resolved) {
+      const chain = readTransactionChain(transactionDirectory(foundation.root, rollbackId));
+      const head = chain.records[chain.records.length - 1]?.record;
+      resolved = head?.transactionState === "rollback-reversed-to-current" &&
+        head?.intentSha256 === document.sha256 &&
+        (head?.publicationTarget ?? DEV_CONTROLS_TARGET) === STUDIO_LAUNCHER_TARGET;
+    }
+    if (!resolved) {
+      fail("rollback-intent-unresolved", "An unresolved rollback intent already exists.", { rollbackId });
+    }
+  }
+  return true;
+}
+
+export function prepareStudioRollbackIntent(receiptPath, {
+  environment = process.env, now = new Date(), randomBytes = crypto.randomBytes,
+} = {}) {
+  const first = freshStudioRollbackAuthority(receiptPath, { environment });
+  const rollbackId = generateActivationId({ now, randomBytes });
+  return withPublisherLock(first.foundation, first.source, (lock) => {
+    const second = freshStudioRollbackAuthority(receiptPath, { environment });
+    if (first.receiptSha256 !== second.receiptSha256 ||
+        first.chain.headSha256 !== second.chain.headSha256 ||
+        first.live.treeDigest !== second.live.treeDigest ||
+        first.candidate.treeDigest !== second.candidate.treeDigest) {
+      fail("rollback-intent-revalidation-changed", "Rollback evidence changed after lock acquisition.");
+    }
+    ensureCoordinationDirectory(second.foundation.root,
+      "canonical-anchor-symlink", "canonical-anchor-invalid");
+    const directory = rollbackIntentDirectory(second.foundation);
+    ensureCoordinationDirectory(directory, "rollback-intents-symlink", "rollback-intents-invalid");
+    assertRollbackIntentsResolved(directory, second.foundation);
+    const intent = buildStudioRollbackIntent(second, rollbackId, now.toISOString());
+    const durable = writeDurableActivationIntent(directory, rollbackId, intent, { ownerId: lock.ownerId });
+    return Object.freeze({
+      ok: true, mode: "prepare-rollback-intent", rollbackId,
+      rollbackIntentPath: durable.path, rollbackIntentSha256: durable.sha256,
+      durability: durable.durability,
+      rollbackPerformed: false, runtimeActivationPerformed: false,
+      browserActionPerformed: false, networkActionPerformed: false,
+    });
+  });
+}
+
+function rollbackBaseRecord(authority, intentEvidence, lockOwnerId) {
+  const { intent } = intentEvidence;
+  const rollbackId = intent.rollbackId;
+  return {
+    activationId: rollbackId,
+    sequence: 1,
+    previousRecordSha256: null,
+    createdAt: intent.createdAt,
+    intentPath: intentEvidence.intentPath,
+    intentSha256: intentEvidence.intentSha256,
+    stageReceiptPath: authority.receipt.stageReceiptPath,
+    stageReceiptSha256: authority.receipt.stageReceiptSha256,
+    repositoryRealpath: authority.source.repository,
+    authorizedWorktreeRealpath: authority.source.repository,
+    branch: authority.source.branch,
+    approvedHead: authority.source.approvedHead,
+    sourceTree: authority.source.sourceTree,
+    stableGitIdentity: authority.source.gitExecutable,
+    acceptedExtensionVariant: STUDIO_LAUNCHER_TARGET,
+    buildMarker: authority.receipt.buildMarker,
+    owner: { ownerId: lockOwnerId, pid: process.pid },
+    transactionState: "rollback-retiring-current",
+    publicationTarget: STUDIO_LAUNCHER_TARGET,
+    generationId: authority.receipt.generationId,
+    canonicalBaseline: authority.receipt.canonicalBaseline,
+    trees: [{
+      logicalName: "studio_launcher",
+      state: "untouched",
+      livePath: authority.unit.livePath,
+      incomingPath: path.join(authority.unit.parent,
+        `${path.basename(authority.unit.livePath)}.staging-rbk-${rollbackId}`),
+      retiredPath: rollbackRetiredPath(authority.unit, rollbackId),
+    }],
+  };
+}
+
+function appendStudioRollbackState({ directory, baseRecord, ownerId, state, extra = {} }) {
+  const chain = readTransactionChain(directory);
+  return appendRollbackStateRecord({
+    directory,
+    baseRecord,
+    sequence: chain.records.length + 1,
+    previousRecordSha256: chain.headSha256 ?? null,
+    ownerId,
+    state,
+    trees: baseRecord.trees.map((tree) => ({ ...tree, state, ...extra })),
+  });
+}
+
+function reverseStudioRollback({ authority, intentEvidence, guards }) {
+  return reverseRollbackUnit({
+    unit: authority.unit,
+    rollbackId: intentEvidence.intent.rollbackId,
+    guards,
+    previousCandidatePath: authority.unit.retiredPath,
+    expectedCurrentDigest: intentEvidence.intent.expectedCurrentDigest,
+    expectedPreviousDigest: intentEvidence.intent.expectedPreviousDigest,
+  });
+}
+
+/** Execute one separately authorized Studio rollback. */
+export function executeStudioRollback(receiptPath, intentPath, {
+  environment = process.env, leaseApi = null, hooks = {}, now = new Date(),
+} = {}) {
+  const first = freshStudioRollbackAuthority(receiptPath, { environment });
+  const firstIntent = inspectStudioRollbackIntent(intentPath, first);
+  const rollbackId = firstIntent.intent.rollbackId;
+  return withPublisherLock(first.foundation, first.source, (lock) => withCanonicalLease(
+    { foundation: first.foundation, source: first.source, activationId: rollbackId,
+      targetId: STUDIO_LAUNCHER_TARGET, leaseApi, buildTs: first.receipt.buildMarker },
+    (lease) => {
+      const authority = freshStudioRollbackAuthority(receiptPath, { environment });
+      const intentEvidence = inspectStudioRollbackIntent(intentPath, authority);
+      if (authority.receiptSha256 !== first.receiptSha256 ||
+          authority.chain.headSha256 !== first.chain.headSha256 ||
+          intentEvidence.intentSha256 !== firstIntent.intentSha256) {
+        fail("rollback-revalidation-changed", "Rollback evidence changed after exclusion was acquired.");
+      }
+      lease.verify();
+      const guards = {
+        verifyLock: () => assertPublisherLockStillOwned(authority.foundation.publisherLock, lock),
+        verifyLease: () => lease.verify(),
+        leaseSessionId: lease.sessionId,
+      };
+      const directory = transactionDirectory(authority.foundation.root, rollbackId);
+      if (readTransactionChain(directory).present) {
+        fail("rollback-transaction-collision", "Rollback transaction already exists; governed recovery is required.");
+      }
+      if (fs.existsSync(rollbackRetiredPath(authority.unit, rollbackId))) {
+        fail("rollback-sibling-collision", "Rollback-retained sibling already exists.");
+      }
+      ensureTransactionDirectory(authority.foundation.root, rollbackId);
+      const baseRecord = rollbackBaseRecord(authority, intentEvidence, lock.ownerId);
+      appendStudioRollbackState({ directory, baseRecord, ownerId: lock.ownerId,
+        state: "rollback-retiring-current", extra: { currentIdentity: authority.live.treeDigest } });
+
+      let outcome;
+      try {
+        outcome = rollbackUnitToPrevious({
+          unit: authority.unit,
+          rollbackId,
+          guards,
+          previousCandidatePath: authority.unit.retiredPath,
+          expectedPreviousDigest: intentEvidence.intent.expectedPreviousDigest,
+          expectedCurrentDigest: intentEvidence.intent.expectedCurrentDigest,
+          hooks: {
+            beforeRetireCurrent: hooks.beforeRetireCurrent,
+            afterRetireCurrent: () => {
+              appendStudioRollbackState({ directory, baseRecord, ownerId: lock.ownerId,
+                state: "rollback-current-retired", extra: {
+                  retainedCurrentPath: rollbackRetiredPath(authority.unit, rollbackId),
+                } });
+              if (hooks.afterRetireCurrent) hooks.afterRetireCurrent(authority.unit);
+            },
+            beforeRestorePrevious: () => {
+              appendStudioRollbackState({ directory, baseRecord, ownerId: lock.ownerId,
+                state: "rollback-restoring-previous" });
+              if (hooks.beforeRestorePrevious) hooks.beforeRestorePrevious(authority.unit);
+            },
+          },
+        });
+      } catch (error) {
+        fail("rollback-failed", "Studio rollback failed closed; retained evidence requires governed recovery if state changed.", {
+          cause: error?.code ?? null,
+        });
+      }
+      appendStudioRollbackState({ directory, baseRecord, ownerId: lock.ownerId,
+        state: "rollback-previous-restored", extra: { restoredIdentity: outcome.restoredDigest } });
+      const restored = recomputeIncomingManifest(authority.unit.livePath, "");
+      if (restored.treeDigest !== intentEvidence.intent.expectedPreviousDigest) {
+        const reversal = reverseStudioRollback({ authority, intentEvidence, guards });
+        fail("rollback-unit-verification", "Restored Studio generation failed verification.", {
+          reversal: reversal.reversed === true,
+        });
+      }
+      appendStudioRollbackState({ directory, baseRecord, ownerId: lock.ownerId,
+        state: "rollback-unit-verified", extra: { verified: true } });
+
+      const chain = readTransactionChain(directory);
+      const rollbackReceipt = buildRollbackReceipt({
+        rollbackId,
+        publicationTarget: STUDIO_LAUNCHER_TARGET,
+        sourceActivationReceiptPath: authority.receiptPath,
+        sourceActivationReceiptSha256: authority.receiptSha256,
+        rollbackIntentPath: intentEvidence.intentPath,
+        rollbackIntentSha256: intentEvidence.intentSha256,
+        rollbackTransactionPath: chain.records[chain.records.length - 1].path,
+        rollbackTransactionSha256: chain.headSha256,
+        repositoryRealpath: authority.source.repository,
+        rollbackAuthorityHead: authority.source.approvedHead,
+        rolledBackFrom: authority.receipt.activationId,
+        rolledBackFromGenerationId: authority.receipt.generationId,
+        rolledBackFromDigest: authority.live.treeDigest,
+        restoredTo: intentEvidence.intent.restoredGenerationId ?? "legacy-unreceipted-previous-generation",
+        restoredToGenerationId: intentEvidence.intent.restoredGenerationId,
+        restoredToDigest: restored.treeDigest,
+        retainedReplacementPath: rollbackRetiredPath(authority.unit, rollbackId),
+        previousProvenanceStatus: intentEvidence.intent.previousProvenanceStatus,
+        publisherAuthorityVersion: "lean-activator/studio-target-v1",
+        manifests: { studio_launcher: restored },
+        previousCanonicalIdentities: authority.receipt.previousCanonicalIdentities,
+        resultingCanonicalIdentities: { studio_launcher: restored },
+        lockLeaseCorrelation: {
+          publisherLockOwnerId: lock.ownerId,
+          canonicalLeaseSessionId: lease.sessionId,
+        },
+        startedAt: intentEvidence.intent.createdAt,
+        completedAt: now.toISOString(),
+      });
+      let published;
+      try {
+        if (hooks.beforeRollbackReceipt) hooks.beforeRollbackReceipt();
+        published = publishRollbackReceipt(authority.foundation.root, rollbackId, rollbackReceipt, {
+          ownerId: lock.ownerId,
+          failureInjection: hooks.receiptFailureInjection ?? null,
+        });
+      } catch (error) {
+        let reversed = false;
+        try { reversed = reverseStudioRollback({ authority, intentEvidence, guards }).reversed === true; } catch {}
+        fail("rollback-receipt-publication-failed",
+          "Rollback receipt was not durably accepted; pre-rollback generation restoration was attempted.", {
+            cause: error?.code ?? null, reversed,
+          });
+      }
+      const finalChain = readTransactionChain(directory);
+      const terminal = appendRollbackCompleteRecord({
+        directory,
+        baseRecord,
+        sequence: finalChain.records.length + 1,
+        previousRecordSha256: finalChain.headSha256,
+        ownerId: lock.ownerId,
+        receipt: published,
+        trees: baseRecord.trees.map((tree) => ({ ...tree, state: "rollback-complete" })),
+      });
+      return Object.freeze({
+        ok: true, mode: "rollback", publicationTarget: STUDIO_LAUNCHER_TARGET,
+        rollbackId, sourceActivationId: authority.receipt.activationId,
+        rollbackReceiptPath: published.path, rollbackReceiptSha256: published.sha256,
+        terminalRecordPath: terminal.path,
+        retainedReplacementPath: rollbackRetiredPath(authority.unit, rollbackId),
+        restoredDigest: restored.treeDigest,
+        rollbackPerformed: true,
+        runtimeActivationPerformed: false,
+        browserActionPerformed: false,
+        networkActionPerformed: false,
+        deploymentPerformed: false,
+        releasePerformed: false,
+      });
+    }));
+}
+
+function observeRollbackDirectory(target) {
+  let stat;
+  try { stat = fs.lstatSync(target); } catch (error) {
+    if (error?.code === "ENOENT") return Object.freeze({ state: "absent", digest: null, manifest: null });
+    fail("rollback-recovery-entry-unreadable", "Rollback recovery entry could not be inspected.", { target });
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    return Object.freeze({ state: "foreign", digest: null, manifest: null });
+  }
+  const manifest = recomputeIncomingManifest(target, "");
+  return Object.freeze({ state: "present", digest: manifest.treeDigest, manifest });
+}
+
+function freshStudioRollbackRecoveryAuthority(rollbackId, intentPath, { environment = process.env } = {}) {
+  assertNoDestinationOverrides(environment);
+  validateActivationId(rollbackId);
+  const source = collectSourcePreflight(REPOSITORY_ROOT);
+  const foundation = deriveCanonicalFoundation(source.repository);
+  assertApprovedProductionRoot({ repository: source.repository,
+    cockpitProRoot: path.dirname(source.repository), anchorRoot: foundation.root });
+  const intentDocument = readJsonFile(intentPath, "rollback-intent-invalid");
+  const intent = intentDocument.value;
+  if (intent.rollbackId !== rollbackId ||
+      realAware(intentDocument.path) !== realAware(rollbackIntentPath(foundation, rollbackId)) ||
+      intent.schemaVersion !== ROLLBACK_INTENT_SCHEMA_VERSION || intent.mode !== ROLLBACK_INTENT_MODE ||
+      intent.publicationTarget !== STUDIO_LAUNCHER_TARGET ||
+      realAware(intent.repositoryRealpath ?? "") !== source.repository ||
+      realAware(intent.authorizedWorktreeRealpath ?? "") !== source.repository ||
+      intent.branch !== source.branch ||
+      !gitIsAncestor(source.repository, intent.rollbackAuthorityHead, source.approvedHead) ||
+      !sameJson(intent.stableGitIdentity, source.gitExecutable)) {
+    fail("rollback-intent-mismatch", "Rollback recovery intent differs from current authority.");
+  }
+  const rollbackAuthorityTree = git(source.repository,
+    ["rev-parse", `${intent.rollbackAuthorityHead}^{tree}`], { allowFailure: true });
+  if (rollbackAuthorityTree === null || rollbackAuthorityTree !== intent.rollbackAuthorityTree) {
+    fail("rollback-intent-mismatch", "Rollback recovery intent does not bind its recorded source tree.");
+  }
+  const receiptDocument = readJsonFile(intent.sourceActivationReceiptPath,
+    "rollback-activation-receipt-invalid");
+  const receipt = receiptDocument.value;
+  if (receiptDocument.sha256 !== intent.sourceActivationReceiptSha256 ||
+      receipt.activationId !== intent.sourceActivationId ||
+      receipt.publicationTarget !== STUDIO_LAUNCHER_TARGET ||
+      receipt.mode !== ACTIVATION_RECEIPT_MODE ||
+      receipt.schemaVersion !== TARGET_AWARE_RECEIPT_SCHEMA_VERSION ||
+      !gitIsAncestor(source.repository, receipt.approvedHead, source.approvedHead)) {
+    fail("rollback-activation-receipt-invalid", "Rollback recovery receipt authority is invalid.");
+  }
+  const policy = activatorTargetPolicy(STUDIO_LAUNCHER_TARGET);
+  const [unit] = canonicalUnitPaths(source.repository, receipt.activationId, {
+    targetId: policy.targetId, extensionVariant: policy.extensionVariant,
+  });
+  if (realAware(intent.expectedCanonicalPath) !== realAware(unit.livePath) ||
+      realAware(intent.expectedPreviousPath) !== realAware(unit.retiredPath)) {
+    fail("rollback-intent-mismatch", "Rollback recovery paths are not internally derived.");
+  }
+  const sourceChain = readTransactionChain(transactionDirectory(foundation.root, receipt.activationId));
+  const sourceTerminal = sourceChain.records[sourceChain.records.length - 1]?.record;
+  if (!sourceChain.present || sourceTerminal?.transactionState !== "accepted" ||
+      sourceTerminal.activationReceiptSha256 !== receiptDocument.sha256) {
+    fail("rollback-activation-not-accepted", "Source Studio generation lacks accepted transaction authority.");
+  }
+  const directory = transactionDirectory(foundation.root, rollbackId);
+  const chain = readTransactionChain(directory);
+  if (!chain.present || chain.records.length === 0) {
+    fail("rollback-recovery-transaction-missing", "No rollback transaction exists for recovery.");
+  }
+  const head = chain.records[chain.records.length - 1].record;
+  const expectedRetainedCurrent = rollbackRetiredPath(unit, rollbackId);
+  const expectedIncoming = path.join(unit.parent,
+    `${path.basename(unit.livePath)}.staging-rbk-${rollbackId}`);
+  if (head.activationId !== rollbackId || head.mode !== TRANSACTION_MODE ||
+      head.publicationTarget !== STUDIO_LAUNCHER_TARGET ||
+      head.approvedHead !== intent.rollbackAuthorityHead ||
+      head.sourceTree !== intent.rollbackAuthorityTree ||
+      head.generationId !== receipt.generationId ||
+      realAware(head.intentPath ?? "") !== realAware(intentDocument.path) ||
+      head.intentSha256 !== intentDocument.sha256 || head.trees?.length !== 1 ||
+      realAware(head.trees[0]?.livePath ?? "") !== realAware(unit.livePath) ||
+      realAware(head.trees[0]?.incomingPath ?? "") !== realAware(expectedIncoming) ||
+      realAware(head.trees[0]?.retiredPath ?? "") !== realAware(expectedRetainedCurrent)) {
+    fail("rollback-recovery-transaction-foreign", "Rollback transaction is foreign or inconsistent.");
+  }
+  const receiptPath = rollbackReceiptPath(foundation.root, rollbackId);
+  let rollbackReceipt = null;
+  if (fs.existsSync(receiptPath)) {
+    const document = readJsonFile(receiptPath, "rollback-receipt-invalid");
+    const receiptTransactionBound = chain.records.some((entry) =>
+      entry.sha256 === document.value?.rollbackTransactionSha256 &&
+      realAware(entry.path) === realAware(document.value?.rollbackTransactionPath ?? ""));
+    if (document.value?.mode !== ROLLBACK_RECEIPT_MODE ||
+        document.value?.rollbackId !== rollbackId ||
+        document.value?.rollbackIntentSha256 !== intentDocument.sha256 ||
+        document.value?.sourceActivationReceiptSha256 !== receiptDocument.sha256 ||
+        document.value?.rolledBackFromGenerationId !== receipt.generationId ||
+        document.value?.rolledBackFromDigest !== intent.expectedCurrentDigest ||
+        document.value?.restoredToDigest !== intent.expectedPreviousDigest ||
+        realAware(document.value?.retainedReplacementPath ?? "") !== realAware(expectedRetainedCurrent) ||
+        document.value?.resultingCanonicalIdentities?.studio_launcher?.treeDigest !==
+          intent.expectedPreviousDigest || !receiptTransactionBound) {
+      fail("rollback-receipt-invalid", "Rollback receipt does not bind this recovery intent.");
+    }
+    rollbackReceipt = document;
+  }
+  return Object.freeze({
+    source, foundation, policy, receipt, receiptPath: receiptDocument.path,
+    receiptSha256: receiptDocument.sha256, unit, intent, intentPath: intentDocument.path,
+    intentSha256: intentDocument.sha256, directory, chain, head, rollbackReceipt,
+    live: observeRollbackDirectory(unit.livePath),
+    previous: observeRollbackDirectory(unit.retiredPath),
+    retainedCurrent: observeRollbackDirectory(expectedRetainedCurrent),
+  });
+}
+
+/** Recover an interrupted, already-authorized Studio rollback deterministically. */
+export function recoverStudioRollback(rollbackId, intentPath, {
+  environment = process.env, leaseApi = null,
+} = {}) {
+  const first = freshStudioRollbackRecoveryAuthority(rollbackId, intentPath, { environment });
+  return withPublisherLock(first.foundation, first.source, (lock) => withCanonicalLease(
+    { foundation: first.foundation, source: first.source, activationId: rollbackId,
+      targetId: STUDIO_LAUNCHER_TARGET, leaseApi, buildTs: first.receipt.buildMarker },
+    (lease) => {
+      const authority = freshStudioRollbackRecoveryAuthority(rollbackId, intentPath, { environment });
+      if (authority.chain.headSha256 !== first.chain.headSha256 ||
+          authority.intentSha256 !== first.intentSha256 ||
+          (authority.rollbackReceipt?.sha256 ?? null) !== (first.rollbackReceipt?.sha256 ?? null)) {
+        fail("rollback-recovery-revalidation-changed", "Rollback evidence changed after exclusion.");
+      }
+      lease.verify();
+      const guards = {
+        verifyLock: () => assertPublisherLockStillOwned(authority.foundation.publisherLock, lock),
+        verifyLease: () => lease.verify(), leaseSessionId: lease.sessionId,
+      };
+      const currentDigest = authority.intent.expectedCurrentDigest;
+      const previousDigest = authority.intent.expectedPreviousDigest;
+      const liveIsCurrent = authority.live.digest === currentDigest;
+      const liveIsPrevious = authority.live.digest === previousDigest;
+      const candidateIsPrevious = authority.previous.digest === previousDigest;
+      const retainedIsCurrent = authority.retainedCurrent.digest === currentDigest;
+      const anyForeign = [authority.live, authority.previous, authority.retainedCurrent]
+        .some((entry) => entry.state === "foreign");
+      if (anyForeign) fail("rollback-recovery-foreign-entry", "Foreign entry blocks rollback recovery.");
+      const baseRecord = rollbackBaseRecord({
+        source: authority.source, receipt: authority.receipt, unit: authority.unit,
+      }, { intent: authority.intent, intentPath: authority.intentPath,
+        intentSha256: authority.intentSha256 }, lock.ownerId);
+      // Recovery continues the immutable transaction authority that began the
+      // rollback. A later canonical-main descendant may authorize recovery, but
+      // it never rewrites the journal's original HEAD/tree identity.
+      baseRecord.approvedHead = authority.head.approvedHead;
+      baseRecord.sourceTree = authority.head.sourceTree;
+      baseRecord.stableGitIdentity = authority.head.stableGitIdentity;
+
+      if (authority.rollbackReceipt) {
+        if (!liveIsPrevious || !retainedIsCurrent || authority.previous.state !== "absent") {
+          fail("rollback-recovery-receipted-state-mismatch",
+            "Durably receipted rollback does not match canonical generation state.");
+        }
+        if (authority.head.transactionState === "rollback-complete") {
+          return Object.freeze({ ok: true, mode: "recover-rollback", alreadyTerminal: true,
+            rollbackId, rollbackPerformed: true, runtimeActivationPerformed: false });
+        }
+        const terminal = appendRollbackCompleteRecord({
+          directory: authority.directory, baseRecord,
+          sequence: authority.chain.records.length + 1,
+          previousRecordSha256: authority.chain.headSha256,
+          ownerId: lock.ownerId,
+          receipt: { path: authority.rollbackReceipt.path, sha256: authority.rollbackReceipt.sha256 },
+          trees: baseRecord.trees.map((tree) => ({ ...tree, state: "rollback-complete" })),
+        });
+        return Object.freeze({ ok: true, mode: "recover-rollback", rollbackId,
+          forwardCompleted: true, terminalRecordPath: terminal.path,
+          rollbackPerformed: true, runtimeActivationPerformed: false });
+      }
+
+      if (!(liveIsCurrent && candidateIsPrevious && authority.retainedCurrent.state === "absent")) {
+        if (!retainedIsCurrent || !(
+          (authority.live.state === "absent" && candidateIsPrevious) ||
+          (liveIsPrevious && authority.previous.state === "absent")
+        )) {
+          fail("rollback-recovery-ambiguous", "Interrupted rollback state is not safely reversible.");
+        }
+        appendStudioRollbackState({ directory: authority.directory, baseRecord, ownerId: lock.ownerId,
+          state: "rollback-reversing-current" });
+        reverseRollbackUnit({
+          unit: authority.unit, rollbackId, guards,
+          previousCandidatePath: authority.unit.retiredPath,
+          expectedCurrentDigest: currentDigest, expectedPreviousDigest: previousDigest,
+        });
+      }
+      const live = recomputeIncomingManifest(authority.unit.livePath, "");
+      const previous = recomputeIncomingManifest(authority.unit.retiredPath, "");
+      if (live.treeDigest !== currentDigest || previous.treeDigest !== previousDigest ||
+          fs.existsSync(rollbackRetiredPath(authority.unit, rollbackId))) {
+        fail("rollback-recovery-verification", "Rollback reversal did not restore both accepted generations.");
+      }
+      const resolved = appendStudioRollbackState({ directory: authority.directory, baseRecord,
+        ownerId: lock.ownerId, state: "rollback-reversed-to-current",
+        extra: { restoredIdentity: live.treeDigest } });
+      return Object.freeze({ ok: true, mode: "recover-rollback", rollbackId,
+        reversedToAcceptedGeneration: true, terminalRecordPath: resolved.path,
+        rollbackPerformed: false, runtimeActivationPerformed: false });
+    }));
 }
 
 export async function runLeanActivator({ argv = process.argv.slice(2), environment = process.env } = {}) {
+  if (argv.length === 2 && argv[0] === "--prepare-rollback-intent") {
+    return prepareStudioRollbackIntent(argv[1], { environment });
+  }
+  if (argv.length === 4 && argv[0] === "--rollback-receipt" && argv[2] === "--rollback-intent") {
+    return executeStudioRollback(argv[1], argv[3], { environment });
+  }
+  if (argv.length === 4 && argv[0] === "--recover-rollback" && argv[2] === "--rollback-intent") {
+    return recoverStudioRollback(argv[1], argv[3], { environment });
+  }
   if (argv.length === 4 && argv[0] === "--activate-receipt" && argv[2] === "--activation-intent") {
     return activateReceipt(argv[1], argv[3], { environment });
   }
@@ -2718,8 +3733,9 @@ export async function runLeanActivator({ argv = process.argv.slice(2), environme
   if (argv.length === 2 && argv[0] === "--recover") {
     return recoverActivation(argv[1], { environment });
   }
-  if (argv.length >= 1 && ["--rollback", "--recover", "--prune"].includes(argv[0])) {
-    fail("mutation-command-not-implemented", "Rollback and pruning remain intentionally absent.");
+  if (argv.length >= 1 && ["--rollback", "--rollback-receipt", "--recover", "--prune"].includes(argv[0])) {
+    fail("mutation-command-not-implemented",
+      "Rollback requires exact accepted-receipt and immutable-intent arguments; pruning remains absent.");
   }
   if (argv.length === 3 && argv[0] === "--verify-canonical" && argv[1] === "--activation-receipt") {
     return verifyCanonicalFromReceipt(argv[2], { environment });

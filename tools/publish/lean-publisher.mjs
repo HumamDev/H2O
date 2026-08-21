@@ -24,6 +24,12 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { deriveSharedAnchor } from "./canonical-delivery-lib.mjs";
+import { getExtensionId } from "../product/extensions/chatgpt/chrome/chrome-extension-keys.mjs";
+import {
+  ARCHIVE_WORKBENCH_OUT_FILES,
+  compareArchiveWorkbenchToSource,
+  parseStudioHtmlScriptRefs,
+} from "../product/studio/pack-studio.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // Repository root is derived from this module's own location, never from the
@@ -45,7 +51,11 @@ const LOCK_REQUIRED_FIELDS = Object.freeze([
 ]);
 const RECEIPT_FILE = "publication-receipt.json";
 const RECEIPT_SCHEMA_VERSION = 1;
+const TARGET_AWARE_RECEIPT_SCHEMA_VERSION = 2;
 const STAGED_EXTENSION_VARIANT = "dev-controls-oauth-google";
+export const DEV_CONTROLS_TARGET = "dev-controls-oauth-google";
+export const STUDIO_LAUNCHER_TARGET = "studio-launcher";
+export const STUDIO_LAUNCHER_EXTENSION_ID = "bpobkkppdlldlkccaehmpfclmkhiemhg";
 const CHILD_TIMEOUT_MS = 300_000;
 
 // Accepted safety foundation. HEAD must descend from these.
@@ -70,6 +80,61 @@ const REQUIRED_EXTENSION_FILES = Object.freeze([
   "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
+
+const STUDIO_LAUNCHER_SHELL_FILES = Object.freeze([
+  "README.txt",
+  "bg.js",
+  "manifest.json",
+  "icons/icon16.png",
+  "icons/icon32.png",
+  "icons/icon48.png",
+  "icons/icon128.png",
+  "icons/icon256.png",
+  "icons/icon512.png",
+  "icons/icon1024.png",
+  "icons/manifest-icons.json",
+]);
+
+const STUDIO_REQUIRED_ORDER = Object.freeze([
+  "platform/selectors.contract.js",
+  "platform/html-sanitizer.js",
+  "renderer/chat-renderer.studio.js",
+  "studio.js",
+]);
+
+const PUBLISHER_TARGETS = Object.freeze({
+  [DEV_CONTROLS_TARGET]: Object.freeze({
+    targetId: DEV_CONTROLS_TARGET,
+    receiptSchemaVersion: RECEIPT_SCHEMA_VERSION,
+    outputFamilies: Object.freeze(["alias", "devOutput", "extension"]),
+    extensionVariant: STAGED_EXTENSION_VARIANT,
+    artifactBasename: "extension",
+    canonicalVariant: STAGED_EXTENSION_VARIANT,
+    expectedExtensionId: null,
+    exactCanonicalHeadRequired: false,
+  }),
+  [STUDIO_LAUNCHER_TARGET]: Object.freeze({
+    targetId: STUDIO_LAUNCHER_TARGET,
+    receiptSchemaVersion: TARGET_AWARE_RECEIPT_SCHEMA_VERSION,
+    outputFamilies: Object.freeze(["extension"]),
+    extensionVariant: STUDIO_LAUNCHER_TARGET,
+    artifactBasename: STUDIO_LAUNCHER_TARGET,
+    canonicalVariant: STUDIO_LAUNCHER_TARGET,
+    expectedExtensionId: STUDIO_LAUNCHER_EXTENSION_ID,
+    exactCanonicalHeadRequired: true,
+  }),
+});
+
+export function publisherTargetPolicy(targetId = DEV_CONTROLS_TARGET) {
+  const policy = PUBLISHER_TARGETS[targetId];
+  if (!policy) {
+    fail("publication-target-not-accepted", "Publication target is not independently admitted.", {
+      targetId,
+      accepted: Object.keys(PUBLISHER_TARGETS),
+    });
+  }
+  return policy;
+}
 
 export class LeanPublisherError extends Error {
   constructor(code, message, details = undefined) {
@@ -730,18 +795,23 @@ function temporaryBaseDirectory() {
   }
 }
 
-export function createStagingRoot() {
+export function createStagingRoot(targetId = DEV_CONTROLS_TARGET) {
+  const policy = publisherTargetPolicy(targetId);
   const root = fs.mkdtempSync(path.join(temporaryBaseDirectory(), "h2o-publish-stage-"));
-  const serverRoot = path.join(root, "server");
-  const extensionRoot = path.join(root, "extension");
-  fs.mkdirSync(serverRoot, { recursive: true, mode: 0o700 });
+  const serverRoot = policy.targetId === DEV_CONTROLS_TARGET ? path.join(root, "server") : null;
+  const extensionRoot = policy.targetId === STUDIO_LAUNCHER_TARGET
+    ? path.join(root, "artifacts", policy.artifactBasename)
+    : path.join(root, policy.artifactBasename);
+  if (serverRoot) fs.mkdirSync(serverRoot, { recursive: true, mode: 0o700 });
   fs.mkdirSync(extensionRoot, { recursive: true, mode: 0o700 });
   return {
     root,
+    targetId: policy.targetId,
     serverRoot,
-    aliasDir: path.join(serverRoot, "alias"),
-    devOutputDir: path.join(serverRoot, "dev_output"),
-    proxyPackFile: path.join(serverRoot, "dev_output", "proxy", "_paste-pack.ext.txt"),
+    aliasDir: serverRoot ? path.join(serverRoot, "alias") : null,
+    devOutputDir: serverRoot ? path.join(serverRoot, "dev_output") : null,
+    proxyPackFile: serverRoot
+      ? path.join(serverRoot, "dev_output", "proxy", "_paste-pack.ext.txt") : null,
     extensionRoot,
     receiptFile: path.join(root, RECEIPT_FILE),
   };
@@ -810,7 +880,14 @@ function stageDevOutput(stage, buildTimestamp, sourceRoot) {
   }, sourceRoot);
 }
 
-function stageExtension(stage, buildTimestamp, sourceRoot) {
+function stageExtension(stage, buildTimestamp, sourceRoot, policy = publisherTargetPolicy(stage.targetId)) {
+  if (policy.targetId === STUDIO_LAUNCHER_TARGET) {
+    return runBuilder("studio-launcher", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
+      H2O_EXT_OUT_DIR: stage.extensionRoot,
+      H2O_EXT_DEV_VARIANT: STUDIO_LAUNCHER_TARGET,
+      H2O_BUILD_TS: buildTimestamp,
+    }, sourceRoot);
+  }
   return runBuilder("extension", "tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs", {
     H2O_EXT_OUT_DIR: stage.extensionRoot,
     H2O_EXT_DEV_VARIANT: "controls",
@@ -979,6 +1056,186 @@ export function validateStagedExtension(stage, source, buildTimestamp, worktreeR
   return { manifestVersion: manifest.manifest_version, requiredFiles: [...REQUIRED_EXTENSION_FILES] };
 }
 
+function extensionIdFromManifestKey(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  let bytes;
+  try { bytes = Buffer.from(value, "base64"); } catch { return null; }
+  if (!bytes.length) return null;
+  const alphabet = "abcdefghijklmnop";
+  const digest = crypto.createHash("sha256").update(bytes).digest().subarray(0, 16);
+  return [...digest].map((byte) => alphabet[byte >> 4] + alphabet[byte & 15]).join("");
+}
+
+function relativeArtifactFiles(root) {
+  return listFilesRecursive(root)
+    .map((file) => path.relative(root, file).split(path.sep).join("/"))
+    .sort((left, right) => left.localeCompare(right, "en"));
+}
+
+export function validateStagedStudioLauncher(stage, source, worktreeRoots) {
+  const policy = publisherTargetPolicy(STUDIO_LAUNCHER_TARGET);
+  if (path.basename(stage.extensionRoot) !== policy.artifactBasename) {
+    fail("studio-stage-basename", "Studio stage basename must preserve stable extension identity.", {
+      expected: policy.artifactBasename,
+      observed: path.basename(stage.extensionRoot),
+    });
+  }
+
+  const expectedFiles = [...STUDIO_LAUNCHER_SHELL_FILES,
+    ...ARCHIVE_WORKBENCH_OUT_FILES.map((name) => `surfaces/studio/${name}`)]
+    .sort((left, right) => left.localeCompare(right, "en"));
+  const actualFiles = relativeArtifactFiles(stage.extensionRoot);
+  for (const relative of actualFiles) {
+    const absolute = path.join(stage.extensionRoot, ...relative.split("/"));
+    const stat = fs.lstatSync(absolute);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      fail("studio-stage-unsafe-entry", "Studio stage contains a non-regular artifact entry.", { relative });
+    }
+    if (relative.split("/").some((segment) => segment.startsWith("."))) {
+      fail("studio-stage-dotfile", "Studio stage contains dotfile contamination.", { relative });
+    }
+  }
+  if (JSON.stringify(actualFiles) !== JSON.stringify(expectedFiles)) {
+    const expected = new Set(expectedFiles);
+    const actual = new Set(actualFiles);
+    fail("studio-stage-file-set", "Studio stage file set differs from the pinned launcher and pack allowlists.", {
+      missing: expectedFiles.filter((name) => !actual.has(name)),
+      unexpected: actualFiles.filter((name) => !expected.has(name)),
+    });
+  }
+
+  const manifestPath = path.join(stage.extensionRoot, "manifest.json");
+  let manifest;
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")); } catch (error) {
+    fail("studio-stage-manifest", "Studio launcher manifest is not valid JSON.", {
+      reason: String(error?.message || error).slice(0, 200),
+    });
+  }
+  if (manifest?.manifest_version !== 3 || manifest?.background?.service_worker !== "bg.js") {
+    fail("studio-stage-manifest", "Studio launcher must be an MV3 extension with the pinned service worker.");
+  }
+  if (Object.prototype.hasOwnProperty.call(manifest, "content_scripts")) {
+    fail("studio-stage-manifest", "Studio launcher must not inject content scripts.");
+  }
+  const configuredId = getExtensionId(STUDIO_LAUNCHER_TARGET);
+  const derivedId = extensionIdFromManifestKey(manifest.key);
+  if (configuredId !== policy.expectedExtensionId || derivedId !== policy.expectedExtensionId) {
+    fail("studio-stage-extension-id", "Studio launcher manifest key does not derive the pinned extension ID.", {
+      expected: policy.expectedExtensionId,
+      configured: configuredId,
+      derived: derivedId,
+    });
+  }
+
+  const packed = compareArchiveWorkbenchToSource(source.sourceRoot ?? source.repository, stage.extensionRoot);
+  if (!packed.matches) {
+    fail("studio-stage-source-drift", "Packed Studio files differ from the authorized source allowlist.", {
+      mismatches: packed.files.filter((entry) => !entry.sourceExists || !entry.outExists || !entry.equal)
+        .map((entry) => entry.name),
+    });
+  }
+  const studioHtml = fs.readFileSync(path.join(stage.extensionRoot, "surfaces", "studio", "studio.html"), "utf8");
+  const refs = parseStudioHtmlScriptRefs(studioHtml);
+  const positions = STUDIO_REQUIRED_ORDER.map((name) => refs.indexOf(name));
+  if (positions.some((index) => index < 0) || positions.some((index, offset) => offset > 0 && index <= positions[offset - 1])) {
+    fail("studio-stage-load-order", "Studio selectors, sanitizer, Renderer and orchestration load order is invalid.", {
+      required: [...STUDIO_REQUIRED_ORDER], positions,
+    });
+  }
+
+  const approvedWorktree = realAware(source.sourceRoot ?? source.repository);
+  const foreignWorktrees = worktreeRoots.filter((root) => root !== approvedWorktree);
+  for (const relative of actualFiles) {
+    if (!/\.(?:js|json|txt|html|css)$/u.test(relative)) continue;
+    const text = fs.readFileSync(path.join(stage.extensionRoot, ...relative.split("/")), "utf8");
+    for (const foreign of foreignWorktrees) {
+      if (text.includes(foreign)) {
+        fail("studio-stage-foreign-worktree-path", "Studio artifact embeds a foreign worktree path.", {
+          relative, foreign,
+        });
+      }
+    }
+  }
+
+  return Object.freeze({
+    manifestVersion: 3,
+    extensionId: derivedId,
+    requiredLoadOrder: [...STUDIO_REQUIRED_ORDER],
+    packedFileCount: packed.files.length,
+    exactFileSet: true,
+  });
+}
+
+function sha256Bytes(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function knownStudioReceipt(anchorRoot, treeDigest) {
+  const directory = path.join(anchorRoot, "activations");
+  let names;
+  try { names = fs.readdirSync(directory).filter((name) => name.endsWith(".json")).sort().reverse(); } catch { return null; }
+  for (const name of names) {
+    const receiptPath = path.join(directory, name);
+    try {
+      const stat = fs.lstatSync(receiptPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      const bytes = fs.readFileSync(receiptPath);
+      const receipt = JSON.parse(bytes.toString("utf8"));
+      const observedDigest = receipt?.promotedCanonicalIdentities?.studio_launcher?.treeDigest ??
+        receipt?.promotedCanonicalIdentities?.extension?.treeDigest ?? null;
+      if (receipt?.publicationTarget === STUDIO_LAUNCHER_TARGET && observedDigest === treeDigest) {
+        return Object.freeze({
+          provenanceStatus: "governed-receipt",
+          publicationReceiptPath: receiptPath,
+          publicationReceiptSha256: sha256Bytes(bytes),
+          generationId: receipt.generationId ?? null,
+        });
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export function captureStudioCanonicalBaseline(repository, anchorRoot) {
+  const canonicalPath = path.join(repository, "apps", "extensions", "chatgpt", "chrome", STUDIO_LAUNCHER_TARGET);
+  let stat;
+  try { stat = fs.lstatSync(canonicalPath); } catch (error) {
+    if (error?.code === "ENOENT") {
+      return Object.freeze({ state: "absent", canonicalPath, treeDigest: null, fileCount: 0,
+        manifest: Object.freeze([]), generationId: null, provenanceStatus: "absent" });
+    }
+    throw error;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    fail("studio-canonical-baseline-invalid", "Canonical Studio launcher must be a real directory or absent.", {
+      canonicalPath,
+    });
+  }
+  const manifest = buildManifest(canonicalPath, canonicalPath);
+  const known = knownStudioReceipt(anchorRoot, manifest.treeDigest);
+  return Object.freeze({
+    state: "present",
+    canonicalPath,
+    treeDigest: manifest.treeDigest,
+    fileCount: manifest.fileCount,
+    manifest: Object.freeze(manifest.entries.map((entry) => Object.freeze({ ...entry }))),
+    generationId: known?.generationId ?? null,
+    provenanceStatus: known?.provenanceStatus ?? "legacy-unreceipted",
+    publicationReceiptPath: known?.publicationReceiptPath ?? null,
+    publicationReceiptSha256: known?.publicationReceiptSha256 ?? null,
+  });
+}
+
+function studioGenerationId({ source, artifactManifest, buildTimestamp }) {
+  return sha256Bytes(JSON.stringify({
+    targetId: STUDIO_LAUNCHER_TARGET,
+    sourceCommit: source.sourceHead,
+    sourceTree: source.sourceTree,
+    artifactTreeDigest: artifactManifest.treeDigest,
+    buildMarker: buildTimestamp,
+  }));
+}
+
 export function validateCrossOutput(stage) {
   const stagingRoot = realAware(stage.root);
   const required = [stage.aliasDir, stage.devOutputDir, stage.proxyPackFile, stage.extensionRoot];
@@ -1050,6 +1307,9 @@ export function parsePublisherArguments(argv) {
   const args = argv.slice();
   let stageOnly = false;
   let sourceWorktree = null;
+  let targetId = DEV_CONTROLS_TARGET;
+  let targetSupplied = false;
+  let authorizedHead = null;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -1070,21 +1330,59 @@ export function parsePublisherArguments(argv) {
       index += 1;
       continue;
     }
-    fail("invalid-arguments", "Lean publisher accepts --stage-only and optional --source-worktree <path>.", { args });
+    if (arg === "--target") {
+      if (targetSupplied) fail("invalid-arguments", "--target may be supplied only once.", { args });
+      const value = args[index + 1];
+      if (typeof value !== "string" || !value || value.startsWith("--")) {
+        fail("invalid-arguments", "--target requires exactly one target ID.", { args });
+      }
+      publisherTargetPolicy(value);
+      targetId = value;
+      targetSupplied = true;
+      index += 1;
+      continue;
+    }
+    if (arg === "--authorized-head") {
+      if (authorizedHead !== null) fail("invalid-arguments", "--authorized-head may be supplied only once.", { args });
+      const value = args[index + 1];
+      if (typeof value !== "string" || !/^[a-f0-9]{40}$/u.test(value)) {
+        fail("invalid-arguments", "--authorized-head requires one full lowercase Git object ID.", { args });
+      }
+      authorizedHead = value;
+      index += 1;
+      continue;
+    }
+    fail("invalid-arguments", "Lean publisher accepts --stage-only, target authority and optional source selection only.", { args });
   }
 
   if (!stageOnly) {
     fail("invalid-arguments", "Lean publisher requires --stage-only.", { args });
   }
-  return Object.freeze({ stageOnly, sourceWorktree });
+  const policy = publisherTargetPolicy(targetId);
+  if (policy.exactCanonicalHeadRequired && authorizedHead === null) {
+    fail("authorized-head-required", "Studio staging requires an explicitly authorized exact canonical HEAD.");
+  }
+  if (!policy.exactCanonicalHeadRequired && authorizedHead !== null) {
+    fail("authorized-head-not-applicable", "Legacy Dev Controls staging does not accept Studio head authority.");
+  }
+  return Object.freeze({ stageOnly, sourceWorktree, targetId, authorizedHead });
 }
 
 export async function runLeanPublisher({ argv = [] } = {}) {
   const parsed = parsePublisherArguments(argv);
+  const policy = publisherTargetPolicy(parsed.targetId);
 
   const startedAt = new Date().toISOString();
   const buildTimestamp = String(Date.now());
   const source = runSourcePreflight({ sourceWorktree: parsed.sourceWorktree });
+  if (policy.exactCanonicalHeadRequired &&
+      (source.sourceHead !== parsed.authorizedHead || source.approvedHead !== parsed.authorizedHead)) {
+    fail("authorized-head-mismatch", "Studio source, authorized HEAD and canonical main must be exactly equal.", {
+      sourceHead: source.sourceHead,
+      canonicalHead: source.approvedHead,
+      authorizedHead: parsed.authorizedHead,
+    });
+  }
 
   const anchor = deriveSharedAnchor({ cwd: REPO_ROOT, env: {}, allowOverride: false });
   // Sibling of the canonical anchor: this publisher never creates that anchor.
@@ -1100,29 +1398,87 @@ export async function runLeanPublisher({ argv = [] } = {}) {
 
   let stage = null;
   try {
-    stage = createStagingRoot();
+    const canonicalBaselineBefore = policy.targetId === STUDIO_LAUNCHER_TARGET
+      ? captureStudioCanonicalBaseline(source.repository, anchor.root) : null;
+    stage = createStagingRoot(policy.targetId);
 
-    stageAliases(stage, buildTimestamp, source.sourceRoot);
-    stageDevOutput(stage, buildTimestamp, source.sourceRoot);
-    stageExtension(stage, buildTimestamp, source.sourceRoot);
+    if (policy.targetId === DEV_CONTROLS_TARGET) {
+      stageAliases(stage, buildTimestamp, source.sourceRoot);
+      stageDevOutput(stage, buildTimestamp, source.sourceRoot);
+    }
+    stageExtension(stage, buildTimestamp, source.sourceRoot, policy);
 
     assertSourceStillClean(source);
+    if (policy.exactCanonicalHeadRequired) {
+      const currentCanonicalHead = git(REPO_ROOT, ["rev-parse", "HEAD"]);
+      if (currentCanonicalHead !== parsed.authorizedHead || source.sourceHead !== parsed.authorizedHead) {
+        fail("authorized-head-drift", "Canonical or source HEAD changed during Studio staging.", {
+          authorizedHead: parsed.authorizedHead,
+          currentCanonicalHead,
+          sourceHead: source.sourceHead,
+        });
+      }
+    }
 
-    const aliasResult = validateStagedAliases(stage, source, worktreeRoots);
-    const devOutputResult = validateStagedDevOutput(stage, buildTimestamp);
-    const extensionResult = validateStagedExtension(stage, source, buildTimestamp, worktreeRoots);
-    const crossResult = validateCrossOutput(stage);
+    const aliasResult = policy.targetId === DEV_CONTROLS_TARGET
+      ? validateStagedAliases(stage, source, worktreeRoots) : null;
+    const devOutputResult = policy.targetId === DEV_CONTROLS_TARGET
+      ? validateStagedDevOutput(stage, buildTimestamp) : null;
+    const extensionResult = policy.targetId === STUDIO_LAUNCHER_TARGET
+      ? validateStagedStudioLauncher(stage, source, worktreeRoots)
+      : validateStagedExtension(stage, source, buildTimestamp, worktreeRoots);
+    const crossResult = policy.targetId === DEV_CONTROLS_TARGET
+      ? validateCrossOutput(stage)
+      : { stagedFileCount: relativeArtifactFiles(stage.extensionRoot).length };
 
-    const manifests = {
-      alias: buildManifest(stage.aliasDir, stage.root),
-      devOutput: buildManifest(stage.devOutputDir, stage.root),
-      extension: buildManifest(stage.extensionRoot, stage.root),
-    };
+    const manifests = policy.targetId === DEV_CONTROLS_TARGET
+      ? {
+          alias: buildManifest(stage.aliasDir, stage.root),
+          devOutput: buildManifest(stage.devOutputDir, stage.root),
+          extension: buildManifest(stage.extensionRoot, stage.root),
+        }
+      : { extension: buildManifest(stage.extensionRoot, stage.root) };
+
+    const canonicalBaseline = policy.targetId === STUDIO_LAUNCHER_TARGET
+      ? captureStudioCanonicalBaseline(source.repository, anchor.root) : null;
+    if (canonicalBaselineBefore &&
+        (canonicalBaselineBefore.state !== canonicalBaseline.state ||
+         canonicalBaselineBefore.treeDigest !== canonicalBaseline.treeDigest)) {
+      fail("studio-canonical-baseline-drift", "Canonical Studio launcher changed during isolated staging.", {
+        before: canonicalBaselineBefore.treeDigest,
+        after: canonicalBaseline.treeDigest,
+      });
+    }
 
     const completedAt = new Date().toISOString();
+    const fileCounts = policy.targetId === DEV_CONTROLS_TARGET
+      ? {
+          alias: manifests.alias.fileCount,
+          devOutput: manifests.devOutput.fileCount,
+          extension: manifests.extension.fileCount,
+          total: crossResult.stagedFileCount,
+        }
+      : { extension: manifests.extension.fileCount, total: crossResult.stagedFileCount };
+    const treeDigests = policy.targetId === DEV_CONTROLS_TARGET
+      ? {
+          alias: manifests.alias.treeDigest,
+          devOutput: manifests.devOutput.treeDigest,
+          extension: manifests.extension.treeDigest,
+        }
+      : { extension: manifests.extension.treeDigest };
+    const outputPaths = policy.targetId === DEV_CONTROLS_TARGET
+      ? {
+          alias: stage.aliasDir,
+          devOutput: stage.devOutputDir,
+          proxyPack: stage.proxyPackFile,
+          extension: stage.extensionRoot,
+        }
+      : { extension: stage.extensionRoot };
     const receipt = {
-      schemaVersion: RECEIPT_SCHEMA_VERSION,
+      schemaVersion: policy.receiptSchemaVersion,
       mode: "stage-only",
+      publicationTarget: policy.targetId,
+      outputFamilies: [...policy.outputFamilies],
       repository: source.repository,
       remote: source.remote,
       branch: source.branch,
@@ -1138,28 +1494,16 @@ export async function runLeanPublisher({ argv = [] } = {}) {
         branch: source.sourceBranch,
         worktreeRoot: source.sourceRoot,
       },
-      stagedExtensionVariant: STAGED_EXTENSION_VARIANT,
+      stagedExtensionVariant: policy.extensionVariant,
+      authorizedHead: parsed.authorizedHead,
+      expectedExtensionId: policy.expectedExtensionId,
       buildTimestamp,
       startedAt,
       completedAt,
       stagingRoot: stage.root,
-      outputPaths: {
-        alias: stage.aliasDir,
-        devOutput: stage.devOutputDir,
-        proxyPack: stage.proxyPackFile,
-        extension: stage.extensionRoot,
-      },
-      fileCounts: {
-        alias: manifests.alias.fileCount,
-        devOutput: manifests.devOutput.fileCount,
-        extension: manifests.extension.fileCount,
-        total: crossResult.stagedFileCount,
-      },
-      treeDigests: {
-        alias: manifests.alias.treeDigest,
-        devOutput: manifests.devOutput.treeDigest,
-        extension: manifests.extension.treeDigest,
-      },
+      outputPaths,
+      fileCounts,
+      treeDigests,
       manifests,
       validatorResult: {
         ok: true,
@@ -1173,10 +1517,26 @@ export async function runLeanPublisher({ argv = [] } = {}) {
         ownerId: lock.ownerId,
       },
       activationPerformed: false,
+      runtimeActivationPerformed: false,
       browserReloadPerformed: false,
       browserCanaryPerformed: false,
+      deploymentPerformed: false,
+      releasePerformed: false,
       pushPerformed: false,
     };
+
+    if (policy.targetId === STUDIO_LAUNCHER_TARGET) {
+      receipt.generationId = studioGenerationId({ source, artifactManifest: manifests.extension, buildTimestamp });
+      receipt.canonicalBaseline = canonicalBaseline;
+      receipt.validatorResult.packReference = Object.freeze({ ok: true, sourceMatches: true });
+    } else {
+      // Preserve the accepted v1 Dev Controls receipt surface exactly. Target-aware
+      // fields belong only to schema v2 and are never retrofitted onto legacy bytes.
+      for (const field of ["publicationTarget", "outputFamilies", "authorizedHead",
+        "expectedExtensionId", "runtimeActivationPerformed", "deploymentPerformed", "releasePerformed"]) {
+        delete receipt[field];
+      }
+    }
 
     const receiptFile = writeReceipt(stage, receipt);
     return { ok: true, stagingRoot: stage.root, receiptFile, receipt };

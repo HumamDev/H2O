@@ -29,6 +29,9 @@ import {
   validateStagedDevOutput,
   validateStagedExtension,
   validateCrossOutput,
+  publisherTargetPolicy,
+  DEV_CONTROLS_TARGET,
+  STUDIO_LAUNCHER_TARGET,
 } from "../../publish/lean-publisher.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -41,8 +44,16 @@ const PUBLISHER = path.join(ROOT, PUBLISHER_REL);
 const FINAL_PATHS = Object.freeze([PACKAGE_JSON_REL, PUBLISHER_REL, VALIDATOR_REL]);
 const UNCOMMITTED_MODIFIED = Object.freeze([PUBLISHER_REL, VALIDATOR_REL]);
 const UNCOMMITTED_UNTRACKED = Object.freeze([]);
-const EXPECTED_RUNTIME_SCENARIOS = 61;
-const EXPECTED_SCOPE_SCENARIOS = 8;
+const PUBLICATION_AUTHORITY_ROUND_PATHS = Object.freeze([
+  "tools/publish/lean-publisher.mjs",
+  "tools/publish/lean-activator.mjs",
+  "tools/publish/lean-payload-transaction.mjs",
+  "tools/validation/publish/validate-lean-publisher-v1.mjs",
+  "tools/validation/publish/validate-lean-activator-v1.mjs",
+  "tools/validation/publish/validate-lean-payload-transaction-v1.mjs",
+].sort());
+const EXPECTED_RUNTIME_SCENARIOS = 64;
+const EXPECTED_SCOPE_SCENARIOS = 9;
 const LOCK_PENDING_PREFIX = ".h2o-publisher-lock.pending-";
 const FORBIDDEN_STALE_PREFIX = ".h2o-publisher-lock.stale-";
 const LOCK_RELEASED_PREFIX = ".h2o-publisher-lock.released-";
@@ -124,6 +135,10 @@ export function classifyLeanPublisherScope(state) {
   if (normalized.staged.length) {
     scopeFailure("Lean publisher Batch 1 forbids staged paths", normalized);
   }
+  if (sameSet(normalized.modifiedTracked, PUBLICATION_AUTHORITY_ROUND_PATHS) &&
+      normalized.untracked.length === 0 && normalized.missingFinal.length === 0) {
+    return "studio-publication-authority-uncommitted";
+  }
   const uncommitted =
     sameSet(normalized.modifiedTracked, UNCOMMITTED_MODIFIED) &&
     sameSet(normalized.untracked, UNCOMMITTED_UNTRACKED) &&
@@ -194,6 +209,11 @@ function runScopeSelfTests() {
   scopeTest("a missing final path is rejected", () => {
     assert.throws(() => classifyLeanPublisherScope(baseScope({ missingFinal: [PUBLISHER_REL] })), /scope mismatch/u);
   });
+  scopeTest("exact Studio publication-authority round is accepted without staging", () => {
+    assert.equal(classifyLeanPublisherScope(baseScope({
+      modifiedTracked: [...PUBLICATION_AUTHORITY_ROUND_PATHS],
+    })), "studio-publication-authority-uncommitted");
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE_SCENARIOS);
 }
 
@@ -225,13 +245,18 @@ function createPublishableFixture(label) {
   git(repository, ["config", "user.name", "Lean Publisher Validator"]);
   git(repository, ["config", "user.email", "lean-publisher@example.invalid"]);
 
+  const dependencyRoot = fs.existsSync(path.join(ROOT, "node_modules"))
+    ? path.join(ROOT, "node_modules")
+    : path.resolve(ROOT, "..", "..", "h2o-cp-source", "node_modules");
   fs.mkdirSync(path.join(repository, "node_modules"), { recursive: true });
-  for (const entry of fs.readdirSync(path.join(ROOT, "node_modules"))) {
+  for (const entry of fs.readdirSync(dependencyRoot)) {
     const link = path.join(repository, "node_modules", entry);
-    if (!fs.existsSync(link)) fs.symlinkSync(path.join(ROOT, "node_modules", entry), link);
+    if (!fs.existsSync(link)) fs.symlinkSync(path.join(dependencyRoot, entry), link);
   }
+  const canonicalMainRoot = path.resolve(ROOT, "..", "..", "h2o-cp-source");
   for (const relative of ["assets/chrome-dev-controls-icons", "assets/chrome-dev-lean-icons", "assets/internal-dev-controls-icons"]) {
-    const source = path.join(ROOT, relative);
+    const source = fs.existsSync(path.join(ROOT, relative))
+      ? path.join(ROOT, relative) : path.join(canonicalMainRoot, relative);
     if (!fs.existsSync(source)) continue;
     const destination = path.join(repository, relative);
     fs.mkdirSync(destination, { recursive: true });
@@ -240,7 +265,9 @@ function createPublishableFixture(label) {
       if (fs.statSync(from).isFile()) fs.copyFileSync(from, path.join(destination, file));
     }
   }
-  const localConfig = path.join(ROOT, "config/local/identity-provider.local.json");
+  const localConfig = fs.existsSync(path.join(ROOT, "config/local/identity-provider.local.json"))
+    ? path.join(ROOT, "config/local/identity-provider.local.json")
+    : path.join(canonicalMainRoot, "config/local/identity-provider.local.json");
   if (fs.existsSync(localConfig)) {
     fs.mkdirSync(path.join(repository, "config/local"), { recursive: true });
     fs.copyFileSync(localConfig, path.join(repository, "config/local/identity-provider.local.json"));
@@ -574,6 +601,16 @@ async function runRuntimeScenarios() {
     assert.doesNotMatch(publisherSource, /anchor\.root, LOCK_DIR_NAME/u);
     assert.doesNotMatch(publisherSource, /H2O_ALIAS_MODE:\s*["']symlink["']/u);
   });
+  await test("publisher independently pins Dev Controls and one-unit Studio staging policies", () => {
+    const dev = publisherTargetPolicy(DEV_CONTROLS_TARGET);
+    const studio = publisherTargetPolicy(STUDIO_LAUNCHER_TARGET);
+    assert.deepEqual(dev.outputFamilies, ["alias", "devOutput", "extension"]);
+    assert.deepEqual(studio.outputFamilies, ["extension"]);
+    assert.equal(studio.artifactBasename, "studio-launcher");
+    assert.equal(studio.expectedExtensionId, "bpobkkppdlldlkccaehmpfclmkhiemhg");
+    assert.equal(studio.exactCanonicalHeadRequired, true);
+    assert.throws(() => publisherTargetPolicy("caller-selected-path"), LeanPublisherError);
+  });
 
   // ── lock ───────────────────────────────────────────────────────────────────
   await test("lock acquires atomically and records complete metadata", () => {
@@ -637,6 +674,57 @@ async function runRuntimeScenarios() {
     assert.ok(staged.receipt, "receipt was not produced");
     assertSandboxPath(fixture.repository);
     preservedStagingRoots.push(staged.stagingRoot);
+  });
+  let studioStaged = null;
+  await test("real isolated Studio target stages one exact validated launcher generation", () => {
+    const canonicalStudio = path.join(fixture.repository,
+      "apps", "extensions", "chatgpt", "chrome", "studio-launcher");
+    const canonicalBefore = fs.existsSync(canonicalStudio) ? fixtureManifest(canonicalStudio) : null;
+    const authorizedHead = git(fixture.repository, ["rev-parse", "HEAD"]);
+    studioStaged = runPublisher(fixture, { args: ["--stage-only", "--target", "studio-launcher",
+      "--authorized-head", authorizedHead] });
+    assert.equal(studioStaged.result.status, 0, studioStaged.result.stderr);
+    assert.ok(studioStaged.receipt, "Studio stage receipt was not produced");
+    preservedStagingRoots.push(studioStaged.stagingRoot);
+    const receipt = studioStaged.receipt;
+    assert.equal(receipt.schemaVersion, 2);
+    assert.equal(receipt.publicationTarget, "studio-launcher");
+    assert.deepEqual(receipt.outputFamilies, ["extension"]);
+    assert.equal(receipt.authorizedHead, authorizedHead);
+    assert.equal(receipt.sourceAuthority.head, authorizedHead);
+    assert.equal(receipt.expectedExtensionId, "bpobkkppdlldlkccaehmpfclmkhiemhg");
+    assert.match(receipt.generationId, /^[a-f0-9]{64}$/u);
+    assert.equal(receipt.validatorResult.extension.exactFileSet, true);
+    assert.equal(receipt.validatorResult.extension.extensionId, receipt.expectedExtensionId);
+    assert.deepEqual(receipt.validatorResult.extension.requiredLoadOrder,
+      ["platform/selectors.contract.js", "platform/html-sanitizer.js",
+        "renderer/chat-renderer.studio.js", "studio.js"]);
+    assert.equal(fs.existsSync(path.join(receipt.outputPaths.extension,
+      "surfaces", "studio", "renderer", "chat-renderer.studio.js")), true);
+    assert.equal(fs.existsSync(path.join(receipt.outputPaths.extension,
+      "surfaces", "studio", "S0D3e. 🎬 Transcript Studio Host - Studio.js")), true);
+    assert.equal(receipt.canonicalBaseline.state, canonicalBefore === null ? "absent" : "present");
+    assert.equal(fs.existsSync(canonicalStudio), canonicalBefore !== null,
+      "isolated stage must not create or remove canonical Studio");
+    if (canonicalBefore !== null) assert.equal(fixtureManifest(canonicalStudio), canonicalBefore);
+    for (const flag of ["activationPerformed", "runtimeActivationPerformed", "browserReloadPerformed",
+      "browserCanaryPerformed", "deploymentPerformed", "releasePerformed", "pushPerformed"]) {
+      assert.equal(receipt[flag], false, flag);
+    }
+  });
+  await test("Studio staging rejects an older ancestral source before building", () => {
+    const oldRoot = path.join(fixture.top, "older-source");
+    git(fixture.repository, ["worktree", "add", "--quiet", "--detach", oldRoot, "HEAD^"]);
+    const authorizedHead = git(fixture.repository, ["rev-parse", "HEAD"]);
+    try {
+      const attempt = runPublisher(fixture, { args: ["--stage-only", "--target", "studio-launcher",
+        "--authorized-head", authorizedHead, "--source-worktree", oldRoot] });
+      assert.equal(attempt.result.status, 1);
+      assert.equal(errorCodeOf(attempt.result), "authorized-head-mismatch");
+      assert.equal(attempt.stagingRoot, null);
+    } finally {
+      git(fixture.repository, ["worktree", "remove", "--force", oldRoot]);
+    }
   });
   await test("staged alias directory exists and contains aliases", () => {
     const aliasDir = staged.receipt.outputPaths.alias;

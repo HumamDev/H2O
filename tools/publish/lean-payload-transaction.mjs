@@ -9,9 +9,9 @@
 // mutation is confined to one rename helper operating on internally derived
 // operands under re-proved publisher-lock and canonical-lease ownership. The
 // promotion interval between the two renames is real and is handled by
-// fail-closed detection plus reversal, not removed. This module never publishes
-// an activation or rollback receipt, never claims acceptance, and remains
-// unreachable from every production CLI: no production entry point imports it.
+// fail-closed detection plus reversal, not removed. Later finalization helpers
+// publish immutable receipts and terminal records, but this module still has no
+// CLI and is reachable only through the governed activator import edge.
 //
 // It imports only Node builtins. It never imports the activator, the publisher, or
 // canonical-delivery-lib, so no lease, recursive-deletion, or promotion primitive
@@ -33,8 +33,11 @@ export const APPROVED_AUTHORITATIVE_REPOSITORIES = Object.freeze([
 ]);
 export const CANONICAL_ANCHOR_BASENAME = ".h2o-canonical-delivery";
 export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";
+export const DEV_CONTROLS_TARGET = "dev-controls-oauth-google";
+export const STUDIO_LAUNCHER_TARGET = "studio-launcher";
 
 export const TRANSACTION_SCHEMA_VERSION = 1;
+export const TARGET_AWARE_TRANSACTION_SCHEMA_VERSION = 2;
 export const TRANSACTION_MODE = "activation-transaction";
 export const TRANSACTION_SUBPATH = "transactions";
 export const TRANSACTION_RECORD_PATTERN = /^seq-(\d{6})\.json$/u;
@@ -59,9 +62,20 @@ export const DEFERRED_TRANSACTION_STATES = Object.freeze([
   "restored",
   "accepted",
 ]);
+export const ROLLBACK_TRANSACTION_STATES = Object.freeze([
+  "rollback-retiring-current",
+  "rollback-current-retired",
+  "rollback-restoring-previous",
+  "rollback-previous-restored",
+  "rollback-unit-verified",
+  "rollback-reversing-current",
+  "rollback-reversed-to-current",
+  "rollback-complete",
+]);
 export const TRANSACTION_STATES = Object.freeze([
   ...P3A_TRANSACTION_STATES,
   ...DEFERRED_TRANSACTION_STATES,
+  ...ROLLBACK_TRANSACTION_STATES,
 ]);
 
 export const RECOVERY_OUTCOMES = Object.freeze([
@@ -89,6 +103,43 @@ export const CANONICAL_UNITS = Object.freeze([
   Object.freeze({ logicalName: "dev_output", family: "devOutput", segments: Object.freeze(["apps", "dev-server", "dev_output"]) }),
   Object.freeze({ logicalName: "extension", family: "extension", segments: null }),
 ]);
+export const STUDIO_CANONICAL_UNITS = Object.freeze([
+  Object.freeze({
+    logicalName: "studio_launcher",
+    family: "extension",
+    segments: Object.freeze(["apps", "extensions", "chatgpt", "chrome", STUDIO_LAUNCHER_TARGET]),
+  }),
+]);
+
+const PAYLOAD_TARGETS = Object.freeze({
+  [DEV_CONTROLS_TARGET]: Object.freeze({
+    targetId: DEV_CONTROLS_TARGET,
+    extensionVariant: ACCEPTED_EXTENSION_VARIANT,
+    units: CANONICAL_UNITS,
+    order: Object.freeze(["alias", "dev_output", "extension"]),
+  }),
+  [STUDIO_LAUNCHER_TARGET]: Object.freeze({
+    targetId: STUDIO_LAUNCHER_TARGET,
+    extensionVariant: STUDIO_LAUNCHER_TARGET,
+    units: STUDIO_CANONICAL_UNITS,
+    order: Object.freeze(["studio_launcher"]),
+  }),
+});
+
+export function payloadTargetPolicy(targetId = DEV_CONTROLS_TARGET) {
+  const policy = PAYLOAD_TARGETS[targetId];
+  if (!policy) fail("publication-target-not-accepted", "Payload target is not independently admitted.", { targetId });
+  return policy;
+}
+
+function targetPolicyForRecord(record) {
+  const targetId = record?.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const policy = payloadTargetPolicy(targetId);
+  const expectedSchema = targetId === DEV_CONTROLS_TARGET
+    ? TRANSACTION_SCHEMA_VERSION : TARGET_AWARE_TRANSACTION_SCHEMA_VERSION;
+  if (record?.schemaVersion !== expectedSchema) return null;
+  return policy;
+}
 
 export class PayloadTransactionError extends Error {
   constructor(code, message, details = {}) {
@@ -268,20 +319,23 @@ function assertSafeSegment(value, code) {
  * never creates it.
  */
 export function canonicalUnitPaths(repository, activationId, {
-  extensionVariant = ACCEPTED_EXTENSION_VARIANT,
+  targetId = DEV_CONTROLS_TARGET,
+  extensionVariant = null,
 } = {}) {
   if (!nonEmptyString(repository) || !path.isAbsolute(repository)) {
     fail("repository-invalid", "Repository root must be an absolute path.", { repository });
   }
   validateActivationId(activationId);
-  if (extensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  const policy = payloadTargetPolicy(targetId);
+  extensionVariant = extensionVariant ?? policy.extensionVariant;
+  if (extensionVariant !== policy.extensionVariant) {
     fail("extension-variant-not-accepted", "Extension variant differs from the independently pinned variant.", {
-      expected: ACCEPTED_EXTENSION_VARIANT,
+      expected: policy.extensionVariant,
       observed: extensionVariant,
     });
   }
   assertSafeSegment(extensionVariant, "extension-variant-not-accepted");
-  return Object.freeze(CANONICAL_UNITS.map((unit) => {
+  return Object.freeze(policy.units.map((unit) => {
     const livePath = unit.segments
       ? path.join(repository, ...unit.segments)
       : path.join(repository, "apps", "extensions", "chatgpt", "chrome", extensionVariant);
@@ -507,11 +561,22 @@ export function buildTransactionRecord(input) {
     activationId, sequence, previousRecordSha256, intentPath, intentSha256,
     stageReceiptPath, stageReceiptSha256, repositoryRealpath, authorizedWorktreeRealpath,
     branch, approvedHead, sourceTree, stableGitIdentity, acceptedExtensionVariant,
-    buildMarker, owner, transactionState, trees, createdAt,
+    buildMarker, owner, transactionState, trees, createdAt, publicationTarget = DEV_CONTROLS_TARGET,
+    generationId = null, canonicalBaseline = null,
   } = input;
+  const targetPolicy = payloadTargetPolicy(publicationTarget);
   validateActivationId(activationId);
   sequenceBasename(sequence);
-  if (input.allowP3cStates === true) {
+  if (input.allowRollbackStates === true) {
+    if (!ROLLBACK_TRANSACTION_STATES.includes(transactionState)) {
+      fail("transaction-state-not-rollback", "Not a rollback transaction state.", { state: transactionState });
+    }
+    if (P3C_RESERVED_STATES.includes(transactionState) && input.allowP3cStates !== true) {
+      fail("transaction-state-reserved-for-p3c", "Rollback completion belongs to its finalization helper.", {
+        state: transactionState,
+      });
+    }
+  } else if (input.allowP3cStates === true) {
     if (!P3C_TRANSACTION_STATES.includes(transactionState)) assertP3bWritableState(transactionState);
   } else if (input.allowP3bStates === true) assertP3bWritableState(transactionState);
   else assertP3aWritableState(transactionState);
@@ -528,7 +593,7 @@ export function buildTransactionRecord(input) {
   })) {
     if (!nonEmptyString(value)) fail("transaction-record-invalid", `Field ${name} must be a non-empty string.`, { name });
   }
-  if (acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  if (acceptedExtensionVariant !== targetPolicy.extensionVariant) {
     fail("extension-variant-not-accepted", "Transaction records pin the accepted extension variant.", {
       observed: acceptedExtensionVariant,
     });
@@ -542,10 +607,10 @@ export function buildTransactionRecord(input) {
   if (!plainObject(owner) || !nonEmptyString(owner.ownerId) || !Number.isSafeInteger(owner.pid)) {
     fail("transaction-owner-invalid", "Transaction records must carry owner evidence.");
   }
-  if (!Array.isArray(trees) || trees.length !== 3 ||
+  if (!Array.isArray(trees) || trees.length !== targetPolicy.order.length ||
       !sameJson(trees.map((tree) => tree?.logicalName).slice().sort(),
-        ["alias", "dev_output", "extension"])) {
-    fail("transaction-tree-records-invalid", "A transaction record carries exactly the three canonical units.");
+        [...targetPolicy.order].sort())) {
+    fail("transaction-tree-records-invalid", "A transaction record carries exactly the target's pinned units.");
   }
   for (const tree of trees) {
     if (!plainObject(tree) || !TRANSACTION_STATES.includes(tree.state) ||
@@ -553,7 +618,12 @@ export function buildTransactionRecord(input) {
         !nonEmptyString(tree.retiredPath)) {
       fail("transaction-tree-records-invalid", "Each tree record needs a known state and derived paths.");
     }
-    if (input.allowP3cStates === true) {
+    if (input.allowRollbackStates === true) {
+      if (!ROLLBACK_TRANSACTION_STATES.includes(tree.state) &&
+          !TRANSACTION_STATES.includes(tree.state)) {
+        fail("transaction-state-not-rollback", "Not a rollback tree state.", { state: tree.state });
+      }
+    } else if (input.allowP3cStates === true) {
       // Terminal P3C tree states are permitted only through finalization helpers.
     } else if (input.allowP3bStates === true) {
       if (P3C_RESERVED_STATES.includes(tree.state)) {
@@ -566,7 +636,8 @@ export function buildTransactionRecord(input) {
     }
   }
   const record = {
-    schemaVersion: TRANSACTION_SCHEMA_VERSION,
+    schemaVersion: publicationTarget === DEV_CONTROLS_TARGET
+      ? TRANSACTION_SCHEMA_VERSION : TARGET_AWARE_TRANSACTION_SCHEMA_VERSION,
     mode: TRANSACTION_MODE,
     phase: PAYLOAD_TRANSACTION_PHASE,
     activationId,
@@ -608,6 +679,18 @@ export function buildTransactionRecord(input) {
       powerLossDurabilityGuaranteed: false,
     },
   };
+  if (publicationTarget !== DEV_CONTROLS_TARGET) {
+    if (!nonEmptyString(generationId) || !/^[a-f0-9]{64}$/u.test(generationId)) {
+      fail("transaction-generation-invalid",
+        "Target-aware transaction records must bind the staged generation identity.");
+    }
+    record.publicationTarget = publicationTarget;
+    record.generationId = generationId;
+    record.canonicalBaseline = canonicalBaseline;
+    record.runtimeActivationPerformed = false;
+    record.deploymentPerformed = false;
+    record.releasePerformed = false;
+  }
   for (const key of TRANSACTION_REQUIRED_KEYS) {
     if (!Object.hasOwn(record, key)) fail("transaction-record-invalid", `Record is missing ${key}.`, { key });
   }
@@ -680,7 +763,8 @@ function manifestEntriesForFamily(verification, unit) {
 
 export function requiredDiskBytes(verification) {
   let total = 0;
-  for (const unit of CANONICAL_UNITS) {
+  const policy = payloadTargetPolicy(verification?.stage?.publicationTarget ?? DEV_CONTROLS_TARGET);
+  for (const unit of policy.units) {
     for (const entry of manifestEntriesForFamily(verification, unit).entries) {
       if (entry.type === "file") total += Number(entry.bytes) || 0;
     }
@@ -1235,7 +1319,7 @@ export function buildPreviousStateRecord(observation) {
   if (!plainObject(observation)) fail("previous-state-invalid", "Previous-state observation must be an object.");
   const { logicalName, state, entryType, manifest, treeDigest, fileCount, buildMarker,
     filesystemIdentity, retiredPath, livePath } = observation;
-  if (!["alias", "dev_output", "extension"].includes(logicalName)) {
+  if (!["alias", "dev_output", "extension", "studio_launcher"].includes(logicalName)) {
     fail("previous-state-invalid", "Unknown canonical unit.", { logicalName });
   }
   if (!PREVIOUS_STATE_VALUES.includes(state)) {
@@ -1311,7 +1395,8 @@ export function planRecovery({ intent, chain, observations, expected = {} } = {}
   }
   const head = chain.records[chain.records.length - 1]?.record;
   if (!plainObject(head)) return outcome("contradictory-transaction", "contradictory-transaction");
-  if (head.schemaVersion !== TRANSACTION_SCHEMA_VERSION || head.mode !== TRANSACTION_MODE) {
+  const targetPolicy = targetPolicyForRecord(head);
+  if (!targetPolicy || head.mode !== TRANSACTION_MODE) {
     return outcome("contradictory-transaction", "contradictory-transaction");
   }
   if (head.activationId !== intent.activationId) {
@@ -1327,7 +1412,7 @@ export function planRecovery({ intent, chain, observations, expected = {} } = {}
     "retiredSiblingCreated", "finalActivationReceiptDurable", "reloadPerformed", "canaryPerformed", "pushPerformed"]) {
     if (head[boundary] !== false) return outcome("contradictory-transaction", "contradictory-transaction");
   }
-  if (!Array.isArray(head.trees) || head.trees.length !== 3) {
+  if (!Array.isArray(head.trees) || head.trees.length !== targetPolicy.order.length) {
     return outcome("contradictory-transaction", "contradictory-transaction");
   }
   // Any record in the chain that reached a live-mutation or promotion state is
@@ -1504,8 +1589,10 @@ export function planP3bRecovery({ intent, chain, observations, expected = {} } =
     return outcome("no-transaction");
   }
   const head = chain.records[chain.records.length - 1]?.record;
-  if (!plainObject(head) || head.schemaVersion !== TRANSACTION_SCHEMA_VERSION ||
-      head.mode !== TRANSACTION_MODE || !Array.isArray(head.trees) || head.trees.length !== 3) {
+  const targetPolicy = plainObject(head) ? targetPolicyForRecord(head) : null;
+  if (!plainObject(head) || !targetPolicy ||
+      head.mode !== TRANSACTION_MODE || !Array.isArray(head.trees) ||
+      head.trees.length !== targetPolicy.order.length) {
     return outcome("contradictory-transaction", "contradictory-transaction");
   }
   if (head.activationId !== intent.activationId) {
@@ -1637,6 +1724,17 @@ export function planP3bRecovery({ intent, chain, observations, expected = {} } =
 export const RELEASE_ORDER = Object.freeze(["alias", "dev_output", "extension"]);
 export const REVERSAL_ORDER = Object.freeze([...RELEASE_ORDER].reverse());
 
+function targetPolicyForUnits(units, { allowSubset = false } = {}) {
+  const names = units.map((entry) => entry?.unit?.logicalName ?? entry?.logicalName);
+  const candidates = Object.values(PAYLOAD_TARGETS).filter((policy) =>
+    names.every((name) => policy.order.includes(name)) &&
+    (allowSubset || names.length === policy.order.length));
+  if (candidates.length !== 1) {
+    fail("release-order-invalid", "Canonical units do not identify one independently pinned target.", { names });
+  }
+  return candidates[0];
+}
+
 export const P3B_TRANSACTION_STATES = Object.freeze([
   "live-retiring",
   "live-retired",
@@ -1650,6 +1748,25 @@ export const P3B_TRANSACTION_STATES = Object.freeze([
 // Both terminal states belong to P3C. Reserving `rollback-complete` alongside
 // `accepted` keeps the precise reserved-state code reachable for either one.
 export const P3C_RESERVED_STATES = Object.freeze(["accepted", "rollback-complete"]);
+export const P3C_ROLLBACK_STATES = Object.freeze([
+  "rollback-retiring-current",
+  "rollback-current-retired",
+  "rollback-restoring-previous",
+  "rollback-previous-restored",
+  "rollback-unit-verified",
+  "rollback-reversing-current",
+  "rollback-reversed-to-current",
+]);
+
+export function assertRollbackWritableState(state) {
+  if (P3C_RESERVED_STATES.includes(state)) {
+    fail("transaction-state-reserved-for-p3c", "Terminal states belong to finalization helpers.", { state });
+  }
+  if (!P3C_ROLLBACK_STATES.includes(state)) {
+    fail("transaction-state-not-rollback", "Not a rollback transaction state.", { state });
+  }
+  return state;
+}
 
 export const P3B_RECOVERY_OUTCOMES = Object.freeze([
   "restore-backward",
@@ -1862,6 +1979,147 @@ export function promoteIncomingTree({ unit, activationId, guards, expectedTreeDi
   return Object.freeze({ promoted: true, treeDigest: promoted.treeDigest, fileCount: promoted.fileCount });
 }
 
+/* ---------------- governed rollback of one unit ---------------- */
+
+export function rollbackRetiredPath(unit, rollbackId) {
+  validateActivationId(rollbackId);
+  return path.join(unit.parent, `${path.basename(unit.livePath)}.retired-rbk-${rollbackId}`);
+}
+
+function safeDirectoryStat(target) {
+  try {
+    const stat = fs.lstatSync(target);
+    return stat.isSymbolicLink() || !stat.isDirectory() ? null : stat;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Replace one live generation with the exact retained prior generation. Both
+ * generations remain recoverable: the current generation moves to a
+ * rollback-specific sibling and the previous candidate moves to the live name.
+ */
+export function rollbackUnitToPrevious({
+  unit, rollbackId, guards, previousCandidatePath, expectedPreviousDigest,
+  expectedCurrentDigest, hooks = {},
+}) {
+  validateActivationId(rollbackId);
+  const retainedCurrentPath = rollbackRetiredPath(unit, rollbackId);
+  if (path.dirname(previousCandidatePath) !== unit.parent ||
+      previousCandidatePath !== unit.retiredPath) {
+    fail("rollback-path-not-derived", "Previous candidate must be the activation-owned retained sibling.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  const candidateStat = assertRegularDirectory(previousCandidatePath, "rollback-previous-invalid", {
+    logicalName: unit.logicalName,
+  });
+  const previous = recomputeIncomingManifest(previousCandidatePath, "");
+  if (previous.treeDigest !== expectedPreviousDigest) {
+    fail("rollback-previous-digest-mismatch", "Retained prior generation differs from accepted evidence.", {
+      logicalName: unit.logicalName, expected: expectedPreviousDigest, observed: previous.treeDigest,
+    });
+  }
+  const current = recomputeIncomingManifest(unit.livePath, "");
+  if (current.treeDigest !== expectedCurrentDigest) {
+    fail("rollback-current-drift", "Live generation differs from the accepted promoted generation.", {
+      logicalName: unit.logicalName, expected: expectedCurrentDigest, observed: current.treeDigest,
+    });
+  }
+
+  if (hooks.beforeRetireCurrent) hooks.beforeRetireCurrent(unit);
+  renameCanonicalEntry({
+    from: unit.livePath, to: retainedCurrentPath, unit,
+    guard: () => assertPromotionOwnership(guards),
+  });
+  try {
+    if (hooks.afterRetireCurrent) hooks.afterRetireCurrent(unit);
+    if (hooks.beforeRestorePrevious) hooks.beforeRestorePrevious(unit);
+    renameCanonicalEntry({
+      from: previousCandidatePath, to: unit.livePath, unit,
+      guard: () => assertPromotionOwnership(guards),
+      expectFromDevice: String(candidateStat.dev),
+    });
+  } catch (error) {
+    // Restore the pre-rollback generation whenever the live name is still free.
+    // A foreign gap takeover is never replaced; all evidence stays in place.
+    if (!safeDirectoryStat(unit.livePath)) {
+      try {
+        renameCanonicalEntry({
+          from: retainedCurrentPath, to: unit.livePath, unit,
+          guard: () => assertPromotionOwnership(guards),
+        });
+      } catch (restoreError) {
+        fail("rollback-current-restoration-failed",
+          "Previous restoration failed and the pre-rollback generation could not be restored.", {
+            logicalName: unit.logicalName,
+            cause: error?.code ?? null,
+            restorationCause: restoreError?.code ?? null,
+          });
+      }
+    }
+    if (error?.code === "promotion-destination-occupied") {
+      fail("rollback-gap-takeover", "Foreign content occupied the live path during rollback.", {
+        logicalName: unit.logicalName,
+      });
+    }
+    throw error;
+  }
+  const restored = recomputeIncomingManifest(unit.livePath, "");
+  if (restored.treeDigest !== expectedPreviousDigest) {
+    fail("rollback-restored-verification", "Restored live generation failed digest verification.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  return Object.freeze({
+    rolledBack: true,
+    logicalName: unit.logicalName,
+    retainedCurrentPath,
+    rolledBackFromDigest: current.treeDigest,
+    restoredDigest: restored.treeDigest,
+    restoredFileCount: restored.fileCount,
+  });
+}
+
+/** Reverse a completed unit rollback without deleting either generation. */
+export function reverseRollbackUnit({
+  unit, rollbackId, guards, previousCandidatePath, expectedCurrentDigest, expectedPreviousDigest,
+}) {
+  validateActivationId(rollbackId);
+  const retainedCurrentPath = rollbackRetiredPath(unit, rollbackId);
+  const retainedCurrent = recomputeIncomingManifest(retainedCurrentPath, "");
+  if (retainedCurrent.treeDigest !== expectedCurrentDigest) {
+    fail("rollback-reversal-retired-mismatch", "Retained current generation differs from accepted evidence.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  const liveStat = safeDirectoryStat(unit.livePath);
+  if (liveStat) {
+    const live = recomputeIncomingManifest(unit.livePath, "");
+    if (live.treeDigest !== expectedPreviousDigest) {
+      fail("rollback-reversal-foreign-live", "Foreign content occupies the live path.", {
+        logicalName: unit.logicalName,
+      });
+    }
+    renameCanonicalEntry({
+      from: unit.livePath, to: previousCandidatePath, unit,
+      guard: () => assertPromotionOwnership(guards),
+    });
+  }
+  renameCanonicalEntry({
+    from: retainedCurrentPath, to: unit.livePath, unit,
+    guard: () => assertPromotionOwnership(guards),
+  });
+  const restored = recomputeIncomingManifest(unit.livePath, "");
+  if (restored.treeDigest !== expectedCurrentDigest) {
+    fail("rollback-reversal-verification", "Rollback reversal failed digest verification.", {
+      logicalName: unit.logicalName,
+    });
+  }
+  return Object.freeze({ reversed: true, treeDigest: restored.treeDigest });
+}
+
 /* ---------------- reversal of one unit ---------------- */
 
 export function restoreUnit({ unit, previous, activationId, guards, promotedTreeDigest = null }) {
@@ -1948,10 +2206,21 @@ function appendState({ directory, baseRecord, sequence, previousRecordSha256, ow
 export function promoteUnitWithJournal({
   unit, activationId, directory, baseRecord, ownerId, guards,
   sequence, previousRecordSha256, expectedTreeDigest, previous,
-  requiredFiles = [], buildMarker = null, hooks = {},
+  expectedPrevious = null, requiredFiles = [], buildMarker = null, hooks = {},
 }) {
   validateActivationId(activationId);
   const captured = previous ?? capturePreviousCanonicalState(unit, activationId, { buildMarker, requiredFiles });
+  if (expectedPrevious !== null &&
+      (captured.state !== expectedPrevious.state ||
+       (captured.state === "present" && captured.treeDigest !== expectedPrevious.treeDigest))) {
+    fail("canonical-baseline-drift", "Canonical generation differs from the stage-bound baseline.", {
+      logicalName: unit.logicalName,
+      expectedState: expectedPrevious.state,
+      observedState: captured.state,
+      expectedDigest: expectedPrevious.treeDigest ?? null,
+      observedDigest: captured.treeDigest ?? null,
+    });
+  }
   const treesWith = (state, extra = {}) => baseRecord.trees.map((tree) => (
     tree.logicalName === unit.logicalName
       ? { ...tree, state, previousState: captured.state, previousIdentity: captured.treeDigest ?? null,
@@ -2034,8 +2303,13 @@ export function reverseRelease({
   // Entries are { unit, previous, promotedTreeDigest }: the logical name lives on
   // the unit. Reading it from the entry yielded undefined, so indexOf returned -1
   // for every entry and the sort silently preserved promotion order.
+  const targetPolicy = payloadTargetPolicy(baseRecord?.publicationTarget ?? DEV_CONTROLS_TARGET);
+  if (changed.some((entry) => !targetPolicy.order.includes(entry?.unit?.logicalName))) {
+    fail("release-order-invalid", "Reversal units differ from the transaction target.");
+  }
+  const reversalOrder = [...targetPolicy.order].reverse();
   const ordered = [...changed].sort((left, right) =>
-    REVERSAL_ORDER.indexOf(left.unit.logicalName) - REVERSAL_ORDER.indexOf(right.unit.logicalName));
+    reversalOrder.indexOf(left.unit.logicalName) - reversalOrder.indexOf(right.unit.logicalName));
   let seq = sequence;
   let prev = previousRecordSha256;
   const restored = [];
@@ -2097,13 +2371,13 @@ export function reverseRelease({
  */
 export function promoteReleaseWithJournal({
   units, activationId, directory, baseRecord, ownerId, guards,
-  sequence = 1, previousRecordSha256 = null, expectedDigests = {}, hooks = {},
+  sequence = 1, previousRecordSha256 = null, expectedDigests = {}, expectedPrevious = {}, hooks = {},
 }) {
+  const targetPolicy = targetPolicyForUnits(units);
   const ordered = [...units].sort((left, right) =>
-    RELEASE_ORDER.indexOf(left.logicalName) - RELEASE_ORDER.indexOf(right.logicalName));
-  if (ordered.length !== 3 ||
-      !sameJson(ordered.map((unit) => unit.logicalName), [...RELEASE_ORDER])) {
-    fail("release-order-invalid", "A release promotes exactly the three canonical units in pinned order.", {
+    targetPolicy.order.indexOf(left.logicalName) - targetPolicy.order.indexOf(right.logicalName));
+  if (!sameJson(ordered.map((unit) => unit.logicalName), [...targetPolicy.order])) {
+    fail("release-order-invalid", "A release promotes exactly its target's canonical units in pinned order.", {
       observed: ordered.map((unit) => unit.logicalName),
     });
   }
@@ -2116,6 +2390,7 @@ export function promoteReleaseWithJournal({
         unit, activationId, directory, baseRecord, ownerId, guards,
         sequence: seq, previousRecordSha256: prev,
         expectedTreeDigest: expectedDigests[unit.logicalName] ?? null,
+        expectedPrevious: expectedPrevious[unit.logicalName] ?? null,
         hooks,
       });
       seq = result.sequence;
@@ -2139,11 +2414,12 @@ export function promoteReleaseWithJournal({
   return Object.freeze({
     released: true,
     fixtureVerified: true,
-    order: [...RELEASE_ORDER],
+    order: [...targetPolicy.order],
     changed: Object.freeze(changed.map((entry) => Object.freeze({
       logicalName: entry.unit.logicalName,
       promotedTreeDigest: entry.promotedTreeDigest,
       previousState: entry.previous.state,
+      previousTreeDigest: entry.previous.treeDigest ?? null,
     }))),
     sequence: seq,
     previousRecordSha256: prev,
@@ -2177,6 +2453,8 @@ export const RECEIPT_SCHEMA_VERSION = 2;
 // Distinctly named so the activator cannot confuse it with the Batch 1 STAGE
 // publication receipt schema, which is a different document with its own version.
 export const ACTIVATION_RECEIPT_SCHEMA_VERSION = 2;
+export const TARGET_AWARE_RECEIPT_SCHEMA_VERSION = 3;
+export const TARGET_AWARE_ROLLBACK_RECEIPT_SCHEMA_VERSION = 3;
 export const ACTIVATIONS_SUBPATH = "activations";
 export const ROLLBACKS_SUBPATH = "rollbacks";
 
@@ -2335,6 +2613,8 @@ export function rollbackReceiptPath(anchorRoot, rollbackId) {
 
 export function buildActivationReceipt(input) {
   if (!plainObject(input)) fail("receipt-invalid", "Activation receipt input must be an object.");
+  const publicationTarget = input.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const targetPolicy = payloadTargetPolicy(publicationTarget);
   const required = ["activationId", "transactionRecordPath", "transactionRecordSha256", "intentPath",
     "intentSha256", "stageReceiptPath", "stageReceiptSha256", "repositoryRealpath",
     "authorizedWorktreeRealpath", "branch", "approvedHead", "sourceTree", "buildMarker",
@@ -2343,7 +2623,7 @@ export function buildActivationReceipt(input) {
     if (!nonEmptyString(input[key])) fail("receipt-invalid", `Activation receipt field ${key} is required.`, { key });
   }
   validateActivationId(input.activationId);
-  if (input.acceptedExtensionVariant !== ACCEPTED_EXTENSION_VARIANT) {
+  if (input.acceptedExtensionVariant !== targetPolicy.extensionVariant) {
     fail("extension-variant-not-accepted", "Activation receipts pin the accepted extension variant.");
   }
   if (!plainObject(input.stableGitIdentity) ||
@@ -2355,8 +2635,9 @@ export function buildActivationReceipt(input) {
     "promotedCanonicalIdentities", "canonicalVerification"]) {
     if (!plainObject(input[key])) fail("receipt-invalid", `Activation receipt field ${key} must be an object.`, { key });
   }
-  return {
-    schemaVersion: RECEIPT_SCHEMA_VERSION,
+  const receipt = {
+    schemaVersion: publicationTarget === DEV_CONTROLS_TARGET
+      ? RECEIPT_SCHEMA_VERSION : TARGET_AWARE_RECEIPT_SCHEMA_VERSION,
     mode: ACTIVATION_RECEIPT_MODE,
     activationId: input.activationId,
     transactionRecordPath: input.transactionRecordPath,
@@ -2397,6 +2678,36 @@ export function buildActivationReceipt(input) {
     canaryPerformed: false,
     pushPerformed: false,
   };
+  if (publicationTarget === STUDIO_LAUNCHER_TARGET) {
+    const studioRequired = ["generationId", "sourceRemote", "sourceAuthorityMode",
+      "expectedExtensionId", "canonicalOutputPath", "artifactTreeDigest", "publicationOutcome"];
+    for (const key of studioRequired) {
+      if (!nonEmptyString(input[key])) fail("receipt-invalid", `Studio publication receipt field ${key} is required.`);
+    }
+    if (!plainObject(input.artifactManifest) || !plainObject(input.canonicalBaseline) ||
+        !plainObject(input.lockLeaseCorrelation) || !Number.isSafeInteger(input.artifactFileCount)) {
+      fail("receipt-invalid", "Studio publication receipt provenance is incomplete.");
+    }
+    receipt.publicationTarget = publicationTarget;
+    receipt.generationId = input.generationId;
+    receipt.sourceRemote = input.sourceRemote;
+    receipt.sourceAuthorityMode = input.sourceAuthorityMode;
+    receipt.sourceAuthorityWorktree = input.sourceAuthorityWorktree ?? null;
+    receipt.expectedExtensionId = input.expectedExtensionId;
+    receipt.canonicalOutputPath = input.canonicalOutputPath;
+    receipt.canonicalBaseline = input.canonicalBaseline;
+    receipt.artifactManifest = input.artifactManifest;
+    receipt.artifactFileCount = input.artifactFileCount;
+    receipt.artifactTreeDigest = input.artifactTreeDigest;
+    receipt.lockLeaseCorrelation = input.lockLeaseCorrelation;
+    receipt.publicationOutcome = input.publicationOutcome;
+    receipt.canonicalPublicationPerformed = true;
+    receipt.runtimeActivationPerformed = false;
+    receipt.browserReloadPerformed = false;
+    receipt.deploymentPerformed = false;
+    receipt.releasePerformed = false;
+  }
+  return receipt;
 }
 
 export function publishActivationReceipt(anchorRoot, activationId, receipt,
@@ -2414,6 +2725,8 @@ export function publishActivationReceipt(anchorRoot, activationId, receipt,
 
 export function buildRollbackReceipt(input) {
   if (!plainObject(input)) fail("receipt-invalid", "Rollback receipt input must be an object.");
+  const publicationTarget = input.publicationTarget ?? DEV_CONTROLS_TARGET;
+  const targetPolicy = payloadTargetPolicy(publicationTarget);
   for (const key of ["rollbackId", "sourceActivationReceiptPath", "sourceActivationReceiptSha256",
     "rollbackTransactionPath", "rollbackTransactionSha256", "repositoryRealpath", "rolledBackFrom",
     "restoredTo", "startedAt", "completedAt"]) {
@@ -2423,8 +2736,9 @@ export function buildRollbackReceipt(input) {
   for (const key of ["previousCanonicalIdentities", "resultingCanonicalIdentities", "manifests"]) {
     if (!plainObject(input[key])) fail("receipt-invalid", `Rollback receipt field ${key} must be an object.`, { key });
   }
-  return {
-    schemaVersion: RECEIPT_SCHEMA_VERSION,
+  const receipt = {
+    schemaVersion: publicationTarget === DEV_CONTROLS_TARGET
+      ? RECEIPT_SCHEMA_VERSION : TARGET_AWARE_ROLLBACK_RECEIPT_SCHEMA_VERSION,
     mode: ROLLBACK_RECEIPT_MODE,
     rollbackId: input.rollbackId,
     sourceActivationReceiptPath: input.sourceActivationReceiptPath,
@@ -2451,9 +2765,42 @@ export function buildRollbackReceipt(input) {
     canaryPerformed: false,
     pushPerformed: false,
   };
+  if (publicationTarget === STUDIO_LAUNCHER_TARGET) {
+    for (const key of ["rollbackIntentPath", "rollbackIntentSha256", "rollbackAuthorityHead",
+      "rolledBackFromGenerationId", "rolledBackFromDigest", "restoredToDigest",
+      "retainedReplacementPath", "previousProvenanceStatus", "publisherAuthorityVersion"]) {
+      if (!nonEmptyString(input[key])) {
+        fail("receipt-invalid", `Studio rollback receipt field ${key} is required.`, { key });
+      }
+    }
+    if (!plainObject(input.lockLeaseCorrelation)) {
+      fail("receipt-invalid", "Studio rollback receipt requires lock/lease correlation.");
+    }
+    receipt.publicationTarget = publicationTarget;
+    receipt.rollbackIntentPath = input.rollbackIntentPath;
+    receipt.rollbackIntentSha256 = input.rollbackIntentSha256;
+    receipt.rollbackAuthorityHead = input.rollbackAuthorityHead;
+    receipt.rolledBackFromGenerationId = input.rolledBackFromGenerationId;
+    receipt.rolledBackFromDigest = input.rolledBackFromDigest;
+    receipt.restoredToGenerationId = input.restoredToGenerationId ?? null;
+    receipt.restoredToDigest = input.restoredToDigest;
+    receipt.retainedReplacementPath = input.retainedReplacementPath;
+    receipt.previousProvenanceStatus = input.previousProvenanceStatus;
+    receipt.lockLeaseCorrelation = input.lockLeaseCorrelation;
+    receipt.publisherAuthorityVersion = input.publisherAuthorityVersion;
+    receipt.rollbackOutcome = "completed";
+    receipt.runtimeActivationPerformed = false;
+    receipt.browserReloadPerformed = false;
+    receipt.deploymentPerformed = false;
+    receipt.releasePerformed = false;
+  } else if (targetPolicy.targetId !== DEV_CONTROLS_TARGET) {
+    fail("publication-target-not-accepted", "Rollback target is not admitted.");
+  }
+  return receipt;
 }
 
-export function publishRollbackReceipt(anchorRoot, rollbackId, receipt, { ownerId } = {}) {
+export function publishRollbackReceipt(anchorRoot, rollbackId, receipt,
+  { ownerId, failureInjection = null } = {}) {
   validateActivationId(rollbackId);
   if (receipt?.mode !== ROLLBACK_RECEIPT_MODE || receipt?.rollbackId !== rollbackId) {
     fail("receipt-invalid", "Rollback receipt does not describe this rollback.", { rollbackId });
@@ -2461,7 +2808,7 @@ export function publishRollbackReceipt(anchorRoot, rollbackId, receipt, { ownerI
   const directory = ensureAnchorSubdirectory(anchorRoot, ROLLBACKS_SUBPATH,
     "rollbacks-symlink", "rollbacks-invalid");
   return publishDurableReceipt(directory, `${rollbackId}.json`, receipt, {
-    ownerId, collisionCode: "rollback-receipt-collision",
+    ownerId, collisionCode: "rollback-receipt-collision", failureInjection,
   });
 }
 
@@ -2497,6 +2844,17 @@ export function appendAcceptedRecord({
   return publishTransactionRecord(directory, record, { ownerId });
 }
 
+export function appendRollbackStateRecord({
+  directory, baseRecord, sequence, previousRecordSha256, ownerId, state, trees,
+}) {
+  assertRollbackWritableState(state);
+  const record = buildTransactionRecord({
+    ...baseRecord, sequence, previousRecordSha256, transactionState: state, trees,
+    allowRollbackStates: true,
+  });
+  return publishTransactionRecord(directory, record, { ownerId });
+}
+
 /** The ONLY writer of the terminal `rollback-complete` state. */
 export function appendRollbackCompleteRecord({
   directory, baseRecord, sequence, previousRecordSha256, ownerId, receipt, trees,
@@ -2513,7 +2871,7 @@ export function appendRollbackCompleteRecord({
   }
   const record = buildTransactionRecord({
     ...baseRecord, sequence, previousRecordSha256,
-    transactionState: "rollback-complete", trees, allowP3bStates: true, allowP3cStates: true,
+    transactionState: "rollback-complete", trees, allowRollbackStates: true, allowP3cStates: true,
   });
   record.rollbackReceiptPath = receipt.path;
   record.rollbackReceiptSha256 = receipt.sha256;
@@ -2602,6 +2960,7 @@ export function verifyCanonicalAgainstReceipt(units, receipt, {
   if (!plainObject(receipt) || receipt.mode !== ACTIVATION_RECEIPT_MODE) {
     fail("canonical-verification-receipt-invalid", "Canonical verification requires an activation receipt.");
   }
+  const targetPolicy = targetPolicyForUnits(units, { allowSubset: true });
   if (nonEmptyString(expectedBuildMarker) && receipt.buildMarker !== expectedBuildMarker) {
     fail("canonical-verification-build-marker", "Receipt build marker differs from the verified stage.", {
       expected: expectedBuildMarker, observed: receipt.buildMarker,
@@ -2612,8 +2971,8 @@ export function verifyCanonicalAgainstReceipt(units, receipt, {
       expected: extensionVariant, observed: receipt.acceptedExtensionVariant ?? null,
     });
   }
-  if (units.length !== 3) {
-    fail("canonical-verification-incomplete", "Canonical verification requires all three units.");
+  if (units.length !== targetPolicy.order.length) {
+    fail("canonical-verification-incomplete", "Canonical verification requires every pinned target unit.");
   }
   const comparisons = [];
   for (const unit of units) {
@@ -2671,7 +3030,7 @@ export function verifyCanonicalAgainstReceipt(units, receipt, {
       });
     }
     const symlinks = verifyLiveSymlinkPolicy(entry.unit, repository);
-    if (entry.unit.logicalName === "extension" && requiredFiles.length > 0) {
+    if (entry.unit.family === "extension" && requiredFiles.length > 0) {
       const present = new Set(entry.observed.entries.map((item) => item.path));
       for (const required of requiredFiles) {
         if (!present.has(required)) {
@@ -2688,8 +3047,8 @@ export function verifyCanonicalAgainstReceipt(units, receipt, {
       symlinks,
     });
   }
-  if (Object.keys(results).length !== 3) {
-    fail("canonical-verification-incomplete", "Canonical verification requires all three units.");
+  if (Object.keys(results).length !== targetPolicy.order.length) {
+    fail("canonical-verification-incomplete", "Canonical verification requires every pinned target unit.");
   }
   return Object.freeze({
     ok: true, mode: "verify-canonical", activationId: receipt.activationId,
@@ -2712,7 +3071,8 @@ export function planP3cRecovery({ chain, observations, receipt = null, expected 
     return outcome("no-transaction");
   }
   const head = chain.records[chain.records.length - 1]?.record;
-  if (!plainObject(head) || head.schemaVersion !== TRANSACTION_SCHEMA_VERSION || head.mode !== TRANSACTION_MODE) {
+  const targetPolicy = plainObject(head) ? targetPolicyForRecord(head) : null;
+  if (!plainObject(head) || !targetPolicy || head.mode !== TRANSACTION_MODE) {
     return outcome("contradictory-transaction", "contradictory-transaction");
   }
   for (const key of ["repositoryRealpath", "authorizedWorktreeRealpath"]) {
@@ -2725,7 +3085,7 @@ export function planP3cRecovery({ chain, observations, receipt = null, expected 
   const receiptDurable = plainObject(receipt) && receipt.durable === true;
   const canonicalVerified = observations.canonicalVerified === true;
   const alreadyAccepted = head.transactionState === "accepted";
-  const anyForeign = ["alias", "dev_output", "extension"]
+  const anyForeign = targetPolicy.order
     .some((name) => observations[name]?.foreignLivePresent === true);
 
   if (anyForeign) {
@@ -2749,7 +3109,7 @@ export function planP3cRecovery({ chain, observations, receipt = null, expected 
   if (states.some((state) => state === "restoring")) {
     return outcome("complete-reversal", null, { acceptedRelease: false });
   }
-  if (states.length === 3 && states.every((state) => state === "restored")) {
+  if (states.length === targetPolicy.order.length && states.every((state) => state === "restored")) {
     return outcome("complete-reversal", null, { acceptedRelease: false });
   }
   const previousAbsent = head.trees?.every((tree) => tree?.previousState === "absent") === true;
