@@ -126,6 +126,7 @@ function createRenderHarness() {
     snapshot: null,
     mountCount: 0,
     unmountCount: 0,
+    rejectSnapshotUpdate: false,
   };
   const studioHost = {
     mount(opts) {
@@ -159,6 +160,13 @@ function createRenderHarness() {
     },
     getScrollRoot() {
       return hostState.scroll?.isConnected ? hostState.scroll : null;
+    },
+    updateSnapshot(snapshot) {
+      if (hostState.rejectSnapshotUpdate) return false;
+      if (!hostState.root?.isConnected || !hostState.turns?.isConnected || !hostState.scroll?.isConnected) return false;
+      if (!hostState.root.contains(hostState.turns) || !hostState.root.contains(hostState.scroll)) return false;
+      hostState.snapshot = snapshot || null;
+      return true;
     },
   };
 
@@ -294,6 +302,7 @@ function createRenderHarness() {
     },
     setLoad(id, value) { loads.set(id, value); },
     setBindings(value) { bindings = value; },
+    rejectHostSnapshotUpdate(value = true) { hostState.rejectSnapshotUpdate = !!value; },
     readerEl,
     listPanel,
     state,
@@ -361,8 +370,20 @@ function createHostHarness() {
     Array,
     CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
   });
-  vm.runInContext(hostSource, sandbox, { filename: HOST_REL });
-  return { api: W.H2O.studioHost, W, D, routeEvents, originalGetChatId };
+  const instrumentedHostSource = hostSource.replace(
+    '  W.H2O.studioHost = {',
+    '  W.__getStudioHostSnapshotForTest = () => STATE.snapshot;\n\n  W.H2O.studioHost = {'
+  );
+  assert.notEqual(instrumentedHostSource, hostSource, 'host snapshot test hook must install');
+  vm.runInContext(instrumentedHostSource, sandbox, { filename: HOST_REL });
+  return {
+    api: W.H2O.studioHost,
+    W,
+    D,
+    routeEvents,
+    originalGetChatId,
+    getSnapshot: () => W.__getStudioHostSnapshotForTest(),
+  };
 }
 
 const PASS = [];
@@ -434,7 +455,25 @@ await check('equivalent fast refresh publishes the fresh snapshot without mutati
   await h.renderReader('A');
   assert.equal(h.readerEl.children[0], root);
   assert.equal(h.state.currentReaderSnapshot, fresh, 'fresh loaded snapshot object must become current');
+  assert.equal(h.hostState.snapshot, fresh, 'fast refresh must replace the host snapshot reference');
   assert.equal(JSON.stringify(fresh), before, 'fast refresh must not mutate the loaded snapshot');
+});
+
+await check('host snapshot publication failure forces the normal rebuild path', async () => {
+  const h = createRenderHarness();
+  const initial = makeSnapshot('A');
+  h.setLoad('A', initial);
+  await h.renderReader('A');
+  const firstRoot = h.readerEl.children[0];
+  const fresh = structuredClone(initial);
+  fresh.meta.category = { id: 'presentation-only' };
+  h.setLoad('A', fresh);
+  h.rejectHostSnapshotUpdate(true);
+  await h.renderReader('A');
+  assert.notEqual(h.readerEl.children[0], firstRoot, 'publication failure must replace the mounted root');
+  assert.equal(firstRoot.isConnected, false, 'publication failure must detach the obsolete root');
+  assert.equal(h.hostState.mountCount, 2, 'publication failure must use the normal host mount path');
+  assert.equal(h.hostState.snapshot, fresh, 'full rebuild must publish the fresh snapshot');
 });
 
 await check('detached or stale host roots reject otherwise-equivalent fast refresh', async () => {
@@ -594,7 +633,9 @@ await check('S0D3e repeated mount/unmount keeps only connected current roots', (
     const root = new FakeNode(name);
     const turns = new FakeNode(`${name}-turns`);
     const scroll = new FakeNode(`${name}-scroll`);
-    root.isConnected = turns.isConnected = scroll.isConnected = true;
+    root.appendChild(turns);
+    root.appendChild(scroll);
+    root.setConnected(true);
     return { root, turns, scroll };
   };
   const a = makeRoots('A');
@@ -612,6 +653,13 @@ await check('S0D3e repeated mount/unmount keeps only connected current roots', (
   assert.equal(h.api.getTurnsRoot(), b.turns);
   assert.equal(h.api.getScrollRoot(), b.scroll);
   assert.equal(h.W.H2O.util.getChatId(), 'chat-B');
+
+  const freshB = structuredClone(makeSnapshot('B'));
+  freshB.meta.folderId = 'presentation-only';
+  assert.equal(h.api.updateSnapshot(freshB), true, 'current same-route snapshot should update without remount');
+  assert.equal(h.api.getReaderRoot(), b.root, 'snapshot publication must preserve the mounted root');
+  assert.equal(h.W.H2O.util.getChatId(), 'chat-B');
+  assert.equal(h.api.updateSnapshot(makeSnapshot('C')), false, 'different-route snapshot must not replace host state');
 
   b.root.isConnected = false;
   assert.equal(h.api.getReaderRoot(), null, 'disconnected roots must not be exposed');
@@ -636,6 +684,52 @@ await check('S0D3e repeated mount/unmount keeps only connected current roots', (
   assert.equal(h.W.H2O.util.getChatId(), 'chat-A-again');
 });
 
+await check('S0D3e snapshot publication rejects detached and inconsistent mounted roots', () => {
+  const h = createHostHarness();
+  const root = new FakeNode('validity-root');
+  const turns = new FakeNode('validity-turns');
+  const scroll = new FakeNode('validity-scroll');
+  root.appendChild(turns);
+  root.appendChild(scroll);
+  root.setConnected(true);
+  const initial = makeSnapshot('A');
+  h.api.mount({ readerRoot: root, turnsEl: turns, scrollEl: scroll, snapshot: initial });
+  const accepted = structuredClone(initial);
+  accepted.meta.folderId = 'accepted-presentation';
+  assert.equal(h.api.updateSnapshot(accepted), true);
+  assert.equal(h.getSnapshot(), accepted);
+
+  const rejected = structuredClone(initial);
+  rejected.meta.folderId = 'must-not-publish';
+  const assertRejectedWithoutMutation = (label) => {
+    assert.equal(h.api.updateSnapshot(rejected), false, label);
+    assert.equal(h.getSnapshot(), accepted, `${label}: host snapshot must remain unchanged`);
+  };
+
+  root.setConnected(false);
+  assertRejectedWithoutMutation('detached Reader root must reject publication');
+  root.setConnected(true);
+
+  turns.setConnected(false);
+  assertRejectedWithoutMutation('detached turns root must reject publication');
+  turns.setConnected(true);
+
+  scroll.setConnected(false);
+  assertRejectedWithoutMutation('detached scroll root must reject publication');
+  scroll.setConnected(true);
+
+  root.children = [];
+  assertRejectedWithoutMutation('roots outside the Reader ownership tree must reject publication');
+  root.children = [turns, scroll];
+
+  root.removeAttribute('data-h2o-studio-reader');
+  assertRejectedWithoutMutation('missing Reader lifecycle marker must reject publication');
+  root.setAttribute('data-h2o-studio-reader', '1');
+
+  assert.equal(h.api.updateSnapshot(makeSnapshot('B')), false, 'route identity mismatch must reject publication');
+  assert.equal(h.getSnapshot(), accepted, 'route mismatch must preserve the current host snapshot');
+});
+
 await check('non-Reader routes and late overlay work use lifecycle guards', () => {
   for (const route of ['library', 'migrate', 'settings']) {
     assert.match(studioSource, new RegExp(`studioHostUnmountPreservingRouteHash\\("studio:route-${route}"\\)`));
@@ -648,6 +742,11 @@ await check('non-Reader routes and late overlay work use lifecycle guards', () =
   const overlayApply = studioSource.indexOf('__applier(root, snap, __overlay || null)');
   assert.ok(overlayGuard >= 0 && overlayGuard < overlayApply,
     'late overlay result must be gated before it can touch a superseded base root');
+});
+
+await check('mounted Reader listener retains only primitive snapshot identity', () => {
+  assert.match(studioSource, /const mountedSnapshotId = String\(snap\?\.snapshotId \|\| ''\);/);
+  assert.match(studioSource, /String\(currentSnap\.snapshotId \|\| ''\) === mountedSnapshotId/);
 });
 
 const total = PASS.length + FAIL.length;

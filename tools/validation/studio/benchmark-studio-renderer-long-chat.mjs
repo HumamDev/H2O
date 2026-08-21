@@ -571,6 +571,9 @@ try {
       });
       const equivalenceGateMs = performance.now() - start;
       if (!eligible) throw new Error("Equivalent connected Reader did not qualify for the fast refresh path");
+      if (host.updateSnapshot(freshSnapshot) !== true) {
+        throw new Error("Fast refresh could not publish the fresh snapshot to the mounted Studio host");
+      }
       refreshBench.setState(freshSnapshot, nextEditOverrides, 1);
       const immediateTotalMs = performance.now() - totalStart;
       if (host.getReaderRoot() !== previousRoot) throw new Error("Fast refresh replaced the mounted Reader root");

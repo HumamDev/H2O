@@ -363,6 +363,7 @@ function getReusableReaderMount(snap){
     typeof host?.getReaderRoot !== "function"
     || typeof host?.getTurnsRoot !== "function"
     || typeof host?.getScrollRoot !== "function"
+    || typeof host?.updateSnapshot !== "function"
   ) return null;
 
   const root = host.getReaderRoot();
@@ -4830,7 +4831,8 @@ function buildReaderDOM(snap, rendererInputRaw){
    * on interactive descendants so the legacy text-edit flow keeps
    * working unchanged. Never throws. */
   try {
-    if (sc && typeof sc.addEventListener === 'function' && String(snap?.snapshotId || '')) {
+    const mountedSnapshotId = String(snap?.snapshotId || '');
+    if (sc && typeof sc.addEventListener === 'function' && mountedSnapshotId) {
       sc.addEventListener('click', function (ev) {
         try {
           const target = ev.target;
@@ -4878,7 +4880,7 @@ function buildReaderDOM(snap, rendererInputRaw){
           try {
             if (editModeOn && !turn.classList.contains('wbTurn--editing')) {
               const currentSnap = state.currentReaderSnapshot;
-              if (currentSnap && String(currentSnap.snapshotId || '') === String(snap?.snapshotId || '')) {
+              if (currentSnap && String(currentSnap.snapshotId || '') === mountedSnapshotId) {
                 __mountOverlayEditorOnTurn(turn, currentSnap, turnIdx);
               }
             }
@@ -5275,7 +5277,7 @@ async function renderReader(snapshotId){
     const renderer = getStudioChatRenderer();
     const rendererInput = renderer.normalizeInput(snap);
     const nextEditOverrides = collectRendererEditOverrides(rendererInput);
-    const canReuseMountedReader = mayAttemptReuse && canReuseReaderDOM({
+    let canReuseMountedReader = mayAttemptReuse && canReuseReaderDOM({
       mount: previousMount,
       token,
       previousSnapshot,
@@ -5283,6 +5285,13 @@ async function renderReader(snapshotId){
       previousEditOverrides,
       nextEditOverrides,
     });
+    if (canReuseMountedReader){
+      try {
+        canReuseMountedReader = W.H2O.studioHost.updateSnapshot(snap) === true;
+      } catch {
+        canReuseMountedReader = false;
+      }
+    }
 
     if (!canReuseMountedReader && mayAttemptReuse){
       state.currentReaderSnapshot = null;

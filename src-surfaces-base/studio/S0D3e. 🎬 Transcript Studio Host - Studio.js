@@ -74,6 +74,14 @@
     return `/c/${encodeURIComponent(cId)}`;
   }
 
+  function resolveSnapshotRoute(snapshot) {
+    const meta = snapshot?.meta && typeof snapshot.meta === "object" ? snapshot.meta : {};
+    return {
+      chatId: String(snapshot?.chatId || meta.chatId || "").trim(),
+      projectId: String(meta.projectId || "").trim(),
+    };
+  }
+
   function dispatchRouteChanged(reason) {
     const detail = {
       source: "studio-host",
@@ -163,6 +171,21 @@
     try { scrollEl?.removeAttribute("data-scroll-root"); } catch {}
   }
 
+  function hasValidMountedReaderState() {
+    if (!STATE.mounted) return false;
+    const readerRoot = getReaderRoot();
+    const turnsEl = getTurnsRoot();
+    const scrollEl = getScrollRoot();
+    if (!readerRoot || !turnsEl || !scrollEl) return false;
+    if (readerRoot !== STATE.readerRoot || turnsEl !== STATE.turnsEl || scrollEl !== STATE.scrollEl) return false;
+    if (typeof readerRoot.contains !== "function") return false;
+    if (!readerRoot.contains(turnsEl) || !readerRoot.contains(scrollEl)) return false;
+    if (readerRoot.getAttribute?.("data-h2o-studio-reader") !== "1") return false;
+    if (turnsEl.getAttribute?.("data-testid") !== "conversation-turns") return false;
+    if (scrollEl.getAttribute?.("data-scroll-root") !== "1") return false;
+    return true;
+  }
+
   function flushLifecycle(reason) {
     try { W.H2O?.obs?.ensureRoot?.(reason); } catch {}
     try { W.H2O?.index?.refresh?.(reason); } catch {}
@@ -203,13 +226,23 @@
     installChatIdOverride();
     ensureReaderMarkers();
 
-    const meta = snapshot?.meta && typeof snapshot.meta === "object" ? snapshot.meta : {};
-    const chatId = String(snapshot?.chatId || meta.chatId || "").trim();
-    const projectId = String(meta.projectId || "").trim();
+    const { chatId, projectId } = resolveSnapshotRoute(snapshot);
 
     setRoute(chatId, projectId);
     flushLifecycleMulti("studio:mount");
 
+    return true;
+  }
+
+  function updateSnapshot(snapshot = null) {
+    if (!hasValidMountedReaderState()) return false;
+    const nextRoute = resolveSnapshotRoute(snapshot);
+    const mountedRoute = resolveSnapshotRoute(STATE.snapshot);
+    const currentChatId = String(STATE.route?.chatId || "").trim();
+    const currentProjectId = String(STATE.route?.projectId || "").trim();
+    if (mountedRoute.chatId !== currentChatId || mountedRoute.projectId !== currentProjectId) return false;
+    if (nextRoute.chatId !== currentChatId || nextRoute.projectId !== currentProjectId) return false;
+    STATE.snapshot = snapshot;
     return true;
   }
 
@@ -240,6 +273,7 @@
   W.H2O.studioHost = {
     mount,
     unmount,
+    updateSnapshot,
     setRoute,
     clearRoute,
     getReaderRoot,
