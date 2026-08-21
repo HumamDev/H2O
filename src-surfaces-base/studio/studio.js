@@ -833,7 +833,15 @@ try {
 } catch {}
 
 function normalizeRole(raw){
-  return String(raw || "").trim().toLowerCase() === "user" ? "user" : "assistant";
+  const value = String(raw || "").trim().toLowerCase();
+  const roles = W.H2O?.Studio?.SELECTORS?.ROLES || {};
+  const canonicalRoles = [
+    roles.USER || "user",
+    roles.ASSISTANT || "assistant",
+    roles.SYSTEM || "system",
+    roles.TOOL || "tool",
+  ];
+  return canonicalRoles.includes(value) ? value : (roles.ASSISTANT || "assistant");
 }
 
 function normalizeArchiveView(raw){
@@ -2397,8 +2405,19 @@ function sanitizeRichTurnElement(htmlRaw){
   const html = String(htmlRaw || "").trim();
   if (!html) return null;
 
+  const sharedSanitizer = W.H2O?.Studio?.html?.sanitize;
+  if (!sharedSanitizer || typeof sharedSanitizer.sanitizeHtml !== "function") return null;
+
+  let sanitizedHtml = "";
+  try {
+    sanitizedHtml = String(sharedSanitizer.sanitizeHtml(html) || "").trim();
+  } catch {
+    return null;
+  }
+  if (!sanitizedHtml) return null;
+
   const tpl = document.createElement("template");
-  tpl.innerHTML = html;
+  tpl.innerHTML = sanitizedHtml;
 
   tpl.content.querySelectorAll("script,link,iframe,object,embed,style").forEach((bad) => {
     try { bad.remove(); } catch {}
@@ -2791,66 +2810,83 @@ function mountRichTurns(container, richTurns, snapshotId, snap){
   const sid = String(snapshotId || "");
   const normalized = normalizeRichTurns(richTurns);
   const assistantHosts = [];
+  const pendingHosts = [];
   let assistantIdx = 0;
 
-  for (let i = 0; i < normalized.length; i += 1){
-    const turn = normalized[i];
-    const turnNo = Number(turn.turnIdx || (i + 1)) || (i + 1);
-    const createTime = resolveSnapshotTurnCreateTime(snap, turn, i);
-    const snapMessage = Array.isArray(snap?.messages) ? snap.messages[turnNo - 1] : null;
-    const userAttachments = role => normalizeAttachments(
-      Array.isArray(turn.attachments) && turn.attachments.length ? turn.attachments : snapMessage?.attachments,
-      role
-    );
-    let host = sanitizeRichTurnElement(turn.outerHTML);
-    let role = normalizeRole(turn.role);
-    let messageEl = host ? findRoleHostInTurn(host, role) : null;
+  const fallbackResult = {
+    mountedTurnCount: 0,
+    assistantTurnEls: [],
+    fallbackRequired: true,
+  };
+  if (!normalized.length) return fallbackResult;
 
-    if (host && messageEl){
+  try {
+    for (let i = 0; i < normalized.length; i += 1){
+      const turn = normalized[i];
+      const turnNo = Number(turn.turnIdx || (i + 1)) || (i + 1);
+      const createTime = resolveSnapshotTurnCreateTime(snap, turn, i);
+      const snapMessage = Array.isArray(snap?.messages) ? snap.messages[turnNo - 1] : null;
+      const userAttachments = role => normalizeAttachments(
+        Array.isArray(turn.attachments) && turn.attachments.length ? turn.attachments : snapMessage?.attachments,
+        role
+      );
+      const host = sanitizeRichTurnElement(turn.outerHTML);
+      let role = normalizeRole(turn.role);
+      const messageEl = host ? findRoleHostInTurn(host, role) : null;
+
+      if (!(host instanceof Element) || !(messageEl instanceof Element)) return fallbackResult;
       role = inferTurnRole(host, role);
-    } else {
-      const fallback = buildCanonicalTurn(role, extractPlaintextFromHtml(turn.outerHTML), {
+
+      const answerIdx = role === "assistant" ? (assistantIdx + 1) : 0;
+      decorateReplayTurn(host, messageEl, role, {
         turnNo,
-        answerIdx: role === "assistant" ? (assistantIdx + 1) : 0,
+        answerIdx,
         createTime,
         messageId: role === "assistant" ? turn.assistantMessageId : turn.userMessageId,
       });
-      host = fallback.turn;
-      messageEl = fallback.messageEl;
+      if (role === "user") cleanReaderUserTextNodeLeaks(host);
+
+      const override = sid ? getEditOverride(sid, turn.turnIdx) : null;
+      if (override !== null && role === "assistant"){
+        host.classList.add("wbTurn--edited");
+        applyEditedMessageBody(messageEl, role, override);
+      }
+
+      if (role === "assistant"){
+        assistantIdx = answerIdx;
+        /* Phase 7b repair 2 — legacy pencil disabled on the rich/replay
+         * mount path too. See the canonical path above for the rationale.
+         * Phase 7e will remove the helper outright. */
+        /* attachAssistantEditButton(host, messageEl, sid, turn.turnIdx);  // disabled in Phase 7b repair 2 */
+        assistantHosts.push(host);
+      } else if (role === "user"){
+        attachUserAttachmentsToTurn(host, messageEl, userAttachments(role));
+      }
+
+      pendingHosts.push(host);
     }
-
-    if (!(host instanceof Element) || !(messageEl instanceof Element)) continue;
-
-    const answerIdx = role === "assistant" ? (assistantIdx + 1) : 0;
-    decorateReplayTurn(host, messageEl, role, {
-      turnNo,
-      answerIdx,
-      createTime,
-      messageId: role === "assistant" ? turn.assistantMessageId : turn.userMessageId,
-    });
-    if (role === "user") cleanReaderUserTextNodeLeaks(host);
-
-    const override = sid ? getEditOverride(sid, turn.turnIdx) : null;
-    if (override !== null && role === "assistant"){
-      host.classList.add("wbTurn--edited");
-      applyEditedMessageBody(messageEl, role, override);
-    }
-
-    if (role === "assistant"){
-      assistantIdx = answerIdx;
-      /* Phase 7b repair 2 — legacy pencil disabled on the rich/replay
-       * mount path too. See the canonical path above for the rationale.
-       * Phase 7e will remove the helper outright. */
-      /* attachAssistantEditButton(host, messageEl, sid, turn.turnIdx);  // disabled in Phase 7b repair 2 */
-      assistantHosts.push(host);
-    } else if (role === "user"){
-      attachUserAttachmentsToTurn(host, messageEl, userAttachments(role));
-    }
-
-    container.appendChild(host);
+  } catch {
+    return fallbackResult;
   }
 
-  return assistantHosts;
+  let appendedCount = 0;
+  try {
+    for (const host of pendingHosts){
+      container.appendChild(host);
+      appendedCount += 1;
+    }
+  } catch {
+    for (let i = 0; i < appendedCount; i += 1){
+      try { pendingHosts[i].remove(); } catch {}
+    }
+    return fallbackResult;
+  }
+
+  return {
+    mountedTurnCount: pendingHosts.length,
+    assistantTurnEls: assistantHosts,
+    fallbackRequired: false,
+  };
 }
 
 function appendMiniMapDots(btn, colors){
@@ -5725,18 +5761,22 @@ function buildReaderDOM(snap){
   const scrollRoot = sc;
   const richTurns = normalizeRichTurns(meta.richTurns);
   let assistantTurnEls = [];
+  let richRenderResult = {
+    mountedTurnCount: 0,
+    assistantTurnEls: [],
+    fallbackRequired: true,
+  };
 
   if (richTurns.length){
     sc.classList.add("wbRichRoot");
     sc.classList.add("is-rich");
-    assistantTurnEls = mountRichTurns(sc, richTurns, snap.snapshotId, snap);
+    richRenderResult = mountRichTurns(sc, richTurns, snap.snapshotId, snap);
+    assistantTurnEls = richRenderResult.assistantTurnEls;
   }
 
-  if (!assistantTurnEls.length){
+  if (richRenderResult.fallbackRequired){
     sc.classList.add("wbRichRoot"); // semantic markdown CSS applies to canonical renders too
     sc.classList.remove("is-rich"); // is-rich stays false — signals DOM-rich vs text-rich
-  // E.2.2: quiet inline archive delivery status badge (focused helper, no-op if absent).
-  W?.H2O?.Studio?.ingestion?.appendSavedChatArchiveStatusBadgeV1?.({ article, badgesEl: article.querySelector(".wbBadges"), row });
     assistantTurnEls = buildCanonicalConversation(sc, snap);
   }
 

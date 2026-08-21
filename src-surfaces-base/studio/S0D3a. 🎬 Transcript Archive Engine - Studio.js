@@ -314,8 +314,15 @@
   }
 
   function normalizeRole(raw) {
-    const v = String(raw || "").trim().toLowerCase();
-    return v === "user" ? "user" : "assistant";
+    const value = String(raw || "").trim().toLowerCase();
+    const roles = H2O.Studio?.SELECTORS?.ROLES || {};
+    const canonicalRoles = [
+      roles.USER || "user",
+      roles.ASSISTANT || "assistant",
+      roles.SYSTEM || "system",
+      roles.TOOL || "tool",
+    ];
+    return canonicalRoles.includes(value) ? value : (roles.ASSISTANT || "assistant");
   }
 
   function normalizeCreatedAt(raw) {
