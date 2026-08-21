@@ -183,6 +183,37 @@ function normalizeSafeImageSrc(rawSrc, allowCapturedData){
   return "";
 }
 
+function normalizeImageAlt(rawAlt){
+  return rawAlt == null ? "" : String(rawAlt);
+}
+
+function getAccessibleRoleLabel(roleRaw){
+  const role = normalizeRole(roleRaw);
+  if (role === (ROLES.USER || "user")) return "User message";
+  if (role === (ROLES.ASSISTANT || "assistant")) return "Assistant message";
+  if (role === (ROLES.SYSTEM || "system")) return "System message";
+  if (role === (ROLES.TOOL || "tool")) return "Tool message";
+  return "";
+}
+
+function applyTurnAccessibility(turnEl, roleRaw){
+  if (!(turnEl instanceof Element)) return;
+  const label = getAccessibleRoleLabel(roleRaw);
+  if (!label) return;
+
+  // A transcript turn is a self-contained authored item. Canonical turns use
+  // native <article>; rich replay hosts may use other elements, so normalize
+  // only that outer host to the equivalent article semantic.
+  if (String(turnEl.tagName || "").toUpperCase() === "ARTICLE"){
+    try { turnEl.removeAttribute("role"); } catch {}
+  } else {
+    try { turnEl.setAttribute("role", "article"); } catch {}
+  }
+  // Captured labels may reference host-page nodes that replay cleanup removed.
+  try { turnEl.removeAttribute("aria-labelledby"); } catch {}
+  try { turnEl.setAttribute("aria-label", label); } catch {}
+}
+
 // Inline markdown → HTML. Handles links, bold, italic, inline code, plain text.
 // All plain-text segments are HTML-escaped via esc(). Handles orphaned markers
 // gracefully — an unmatched ` or * is consumed as literal text.
@@ -210,7 +241,7 @@ function renderInlineMarkdown(text){
       if (labelEnd > 1 && s[labelEnd + 1] === "("){
         const hrefEnd = s.indexOf(")", labelEnd + 2);
         if (hrefEnd > labelEnd + 2){
-          const alt = s.slice(2, labelEnd);
+          const alt = normalizeImageAlt(s.slice(2, labelEnd));
           const rawHref = s.slice(labelEnd + 2, hrefEnd);
           const href = normalizeSafeImageSrc(rawHref, false);
           if (href){
@@ -236,7 +267,7 @@ function renderInlineMarkdown(text){
           const label = s.slice(1, labelEnd);
           const rawHref = s.slice(labelEnd + 2, hrefEnd);
           const href = normalizeSafeMarkdownHref(rawHref);
-          if (href){
+          if (href && label.trim()){
             out += `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${renderInlineMarkdown(label)}</a>`;
             s = s.slice(hrefEnd + 1);
             continue;
@@ -408,7 +439,7 @@ function renderMarkdownTable(lines, start){
 
   const alignAttr = (idx) => aligns[idx] ? ` style="text-align:${aligns[idx]}"` : "";
   const renderCell = (tag, value, idx) => (
-    `<${tag}${alignAttr(idx)}>${renderInlineMarkdown(value || "")}</${tag}>`
+    `<${tag}${tag === "th" ? ' scope="col"' : ""}${alignAttr(idx)}>${renderInlineMarkdown(value || "")}</${tag}>`
   );
   const head = `<thead><tr>${header.map((cell, idx) => renderCell("th", cell, idx)).join("")}</tr></thead>`;
   const body = `<tbody>${bodyRows.map((row) => {
@@ -680,6 +711,34 @@ function unwrapReplayNode(node){
   node.remove();
 }
 
+function normalizeReplayImageAccessibility(el){
+  if (!(el instanceof Element) || el.tagName !== "IMG") return true;
+  const src = String(el.getAttribute("src") || "").trim();
+  if (src === "#"){
+    try { el.remove(); } catch {}
+    return false;
+  }
+  if (!el.hasAttribute("alt")){
+    try { el.setAttribute("alt", ""); } catch {}
+  }
+  return true;
+}
+
+function normalizeReplayLinkAccessibility(el){
+  if (!(el instanceof Element) || el.tagName !== "A") return;
+  try {
+    const href = el.getAttribute("href") || "";
+    if (href.trim() === "#"){
+      el.removeAttribute("href");
+      el.removeAttribute("target");
+      el.removeAttribute("rel");
+    } else if (/^https?:\/\//i.test(href)){
+      el.setAttribute("target", "_blank");
+      el.setAttribute("rel", "noreferrer noopener");
+    }
+  } catch {}
+}
+
 function scrubReplayNode(root){
   if (!(root instanceof Element)) return;
   const userRoleSelector = SEL.userTurn || (
@@ -728,15 +787,9 @@ function scrubReplayNode(root){
       }
     }
 
-    if (el.tagName === "A"){
-      try {
-        const href = el.getAttribute("href") || "";
-        if (/^https?:\/\//i.test(href)){
-          el.setAttribute("target", "_blank");
-          el.setAttribute("rel", "noreferrer noopener");
-        }
-      } catch {}
-    }
+    if (!normalizeReplayImageAccessibility(el)) return;
+
+    normalizeReplayLinkAccessibility(el);
   });
 }
 
@@ -900,6 +953,7 @@ function buildUserAttachmentGrid(attachmentsRaw){
   if (!attachments.length) return null;
   const grid = document.createElement("div");
   grid.className = "cgUserAttachmentGrid";
+  grid.setAttribute("role", "group");
   grid.setAttribute("aria-label", "Attached images");
   for (const item of attachments){
     const src = normalizeSafeImageSrc(item.thumbnailSrc || item.originalSrc || "", true);
@@ -910,7 +964,7 @@ function buildUserAttachmentGrid(attachmentsRaw){
 
     const img = document.createElement("img");
     img.src = src;
-    img.alt = item.alt || "Attached image";
+    img.alt = normalizeImageAlt(item.alt);
     img.loading = "lazy";
     img.decoding = "async";
     if (item.naturalWidth > 0) img.dataset.naturalWidth = String(item.naturalWidth);
@@ -954,10 +1008,11 @@ function attachUserAttachmentsToTurn(turnEl, messageEl, attachmentsRaw){
 }
 
 function buildCanonicalTurn(role, text, meta = {}){
-  const turn = document.createElement("section");
+  const turn = document.createElement("article");
   turn.className = `cgTurn cgTurn--${role} wbTurn wbTurn--fallback wbTurn--${role}`;
   turn.setAttribute(TESTID_ATTR, meta.turnNo > 0 ? `${TURN_TESTID}-${meta.turnNo}` : TURN_TESTID);
   turn.setAttribute("data-turn", role);
+  applyTurnAccessibility(turn, role);
 
   const messageEl = buildCanonicalMessage(role, text, meta);
   if (role === "assistant" && meta.answerIdx > 0){
@@ -977,6 +1032,7 @@ function decorateReplayTurn(turnEl, messageEl, role, meta = {}){
     turnEl.setAttribute(TESTID_ATTR, meta.turnNo > 0 ? `${TURN_TESTID}-${meta.turnNo}` : TURN_TESTID);
   }
   if (!turnEl.getAttribute("data-turn")) turnEl.setAttribute("data-turn", role);
+  applyTurnAccessibility(turnEl, role);
   if (role === "assistant" && meta.answerIdx > 0){
     turnEl.dataset.turnIdx = String(meta.answerIdx);
     try { messageEl.dataset.turnIdx = String(meta.answerIdx); } catch {}
@@ -1220,7 +1276,7 @@ function render(inputRaw, options){
   root.innerHTML = `
     <div class="cgBody">
       <div class="cgThread">
-        <div class="cgScroll" data-testid="${TURNS_TESTID}"></div>
+        <section class="cgScroll" data-testid="${TURNS_TESTID}" aria-label="Conversation transcript"></section>
       </div>
     </div>
   `;

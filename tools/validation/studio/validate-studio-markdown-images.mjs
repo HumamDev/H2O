@@ -17,6 +17,8 @@
 //   8. Alt text is HTML-escaped (no XSS via alt="\"><script>…").
 //   9. Representative headings, quotes, lists, code, tables, Unicode, empty
 //      content, and multiline paragraphs retain the supported base fidelity.
+//  10. Empty link labels never create unnamed keyboard focus targets.
+//  11. Known Markdown table headers retain explicit column-header semantics.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -56,6 +58,7 @@ const helperNames = [
   'esc',
   'normalizeSafeMarkdownHref',
   'normalizeSafeImageSrc',
+  'normalizeImageAlt',
   'renderInlineMarkdown',
   'countMarkdownIndent',
   'parseMarkdownListLine',
@@ -193,6 +196,8 @@ check('empty alt is allowed and stays empty', () => {
   const out = render('![](https://e.com/x.png)');
   assert.ok(out.includes('alt=""'));
   assert.ok(out.includes('<img'));
+  assert.equal(vm.runInContext('normalizeImageAlt(null)', sandbox), '',
+    'missing captured alt text must not be replaced with a fabricated description');
 });
 
 // ── 17. Empty content retains the stable base message body ─────────────────
@@ -232,6 +237,13 @@ check('bold, italic, code, and links compose inline', () => {
   assert.ok(out.includes('<a href="https://example.com"'));
 });
 
+check('empty link labels stay literal instead of creating unnamed links', () => {
+  const out = renderBlocks('[](https://example.com) and [   ](https://example.org)');
+  assert.ok(!out.includes('<a '), `unexpected unnamed link in: ${out}`);
+  assert.ok(out.includes('https://example.com'));
+  assert.ok(out.includes('https://example.org'));
+});
+
 // ── 22. Fenced code preserves whitespace and escapes executable text ───────
 check('fenced code preserves whitespace, language, and escaped HTML text', () => {
   const out = renderBlocks('```js<script>\n  const x = "<script>&";  \nlong_line_without_breaks_1234567890\n```');
@@ -245,8 +257,8 @@ check('fenced code preserves whitespace, language, and escaped HTML text', () =>
 check('tables render headers, body rows, alignment, and escaped cells', () => {
   const out = renderBlocks('| Name | Value |\n| --- | ---: |\n| a\\|b | <script>& |');
   assert.ok(out.includes('<table><thead><tr>'));
-  assert.ok(out.includes('<th>Name</th>'));
-  assert.ok(out.includes('<th style="text-align:right">Value</th>'));
+  assert.ok(out.includes('<th scope="col">Name</th>'));
+  assert.ok(out.includes('<th scope="col" style="text-align:right">Value</th>'));
   assert.ok(out.includes('<td>a|b</td>'));
   assert.ok(out.includes('<td style="text-align:right">&lt;script&gt;&amp;</td>'));
   assert.ok(!out.includes('<script>'));

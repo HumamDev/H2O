@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Focused regression coverage for the Studio renderer contract and extracted
-// Phase 3 module boundary plus the focused T09/T10 fidelity/resilience round.
+// Phase 3 module boundary, the focused T09/T10 fidelity/resilience round, and
+// the T13 base-transcript accessibility semantics.
 // Uses small DOM seams around the real renderer functions so the validator stays
 // dependency-free while exercising role fidelity, rich success/fallback state,
 // shared sanitization order, assistant-only collection, malformed input, and
@@ -297,10 +298,16 @@ function validateRichMountContract() {
 }
 
 class FakeIdentityElement {
-  constructor(attrs = {}) { this.attrs = new Map(Object.entries(attrs)); }
-  getAttribute(name) { return this.attrs.get(name) || null; }
+  constructor(attrs = {}, tagName = 'DIV') {
+    this.attrs = new Map(Object.entries(attrs));
+    this.tagName = String(tagName).toUpperCase();
+    this.removed = false;
+  }
+  getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
   setAttribute(name, value) { this.attrs.set(name, String(value)); }
   removeAttribute(name) { this.attrs.delete(name); }
+  hasAttribute(name) { return this.attrs.has(name); }
+  remove() { this.removed = true; }
 }
 
 function validateRichIdentityResilience() {
@@ -322,6 +329,63 @@ function validateRichIdentityResilience() {
     'missing rich identity must remain optional and must not throw');
   assert.equal(claim(missing, 'data-message-id', 'message-2', seen), 'message-2');
   assert.equal(missing.getAttribute('data-message-id'), 'message-2');
+}
+
+function validateRendererAccessibilityContract() {
+  assert.match(rendererSource,
+    /grid\.setAttribute\("role", "group"\);\s*grid\.setAttribute\("aria-label", "Attached images"\);/,
+    'attachment collection label must be exposed through a nameable group semantic');
+  const normalizeRole = (raw) => {
+    const role = String(raw || '').trim().toLowerCase();
+    return ['user', 'assistant', 'system', 'tool'].includes(role) ? role : '';
+  };
+  const context = vm.createContext({
+    Element: FakeIdentityElement,
+    ROLES: roleContract,
+    normalizeRole,
+    String,
+  });
+  vm.runInContext([
+    extractFunction(rendererSource, 'getAccessibleRoleLabel'),
+    extractFunction(rendererSource, 'applyTurnAccessibility'),
+    extractFunction(rendererSource, 'normalizeImageAlt'),
+    extractFunction(rendererSource, 'normalizeReplayImageAccessibility'),
+    extractFunction(rendererSource, 'normalizeReplayLinkAccessibility'),
+    'this.a11y = { getAccessibleRoleLabel, applyTurnAccessibility, normalizeImageAlt, normalizeReplayImageAccessibility, normalizeReplayLinkAccessibility };',
+  ].join('\n'), context);
+
+  const canonicalTurn = new FakeIdentityElement({ role: 'button', 'aria-labelledby': 'stale-host-label' }, 'article');
+  context.a11y.applyTurnAccessibility(canonicalTurn, 'assistant');
+  assert.equal(canonicalTurn.getAttribute('role'), null, 'native article must not retain redundant/stale ARIA role');
+  assert.equal(canonicalTurn.getAttribute('aria-labelledby'), null, 'stale host-page label reference must be removed');
+  assert.equal(canonicalTurn.getAttribute('aria-label'), 'Assistant message');
+
+  const richTurn = new FakeIdentityElement({}, 'section');
+  context.a11y.applyTurnAccessibility(richTurn, 'system');
+  assert.equal(richTurn.getAttribute('role'), 'article', 'rich replay turn hosts must expose equivalent article semantics');
+  assert.equal(richTurn.getAttribute('aria-label'), 'System message');
+  assert.equal(context.a11y.getAccessibleRoleLabel('user'), 'User message');
+  assert.equal(context.a11y.getAccessibleRoleLabel('tool'), 'Tool message');
+  assert.equal(context.a11y.getAccessibleRoleLabel('unknown'), '', 'unknown roles must not acquire fabricated labels');
+
+  assert.equal(context.a11y.normalizeImageAlt(null), '', 'missing image alt must remain empty');
+  assert.equal(context.a11y.normalizeImageAlt('diagram'), 'diagram', 'supplied image alt must remain intact');
+  const unlabeledImage = new FakeIdentityElement({ src: 'https://example.com/image.png' }, 'img');
+  assert.equal(context.a11y.normalizeReplayImageAccessibility(unlabeledImage), true);
+  assert.equal(unlabeledImage.getAttribute('alt'), '', 'rich images without source alt must become explicitly decorative');
+  const brokenImage = new FakeIdentityElement({ src: '#' }, 'img');
+  assert.equal(context.a11y.normalizeReplayImageAccessibility(brokenImage), false);
+  assert.equal(brokenImage.removed, true, 'sanitizer-neutralized broken images must not remain misleading content');
+
+  const inertLink = new FakeIdentityElement({ href: '#', target: '_blank', rel: 'noopener' }, 'a');
+  context.a11y.normalizeReplayLinkAccessibility(inertLink);
+  assert.equal(inertLink.getAttribute('href'), null, 'sanitizer-neutralized links must not remain keyboard focus targets');
+  assert.equal(inertLink.getAttribute('target'), null);
+  assert.equal(inertLink.getAttribute('rel'), null);
+  const externalLink = new FakeIdentityElement({ href: 'https://example.com' }, 'a');
+  context.a11y.normalizeReplayLinkAccessibility(externalLink);
+  assert.equal(externalLink.getAttribute('target'), '_blank');
+  assert.equal(externalLink.getAttribute('rel'), 'noreferrer noopener');
 }
 
 function validateSharedSanitizerOrder() {
@@ -377,7 +441,9 @@ class FakeClassList {
 }
 
 class FakeScroll {
-  constructor() {
+  constructor(tagName = 'SECTION') {
+    this.tagName = tagName;
+    this.attrs = new Map();
     this.classList = new FakeClassList();
     this.children = [];
   }
@@ -385,6 +451,8 @@ class FakeScroll {
   addEventListener() {}
   contains(value) { return this.children.includes(value); }
   querySelectorAll() { return []; }
+  setAttribute(name, value) { this.attrs.set(name, String(value)); }
+  getAttribute(name) { return this.attrs.get(name) || null; }
 }
 
 class FakeRoot {
@@ -393,7 +461,13 @@ class FakeRoot {
     this.className = '';
     this.scroll = null;
   }
-  set innerHTML(_value) { this.scroll = new FakeScroll(); }
+  set innerHTML(value) {
+    const html = String(value || '');
+    const tagName = String(html.match(/<([a-z]+)\s+class="cgScroll"/i)?.[1] || 'div').toUpperCase();
+    this.scroll = new FakeScroll(tagName);
+    const label = html.match(/class="cgScroll"[^>]*aria-label="([^"]+)"/i)?.[1] || '';
+    if (label) this.scroll.setAttribute('aria-label', label);
+  }
   querySelector(selector) { return selector === '.cgScroll' ? this.scroll : null; }
 }
 
@@ -439,6 +513,8 @@ function validateBuildFallbackDecision() {
     assert.equal(h.getCanonicalCalls(), 0, 'rich user-only build must not enter canonical fallback');
     assert.equal(result.turnsEl.classList.contains('is-rich'), true);
     assert.equal(result.renderMode, 'rich');
+    assert.equal(result.turnsEl.tagName, 'SECTION', 'transcript root must use native section semantics');
+    assert.equal(result.turnsEl.getAttribute('aria-label'), 'Conversation transcript');
   }
 
   {
@@ -498,6 +574,7 @@ validateRoleFidelity();
 validateRendererInputContract();
 validateRichMountContract();
 validateRichIdentityResilience();
+validateRendererAccessibilityContract();
 validateSharedSanitizerOrder();
 validateBuildFallbackDecision();
 validateExtractedRendererBoundary();
