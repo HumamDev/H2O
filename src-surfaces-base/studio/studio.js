@@ -299,12 +299,51 @@ function studioHostUnmount(reason = "studio:unmount") {
   try { W.H2O?.studioHost?.unmount?.(reason); } catch {}
 }
 
+function studioHostUnmountPreservingRouteHash(reason = "studio:route-leave") {
+  const requestedHash = String(W.location?.hash || "");
+  studioHostUnmount(reason);
+  const readerEl = document.getElementById("viewReader");
+  try {
+    if (typeof readerEl?.replaceChildren === "function") readerEl.replaceChildren();
+    else if (readerEl) readerEl.innerHTML = "";
+  } catch {}
+  if (!requestedHash || String(W.location?.hash || "") === requestedHash) return;
+
+  // S0D3e restores the Studio URL that preceded its ChatGPT-compatible route
+  // projection. Preserve the route transition that triggered this unmount so
+  // leaving Reader cannot silently restore the obsolete read hash.
+  try {
+    const nextUrl = `${W.location.pathname}${W.location.search}${requestedHash}`;
+    W.history.replaceState(
+      Object.assign({}, W.history.state || {}, { h2oStudioReader: false }),
+      "",
+      nextUrl
+    );
+  } catch {
+    try { W.location.hash = requestedHash; } catch {}
+  }
+}
+
 function getStudioChatRenderer(){
   const renderer = W.H2O?.Studio?.chatRenderer;
   if (!renderer || typeof renderer.normalizeInput !== "function" || typeof renderer.render !== "function"){
     throw new Error("Studio Chat Renderer is unavailable");
   }
   return renderer;
+}
+
+function isCurrentReaderRoot(root, snap){
+  if (!root?.isConnected) return false;
+  const readerEl = $("#viewReader");
+  if (!readerEl || typeof readerEl.contains !== "function" || !readerEl.contains(root)) return false;
+
+  const currentSnapshotId = String(state.currentReaderSnapshot?.snapshotId || "");
+  const expectedSnapshotId = String(snap?.snapshotId || "");
+  if (!currentSnapshotId || currentSnapshotId !== expectedSnapshotId) return false;
+
+  const getHostRoot = W.H2O?.studioHost?.getReaderRoot;
+  if (typeof getHostRoot === "function" && getHostRoot() !== root) return false;
+  return true;
 }
 
 // ─── Edit-override persistence ────────────────────────────────────────────────
@@ -4667,6 +4706,7 @@ function buildReaderDOM(snap){
     const __applier = W.H2O?.Studio?.overlay?.applyOverlay;
     if (__sid && __store && typeof __store.get === "function" && typeof __applier === "function") {
       Promise.resolve(__store.get(__sid)).then((__overlay) => {
+        if (!isCurrentReaderRoot(root, snap)) return;
         try { __applier(root, snap, __overlay || null); }
         catch (_) { /* applier never throws, but defensive catch anyway */ }
         /* Phase 5b-1 — inline Bold/Italic render pass on initial mount. */
@@ -4895,7 +4935,7 @@ async function renderList(view, folderId = "", opts = {}){
   setActiveNav(nextView);
 
   const listHash = buildListHash(nextView, selectedFolderId);
-  studioHostUnmount("studio:list");
+  studioHostUnmountPreservingRouteHash("studio:list");
   if (location.hash !== listHash){
     try {
       history.replaceState(
@@ -5065,6 +5105,8 @@ async function renderReader(snapshotId){
   const listPanel = $("#viewListPanel");
   const readerEl = $("#viewReader");
 
+  state.currentReaderSnapshot = null;
+  studioHostUnmountPreservingRouteHash("studio:reader-replace");
   setStudioRouteScope("reader");
   applyDesktopReaderRibbonSession();
   ensureReaderTopbarActions();
@@ -5074,9 +5116,9 @@ async function renderReader(snapshotId){
   setRouteMeta("Studio", "Saved chat", "Loading snapshot");
 
   try {
-    const snap = await callArchive("loadSnapshot", { snapshotId: sid });
+    const loadedSnapshot = await callArchive("loadSnapshot", { snapshotId: sid });
     if (token !== state.renderToken) return;
-    if (!snap){
+    if (!loadedSnapshot){
       if (readerEl) readerEl.innerHTML = `<div class="wbState">Snapshot not found.</div>`;
       state.selectedSnapshotId = "";
       state.selectedChatId = "";
@@ -5085,10 +5127,7 @@ async function renderReader(snapshotId){
       syncSelectionControls();
       return;
     }
-
-    state.currentReaderSnapshot = snap;
-    state.selectedSnapshotId = String(snap.snapshotId || "").trim();
-    state.selectedChatId = String(snap.chatId || "").trim();
+    let snap = loadedSnapshot;
 
     if (!Array.isArray(state.rowsCache)) {
       try {
@@ -5114,17 +5153,24 @@ async function renderReader(snapshotId){
     if (bindings.has(snap.chatId)) {
       const binding = normalizeFolderBinding(bindings.get(snap.chatId));
       const meta = snap.meta && typeof snap.meta === "object" ? snap.meta : {};
-      snap.meta = {
-        ...meta,
-        folderId: binding.folderId,
-        folderName: binding.folderId
-          ? (binding.folderName || resolveFolderName(binding.folderId) || binding.folderId)
-          : "",
+      snap = {
+        ...snap,
+        meta: {
+          ...meta,
+          folderId: binding.folderId,
+          folderName: binding.folderId
+            ? (binding.folderName || resolveFolderName(binding.folderId) || binding.folderId)
+            : "",
+        },
       };
       updateRowFolderBinding(snap.chatId, snap.meta);
     }
     renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
     refreshSidebarChatList(state.lastView, state.lastFolderId);
+
+    state.currentReaderSnapshot = snap;
+    state.selectedSnapshotId = String(snap.snapshotId || "").trim();
+    state.selectedChatId = String(snap.chatId || "").trim();
 
     if (readerEl) {
       readerEl.innerHTML = "";
@@ -5145,6 +5191,7 @@ async function renderReader(snapshotId){
     } catch (_) { /* ignore */ }
   } catch (error){
     if (token !== state.renderToken) return;
+    studioHostUnmount("studio:reader-error");
     if (readerEl) {
       readerEl.innerHTML = `<div class="wbState wbState--error">${esc(error?.message || "Failed to load snapshot.")}</div>`;
     }
@@ -5833,7 +5880,7 @@ async function renderVisibleStudioFoldersPageBody(opts = {}){
   const token = ++state.renderToken;
   setStudioRouteScope("library", { clearReader: true });
   setActiveNav(state.lastView || "saved");
-  studioHostUnmount("studio:library-folders-visible-body");
+  studioHostUnmountPreservingRouteHash("studio:library-folders-visible-body");
   const listEl = prepareVisibleStudioFoldersBody();
   if (listEl) {
     listEl.innerHTML = `
@@ -6022,7 +6069,9 @@ async function renderRoute(opts = {}){
     }
   } catch {}
   if (route.name === "library") {
+    state.renderToken += 1;
     setStudioRouteScope("library", { clearReader: true });
+    studioHostUnmountPreservingRouteHash("studio:route-library");
     // Library overlay is owned by S0F1d Library Insights and toggled by S0Z1f's
     // route subscriber. Most Library routes still bail out here so renderList
     // does not rewrite the hash back to "#/saved"; folders is the explicit
@@ -6050,12 +6099,16 @@ async function renderRoute(opts = {}){
     return;
   }
   if (route.name === "migrate") {
+    state.renderToken += 1;
     setStudioRouteScope("migrate", { clearReader: true });
+    studioHostUnmountPreservingRouteHash("studio:route-migrate");
     renderMigrateRoute(route.action);
     return;
   }
   if (route.name === "settings") {
+    state.renderToken += 1;
     setStudioRouteScope("settings", { clearReader: true });
+    studioHostUnmountPreservingRouteHash("studio:route-settings");
     await renderSettingsRoute(route);
     return;
   }
