@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Validator for the Studio canonical-renderer markdown-image support (Phase 2A).
+// Focused fidelity validator for Studio canonical-renderer Markdown and images.
 //
-// Loads `esc`, `normalizeSafeMarkdownHref`, and `renderInlineMarkdown` out of
-// the canonical Studio Chat Renderer module via a node:vm sandbox and runs
-// behavioural assertions on each. Pattern matches the existing string + AST-
-// light validator style in tools/validation/studio/ (no jsdom, no bundler).
+// Loads the real Renderer Markdown helpers into a node:vm sandbox. Pattern
+// matches the existing string + AST-light validator style in
+// tools/validation/studio/ (no jsdom, no bundler).
 //
 // What this validator pins down:
 //   1. `![alt](https://…)` renders as <img> with safe attrs.
@@ -16,6 +15,8 @@
 //   6. Image + link mixed in the same line both render.
 //   7. Malformed image markdown doesn't break the rest of the paragraph.
 //   8. Alt text is HTML-escaped (no XSS via alt="\"><script>…").
+//   9. Representative headings, quotes, lists, code, tables, Unicode, empty
+//      content, and multiline paragraphs retain the supported base fidelity.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,14 +29,9 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const RENDERER_JS_REL = 'src-surfaces-base/studio/renderer/chat-renderer.studio.js';
 const RENDERER_JS_ABS = path.join(REPO_ROOT, RENDERER_JS_REL);
 
-// Extract function source by name. The three helpers we load (esc,
-// normalizeSafeMarkdownHref, renderInlineMarkdown) contain balanced braces
-// in every string / regex / template literal they use (template-literal
-// `${...}` braces balance themselves, no `{` or `}` appears inside any
-// regex character class or string literal), so a naive `{` / `}` counter
-// from the function's opening brace yields the correct body. If a future
-// edit breaks this assumption, the validator's vm.runInContext step will
-// surface a SyntaxError on the next CI run.
+// Extract function source by name. These Renderer helpers contain balanced
+// braces in strings/regex/template literals, so a naive brace counter yields
+// the correct body. A future incompatible edit surfaces as a VM SyntaxError.
 function extractFunction(source, name) {
   const re = new RegExp(`\\bfunction\\s+${name}\\s*\\(`);
   const m = re.exec(source);
@@ -56,17 +52,29 @@ function extractFunction(source, name) {
 }
 
 const source = fs.readFileSync(RENDERER_JS_ABS, 'utf8');
-const escSrc = extractFunction(source, 'esc');
-const normSrc = extractFunction(source, 'normalizeSafeMarkdownHref');
-const renderSrc = extractFunction(source, 'renderInlineMarkdown');
+const helperNames = [
+  'esc',
+  'normalizeSafeMarkdownHref',
+  'normalizeSafeImageSrc',
+  'renderInlineMarkdown',
+  'countMarkdownIndent',
+  'parseMarkdownListLine',
+  'renderMarkdownList',
+  'splitMarkdownTableRow',
+  'parseMarkdownTableAlign',
+  'parseMarkdownTableStart',
+  'renderMarkdownTable',
+  'renderTextAsChatGPTBlocks',
+];
+const helperSource = helperNames.map((name) => extractFunction(source, name)).join('\n');
 
-// Build a sandbox with the three helpers + a `URL` constructor (used by
-// normalizeSafeMarkdownHref). Node's global URL is already a WHATWG URL.
+// Node's global URL is already a WHATWG URL.
 const sandbox = { URL };
 vm.createContext(sandbox);
-vm.runInContext(`${escSrc}\n${normSrc}\n${renderSrc}`, sandbox);
+vm.runInContext(helperSource, sandbox);
 
 const render = (input) => vm.runInContext(`renderInlineMarkdown(${JSON.stringify(input)})`, sandbox);
+const renderBlocks = (input) => vm.runInContext(`renderTextAsChatGPTBlocks(${JSON.stringify(input)})`, sandbox);
 
 const PASS = [];
 const FAIL = [];
@@ -173,15 +181,10 @@ check('malformed image markdown does not break paragraph', () => {
   assert.ok(out.includes('after'));
 });
 
-// ── 15. mailto: URL renders as <img>? No — mailto isn't useful for images,
-//        but normalizeSafeMarkdownHref currently allows it. We accept the
-//        renderer's permissive behavior (matches link parser) and just pin
-//        the contract: no <script>/<style>/javascript: leak. ────────────────
-check('mailto: URL emits <img> (matches existing href allowlist)', () => {
+// ── 15. mailto remains valid for links, not image sources ──────────────────
+check('mailto: URL is rejected as an image source', () => {
   const out = render('![mailto](mailto:user@example.com)');
-  // Either an <img> with the safe mailto href, or no <img> at all — both are
-  // acceptable for this validator (the normalizer's allowlist is the source
-  // of truth). What's NOT acceptable is a script or javascript: leak.
+  assert.ok(!out.includes('<img'), `unexpected <img> in: ${out}`);
   assert.ok(!/<script|javascript:/i.test(out), `unsafe leak: ${out}`);
 });
 
@@ -190,6 +193,68 @@ check('empty alt is allowed and stays empty', () => {
   const out = render('![](https://e.com/x.png)');
   assert.ok(out.includes('alt=""'));
   assert.ok(out.includes('<img'));
+});
+
+// ── 17. Empty content retains the stable base message body ─────────────────
+check('empty content renders a stable empty paragraph', () => {
+  assert.equal(renderBlocks(''), '<p></p>');
+});
+
+// ── 18. Unicode, emoji, and mixed RTL text survive normal text handling ────
+check('Unicode, emoji, and mixed RTL content are preserved', () => {
+  const input = 'مرحبا 😀 שלום — café';
+  const out = renderBlocks(input);
+  assert.ok(out.includes(input), `Unicode content changed: ${out}`);
+});
+
+// ── 19. Heading/rule/quote block structure ─────────────────────────────────
+check('headings, horizontal rule, and blockquote render structurally', () => {
+  const out = renderBlocks('# H1\n\n## H2\n\n### H3\n\n---\n\n> quoted **bold**');
+  assert.ok(out.includes('<h1>H1</h1>'));
+  assert.ok(out.includes('<h2>H2</h2>'));
+  assert.ok(out.includes('<h3>H3</h3>'));
+  assert.ok(out.includes('<hr>'));
+  assert.ok(out.includes('<blockquote><p>quoted <strong>bold</strong></p></blockquote>'));
+});
+
+// ── 20. Ordered/unordered nested lists ─────────────────────────────────────
+check('ordered and unordered nested lists retain hierarchy', () => {
+  const out = renderBlocks('- parent\n  1. first\n  2. second\n- sibling');
+  assert.match(out, /^<ul><li>parent<ol><li>first<\/li><li>second<\/li><\/ol><\/li><li>sibling<\/li><\/ul>$/);
+});
+
+// ── 21. Supported inline formatting combinations ───────────────────────────
+check('bold, italic, code, and links compose inline', () => {
+  const out = renderBlocks('**bold** and *italic* with `a < b` and [link](https://example.com)');
+  assert.ok(out.includes('<strong>bold</strong>'));
+  assert.ok(out.includes('<em>italic</em>'));
+  assert.ok(out.includes('<code>a &lt; b</code>'));
+  assert.ok(out.includes('<a href="https://example.com"'));
+});
+
+// ── 22. Fenced code preserves whitespace and escapes executable text ───────
+check('fenced code preserves whitespace, language, and escaped HTML text', () => {
+  const out = renderBlocks('```js<script>\n  const x = "<script>&";  \nlong_line_without_breaks_1234567890\n```');
+  assert.ok(out.includes('<div class="wbCodeLang">js&lt;script&gt;</div>'));
+  assert.ok(out.includes('  const x = &quot;&lt;script&gt;&amp;&quot;;  '));
+  assert.ok(out.includes('long_line_without_breaks_1234567890'));
+  assert.ok(!out.includes('<script>'));
+});
+
+// ── 23. Tables retain columns/rows and escape special content ──────────────
+check('tables render headers, body rows, alignment, and escaped cells', () => {
+  const out = renderBlocks('| Name | Value |\n| --- | ---: |\n| a\\|b | <script>& |');
+  assert.ok(out.includes('<table><thead><tr>'));
+  assert.ok(out.includes('<th>Name</th>'));
+  assert.ok(out.includes('<th style="text-align:right">Value</th>'));
+  assert.ok(out.includes('<td>a|b</td>'));
+  assert.ok(out.includes('<td style="text-align:right">&lt;script&gt;&amp;</td>'));
+  assert.ok(!out.includes('<script>'));
+});
+
+// ── 24. Multiline paragraphs remain deterministic ─────────────────────────
+check('multiline paragraphs retain supported paragraph boundaries', () => {
+  assert.equal(renderBlocks('first line\nsecond line\n\nthird'), '<p>first line second line</p><p>third</p>');
 });
 
 // ── Report ──────────────────────────────────────────────────────────────────

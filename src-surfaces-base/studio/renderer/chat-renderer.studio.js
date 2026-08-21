@@ -138,7 +138,7 @@ function cleanReaderUserTextNodeLeaks(root){
   }
 }
 
-function normalizeRole(raw){
+function normalizeRole(raw, fallbackRaw){
   const value = String(raw || "").trim().toLowerCase();
   const canonicalRoles = [
     ROLES.USER || "user",
@@ -146,7 +146,12 @@ function normalizeRole(raw){
     ROLES.SYSTEM || "system",
     ROLES.TOOL || "tool",
   ];
-  return canonicalRoles.includes(value) ? value : (ROLES.ASSISTANT || "assistant");
+  if (canonicalRoles.includes(value)) return value;
+  // Renderer input is presentation-time projection: unknown saved roles must
+  // not acquire assistant semantics unless a caller supplies a canonical
+  // context-specific fallback explicitly.
+  const fallback = String(fallbackRaw || "").trim().toLowerCase();
+  return canonicalRoles.includes(fallback) ? fallback : "";
 }
 function normalizeSafeMarkdownHref(rawHref){
   const href = String(rawHref || "").trim();
@@ -156,6 +161,23 @@ function normalizeSafeMarkdownHref(rawHref){
     const parsed = new URL(href);
     const protocol = parsed.protocol.toLowerCase();
     if (protocol === "http:" || protocol === "https:" || protocol === "mailto:") return href;
+  } catch {}
+
+  return "";
+}
+
+function normalizeSafeImageSrc(rawSrc, allowCapturedData){
+  const src = String(rawSrc || "").trim();
+  if (!src || /[\u0000-\u001F\u007F\s]/.test(src)) return "";
+
+  if (allowCapturedData === true && /^data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(src)){
+    return src;
+  }
+
+  try {
+    const parsed = new URL(src);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol === "http:" || protocol === "https:") return src;
   } catch {}
 
   return "";
@@ -190,7 +212,7 @@ function renderInlineMarkdown(text){
         if (hrefEnd > labelEnd + 2){
           const alt = s.slice(2, labelEnd);
           const rawHref = s.slice(labelEnd + 2, hrefEnd);
-          const href = normalizeSafeMarkdownHref(rawHref);
+          const href = normalizeSafeImageSrc(rawHref, false);
           if (href){
             out += `<img src="${esc(href)}" alt="${esc(alt)}" loading="lazy" decoding="async">`;
             s = s.slice(hrefEnd + 1);
@@ -514,7 +536,7 @@ function findConversationTurnElement(root){
 function findRoleHostInTurn(turnEl, preferredRole = ""){
   if (!(turnEl instanceof Element)) return null;
   const preferred = normalizeRole(preferredRole || "");
-  if (preferredRole){
+  if (preferred){
     const exactSelector = typeof BY.role === "function"
       ? BY.role(preferred)
       : `[${ROLE_ATTR}="${preferred}"]`;
@@ -524,7 +546,7 @@ function findRoleHostInTurn(turnEl, preferredRole = ""){
   return turnEl.querySelector?.(`[${ROLE_ATTR}]`) || null;
 }
 
-function inferTurnRole(turnEl, fallbackRole = "assistant"){
+function inferTurnRole(turnEl, fallbackRole = ""){
   const roleHost = findRoleHostInTurn(turnEl, fallbackRole);
   const raw =
     roleHost?.getAttribute?.(ROLE_ATTR) ||
@@ -782,13 +804,13 @@ function normalizeAttachmentRecord(raw, idx = 0, roleRaw = "user"){
   const src = raw && typeof raw === "object" ? raw : {};
   const kind = String(src.kind || src.type || "").trim().toLowerCase() || "image";
   if (kind !== "image") return null;
-  const thumbnailSrc = String(src.thumbnailSrc || src.thumbnail || src.src || "").trim();
-  const originalSrc = String(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "").trim();
+  const thumbnailSrc = normalizeSafeImageSrc(src.thumbnailSrc || src.thumbnail || src.src || "", true);
+  const originalSrc = normalizeSafeImageSrc(src.originalSrc || src.original || src.url || src.href || thumbnailSrc || "", true);
   const captureStatus = String(src.captureStatus || src.status || (thumbnailSrc ? "linked" : "failed")).trim() || "failed";
   if (!thumbnailSrc && !originalSrc && captureStatus !== "failed") return null;
   const out = {
     kind: "image",
-    role: normalizeRole(src.role || roleRaw || "user"),
+    role: normalizeRole(src.role || roleRaw, ROLES.USER || "user"),
     thumbnailSrc,
     originalSrc,
     alt: String(src.alt || "").trim(),
@@ -822,7 +844,7 @@ function normalizeRichTurns(raw){
   for (let i = 0; i < src.length; i += 1){
     const row = src[i] && typeof src[i] === "object" ? src[i] : {};
     const turnIdx = Math.max(1, Math.floor(Number(row.turnIdx ?? row.idx ?? (i + 1)) || (i + 1)));
-    const role = normalizeRole(row.role || row.author || "assistant");
+    const role = normalizeRole(row.role || row.author || row.type || "");
     const outerHTML = String(row.outerHTML || row.html || "").trim();
     if (!outerHTML) continue;
 
@@ -833,12 +855,16 @@ function normalizeRichTurns(raw){
     const assistantCreateTime = Number(row.assistantCreateTime ?? row.assistant_create_time ?? 0);
     const userMessageId = String(row.userMessageId || row.user_message_id || "").trim();
     const assistantMessageId = String(row.assistantMessageId || row.assistant_message_id || "").trim();
+    const messageId = String(row.messageId || row.message_id || "").trim();
+    const turnId = String(row.turnId || row.turn_id || "").trim();
 
     if (Number.isFinite(createTime) && createTime > 0) item.createTime = createTime;
     if (Number.isFinite(userCreateTime) && userCreateTime > 0) item.userCreateTime = userCreateTime;
     if (Number.isFinite(assistantCreateTime) && assistantCreateTime > 0) item.assistantCreateTime = assistantCreateTime;
     if (userMessageId) item.userMessageId = userMessageId;
     if (assistantMessageId) item.assistantMessageId = assistantMessageId;
+    if (messageId) item.messageId = messageId;
+    if (turnId) item.turnId = turnId;
     if (row.messageTimes && typeof row.messageTimes === "object") item.messageTimes = { ...row.messageTimes };
     const attachments = normalizeAttachments(row.attachments, role);
     if (attachments.length) item.attachments = attachments;
@@ -876,7 +902,7 @@ function buildUserAttachmentGrid(attachmentsRaw){
   grid.className = "cgUserAttachmentGrid";
   grid.setAttribute("aria-label", "Attached images");
   for (const item of attachments){
-    const src = String(item.thumbnailSrc || item.originalSrc || "").trim();
+    const src = normalizeSafeImageSrc(item.thumbnailSrc || item.originalSrc || "", true);
     if (!src) continue;
     const card = document.createElement("div");
     card.className = "cgUserAttachmentCard";
@@ -955,17 +981,36 @@ function decorateReplayTurn(turnEl, messageEl, role, meta = {}){
     turnEl.dataset.turnIdx = String(meta.answerIdx);
     try { messageEl.dataset.turnIdx = String(meta.answerIdx); } catch {}
   }
-  if (meta.messageId && !messageEl.getAttribute(MESSAGE_ID_ATTR)){
-    messageEl.setAttribute(MESSAGE_ID_ATTR, String(meta.messageId));
-  }
-  if (meta.turnId && !messageEl.getAttribute(TURN_ID_ATTR)){
-    messageEl.setAttribute(TURN_ID_ATTR, String(meta.turnId));
-  }
+  claimReplayIdentity(messageEl, MESSAGE_ID_ATTR, meta.messageId, meta.seenMessageIds);
+  claimReplayIdentity(messageEl, TURN_ID_ATTR, meta.turnId, meta.seenTurnIds);
+  claimReplayIdentity(turnEl, TURN_ID_ATTR, "", meta.seenTurnIds);
   stampReplayTurnMeta(turnEl, messageEl, meta.createTime, meta.turnNo);
+}
+function claimReplayIdentity(el, attrName, preferredRaw, seen){
+  if (!(el instanceof Element)) return "";
+  const existing = String(el.getAttribute(attrName) || "").trim();
+  const preferred = String(preferredRaw || "").trim();
+  const value = existing || preferred;
+  if (!value){
+    try { el.removeAttribute(attrName); } catch {}
+    return "";
+  }
+  if (seen instanceof Set && seen.has(value)){
+    // Preserve the first supplied identity and omit later collisions so DOM
+    // lookup consumers never resolve two replay messages to the same key.
+    try { el.removeAttribute(attrName); } catch {}
+    return "";
+  }
+  if (seen instanceof Set) seen.add(value);
+  if (existing !== value){
+    try { el.setAttribute(attrName, value); } catch { return ""; }
+  }
+  return value;
 }
 function applyEditedMessageBody(messageEl, role, text){
   if (!(messageEl instanceof Element)) return;
   const normalizedRole = normalizeRole(role);
+  if (!normalizedRole) return;
   messageEl.innerHTML = "";
   messageEl.setAttribute(ROLE_ATTR, normalizedRole);
   messageEl.classList.add("cgMsg", `cgMsg--${normalizedRole}`, "cgMsg--edited");
@@ -983,6 +1028,7 @@ function buildCanonicalConversation(container, snap){
 
   for (const row of messages){
     const role = normalizeRole(row?.role);
+    if (!role) continue;
     const text = String(row?.text || "");
     turnNo += 1;
 
@@ -1013,6 +1059,8 @@ function mountRichTurns(container, richTurns, snapshotId, snap, options){
   const normalized = Array.isArray(richTurns) ? richTurns : [];
   const assistantHosts = [];
   const pendingHosts = [];
+  const seenMessageIds = new Set();
+  const seenTurnIds = new Set();
   let assistantIdx = 0;
 
   const fallbackResult = {
@@ -1037,13 +1085,17 @@ function mountRichTurns(container, richTurns, snapshotId, snap, options){
 
       if (!(host instanceof Element) || !(messageEl instanceof Element)) return fallbackResult;
       role = inferTurnRole(host, role);
+      if (!role) return fallbackResult;
 
       const answerIdx = role === "assistant" ? (assistantIdx + 1) : 0;
       decorateReplayTurn(host, messageEl, role, {
         turnNo,
         answerIdx,
         createTime,
-        messageId: role === "assistant" ? turn.assistantMessageId : turn.userMessageId,
+        messageId: turn.messageId || (role === "assistant" ? turn.assistantMessageId : turn.userMessageId),
+        turnId: turn.turnId,
+        seenMessageIds,
+        seenTurnIds,
       });
       if (role === "user") cleanReaderUserTextNodeLeaks(host);
 
@@ -1090,16 +1142,41 @@ function mountRichTurns(container, richTurns, snapshotId, snap, options){
 
 function normalizeRendererMessage(raw, idx, snapshot){
   const row = raw && typeof raw === "object" ? raw : {};
+  const role = normalizeRole(row.role || row.author || row.type || "");
+  if (!role) return null;
   return {
     order: Number.isFinite(Number(row.order)) ? Number(row.order) : idx,
-    role: normalizeRole(row.role),
-    text: String(row.text || ""),
+    role,
+    text: String(row.text ?? ""),
     createTime: resolveSnapshotTurnCreateTime(snapshot, row, idx),
-    messageId: String(row.messageId || row.id || ""),
-    turnId: String(row.turnId || ""),
-    dir: String(row.dir || ""),
-    attachments: normalizeAttachments(row.attachments, row.role),
+    messageId: String(row.messageId || row.id || "").trim(),
+    turnId: String(row.turnId || "").trim(),
+    dir: String(row.dir || "").trim(),
+    attachments: normalizeAttachments(row.attachments, role),
   };
+}
+
+function normalizeRendererMessages(raw, snapshot){
+  const rows = Array.isArray(raw) ? raw : [];
+  const messages = [];
+  const seenMessageIds = new Set();
+  const seenTurnIds = new Set();
+
+  for (let i = 0; i < rows.length; i += 1){
+    const message = normalizeRendererMessage(rows[i], i, snapshot);
+    if (!message) continue;
+    if (message.messageId){
+      if (seenMessageIds.has(message.messageId)) message.messageId = "";
+      else seenMessageIds.add(message.messageId);
+    }
+    if (message.turnId){
+      if (seenTurnIds.has(message.turnId)) message.turnId = "";
+      else seenTurnIds.add(message.turnId);
+    }
+    messages.push(message);
+  }
+
+  return messages;
 }
 
 function normalizeInput(snapshot){
@@ -1118,10 +1195,18 @@ function normalizeInput(snapshot){
     messages: [],
     richTurns: normalizeRichTurns(source.richTurns || metadata.richTurns),
   };
-  const messages = Array.isArray(source.messages) ? source.messages : [];
-  input.messages = messages.map((row, idx) => normalizeRendererMessage(row, idx, { metadata }));
+  input.messages = normalizeRendererMessages(source.messages, { metadata });
   Object.defineProperty(input, NORMALIZED_INPUT, { value: true });
   return input;
+}
+
+function hasCompleteRichCoverage(input){
+  const richTurns = Array.isArray(input?.richTurns) ? input.richTurns : [];
+  const messages = Array.isArray(input?.messages) ? input.messages : [];
+  if (!richTurns.length) return false;
+  // Rich replay is intentionally a whole-transcript mode. A partial rich set
+  // must not hide otherwise usable canonical turns or create a hybrid replay.
+  return !messages.length || richTurns.length === messages.length;
 }
 
 function render(inputRaw, options){
@@ -1153,7 +1238,7 @@ function render(inputRaw, options){
     fallbackRequired: true,
   };
 
-  if (input.richTurns.length){
+  if (hasCompleteRichCoverage(input)){
     turnsEl.classList.add("wbRichRoot", "is-rich");
     richRenderResult = mountRichTurns(
       turnsEl,

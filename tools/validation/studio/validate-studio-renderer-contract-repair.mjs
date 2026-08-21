@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Focused regression coverage for the Studio renderer contract and extracted
-// Phase 3 module boundary.
+// Phase 3 module boundary plus the focused T09/T10 fidelity/resilience round.
 // Uses small DOM seams around the real renderer functions so the validator stays
 // dependency-free while exercising role fidelity, rich success/fallback state,
-// shared sanitization order, and assistant-only collection.
+// shared sanitization order, assistant-only collection, malformed input, and
+// deterministic whole-transcript rich/canonical selection.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -68,7 +69,8 @@ function validateRoleFidelity() {
   }
   assert.equal(studio('SYSTEM'), 'system', 'Studio role normalization must remain case-insensitive');
   assert.equal(archive('TOOL'), 'tool', 'S0D3a role normalization must remain case-insensitive');
-  assert.equal(studio('unknown'), 'assistant', 'unknown Studio roles retain the legacy assistant fallback');
+  assert.equal(studio('unknown'), '', 'unknown Renderer roles must not silently become assistant turns');
+  assert.equal(studio('', 'user'), 'user', 'Renderer-local callers may provide an explicit canonical fallback');
   assert.equal(archive('unknown'), 'assistant', 'unknown S0D3a roles retain the legacy assistant fallback');
 }
 
@@ -80,14 +82,18 @@ function validateRendererInputContract() {
     Number,
     Array,
     Object,
+    Set,
+    URL,
   });
   const helpers = [
     'resolveSnapshotTurnCreateTime',
     'normalizeRole',
+    'normalizeSafeImageSrc',
     'normalizeAttachmentRecord',
     'normalizeAttachments',
     'normalizeRichTurns',
     'normalizeRendererMessage',
+    'normalizeRendererMessages',
     'normalizeInput',
   ].map((name) => extractFunction(rendererSource, name)).join('\n');
   vm.runInContext(`${helpers}\nthis.normalizeRendererInput = normalizeInput;`, sandbox);
@@ -135,6 +141,49 @@ function validateRendererInputContract() {
     JSON.parse(JSON.stringify(input)),
     'meta and metadata source projections must converge on one logical Renderer input'
   );
+
+  const malformedSource = {
+    messages: [
+      {
+        role: 'user',
+        text: '',
+        messageId: ' duplicate-message ',
+        turnId: 'duplicate-turn',
+        attachments: [
+          { kind: 'image', thumbnailSrc: 'https://example.com/image.png', alt: 'safe' },
+          { kind: 'image', thumbnailSrc: 'data:image/webp;base64,QUJDRA==', captureStatus: 'embedded' },
+          { kind: 'image', thumbnailSrc: 'javascript:alert(1)', captureStatus: 'linked' },
+          { kind: 'file', src: 'https://example.com/file.pdf' },
+          { kind: 'image', captureStatus: 'failed', error: 'capture failed' },
+        ],
+      },
+      { role: 'assistant', text: 'kept', messageId: 'duplicate-message', turnId: 'duplicate-turn' },
+      { role: 'mystery', text: 'must not become an answer' },
+      { text: 'missing role must stay local' },
+    ],
+  };
+  const malformedBefore = JSON.stringify(malformedSource);
+  const resilient = sandbox.normalizeRendererInput(malformedSource);
+  assert.deepEqual(Array.from(resilient.messages, (row) => row.role), ['user', 'assistant'],
+    'missing/unknown roles must be omitted locally without collapsing the valid transcript');
+  assert.equal(resilient.messages[0].text, '', 'valid empty content must survive normalization');
+  assert.equal(resilient.messages[0].messageId, 'duplicate-message');
+  assert.equal(resilient.messages[0].turnId, 'duplicate-turn');
+  assert.equal(resilient.messages[1].messageId, '', 'later duplicate message IDs must be omitted');
+  assert.equal(resilient.messages[1].turnId, '', 'later duplicate turn IDs must be omitted');
+  assert.equal(resilient.messages[0].attachments.length, 3,
+    'safe remote/data images and a failed record must survive while unsafe/unsupported records degrade away');
+  assert.equal(resilient.messages[0].attachments[1].thumbnailSrc, 'data:image/webp;base64,QUJDRA==');
+  assert.equal(resilient.messages[0].attachments[2].captureStatus, 'failed');
+  assert.equal(JSON.stringify(malformedSource), malformedBefore,
+    'malformed input projection must not mutate the saved snapshot');
+
+  const metadataFree = sandbox.normalizeRendererInput({ messages: [{ role: 'tool' }] });
+  const metadataFreeAgain = sandbox.normalizeRendererInput({ messages: [{ role: 'tool' }] });
+  assert.equal(metadataFree.title, 'Saved chat');
+  assert.equal(metadataFree.messages[0].text, '');
+  assert.deepEqual(JSON.parse(JSON.stringify(metadataFree)), JSON.parse(JSON.stringify(metadataFreeAgain)),
+    'incomplete metadata must produce deterministic normalized output');
 }
 
 class FakeElement {
@@ -162,9 +211,12 @@ function createRichMountHarness() {
       return host;
     },
     normalizeRole: (raw) => ['user', 'assistant', 'system', 'tool'].includes(String(raw).toLowerCase())
-      ? String(raw).toLowerCase() : 'assistant',
+      ? String(raw).toLowerCase() : '',
     findRoleHostInTurn: (host) => host.message,
-    inferTurnRole: (host, fallback) => host.role || fallback,
+    inferTurnRole: (host, fallback) => {
+      const role = String(host.role || fallback).toLowerCase();
+      return ['user', 'assistant', 'system', 'tool'].includes(role) ? role : '';
+    },
     decorateReplayTurn: (_host, _message, role, meta) => decorated.push({ role, answerIdx: meta.answerIdx }),
     cleanReaderUserTextNodeLeaks() {},
     getEditOverride: () => null,
@@ -233,6 +285,43 @@ function validateRichMountContract() {
     assert.equal(result.assistantTurnEls.length, 0);
     assert.equal(appended.length, 0, 'failed rich replay must not leave a partial mount');
   }
+
+  {
+    const h = createRichMountHarness();
+    const { result, appended } = runRichMount(h.fn, [
+      { turnIdx: 1, role: 'mystery', outerHTML: 'mystery' },
+    ]);
+    assert.equal(result.fallbackRequired, true, 'a rich turn with no canonical role must fail locally');
+    assert.equal(appended.length, 0, 'invalid-role rich replay must not leave a partial mount');
+  }
+}
+
+class FakeIdentityElement {
+  constructor(attrs = {}) { this.attrs = new Map(Object.entries(attrs)); }
+  getAttribute(name) { return this.attrs.get(name) || null; }
+  setAttribute(name, value) { this.attrs.set(name, String(value)); }
+  removeAttribute(name) { this.attrs.delete(name); }
+}
+
+function validateRichIdentityResilience() {
+  const claim = loadFunction(rendererSource, 'claimReplayIdentity', {
+    Element: FakeIdentityElement,
+    Set,
+    String,
+  }).fn;
+  const seen = new Set();
+  const first = new FakeIdentityElement({ 'data-message-id': 'message-1' });
+  const duplicate = new FakeIdentityElement({ 'data-message-id': 'message-1' });
+  const missing = new FakeIdentityElement();
+
+  assert.equal(claim(first, 'data-message-id', '', seen), 'message-1');
+  assert.equal(claim(duplicate, 'data-message-id', '', seen), '');
+  assert.equal(duplicate.getAttribute('data-message-id'), null,
+    'later duplicate rich identity must be removed from the replay DOM');
+  assert.equal(claim(missing, 'data-message-id', '', seen), '',
+    'missing rich identity must remain optional and must not throw');
+  assert.equal(claim(missing, 'data-message-id', 'message-2', seen), 'message-2');
+  assert.equal(missing.getAttribute('data-message-id'), 'message-2');
 }
 
 function validateSharedSanitizerOrder() {
@@ -310,6 +399,7 @@ class FakeRoot {
 
 function createRendererBuildHarness(richResult) {
   let canonicalCalls = 0;
+  let richMountCalls = 0;
   const sandbox = {
     document: {
       createElement: () => new FakeRoot(),
@@ -318,6 +408,7 @@ function createRendererBuildHarness(richResult) {
     TURNS_TESTID: 'conversation-turns',
     normalizeInput: (input) => input,
     mountRichTurns: (container) => {
+      richMountCalls += 1;
       for (let i = 0; i < richResult.mountedTurnCount; i += 1) container.appendChild({ kind: 'rich' });
       return richResult;
     },
@@ -331,10 +422,12 @@ function createRendererBuildHarness(richResult) {
     Array,
     Object,
   };
-  const { fn } = loadFunction(rendererSource, 'render', sandbox);
+  const context = vm.createContext(sandbox);
+  vm.runInContext(`${extractFunction(rendererSource, 'hasCompleteRichCoverage')}\n${extractFunction(rendererSource, 'render')}\nthis.result = render;`, context);
   return {
-    fn,
+    fn: context.result,
     getCanonicalCalls: () => canonicalCalls,
+    getRichMountCalls: () => richMountCalls,
   };
 }
 
@@ -357,10 +450,20 @@ function validateBuildFallbackDecision() {
 
   {
     const h = createRendererBuildHarness({ mountedTurnCount: 0, assistantTurnEls: [], fallbackRequired: true });
-    const result = h.fn({ chatId: 'fallback', title: '', projectId: '', snapshotId: '', richTurns: [{ role: 'user' }], messages: [{ role: 'user' }, { role: 'assistant' }] });
+    const result = h.fn({ chatId: 'fallback', title: '', projectId: '', snapshotId: '', richTurns: [{ role: 'user' }, { role: 'assistant' }], messages: [{ role: 'user' }, { role: 'assistant' }] });
     assert.equal(h.getCanonicalCalls(), 1, 'genuine rich failure must activate canonical fallback');
+    assert.equal(h.getRichMountCalls(), 1, 'complete rich replay must be attempted before genuine fallback');
     assert.equal(result.turnsEl.children.length, 2);
     assert.equal(result.turnsEl.classList.contains('is-rich'), false);
+    assert.equal(result.renderMode, 'canonical');
+  }
+
+  {
+    const h = createRendererBuildHarness({ mountedTurnCount: 1, assistantTurnEls: [], fallbackRequired: false });
+    const result = h.fn({ chatId: 'partial-rich', title: '', projectId: '', snapshotId: '', richTurns: [{ role: 'user' }], messages: [{ role: 'user' }, { role: 'assistant' }] });
+    assert.equal(h.getRichMountCalls(), 0, 'incomplete whole-transcript rich coverage must not suppress canonical turns');
+    assert.equal(h.getCanonicalCalls(), 1);
+    assert.equal(result.turnsEl.children.length, 2, 'mixed rich/text input must emit one complete canonical transcript');
     assert.equal(result.renderMode, 'canonical');
   }
 
@@ -394,6 +497,7 @@ function validateExtractedRendererBoundary() {
 validateRoleFidelity();
 validateRendererInputContract();
 validateRichMountContract();
+validateRichIdentityResilience();
 validateSharedSanitizerOrder();
 validateBuildFallbackDecision();
 validateExtractedRendererBoundary();
