@@ -140,6 +140,7 @@ const state = {
   layout: "focused",
   lastTagFilter: "",
   renderToken: 0,
+  currentReaderEditOverrides: null,
   titleStateByChat: {},
   interfaceMetaByChat: {},
 };
@@ -296,6 +297,7 @@ function installFolderOperatorModeApi(){
 installFolderOperatorModeApi();
 
 function studioHostUnmount(reason = "studio:unmount") {
+  state.currentReaderEditOverrides = null;
   try { W.H2O?.studioHost?.unmount?.(reason); } catch {}
 }
 
@@ -326,7 +328,12 @@ function studioHostUnmountPreservingRouteHash(reason = "studio:route-leave") {
 
 function getStudioChatRenderer(){
   const renderer = W.H2O?.Studio?.chatRenderer;
-  if (!renderer || typeof renderer.normalizeInput !== "function" || typeof renderer.render !== "function"){
+  if (
+    !renderer
+    || typeof renderer.normalizeInput !== "function"
+    || typeof renderer.isRenderEquivalent !== "function"
+    || typeof renderer.render !== "function"
+  ){
     throw new Error("Studio Chat Renderer is unavailable");
   }
   return renderer;
@@ -344,6 +351,82 @@ function isCurrentReaderRoot(root, snap){
   const getHostRoot = W.H2O?.studioHost?.getReaderRoot;
   if (typeof getHostRoot === "function" && getHostRoot() !== root) return false;
   return true;
+}
+
+function getReusableReaderMount(snap){
+  const snapshotId = String(snap?.snapshotId || "").trim();
+  const currentSnapshotId = String(state.currentReaderSnapshot?.snapshotId || "").trim();
+  if (!snapshotId || snapshotId !== currentSnapshotId) return null;
+
+  const host = W.H2O?.studioHost;
+  if (
+    typeof host?.getReaderRoot !== "function"
+    || typeof host?.getTurnsRoot !== "function"
+    || typeof host?.getScrollRoot !== "function"
+  ) return null;
+
+  const root = host.getReaderRoot();
+  const turnsEl = host.getTurnsRoot();
+  const scrollEl = host.getScrollRoot();
+  const readerEl = $("#viewReader");
+  if (!root?.isConnected || !turnsEl?.isConnected || !scrollEl?.isConnected) return null;
+  if (!readerEl || typeof readerEl.contains !== "function" || !readerEl.contains(root)) return null;
+  if (typeof root.contains !== "function" || !root.contains(turnsEl) || !root.contains(scrollEl)) return null;
+  const selectors = W.H2O?.Studio?.SELECTORS || {};
+  const testIdAttr = selectors.ATTR?.TESTID || "data-testid";
+  const turnsTestId = selectors.TESTIDS?.CONVERSATION_TURNS || "conversation-turns";
+  if (root.getAttribute?.("data-h2o-studio-reader") !== "1") return null;
+  if (turnsEl.getAttribute?.(testIdAttr) !== turnsTestId) return null;
+  if (scrollEl.getAttribute?.("data-scroll-root") !== "1") return null;
+  return { root, turnsEl, scrollEl };
+}
+
+function isReusableReaderMountCurrent(mount, snap){
+  if (!mount) return false;
+  const current = getReusableReaderMount(snap);
+  return !!(
+    current
+    && current.root === mount.root
+    && current.turnsEl === mount.turnsEl
+    && current.scrollEl === mount.scrollEl
+  );
+}
+
+function collectRendererEditOverrides(rendererInput){
+  const snapshotId = String(rendererInput?.snapshotId || "").trim();
+  const richTurns = Array.isArray(rendererInput?.richTurns) ? rendererInput.richTurns : [];
+  const messages = Array.isArray(rendererInput?.messages) ? rendererInput.messages : [];
+  const hasCompleteRichCoverage = !!richTurns.length && (!messages.length || richTurns.length === messages.length);
+  if (!snapshotId || !hasCompleteRichCoverage) return [];
+  return richTurns.map((turn) => {
+    const role = String(turn?.role || "");
+    if (role && role !== "assistant") return null;
+    return getEditOverride(snapshotId, turn?.turnIdx);
+  });
+}
+
+function haveEquivalentRendererEditOverrides(leftRaw, rightRaw){
+  const left = Array.isArray(leftRaw) ? leftRaw : [];
+  const right = Array.isArray(rightRaw) ? rightRaw : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1){
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
+
+function canReuseReaderDOM(options){
+  options = options && typeof options === "object" ? options : {};
+  const renderer = getStudioChatRenderer();
+  return !!(
+    options.mount
+    && options.token === state.renderToken
+    && state.activeRoute === "reader"
+    && state.currentReaderSnapshot === options.previousSnapshot
+    && isReusableReaderMountCurrent(options.mount, options.previousSnapshot)
+    && renderer.isRenderEquivalent(options.previousSnapshot, options.rendererInput)
+    && haveEquivalentRendererEditOverrides(options.previousEditOverrides, options.nextEditOverrides)
+  );
 }
 
 // ─── Edit-override persistence ────────────────────────────────────────────────
@@ -4672,34 +4755,11 @@ function renderLinkedReaderPlaceholder(row){
   } catch (_) { /* swallow */ }
 }
 
-function buildReaderDOM(snap){
-  const renderer = getStudioChatRenderer();
-  const rendererInput = renderer.normalizeInput(snap);
-  const rendererResult = renderer.render(rendererInput, { getEditOverride });
-  const {
-    root,
-    turnsEl: sc,
-    scrollEl: scrollRoot,
-    assistantTurnEls,
-  } = rendererResult;
-
-  try {
-    if (typeof W.H2O?.studioHost?.mount === "function") {
-      W.H2O.studioHost.mount({
-        readerRoot: root,
-        turnsEl: sc,
-        scrollEl: scrollRoot,
-        snapshot: snap,
-        assistantTurnEls
-      });
-    }
-  } catch {}
-  syncReaderTopOffset();
-  try { setTimeout(syncReaderTopOffset, 80); } catch {}
-
+function refreshReaderOverlay(root, snap){
   /* Phase 2a — edit-overlay foundation hook (Phase 2b — now also
    * applies ops to DOM via the extended applier, and publishes
-   * hasOverlay to the ribbon context). */
+   * hasOverlay to the ribbon context). This remains downstream projection
+   * orchestration; the base Renderer equivalence contract excludes it. */
   try {
     const __sid = String(snap?.snapshotId || "");
     const __store = W.H2O?.Studio?.store?.editOverlay;
@@ -4734,6 +4794,34 @@ function buildReaderDOM(snap){
       }, () => { /* swallow get rejection — reader continues without overlay */ });
     }
   } catch (_) { /* swallow — overlay must never break the reader */ }
+}
+
+function buildReaderDOM(snap, rendererInputRaw){
+  const renderer = getStudioChatRenderer();
+  const rendererInput = rendererInputRaw || renderer.normalizeInput(snap);
+  const rendererResult = renderer.render(rendererInput, { getEditOverride });
+  const {
+    root,
+    turnsEl: sc,
+    scrollEl: scrollRoot,
+    assistantTurnEls,
+  } = rendererResult;
+
+  try {
+    if (typeof W.H2O?.studioHost?.mount === "function") {
+      W.H2O.studioHost.mount({
+        readerRoot: root,
+        turnsEl: sc,
+        scrollEl: scrollRoot,
+        snapshot: snap,
+        assistantTurnEls
+      });
+    }
+  } catch {}
+  syncReaderTopOffset();
+  try { setTimeout(syncReaderTopOffset, 80); } catch {}
+
+  refreshReaderOverlay(root, snap);
 
   /* Phase 2b — message-level selection click handler. Saved-reader only
    * (gated by the chatType check in the ribbon shell). Adds an outline
@@ -4789,7 +4877,10 @@ function buildReaderDOM(snap){
           /* Phase 7b repair 7 — single-click-to-edit in Edit Mode. */
           try {
             if (editModeOn && !turn.classList.contains('wbTurn--editing')) {
-              __mountOverlayEditorOnTurn(turn, snap, turnIdx);
+              const currentSnap = state.currentReaderSnapshot;
+              if (currentSnap && String(currentSnap.snapshotId || '') === String(snap?.snapshotId || '')) {
+                __mountOverlayEditorOnTurn(turn, currentSnap, turnIdx);
+              }
             }
           } catch (_) { /* swallow — editor mount must never break selection */ }
         } catch (_) { /* swallow — selection must never break the reader */ }
@@ -5104,25 +5195,38 @@ async function renderReader(snapshotId){
   const sid = String(snapshotId || "").trim();
   const listPanel = $("#viewListPanel");
   const readerEl = $("#viewReader");
+  const previousSnapshot = state.currentReaderSnapshot;
+  const previousEditOverrides = state.currentReaderEditOverrides;
+  const previousSnapshotId = String(previousSnapshot?.snapshotId || "").trim();
+  const previousMount = sid && sid === previousSnapshotId
+    ? getReusableReaderMount(previousSnapshot)
+    : null;
+  const mayAttemptReuse = !!(
+    previousMount
+    && Array.isArray(previousEditOverrides)
+  );
 
-  state.currentReaderSnapshot = null;
-  studioHostUnmountPreservingRouteHash("studio:reader-replace");
+  if (!mayAttemptReuse){
+    state.currentReaderSnapshot = null;
+    studioHostUnmountPreservingRouteHash("studio:reader-replace");
+  }
   setStudioRouteScope("reader");
   applyDesktopReaderRibbonSession();
   ensureReaderTopbarActions();
   if (listPanel) listPanel.hidden = true;
   if (readerEl) readerEl.hidden = false;
-  if (readerEl) readerEl.innerHTML = `<div class="wbState">Loading reader…</div>`;
+  if (readerEl && !mayAttemptReuse) readerEl.innerHTML = `<div class="wbState">Loading reader…</div>`;
   setRouteMeta("Studio", "Saved chat", "Loading snapshot");
 
   try {
     const loadedSnapshot = await callArchive("loadSnapshot", { snapshotId: sid });
     if (token !== state.renderToken) return;
     if (!loadedSnapshot){
+      state.currentReaderSnapshot = null;
+      studioHostUnmountPreservingRouteHash("studio:reader-missing");
       if (readerEl) readerEl.innerHTML = `<div class="wbState">Snapshot not found.</div>`;
       state.selectedSnapshotId = "";
       state.selectedChatId = "";
-      state.currentReaderSnapshot = null;
       setStudioRouteScope("reader");
       syncSelectionControls();
       return;
@@ -5168,13 +5272,36 @@ async function renderReader(snapshotId){
     renderFolderSidebar(state.rowsCache || [], state.lastView, state.lastFolderId);
     refreshSidebarChatList(state.lastView, state.lastFolderId);
 
+    const renderer = getStudioChatRenderer();
+    const rendererInput = renderer.normalizeInput(snap);
+    const nextEditOverrides = collectRendererEditOverrides(rendererInput);
+    const canReuseMountedReader = mayAttemptReuse && canReuseReaderDOM({
+      mount: previousMount,
+      token,
+      previousSnapshot,
+      rendererInput,
+      previousEditOverrides,
+      nextEditOverrides,
+    });
+
+    if (!canReuseMountedReader && mayAttemptReuse){
+      state.currentReaderSnapshot = null;
+      studioHostUnmountPreservingRouteHash("studio:reader-replace");
+    }
+
     state.currentReaderSnapshot = snap;
     state.selectedSnapshotId = String(snap.snapshotId || "").trim();
     state.selectedChatId = String(snap.chatId || "").trim();
 
-    if (readerEl) {
+    if (canReuseMountedReader){
+      state.currentReaderEditOverrides = nextEditOverrides;
+      refreshReaderOverlay(previousMount.root, snap);
+    } else if (readerEl) {
       readerEl.innerHTML = "";
-      readerEl.appendChild(buildReaderDOM(snap));
+      readerEl.appendChild(buildReaderDOM(snap, rendererInput));
+      state.currentReaderEditOverrides = nextEditOverrides;
+    } else {
+      state.currentReaderEditOverrides = null;
     }
     renderReaderRouteMeta(snap);
     setActiveSidebarChat(state.selectedSnapshotId);
@@ -5191,13 +5318,13 @@ async function renderReader(snapshotId){
     } catch (_) { /* ignore */ }
   } catch (error){
     if (token !== state.renderToken) return;
-    studioHostUnmount("studio:reader-error");
+    state.currentReaderSnapshot = null;
+    studioHostUnmountPreservingRouteHash("studio:reader-error");
     if (readerEl) {
       readerEl.innerHTML = `<div class="wbState wbState--error">${esc(error?.message || "Failed to load snapshot.")}</div>`;
     }
     state.selectedSnapshotId = "";
     state.selectedChatId = "";
-    state.currentReaderSnapshot = null;
     setStudioRouteScope("reader");
     setActiveSidebarChat("");
     syncSelectionControls();

@@ -1256,6 +1256,85 @@ function normalizeInput(snapshot){
   return input;
 }
 
+function haveEquivalentRendererAttachments(leftRaw, rightRaw){
+  const left = Array.isArray(leftRaw) ? leftRaw : [];
+  const right = Array.isArray(rightRaw) ? rightRaw : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1){
+    const a = left[i] || {};
+    const b = right[i] || {};
+    if (
+      String(a.kind || "") !== String(b.kind || "")
+      || String(a.thumbnailSrc || "") !== String(b.thumbnailSrc || "")
+      || String(a.originalSrc || "") !== String(b.originalSrc || "")
+      || String(a.alt || "") !== String(b.alt || "")
+      || Number(a.naturalWidth || 0) !== Number(b.naturalWidth || 0)
+      || Number(a.naturalHeight || 0) !== Number(b.naturalHeight || 0)
+      || String(a.captureStatus || "") !== String(b.captureStatus || "")
+    ) return false;
+  }
+  return true;
+}
+
+function haveEquivalentRendererMessages(leftRaw, rightRaw){
+  const left = Array.isArray(leftRaw) ? leftRaw : [];
+  const right = Array.isArray(rightRaw) ? rightRaw : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1){
+    const a = left[i] || {};
+    const b = right[i] || {};
+    if (
+      String(a.role || "") !== String(b.role || "")
+      || String(a.text || "") !== String(b.text || "")
+      || Number(a.createTime || 0) !== Number(b.createTime || 0)
+      || String(a.messageId || "") !== String(b.messageId || "")
+      || String(a.turnId || "") !== String(b.turnId || "")
+      || String(a.dir || "") !== String(b.dir || "")
+      || !haveEquivalentRendererAttachments(a.attachments, b.attachments)
+    ) return false;
+  }
+  return true;
+}
+
+function haveEquivalentRendererRichTurns(leftInput, rightInput){
+  const left = Array.isArray(leftInput?.richTurns) ? leftInput.richTurns : [];
+  const right = Array.isArray(rightInput?.richTurns) ? rightInput.richTurns : [];
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1){
+    const a = left[i] || {};
+    const b = right[i] || {};
+    if (
+      Number(a.turnIdx || 0) !== Number(b.turnIdx || 0)
+      || String(a.role || "") !== String(b.role || "")
+      || String(a.outerHTML || "") !== String(b.outerHTML || "")
+      || resolveSnapshotTurnCreateTime(leftInput, a, i) !== resolveSnapshotTurnCreateTime(rightInput, b, i)
+      || String(a.userMessageId || "") !== String(b.userMessageId || "")
+      || String(a.assistantMessageId || "") !== String(b.assistantMessageId || "")
+      || String(a.messageId || "") !== String(b.messageId || "")
+      || String(a.turnId || "") !== String(b.turnId || "")
+      || !haveEquivalentRendererAttachments(a.attachments, b.attachments)
+    ) return false;
+  }
+  return true;
+}
+
+// Exact presentation-time equivalence for the base transcript. This deliberately
+// compares normalized Renderer inputs rather than snapshot identity or storage
+// metadata: a same-ID snapshot may change, while folder/category bookkeeping that
+// never reaches the base transcript must not force a rebuild.
+function isRenderEquivalent(leftRaw, rightRaw){
+  const left = normalizeInput(leftRaw);
+  const right = normalizeInput(rightRaw);
+  return (
+    left.snapshotId === right.snapshotId
+    && left.chatId === right.chatId
+    && left.title === right.title
+    && left.projectId === right.projectId
+    && haveEquivalentRendererMessages(left.messages, right.messages)
+    && haveEquivalentRendererRichTurns(left, right)
+  );
+}
+
 function hasCompleteRichCoverage(input){
   const richTurns = Array.isArray(input?.richTurns) ? input.richTurns : [];
   const messages = Array.isArray(input?.messages) ? input.messages : [];
@@ -1327,6 +1406,7 @@ function render(inputRaw, options){
 Studio.chatRenderer = Object.freeze({
   normalizeInput,
   normalizeRole,
+  isRenderEquivalent,
   render,
   applyEditedMessageBody,
 });

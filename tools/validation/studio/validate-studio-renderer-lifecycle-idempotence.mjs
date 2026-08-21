@@ -38,10 +38,21 @@ class FakeNode {
     this.snapshotId = snapshotId;
     this.isConnected = false;
     this.attrs = new Map();
+    this.children = [];
   }
   setAttribute(name, value) { this.attrs.set(name, String(value)); }
   getAttribute(name) { return this.attrs.get(name) || null; }
   removeAttribute(name) { this.attrs.delete(name); }
+  setConnected(value) {
+    this.isConnected = !!value;
+    for (const child of this.children) child.setConnected(value);
+  }
+  appendChild(node) {
+    this.children.push(node);
+    node.setConnected(this.isConnected);
+    return node;
+  }
+  contains(node) { return node === this || this.children.some((child) => child.contains(node)); }
 }
 
 class FakeReaderElement {
@@ -51,9 +62,9 @@ class FakeReaderElement {
     this._html = '';
   }
   replaceChildren(...nodes) {
-    for (const node of this.children) node.isConnected = false;
+    for (const node of this.children) node.setConnected(false);
     this.children = nodes;
-    for (const node of nodes) node.isConnected = true;
+    for (const node of nodes) node.setConnected(true);
     this._html = '';
   }
   set innerHTML(value) {
@@ -63,7 +74,7 @@ class FakeReaderElement {
   get innerHTML() { return this._html; }
   appendChild(node) {
     this.children.push(node);
-    node.isConnected = true;
+    node.setConnected(true);
     return node;
   }
   contains(node) { return this.children.includes(node) && node.isConnected; }
@@ -106,9 +117,12 @@ function createRenderHarness() {
   let bindings = new Map();
   const roots = [];
   const events = [];
+  const overlayRefreshes = [];
 
   const hostState = {
     root: null,
+    turns: null,
+    scroll: null,
     snapshot: null,
     mountCount: 0,
     unmountCount: 0,
@@ -117,13 +131,22 @@ function createRenderHarness() {
     mount(opts) {
       if (hostState.root || hostState.snapshot) this.unmount('remount');
       hostState.root = opts.readerRoot || null;
+      hostState.turns = opts.turnsEl || null;
+      hostState.scroll = opts.scrollEl || null;
       hostState.snapshot = opts.snapshot || null;
+      hostState.root?.setAttribute('data-h2o-studio-reader', '1');
+      hostState.turns?.setAttribute('data-testid', 'conversation-turns');
+      hostState.scroll?.setAttribute('data-scroll-root', '1');
       hostState.mountCount += 1;
       return true;
     },
     unmount() {
       if (!hostState.root && !hostState.snapshot) return false;
+      hostState.root?.removeAttribute('data-h2o-studio-reader');
+      hostState.scroll?.removeAttribute('data-scroll-root');
       hostState.root = null;
+      hostState.turns = null;
+      hostState.scroll = null;
       hostState.snapshot = null;
       hostState.unmountCount += 1;
       return true;
@@ -131,12 +154,19 @@ function createRenderHarness() {
     getReaderRoot() {
       return hostState.root?.isConnected ? hostState.root : null;
     },
+    getTurnsRoot() {
+      return hostState.turns?.isConnected ? hostState.turns : null;
+    },
+    getScrollRoot() {
+      return hostState.scroll?.isConnected ? hostState.scroll : null;
+    },
   };
 
   const state = {
     renderToken: 0,
     rowsCache: [],
     currentReaderSnapshot: null,
+    currentReaderEditOverrides: null,
     selectedSnapshotId: '',
     selectedChatId: '',
     lastView: 'saved',
@@ -144,10 +174,37 @@ function createRenderHarness() {
     activeRoute: 'list',
   };
 
+  const rendererProjection = (snapshot) => {
+    const meta = snapshot?.meta && typeof snapshot.meta === 'object'
+      ? snapshot.meta
+      : (snapshot?.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {});
+    return JSON.stringify({
+      snapshotId: String(snapshot?.snapshotId || ''),
+      chatId: String(snapshot?.chatId || ''),
+      title: String(meta.title || snapshot?.title || snapshot?.chatId || 'Saved chat'),
+      projectId: String(meta.projectId || snapshot?.projectId || ''),
+      messages: Array.isArray(snapshot?.messages) ? snapshot.messages : [],
+      richTurns: Array.isArray(snapshot?.richTurns || meta.richTurns) ? (snapshot.richTurns || meta.richTurns) : [],
+    });
+  };
+  const chatRenderer = {
+    normalizeInput(snapshot) { return snapshot; },
+    isRenderEquivalent(left, right) { return rendererProjection(left) === rendererProjection(right); },
+    render() { return null; },
+  };
   const W = {
     location,
     history,
-    H2O: { studioHost },
+    H2O: {
+      studioHost,
+      Studio: {
+        chatRenderer,
+        SELECTORS: {
+          ATTR: { TESTID: 'data-testid' },
+          TESTIDS: { CONVERSATION_TURNS: 'conversation-turns' },
+        },
+      },
+    },
     dispatchEvent(event) { events.push(event); },
   };
   const document = {
@@ -196,12 +253,16 @@ function createRenderHarness() {
     resolveFolderName: () => '',
     updateRowFolderBinding() {},
     refreshSidebarChatList() {},
+    getEditOverride() { return null; },
     buildReaderDOM(snap) {
       const root = new FakeNode(String(snap?.snapshotId || ''));
+      const turns = new FakeNode(`${root.snapshotId}-turns`);
+      root.appendChild(turns);
       roots.push(root);
-      studioHost.mount({ readerRoot: root, snapshot: snap });
+      studioHost.mount({ readerRoot: root, turnsEl: turns, scrollEl: turns, snapshot: snap });
       return root;
     },
+    refreshReaderOverlay(root, snap) { overlayRefreshes.push({ root, snap }); },
     renderReaderRouteMeta() {},
     setActiveSidebarChat() {},
     syncSelectionControls() {},
@@ -210,9 +271,15 @@ function createRenderHarness() {
   });
 
   const lifecycleFunctions = [
+    'getStudioChatRenderer',
     'studioHostUnmount',
     'studioHostUnmountPreservingRouteHash',
     'isCurrentReaderRoot',
+    'getReusableReaderMount',
+    'isReusableReaderMountCurrent',
+    'collectRendererEditOverrides',
+    'haveEquivalentRendererEditOverrides',
+    'canReuseReaderDOM',
     'renderReader',
   ].map((name) => extractFunction(studioSource, name)).join('\n');
   vm.runInContext(`${lifecycleFunctions}\nthis.renderReaderUnderTest = renderReader;\nthis.isCurrentReaderRootUnderTest = isCurrentReaderRoot;\nthis.leaveReaderUnderTest = studioHostUnmountPreservingRouteHash;`, sandbox);
@@ -232,6 +299,7 @@ function createRenderHarness() {
     state,
     hostState,
     roots,
+    overlayRefreshes,
     location,
     history,
     events,
@@ -247,7 +315,8 @@ function createRouteHashHarness() {
   let unmounts = 0;
   const W = { location, history, H2O: { studioHost: {} } };
   const document = { getElementById: () => readerEl };
-  const sandbox = vm.createContext({ W, document, String, Object });
+  const state = { currentReaderEditOverrides: [] };
+  const sandbox = vm.createContext({ W, document, state, String, Object });
   sandbox.W.H2O.studioHost.unmount = () => {
     unmounts += 1;
     location.pathname = '/studio.html';
@@ -316,13 +385,79 @@ await check('same snapshot refresh converges on one current transcript', async (
 
   assert.equal(h.readerEl.children.length, 1);
   assert.equal(h.readerEl.children[0].snapshotId, 'A');
-  assert.notEqual(h.readerEl.children[0], firstRoot, 'rebuild may replace node identity');
-  assert.equal(firstRoot.isConnected, false, 'previous root must be disconnected');
+  assert.equal(h.readerEl.children[0], firstRoot, 'equivalent refresh must preserve root identity');
+  assert.equal(firstRoot.isConnected, true);
   assert.equal(h.hostState.root, h.readerEl.children[0]);
   assert.equal(h.hostState.snapshot.snapshotId, 'A');
+  assert.equal(h.hostState.mountCount, 1, 'equivalent refresh must not remount S0D3e');
+  assert.equal(h.overlayRefreshes.length, 1, 'fast refresh must refresh downstream Overlay projection');
   assert.equal(h.state.currentReaderSnapshot.snapshotId, 'A');
   assert.equal(h.state.currentReaderSnapshot.meta.folderId, 'folder-1');
   assert.equal(JSON.stringify(source), before, 'folder projection must not mutate loaded snapshot');
+});
+
+await check('same-ID Renderer-visible changes always replace the mounted transcript', async () => {
+  const variants = [
+    ['canonical text', (snap) => { snap.messages[0].text = 'changed text'; }],
+    ['canonical role', (snap) => { snap.messages[0].role = 'system'; }],
+    ['attachment', (snap) => { snap.messages[0].attachments = [{ kind: 'image', alt: 'changed' }]; }],
+    ['rich HTML', (snap) => {
+      snap.richTurns = [{ turnIdx: 1, role: 'user', outerHTML: '<article>changed</article>' }];
+    }],
+  ];
+  for (const [label, mutate] of variants) {
+    const h = createRenderHarness();
+    const initial = makeSnapshot('A');
+    h.setLoad('A', initial);
+    await h.renderReader('A');
+    const firstRoot = h.readerEl.children[0];
+    const changed = structuredClone(initial);
+    mutate(changed);
+    h.setLoad('A', changed);
+    await h.renderReader('A');
+    assert.notEqual(h.readerEl.children[0], firstRoot, `${label} change must replace the root`);
+    assert.equal(firstRoot.isConnected, false, `${label} change must detach the previous root`);
+    assert.equal(h.hostState.mountCount, 2, `${label} change must remount S0D3e`);
+  }
+});
+
+await check('equivalent fast refresh publishes the fresh snapshot without mutation', async () => {
+  const h = createRenderHarness();
+  const initial = makeSnapshot('A');
+  h.setLoad('A', initial);
+  await h.renderReader('A');
+  const root = h.readerEl.children[0];
+  const fresh = structuredClone(initial);
+  fresh.meta.category = { id: 'surrounding-only' };
+  const before = JSON.stringify(fresh);
+  h.setLoad('A', fresh);
+  await h.renderReader('A');
+  assert.equal(h.readerEl.children[0], root);
+  assert.equal(h.state.currentReaderSnapshot, fresh, 'fresh loaded snapshot object must become current');
+  assert.equal(JSON.stringify(fresh), before, 'fast refresh must not mutate the loaded snapshot');
+});
+
+await check('detached or stale host roots reject otherwise-equivalent fast refresh', async () => {
+  const detached = createRenderHarness();
+  detached.setLoad('A', makeSnapshot('A'));
+  await detached.renderReader('A');
+  const detachedRoot = detached.readerEl.children[0];
+  detachedRoot.setConnected(false);
+  await detached.renderReader('A');
+  assert.notEqual(detached.readerEl.children[0], detachedRoot, 'detached root must be rebuilt');
+  assert.equal(detached.hostState.mountCount, 2);
+
+  const stale = createRenderHarness();
+  stale.setLoad('A', makeSnapshot('A'));
+  await stale.renderReader('A');
+  const staleRoot = stale.readerEl.children[0];
+  const unrelatedTurns = new FakeNode('unrelated-turns');
+  unrelatedTurns.setConnected(true);
+  stale.hostState.turns = unrelatedTurns;
+  stale.hostState.scroll = unrelatedTurns;
+  await stale.renderReader('A');
+  assert.notEqual(stale.readerEl.children[0], staleRoot, 'stale host references must force rebuild');
+  assert.equal(stale.hostState.mountCount, 2);
 });
 
 await check('A to B replacement leaves only B active', async () => {
@@ -342,6 +477,8 @@ await check('A to B replacement leaves only B active', async () => {
 
 await check('rapid A to B race rejects stale late A result', async () => {
   const h = createRenderHarness();
+  h.setLoad('A', makeSnapshot('A'));
+  await h.renderReader('A');
   const a = deferred();
   const b = deferred();
   h.setLoad('A', a.promise);
@@ -357,11 +494,13 @@ await check('rapid A to B race rejects stale late A result', async () => {
   assert.equal(h.readerEl.children.length, 1);
   assert.equal(h.readerEl.children[0].snapshotId, 'B');
   assert.equal(h.state.currentReaderSnapshot.snapshotId, 'B');
-  assert.equal(h.hostState.mountCount, 1, 'stale A must never mount');
+  assert.equal(h.hostState.mountCount, 2, 'stale refreshed A must never reuse or remount after B');
 });
 
 await check('Reader to non-Reader race invalidates the pending Reader result', async () => {
   const h = createRenderHarness();
+  h.setLoad('A', makeSnapshot('A'));
+  await h.renderReader('A');
   const a = deferred();
   h.setLoad('A', a.promise);
   const renderA = h.renderReader('A');
@@ -370,7 +509,7 @@ await check('Reader to non-Reader race invalidates the pending Reader result', a
   a.resolve(makeSnapshot('A'));
   await renderA;
   assert.equal(h.readerEl.children.length, 0);
-  assert.equal(h.hostState.mountCount, 0, 'late A must not mount after route leave');
+  assert.equal(h.hostState.mountCount, 1, 'late refreshed A must not reuse or remount after route leave');
   assert.equal(h.state.currentReaderSnapshot, null);
 });
 

@@ -96,8 +96,12 @@ function validateRendererInputContract() {
     'normalizeRendererMessage',
     'normalizeRendererMessages',
     'normalizeInput',
+    'haveEquivalentRendererAttachments',
+    'haveEquivalentRendererMessages',
+    'haveEquivalentRendererRichTurns',
+    'isRenderEquivalent',
   ].map((name) => extractFunction(rendererSource, name)).join('\n');
-  vm.runInContext(`${helpers}\nthis.normalizeRendererInput = normalizeInput;`, sandbox);
+  vm.runInContext(`${helpers}\nthis.normalizeRendererInput = normalizeInput;\nthis.isRenderEquivalent = isRenderEquivalent;`, sandbox);
 
   const source = {
     snapshotId: 'snap-1',
@@ -185,6 +189,55 @@ function validateRendererInputContract() {
   assert.equal(metadataFree.messages[0].text, '');
   assert.deepEqual(JSON.parse(JSON.stringify(metadataFree)), JSON.parse(JSON.stringify(metadataFreeAgain)),
     'incomplete metadata must produce deterministic normalized output');
+
+  const equivalentBase = {
+    snapshotId: 'equivalent-snapshot',
+    chatId: 'equivalent-chat',
+    meta: { title: 'Equivalent', projectId: 'project-a', turnCreateTimes: { 1: 101, 2: 202 } },
+    messages: [
+      {
+        role: 'user', text: 'question', messageId: 'message-1', turnId: 'turn-1',
+        attachments: [{ kind: 'image', thumbnailSrc: 'https://example.com/a.png', alt: 'A', naturalWidth: 20 }],
+      },
+      { role: 'assistant', text: 'answer', messageId: 'message-2', turnId: 'turn-2' },
+    ],
+    richTurns: [
+      { turnIdx: 1, role: 'user', messageId: 'message-1', turnId: 'turn-1', outerHTML: '<article>User</article>' },
+      { turnIdx: 2, role: 'assistant', messageId: 'message-2', turnId: 'turn-2', outerHTML: '<article>Assistant</article>' },
+    ],
+  };
+  const equivalentBefore = JSON.stringify(equivalentBase);
+  const sameWithIrrelevantMetadata = structuredClone(equivalentBase);
+  sameWithIrrelevantMetadata.meta.folderId = 'folder-does-not-render';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, sameWithIrrelevantMetadata), true,
+    'non-Renderer folder metadata must not force base transcript replacement');
+
+  const changedText = structuredClone(equivalentBase);
+  changedText.messages[1].text = 'changed answer';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, changedText), false,
+    'same-ID changed canonical text must require a full render');
+
+  const changedRole = structuredClone(equivalentBase);
+  changedRole.messages[1].role = 'tool';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, changedRole), false,
+    'same-ID changed canonical role must require a full render');
+
+  const changedAttachment = structuredClone(equivalentBase);
+  changedAttachment.messages[0].attachments[0].alt = 'Changed alternative';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, changedAttachment), false,
+    'same-ID changed visible attachment data must require a full render');
+
+  const changedRichHtml = structuredClone(equivalentBase);
+  changedRichHtml.richTurns[1].outerHTML = '<article>Changed assistant</article>';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, changedRichHtml), false,
+    'same-ID changed rich HTML must require a full render');
+
+  const changedIdentity = structuredClone(equivalentBase);
+  changedIdentity.snapshotId = 'different-snapshot';
+  assert.equal(sandbox.isRenderEquivalent(equivalentBase, changedIdentity), false,
+    'different snapshot identity must not reuse the mounted Reader');
+  assert.equal(JSON.stringify(equivalentBase), equivalentBefore,
+    'render-equivalence checks must not mutate source snapshots');
 }
 
 class FakeElement {
