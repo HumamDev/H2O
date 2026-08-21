@@ -2,7 +2,7 @@
 // Validator for the Studio canonical-renderer markdown-image support (Phase 2A).
 //
 // Loads `esc`, `normalizeSafeMarkdownHref`, and `renderInlineMarkdown` out of
-// `src-surfaces-base/studio/studio.js` via a node:vm sandbox and runs
+// the canonical Studio Chat Renderer module via a node:vm sandbox and runs
 // behavioural assertions on each. Pattern matches the existing string + AST-
 // light validator style in tools/validation/studio/ (no jsdom, no bundler).
 //
@@ -25,8 +25,8 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
-const STUDIO_JS_REL = 'src-surfaces-base/studio/studio.js';
-const STUDIO_JS_ABS = path.join(REPO_ROOT, STUDIO_JS_REL);
+const RENDERER_JS_REL = 'src-surfaces-base/studio/renderer/chat-renderer.studio.js';
+const RENDERER_JS_ABS = path.join(REPO_ROOT, RENDERER_JS_REL);
 
 // Extract function source by name. The three helpers we load (esc,
 // normalizeSafeMarkdownHref, renderInlineMarkdown) contain balanced braces
@@ -55,7 +55,7 @@ function extractFunction(source, name) {
   throw new Error(`extractFunction: unterminated body for '${name}'`);
 }
 
-const source = fs.readFileSync(STUDIO_JS_ABS, 'utf8');
+const source = fs.readFileSync(RENDERER_JS_ABS, 'utf8');
 const escSrc = extractFunction(source, 'esc');
 const normSrc = extractFunction(source, 'normalizeSafeMarkdownHref');
 const renderSrc = extractFunction(source, 'renderInlineMarkdown');

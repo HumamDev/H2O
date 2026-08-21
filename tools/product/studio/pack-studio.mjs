@@ -148,6 +148,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // H2O.Studio.html.sanitize. Must precede the saved-chat package projector,
   // which delegates sanitization to it.
   "platform/html-sanitizer.js",
+  // Canonical base transcript Renderer. Loaded by studio.html after the shared
+  // sanitizer and before studio.js Reader orchestration.
+  "renderer/chat-renderer.studio.js",
   // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
   // API only; no UI, import/recovery, sync transport, or CAS implementation.
   "ingestion/saved-chat-package-v1.tauri.js",
@@ -1345,6 +1348,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/import-bundle.tauri.js",
   "ingestion/export-bundle.tauri.js",
   "platform/html-sanitizer.js",
+  "renderer/chat-renderer.studio.js",
   "ingestion/saved-chat-package-v1.tauri.js",
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",

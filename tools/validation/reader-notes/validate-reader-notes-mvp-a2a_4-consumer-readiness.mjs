@@ -17,6 +17,7 @@ const DOM_REL = 'src-surfaces-base/studio/reader-notes/anchor-resolver-dom.studi
 const A1_LIBRARY_REL = 'src-surfaces-base/studio/reader-notes/library-item-view.studio.js';
 const A1_ANNOTATION_REL = 'src-surfaces-base/studio/reader-notes/annotation-facade.studio.js';
 const STUDIO_JS_REL = 'src-surfaces-base/studio/studio.js';
+const RENDERER_JS_REL = 'src-surfaces-base/studio/renderer/chat-renderer.studio.js';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const EVIDENCE_REL = 'release-evidence/2026-07-01/reader-notes-a2a4-consumer-readiness.md';
@@ -473,16 +474,23 @@ check('repo source evidence confirms 3H1a msgEl-relative nested anchor model', (
 
 check('repo source evidence confirms saved-reader message root conventions', () => {
   const studio = read(STUDIO_JS_REL);
+  const renderer = read(RENDERER_JS_REL);
   for (const token of [
     'function buildReaderDOM',
-    'root.className = "cgFrame"',
-    'root.dataset.chatId',
-    'data-testid="conversation-turns"',
-    'wrap.setAttribute("data-message-author-role", role)',
-    'wrap.setAttribute("data-message-id", String(meta.messageId))',
+    'renderer.normalizeInput(snap)',
+    'renderer.render(rendererInput, { getEditOverride })',
     "const root = turn.querySelector('[data-message-author-role], [data-message-id]') || turn",
   ]) {
-    has(studio, token, 'studio.js reader DOM convention');
+    has(studio, token, 'studio.js Reader orchestration convention');
+  }
+  for (const token of [
+    'root.className = "cgFrame"',
+    'root.dataset.chatId',
+    'const TURNS_TESTID = TESTIDS.CONVERSATION_TURNS || "conversation-turns"',
+    'wrap.setAttribute(ROLE_ATTR, role)',
+    'wrap.setAttribute(MESSAGE_ID_ATTR, String(meta.messageId))',
+  ]) {
+    has(renderer, token, 'Renderer reader DOM convention');
   }
 });
 

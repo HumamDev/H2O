@@ -645,6 +645,9 @@
        H2O.Studio.html.sanitize. Must load BEFORE the saved-chat package
        projector, which delegates its sanitization here. Interim regex+CSP. -->
   <script src="./platform/html-sanitizer.js"></script>
+  <!-- Canonical base transcript Renderer. Loads after the shared sanitizer
+       and selector contract, and before studio.js Reader orchestration. -->
+  <script src="./renderer/chat-renderer.studio.js"></script>
   <!-- Desktop-only: saved-chat package v1 projector/writer. Private API
        only; reads through H2O.Studio.store adapters and writes deterministic
        projection files only when explicitly invoked. No UI, import, sync, or

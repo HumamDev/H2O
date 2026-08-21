@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Focused regression coverage for the Phase 2 Studio renderer contract repair.
+// Focused regression coverage for the Studio renderer contract and extracted
+// Phase 3 module boundary.
 // Uses small DOM seams around the real renderer functions so the validator stays
 // dependency-free while exercising role fidelity, rich success/fallback state,
 // shared sanitization order, and assistant-only collection.
@@ -13,6 +14,8 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const STUDIO_REL = 'src-surfaces-base/studio/studio.js';
+const RENDERER_REL = 'src-surfaces-base/studio/renderer/chat-renderer.studio.js';
+const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const ARCHIVE_REL = 'src-surfaces-base/studio/S0D3a. 🎬 Transcript Archive Engine - Studio.js';
 const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 
@@ -37,6 +40,8 @@ function extractFunction(source, name) {
 }
 
 const studioSource = readRepo(STUDIO_REL);
+const rendererSource = readRepo(RENDERER_REL);
+const studioHtmlSource = readRepo(STUDIO_HTML_REL);
 const archiveSource = readRepo(ARCHIVE_REL);
 const roleContract = {
   USER: 'user',
@@ -52,9 +57,7 @@ function loadFunction(source, name, globals = {}) {
 }
 
 function validateRoleFidelity() {
-  const studio = loadFunction(studioSource, 'normalizeRole', {
-    W: { H2O: { Studio: { SELECTORS: { ROLES: roleContract } } } },
-  }).fn;
+  const studio = loadFunction(rendererSource, 'normalizeRole', { ROLES: roleContract }).fn;
   const archive = loadFunction(archiveSource, 'normalizeRole', {
     H2O: { Studio: { SELECTORS: { ROLES: roleContract } } },
   }).fn;
@@ -67,6 +70,71 @@ function validateRoleFidelity() {
   assert.equal(archive('TOOL'), 'tool', 'S0D3a role normalization must remain case-insensitive');
   assert.equal(studio('unknown'), 'assistant', 'unknown Studio roles retain the legacy assistant fallback');
   assert.equal(archive('unknown'), 'assistant', 'unknown S0D3a roles retain the legacy assistant fallback');
+}
+
+function validateRendererInputContract() {
+  const sandbox = vm.createContext({
+    NORMALIZED_INPUT: Symbol('renderer-input'),
+    ROLES: roleContract,
+    String,
+    Number,
+    Array,
+    Object,
+  });
+  const helpers = [
+    'resolveSnapshotTurnCreateTime',
+    'normalizeRole',
+    'normalizeAttachmentRecord',
+    'normalizeAttachments',
+    'normalizeRichTurns',
+    'normalizeRendererMessage',
+    'normalizeInput',
+  ].map((name) => extractFunction(rendererSource, name)).join('\n');
+  vm.runInContext(`${helpers}\nthis.normalizeRendererInput = normalizeInput;`, sandbox);
+
+  const source = {
+    snapshotId: 'snap-1',
+    chatId: 'chat-1',
+    meta: {
+      title: 'Contract chat',
+      projectId: 'project-1',
+      turnCreateTimes: { 2: 42 },
+      richTurns: [{ turnIdx: 1, role: 'system', outerHTML: '<section></section>' }],
+    },
+    messages: [
+      { order: 4, role: 'user', text: 'u', messageId: 'm-u' },
+      { order: 1, role: 'assistant', text: 'a', turnId: 't-a' },
+      { order: 3, role: 'system', text: 's' },
+      { order: 2, role: 'tool', text: 't' },
+    ],
+  };
+  const before = JSON.stringify(source);
+  const input = sandbox.normalizeRendererInput(source);
+
+  assert.deepEqual(Array.from(input.messages, (row) => row.role),
+    ['user', 'assistant', 'system', 'tool'],
+    'normalized Renderer input must preserve all four roles and source order');
+  assert.equal(input.messages[1].createTime, 42, 'metadata timestamp projection must survive normalization');
+  assert.equal(input.messages[0].messageId, 'm-u');
+  assert.equal(input.messages[1].turnId, 't-a');
+  assert.equal(input.richTurns[0].role, 'system');
+  assert.equal(input.title, 'Contract chat');
+  assert.equal(input.projectId, 'project-1');
+  assert.equal(JSON.stringify(source), before, 'Renderer normalization must not mutate the saved snapshot');
+  assert.notEqual(input.messages, source.messages, 'Renderer input must be logically detached from platform records');
+
+  const desktopShape = {
+    snapshotId: source.snapshotId,
+    chatId: source.chatId,
+    metadata: source.meta,
+    messages: source.messages,
+  };
+  const desktopInput = sandbox.normalizeRendererInput(desktopShape);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(desktopInput)),
+    JSON.parse(JSON.stringify(input)),
+    'meta and metadata source projections must converge on one logical Renderer input'
+  );
 }
 
 class FakeElement {
@@ -103,14 +171,14 @@ function createRichMountHarness() {
     applyEditedMessageBody() {},
     attachUserAttachmentsToTurn: (host) => attachedUsers.push(host),
   };
-  const { fn } = loadFunction(studioSource, 'mountRichTurns', globals);
+  const { fn } = loadFunction(rendererSource, 'mountRichTurns', globals);
   return { fn, decorated, attachedUsers };
 }
 
 function runRichMount(fn, rows) {
   const appended = [];
   const container = { appendChild: (host) => appended.push(host) };
-  const result = fn(container, rows, '', { messages: [] });
+  const result = fn(container, rows, '', { messages: [] }, { getEditOverride: () => null });
   return { result, appended };
 }
 
@@ -199,7 +267,7 @@ function validateSharedSanitizerOrder() {
     cleanReaderUserTextNodeLeaks() {},
     neutralizeExternalUseHrefs() {},
   });
-  vm.runInContext(`${extractFunction(studioSource, 'sanitizeRichTurnElement')}\nthis.sanitizeRichTurnElementResult = sanitizeRichTurnElement;`, sandbox);
+  vm.runInContext(`${extractFunction(rendererSource, 'sanitizeRichTurnElement')}\nthis.sanitizeRichTurnElementResult = sanitizeRichTurnElement;`, sandbox);
 
   const unsafe = '<section data-testid="conversation-turn" onclick="evil()">'
     + '<div data-message-author-role="user"><script>evil()</script>'
@@ -240,23 +308,15 @@ class FakeRoot {
   querySelector(selector) { return selector === '.cgScroll' ? this.scroll : null; }
 }
 
-function createBuildReaderHarness(richResult) {
+function createRendererBuildHarness(richResult) {
   let canonicalCalls = 0;
-  let hostMount = null;
   const sandbox = {
     document: {
       createElement: () => new FakeRoot(),
-      querySelector: () => null,
     },
-    W: {
-      H2O: {
-        Studio: {
-          ingestion: { appendSavedChatArchiveStatusBadgeV1() {} },
-        },
-        studioHost: { mount: (options) => { hostMount = options; } },
-      },
-    },
-    normalizeRichTurns: (rows) => Array.isArray(rows) ? rows : [],
+    Element: FakeScroll,
+    TURNS_TESTID: 'conversation-turns',
+    normalizeInput: (input) => input,
     mountRichTurns: (container) => {
       for (let i = 0; i < richResult.mountedTurnCount; i += 1) container.appendChild({ kind: 'rich' });
       return richResult;
@@ -266,57 +326,76 @@ function createBuildReaderHarness(richResult) {
       for (const row of snap.messages || []) container.appendChild({ kind: 'canonical', role: row.role });
       return (snap.messages || []).filter((row) => row.role === 'assistant').map(() => ({ role: 'assistant' }));
     },
-    syncReaderTopOffset() {},
-    setTimeout() {},
     Promise,
     String,
     Array,
     Object,
   };
-  const { fn } = loadFunction(studioSource, 'buildReaderDOM', sandbox);
+  const { fn } = loadFunction(rendererSource, 'render', sandbox);
   return {
     fn,
     getCanonicalCalls: () => canonicalCalls,
-    getHostMount: () => hostMount,
   };
 }
 
 function validateBuildFallbackDecision() {
   {
-    const h = createBuildReaderHarness({ mountedTurnCount: 1, assistantTurnEls: [], fallbackRequired: false });
-    const root = h.fn({ chatId: 'user-only', meta: { richTurns: [{ role: 'user' }] }, messages: [{ role: 'user' }] });
-    assert.equal(root.scroll.children.length, 1, 'rich user-only build must render exactly one turn');
+    const h = createRendererBuildHarness({ mountedTurnCount: 1, assistantTurnEls: [], fallbackRequired: false });
+    const result = h.fn({ chatId: 'user-only', title: 'User only', projectId: '', snapshotId: '', richTurns: [{ role: 'user' }], messages: [{ role: 'user' }] });
+    assert.equal(result.turnsEl.children.length, 1, 'rich user-only build must render exactly one turn');
     assert.equal(h.getCanonicalCalls(), 0, 'rich user-only build must not enter canonical fallback');
-    assert.equal(root.scroll.classList.contains('is-rich'), true);
+    assert.equal(result.turnsEl.classList.contains('is-rich'), true);
+    assert.equal(result.renderMode, 'rich');
   }
 
   {
-    const h = createBuildReaderHarness({ mountedTurnCount: 2, assistantTurnEls: [], fallbackRequired: false });
-    const root = h.fn({ chatId: 'zero-assistant', meta: { richTurns: [{ role: 'system' }, { role: 'tool' }] }, messages: [{ role: 'system' }, { role: 'tool' }] });
-    assert.equal(root.scroll.children.length, 2);
+    const h = createRendererBuildHarness({ mountedTurnCount: 2, assistantTurnEls: [], fallbackRequired: false });
+    const result = h.fn({ chatId: 'zero-assistant', title: '', projectId: '', snapshotId: '', richTurns: [{ role: 'system' }, { role: 'tool' }], messages: [{ role: 'system' }, { role: 'tool' }] });
+    assert.equal(result.turnsEl.children.length, 2);
     assert.equal(h.getCanonicalCalls(), 0, 'valid zero-assistant rich build must not enter canonical fallback');
   }
 
   {
-    const h = createBuildReaderHarness({ mountedTurnCount: 0, assistantTurnEls: [], fallbackRequired: true });
-    const root = h.fn({ chatId: 'fallback', meta: { richTurns: [{ role: 'user' }] }, messages: [{ role: 'user' }, { role: 'assistant' }] });
+    const h = createRendererBuildHarness({ mountedTurnCount: 0, assistantTurnEls: [], fallbackRequired: true });
+    const result = h.fn({ chatId: 'fallback', title: '', projectId: '', snapshotId: '', richTurns: [{ role: 'user' }], messages: [{ role: 'user' }, { role: 'assistant' }] });
     assert.equal(h.getCanonicalCalls(), 1, 'genuine rich failure must activate canonical fallback');
-    assert.equal(root.scroll.children.length, 2);
-    assert.equal(root.scroll.classList.contains('is-rich'), false);
+    assert.equal(result.turnsEl.children.length, 2);
+    assert.equal(result.turnsEl.classList.contains('is-rich'), false);
+    assert.equal(result.renderMode, 'canonical');
   }
 
   {
     const assistant = { role: 'assistant' };
-    const h = createBuildReaderHarness({ mountedTurnCount: 4, assistantTurnEls: [assistant], fallbackRequired: false });
-    h.fn({ chatId: 'roles', meta: { richTurns: [{}, {}, {}, {}] }, messages: [] });
-    assert.equal(h.getHostMount().assistantTurnEls.length, 1);
-    assert.equal(h.getHostMount().assistantTurnEls[0], assistant, 'downstream host must receive the assistant-only collection');
+    const h = createRendererBuildHarness({ mountedTurnCount: 4, assistantTurnEls: [assistant], fallbackRequired: false });
+    const result = h.fn({ chatId: 'roles', title: '', projectId: '', snapshotId: '', richTurns: [{}, {}, {}, {}], messages: [] });
+    assert.equal(result.assistantTurnEls.length, 1);
+    assert.equal(result.assistantTurnEls[0], assistant, 'Renderer result must expose the assistant-only collection');
   }
 }
 
+function validateExtractedRendererBoundary() {
+  const sanitizerTag = '<script src="./platform/html-sanitizer.js"></script>';
+  const rendererTag = '<script src="./renderer/chat-renderer.studio.js"></script>';
+  const studioTag = '<script src="./studio.js?v=2.5.80"></script>';
+  assert.ok(studioHtmlSource.indexOf(sanitizerTag) < studioHtmlSource.indexOf(rendererTag),
+    'Renderer module must load after the shared sanitizer');
+  assert.ok(studioHtmlSource.indexOf(rendererTag) < studioHtmlSource.indexOf(studioTag),
+    'Renderer module must load before studio.js orchestration');
+  assert.match(rendererSource, /Studio\.chatRenderer\s*=\s*Object\.freeze/,
+    'Renderer module must install the canonical Studio API');
+  assert.match(studioSource, /renderer\.normalizeInput\(snap\)/,
+    'studio.js must normalize snapshots through the Renderer boundary');
+  assert.match(studioSource, /renderer\.render\(rendererInput,\s*\{\s*getEditOverride\s*\}\)/,
+    'studio.js must construct transcripts through the Renderer boundary');
+  assert.doesNotMatch(studioSource, /function\s+(mountRichTurns|buildCanonicalConversation|renderTextAsChatGPTBlocks)\s*\(/,
+    'studio.js must not retain extracted Renderer implementations');
+}
+
 validateRoleFidelity();
+validateRendererInputContract();
 validateRichMountContract();
 validateSharedSanitizerOrder();
 validateBuildFallbackDecision();
+validateExtractedRendererBoundary();
 
 console.log('Studio renderer contract repair validation passed');
