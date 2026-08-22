@@ -124,11 +124,13 @@ const P3C_INTEGRATION_AUTHORIZED_PATHS = Object.freeze([
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
 const STUDIO_PUBLICATION_BASE_HEAD = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
+const STUDIO_PUBLICATION_AUTHORITY_HEAD = "0689b7ac01119c7662953aa48feff7705e677da6";
 const STUDIO_PUBLICATION_AUTHORITY_PATHS = Object.freeze([
   PUBLISHER_REL, ACTIVATOR_REL, PAYLOAD_MODULE_REL,
   "tools/validation/publish/validate-lean-publisher-v1.mjs",
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
+const STUDIO_VALIDATOR_SYNC_PATHS = Object.freeze([VALIDATOR_REL]);
 const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation";
 // Current-main activator baseline. Protected publication authority remained
 // unchanged while main advanced through later non-publish repository work.
@@ -151,13 +153,13 @@ const BATCH11_VALIDATOR_SHA256 = "c8a1abd5c21a9328dc13a8bf19aba508ab476095d9e988
 // invisible. Main commit 0bec56f5 ("feat(publish): allow clean worktree staging
 // authority") advanced the publisher, so the two roles are now pinned separately:
 // BASE_HEAD immutability above, executed-fixture bytes here.
-const SYNCED_PUBLISHER_SHA256 = "3c3ab95938c45ffe212a9f8d221ff8923bc75c030e522c9eff74a0ae215a302b";
+const SYNCED_PUBLISHER_SHA256 = "de4a1f5d1ecde209b127f908c057a3f5b6f233cdfc69b930b636677f91979ae3";
 const ACCEPTED_ACTIVATOR_SHA256 = "531bb4e9b5d7d61584e013d0d10c8007c78f75498988ba64bac4d24a8d4f2f36";
 const REQUIRED_FILES = Object.freeze([
   "manifest.json", "loader.js", "bg.js", "title-contract-bridge.js",
   "provider/identity-provider-supabase.js",
 ]);
-const EXPECTED_SCOPE = 62;
+const EXPECTED_SCOPE = 63;
 const EXPECTED_RUNTIME = 229;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
@@ -364,6 +366,12 @@ function classifyScope(state) {
     value.staged.length === 0 && value.untracked.length === 0 &&
     JSON.stringify(value.modifiedTracked) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS);
   if (studioPublicationRound) return "studio-publication-authority-uncommitted";
+  const studioValidatorSync = value.head === STUDIO_PUBLICATION_AUTHORITY_HEAD &&
+    value.staged.length === 0 && value.untracked.length === 0 && value.missingFinal.length === 0 &&
+    JSON.stringify(value.modifiedTracked) === JSON.stringify(STUDIO_VALIDATOR_SYNC_PATHS) &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS) &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (studioValidatorSync) return "studio-validator-sync-uncommitted";
   const dirty = JSON.stringify(value.modifiedTracked) === JSON.stringify([PACKAGE_REL]) &&
     JSON.stringify(value.untracked) === JSON.stringify([ACTIVATOR_REL, VALIDATOR_REL].sort()) &&
     JSON.stringify(value.finalPaths) === JSON.stringify(AUTHORIZED_PATHS);
@@ -1320,6 +1328,29 @@ function runScopeTests() {
       staged: [], untracked: [],
     })), "studio-publication-authority-uncommitted");
   });
+  scopeTest("exact CP08 activator-validator synchronization is admitted and adjacent states reject", () => {
+    const accepted = {
+      head: STUDIO_PUBLICATION_AUTHORITY_HEAD,
+      modifiedTracked: [...STUDIO_VALIDATOR_SYNC_PATHS],
+      staged: [], untracked: [],
+      committedPaths: [...STUDIO_PUBLICATION_AUTHORITY_PATHS],
+      trackedFinal: [...FINAL_PATHS], missingFinal: [],
+    };
+    assert.equal(classifyScope(baseDirtyScope(accepted)), "studio-validator-sync-uncommitted");
+    for (const override of [
+      { modifiedTracked: [PUBLISHER_REL, VALIDATOR_REL].sort() },
+      { modifiedTracked: [PUBLISHER_REL] },
+      { modifiedTracked: [ACTIVATOR_REL] },
+      { modifiedTracked: [PAYLOAD_MODULE_REL] },
+      { modifiedTracked: [PAYLOAD_VALIDATOR_REL] },
+      { head: STUDIO_PUBLICATION_BASE_HEAD },
+      { untracked: ["foreign-publication-file.mjs"] },
+      { staged: [VALIDATOR_REL] },
+    ]) {
+      assert.throws(() => classifyScope(baseDirtyScope({ ...accepted, ...override })),
+        /scope mismatch|rejects staged/u);
+    }
+  });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
 
@@ -1358,7 +1389,7 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-integration-uncommitted", "p3c-integration-committed",
     "current-baseline-uncommitted", "current-baseline-committed",
     "classifier-durability-uncommitted", "historical-intent-fix-uncommitted",
-    "studio-publication-authority-uncommitted"]
+    "studio-publication-authority-uncommitted", "studio-validator-sync-uncommitted"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }

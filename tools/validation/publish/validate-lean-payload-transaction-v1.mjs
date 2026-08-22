@@ -234,12 +234,15 @@ const R2_PROTECTED_IDENTITIES = Object.freeze({
   [ACTIVATOR_REL]: APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY,
 });
 const STUDIO_PUBLICATION_BASE_HEAD = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
+const STUDIO_PUBLICATION_AUTHORITY_HEAD = "0689b7ac01119c7662953aa48feff7705e677da6";
+const STUDIO_PUBLICATION_AUTHORITY_SUBJECT =
+  "feat(publish): govern Studio launcher promotion and rollback";
 const STUDIO_PUBLICATION_AUTHORITY_PATHS = Object.freeze([
   "tools/publish/lean-publisher.mjs", ACTIVATOR_REL, PAYLOAD_MODULE_REL,
   "tools/validation/publish/validate-lean-publisher-v1.mjs",
   VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
 ].sort());
-const EXPECTED_SCOPE = 30;
+const EXPECTED_SCOPE = 32;
 const EXPECTED_RUNTIME = 140;
 const EXPECTED_STRUCTURAL = 25;
 
@@ -582,6 +585,17 @@ function classifyPayloadScope(state) {
   if (value.head === STUDIO_PUBLICATION_BASE_HEAD && value.untracked.length === 0 &&
       JSON.stringify(value.modifiedTracked) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS)) {
     return "studio-publication-authority-uncommitted";
+  }
+  const committedStudioPublicationAuthority =
+    value.head === STUDIO_PUBLICATION_AUTHORITY_HEAD &&
+    value.parent === STUDIO_PUBLICATION_BASE_HEAD &&
+    value.subject === STUDIO_PUBLICATION_AUTHORITY_SUBJECT &&
+    value.modifiedTracked.length === 0 && value.staged.length === 0 &&
+    value.untracked.length === 0 && value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    JSON.stringify(value.committedPaths) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS);
+  if (committedStudioPublicationAuthority) {
+    return "studio-publication-authority-committed";
   }
   const base = value.head === ACCEPTED_P23_HEAD && value.subject === P23_SUBJECT;
   if (base && value.modifiedTracked.length === 0 &&
@@ -1752,6 +1766,40 @@ function runScopeTests() {
       modifiedTracked: [...STUDIO_PUBLICATION_AUTHORITY_PATHS],
       staged: [], untracked: [],
     })), "studio-publication-authority-uncommitted");
+  });
+  const committedStudioPublicationScope = (overrides = {}) => baseScope({
+    head: STUDIO_PUBLICATION_AUTHORITY_HEAD,
+    parent: STUDIO_PUBLICATION_BASE_HEAD,
+    subject: STUDIO_PUBLICATION_AUTHORITY_SUBJECT,
+    branch: "main",
+    modifiedTracked: [], staged: [], untracked: [],
+    trackedFinal: [...FINAL_PATHS], missingFinal: [],
+    committedPaths: [...STUDIO_PUBLICATION_AUTHORITY_PATHS],
+    ...overrides,
+  });
+  scopeTest("exact committed Studio publication-authority transition is admitted", () => {
+    assert.equal(classifyPayloadScope(committedStudioPublicationScope()),
+      "studio-publication-authority-committed");
+  });
+  scopeTest("committed Studio publication authority rejects every adjacent history shape", () => {
+    for (const override of [
+      { head: "f".repeat(40) },
+      { parent: "e".repeat(40) },
+      { subject: "feat(publish): adjacent Studio publication" },
+      { committedPaths: STUDIO_PUBLICATION_AUTHORITY_PATHS.slice(1) },
+      { committedPaths: [...STUDIO_PUBLICATION_AUTHORITY_PATHS, "foreign.txt"] },
+      {
+        head: "d".repeat(40), parent: STUDIO_PUBLICATION_AUTHORITY_HEAD,
+        subject: "test(publish): arbitrary validator follow-up",
+        committedPaths: [PAYLOAD_VALIDATOR_REL],
+      },
+      { modifiedTracked: [PAYLOAD_MODULE_REL] },
+      { staged: [PAYLOAD_VALIDATOR_REL] },
+      { untracked: ["foreign.txt"] },
+    ]) {
+      assert.throws(() => classifyPayloadScope(committedStudioPublicationScope(override)),
+        /scope mismatch|rejects staged/u);
+    }
   });
   assert.equal(scopeResults.length, EXPECTED_SCOPE);
 }
