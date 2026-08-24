@@ -28,7 +28,7 @@
   var EXPORT_ROOT = 'H2O Studio Exports';
   var PACKAGE_SUFFIX = '.h2ochat';
   var TMP_SUFFIX_PREFIX = '.tmp-';
-  var SUPPORTED_SCHEMA_VERSIONS = [1, 2];
+  var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
 
   function detectTauri() {
     try {
@@ -54,6 +54,12 @@
   function getInspector() {
     var ins = H2O.Studio && H2O.Studio.archiveInspector;
     return (ins && typeof ins.inspectPackage === 'function') ? ins : null;
+  }
+
+  function getPackageRenderers() {
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
+    var renderers = ingestion.savedChatPackageRenderers;
+    return renderers && typeof renderers.renderV3ExportCompanions === 'function' ? renderers : null;
   }
 
   function getInvoke() {
@@ -262,9 +268,14 @@
     var files = [
       { role: 'manifest', path: 'manifest.json', sha256: '', byteLength: null },
       fileDescriptorFromManifest(manifest, 'snapshot', 'snapshot.json'),
-      fileDescriptorFromManifest(manifest, 'markdown', 'chat.md'),
-      fileDescriptorFromManifest(manifest, 'html', 'chat.html'),
     ];
+    var schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
+    /* Legacy exports copy their governed renderers byte-for-byte. V3 source
+     * packages do not declare them; they are derived in the export temp dir. */
+    if (schemaVersion === 1 || schemaVersion === 2) {
+      files.push(fileDescriptorFromManifest(manifest, 'markdown', 'chat.md'));
+      files.push(fileDescriptorFromManifest(manifest, 'html', 'chat.html'));
+    }
     asArray(manifest.assets).forEach(function (asset, index) {
       files.push(assetDescriptorFromManifest(asset, index));
     });
@@ -280,7 +291,10 @@
 
   function isSupportedVersion(manifest) {
     var sv = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
-    return SUPPORTED_SCHEMA_VERSIONS.indexOf(sv) >= 0;
+    if (SUPPORTED_SCHEMA_VERSIONS.indexOf(sv) < 0) return false;
+    if (sv === 1) return manifest.payloadVersion == null;
+    var pv = isFiniteNumber(manifest.payloadVersion) ? manifest.payloadVersion : Number(manifest.payloadVersion);
+    return (sv === 2 && pv === 2) || (sv === 3 && pv === 3);
   }
 
   function contentHashExpected(manifest, fileHashes) {
@@ -290,6 +304,15 @@
       return normalizeSha(asset && asset.sha256);
     }).filter(Boolean).sort();
     var schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
+    if (schemaVersion === 3) {
+      var snapshotDescriptor = safeObject(safeObject(manifest.files).snapshot);
+      var logicalSnapshotSha = normalizeSha(snapshotDescriptor.contentSha256) || snapshotSha;
+      return sha256Prefixed(new TextEncoder().encode(canonicalJson({
+        payloadVersion: 3,
+        snapshot: logicalSnapshotSha,
+        assets: assets,
+      })));
+    }
     if (schemaVersion >= 2 && assets.length) {
       return sha256Prefixed(new TextEncoder().encode(canonicalJson({ snapshot: snapshotSha, assets: assets })));
     }
@@ -357,6 +380,7 @@
     var inspectStatus = cleanString(inspection && inspection.status);
     if (inspectStatus !== 'verified') {
       if (inspectStatus === 'unsupported-version') return { status: 'unsupported-version', reason: inspectStatus, inspection: inspection };
+      if (inspectStatus === 'unsupported-encoding') return { status: 'unsupported-encoding', reason: inspectStatus, inspection: inspection };
       if (inspectStatus === 'read-error') return { status: 'read-error', reason: inspectStatus, inspection: inspection };
       if (inspectStatus === 'corrupted' || inspectStatus === 'missing-files' || inspectStatus === 'hash-mismatch') {
         return { status: 'corrupted', reason: inspectStatus, inspection: inspection };
@@ -388,6 +412,7 @@
         });
       }
       var declared = declaredFilesFromManifest(verified.manifest);
+      var schemaVersion = isFiniteNumber(verified.manifest.schemaVersion) ? verified.manifest.schemaVersion : Number(verified.manifest.schemaVersion);
       return exportResult('export-ready', {
         packagePath: packagePath,
         exportName: dest.exportName,
@@ -396,7 +421,7 @@
         schemaVersion: verified.manifest.schemaVersion,
         payloadVersion: verified.manifest.payloadVersion,
         contentHash: verified.manifest.contentHash,
-        fileCount: declared.length,
+        fileCount: declared.length + (schemaVersion === 3 ? 2 : 0),
         assetCount: asArray(verified.manifest.assets).length,
         reason: 'verified and destination available',
       });
@@ -416,6 +441,36 @@
       expectedSha: desc.sha256,
       expectedByteLength: desc.byteLength,
     };
+  }
+
+  async function writeV3DerivedExportCompanions(manifest, copied, tempPath) {
+    var schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
+    if (schemaVersion !== 3) return [];
+    var snapshotDescriptor = safeObject(safeObject(manifest.files).snapshot);
+    if (cleanString(snapshotDescriptor.encoding) !== 'identity') {
+      throw new Error('v3 export supports identity snapshot encoding only before M03');
+    }
+    var snapshotCopy = null;
+    for (var i = 0; i < copied.length; i += 1) {
+      if (copied[i].relativePath === 'snapshot.json') { snapshotCopy = copied[i]; break; }
+    }
+    if (!snapshotCopy) throw new Error('verified v3 export is missing copied snapshot.json');
+    var snapshot = safeParseJson(decodeToText(snapshotCopy.bytes));
+    if (!snapshot || snapshot.schemaVersion !== 3) throw new Error('verified v3 snapshot.json is not renderable');
+    var renderers = getPackageRenderers();
+    if (!renderers) throw new Error('v3 export renderer capability unavailable');
+    var rendered = safeObject(renderers.renderV3ExportCompanions(snapshot));
+    if (typeof rendered.markdownText !== 'string' || typeof rendered.htmlText !== 'string') {
+      throw new Error('v3 export renderer returned an invalid result');
+    }
+    var companions = [
+      { relativePath: 'chat.md', bytes: new TextEncoder().encode(rendered.markdownText) },
+      { relativePath: 'chat.html', bytes: new TextEncoder().encode(rendered.htmlText) },
+    ];
+    for (var ci = 0; ci < companions.length; ci += 1) {
+      await fsWriteFile(joinPath(tempPath, companions[ci].relativePath), companions[ci].bytes, homeOptions());
+    }
+    return companions;
   }
 
   async function exportVerifiedPackage(options) {
@@ -448,6 +503,9 @@
         copied.push(await copyDeclaredFile(packagePath, tempPath, declared[i]));
       }
       var postCopy = await verifyCopiedFiles(verified.manifest, copied);
+      /* Derived v3 companions are intentionally outside manifest.files and
+       * contentHash. The source manifest is copied byte-for-byte and unchanged. */
+      var derivedCompanions = await writeV3DerivedExportCompanions(verified.manifest, copied, tempPath);
       await fsRename(tempPath, dest.destinationPath, { oldPathBaseDir: HOME_BASE_DIR, newPathBaseDir: HOME_BASE_DIR });
       tempPath = '';
       return exportResult('exported', {
@@ -458,7 +516,7 @@
         schemaVersion: verified.manifest.schemaVersion,
         payloadVersion: verified.manifest.payloadVersion,
         contentHash: postCopy.contentHash,
-        fileCount: copied.length,
+        fileCount: copied.length + derivedCompanions.length,
         assetCount: asArray(verified.manifest.assets).length,
         exportedAt: nowIso(),
         reason: 'exported to bounded Desktop export root',
@@ -491,6 +549,7 @@
     'destination-exists': { tone: 'warn', label: 'Destination exists', note: 'No overwrite was performed. Choose a different export name.' },
     'corrupted': { tone: 'block', label: 'Corrupted', note: 'Package failed verification and was not exported.' },
     'unsupported-version': { tone: 'warn', label: 'Unsupported version', note: 'Package version is outside the supported export range.' },
+    'unsupported-encoding': { tone: 'warn', label: 'Unsupported encoding', note: 'This package encoding is not enabled for export yet.' },
     'rejected': { tone: 'block', label: 'Rejected', note: 'Export was refused.' },
     'read-error': { tone: 'block', label: 'Read error', note: 'The source package could not be verified/read.' },
     'write-error': { tone: 'block', label: 'Write error', note: 'The export write did not complete.' },

@@ -34,7 +34,10 @@
   var STATUS_BLOCKED = 'blocked';
   var STATUS_EMPTY = 'empty';
   var STATUS_PARTIAL = 'partial';
+  /* Frozen legacy inventory. V3 dispatch is additive and must not reinterpret
+   * the v1/v2 required-file contract. */
   var REQUIRED_FILES = ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html'];
+  var REQUIRED_FILES_V3 = ['manifest.json', 'snapshot.json'];
 
   var state = {
     lastRunAt: null,
@@ -251,24 +254,58 @@
     return false;
   }
 
+  function requiredFilesForManifest(manifest) {
+    return manifest && manifest.schemaVersion === 3 ? REQUIRED_FILES_V3 : REQUIRED_FILES;
+  }
+
+  function addMissingRequiredFileIssues(diag, requiredFiles) {
+    var required = asArray(requiredFiles);
+    if (required.indexOf('manifest.json') >= 0 && !diag.manifestPresent) {
+      diag.blockers.push(makeIssue('manifest-missing', 'manifest.json is missing'));
+    }
+    if (required.indexOf('snapshot.json') >= 0 && !diag.snapshotPresent) {
+      diag.blockers.push(makeIssue('snapshot-missing', 'snapshot.json is missing'));
+    }
+    if (required.indexOf('chat.md') >= 0 && !diag.markdownPresent) {
+      diag.blockers.push(makeIssue('markdown-missing', 'chat.md is missing'));
+    }
+    if (required.indexOf('chat.html') >= 0 && !diag.htmlPresent) {
+      diag.blockers.push(makeIssue('html-missing', 'chat.html is missing'));
+    }
+  }
+
   async function shallowPackageEntry(packagePath, dirName) {
     var blockers = [];
     var warnings = [];
     var manifestPresent = await fsExists(joinPath(packagePath, 'manifest.json'));
+    var manifest = null;
+    if (manifestPresent) {
+      try {
+        manifest = parseJsonFile(bytesToText(await fsReadBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', { blockers: blockers });
+      } catch (err) {
+        blockers.push(makeIssue('manifest-read-failed', 'manifest.json could not be read', String((err && err.message) || err)));
+      }
+    }
     var snapshotPresent = await fsExists(joinPath(packagePath, 'snapshot.json'));
     var markdownPresent = await fsExists(joinPath(packagePath, 'chat.md'));
     var htmlPresent = await fsExists(joinPath(packagePath, 'chat.html'));
     var assetsDirPresent = await fsExists(joinPath(packagePath, 'assets'));
-    if (!manifestPresent) blockers.push(makeIssue('manifest-missing', 'manifest.json is missing'));
-    if (!snapshotPresent) blockers.push(makeIssue('snapshot-missing', 'snapshot.json is missing'));
-    if (!markdownPresent) blockers.push(makeIssue('markdown-missing', 'chat.md is missing'));
-    if (!htmlPresent) blockers.push(makeIssue('html-missing', 'chat.html is missing'));
+    var requiredDiag = {
+      manifestPresent: manifestPresent,
+      snapshotPresent: snapshotPresent,
+      markdownPresent: markdownPresent,
+      htmlPresent: htmlPresent,
+      blockers: blockers,
+    };
+    addMissingRequiredFileIssues(requiredDiag, requiredFilesForManifest(manifest));
     var status = statusFromIssues(blockers, warnings);
     return {
       ok: status === STATUS_OK,
       status: status,
       packagePath: packagePath,
       packageDirName: dirName || packageDirNameForPath(packagePath),
+      schemaVersion: manifest && isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : null,
+      payloadVersion: manifest && isFiniteNumber(manifest.payloadVersion) ? manifest.payloadVersion : null,
       manifestPresent: manifestPresent,
       snapshotPresent: snapshotPresent,
       markdownPresent: markdownPresent,
@@ -288,6 +325,7 @@
       packagesBlocked: 0,
       v1: 0,
       v2: 0,
+      v3: 0,
       missingLiveCasAssets: 0,
       brokenPackageAssets: 0,
       assetRefMismatches: 0,
@@ -314,6 +352,7 @@
       else if (pkg.status === STATUS_OK) counts.packagesOk += 1;
       if (pkg.schemaVersion === 1) counts.v1 += 1;
       if (pkg.schemaVersion === 2) counts.v2 += 1;
+      if (pkg.schemaVersion === 3) counts.v3 += 1;
       var db = pkg.dbChecks || {};
       if (db.checked && db.available) {
         if (db.chatExists === false) counts.missingDbChats += 1;
@@ -345,7 +384,7 @@
         assetSummary.failed += 1;
       } else if (warnings || pkg.status === STATUS_WARNING) {
         assetSummary.warnings += 1;
-      } else if (checks.packageAssetsOk === true || pkg.schemaVersion === 1 || pkg.schemaVersion === 2) {
+      } else if (checks.packageAssetsOk === true || pkg.schemaVersion === 1 || pkg.schemaVersion === 2 || pkg.schemaVersion === 3) {
         assetSummary.passed += 1;
       }
     });
@@ -441,6 +480,10 @@
       warnings: [],
       hashChecks: {
         snapshotShaOk: false,
+        snapshotByteLengthOk: null,
+        snapshotEncoding: '',
+        logicalSnapshotSha: '',
+        logicalSnapshotByteLength: null,
         contentHashOk: false,
         expectedContentHash: '',
         actualContentHash: '',
@@ -464,6 +507,94 @@
       if (text) return text;
     }
     return '';
+  }
+
+  function validateManifestVersion(manifest, diag) {
+    diag.schemaVersion = isFiniteNumber(manifest && manifest.schemaVersion) ? manifest.schemaVersion : null;
+    diag.payloadVersion = isFiniteNumber(manifest && manifest.payloadVersion) ? manifest.payloadVersion : null;
+    if (diag.schemaVersion !== 1 && diag.schemaVersion !== 2 && diag.schemaVersion !== 3) {
+      diag.blockers.push(makeIssue('manifest-schema-version-invalid', 'manifest schemaVersion must be 1, 2 or 3', manifest && manifest.schemaVersion));
+      return;
+    }
+    if (diag.schemaVersion === 1 && manifest.payloadVersion != null) {
+      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v1 manifest payloadVersion must be absent', manifest.payloadVersion));
+    }
+    if (diag.schemaVersion === 2 && diag.payloadVersion !== 2) {
+      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v2 manifest payloadVersion must be 2', manifest.payloadVersion));
+    }
+    if (diag.schemaVersion === 3 && diag.payloadVersion !== 3) {
+      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v3 manifest payloadVersion must be 3', manifest.payloadVersion));
+    }
+  }
+
+  function validSha256(value) {
+    return /^sha256-[0-9a-f]{64}$/.test(cleanString(value));
+  }
+
+  async function verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag) {
+    var descriptor = safeObject(manifest && manifest.files && manifest.files.snapshot);
+    var encoding = firstString(descriptor.encoding);
+    var physicalSha = firstString(descriptor.sha256);
+    var physicalLength = descriptor.byteLength;
+    var actualLength = snapshotBytes ? snapshotBytes.byteLength : 0;
+    var actualSha = snapshotBytes ? await sha256Prefixed(snapshotBytes) : '';
+    var descriptorOk = true;
+
+    diag.hashChecks.snapshotEncoding = encoding;
+    if (firstString(descriptor.path) !== 'snapshot.json') {
+      diag.blockers.push(makeIssue('snapshot-path-invalid', 'v3 files.snapshot.path must be snapshot.json', descriptor.path));
+      descriptorOk = false;
+    }
+    if (encoding !== 'identity' && encoding !== 'gzip') {
+      diag.blockers.push(makeIssue('snapshot-encoding-invalid', 'v3 files.snapshot.encoding must be identity or gzip', descriptor.encoding));
+      descriptorOk = false;
+    }
+    if (!isFiniteNumber(physicalLength) || physicalLength < 0 || physicalLength !== actualLength) {
+      diag.blockers.push(makeIssue('snapshot-byte-length-mismatch', 'files.snapshot.byteLength does not match stored snapshot.json bytes', { expected: physicalLength, actual: actualLength }));
+      diag.hashChecks.snapshotByteLengthOk = false;
+      descriptorOk = false;
+    } else {
+      diag.hashChecks.snapshotByteLengthOk = true;
+    }
+    diag.hashChecks.snapshotShaOk = validSha256(physicalSha) && physicalSha === actualSha;
+    if (!diag.hashChecks.snapshotShaOk) {
+      diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSha, actual: physicalSha }));
+      descriptorOk = false;
+    }
+
+    var hasLogicalSha = descriptor.contentSha256 != null;
+    var hasLogicalLength = descriptor.contentByteLength != null;
+    if (encoding === 'identity') {
+      if (hasLogicalSha && firstString(descriptor.contentSha256) !== physicalSha) {
+        diag.blockers.push(makeIssue('snapshot-logical-sha-mismatch-identity', 'identity files.snapshot.contentSha256 must equal sha256', { sha256: physicalSha, contentSha256: descriptor.contentSha256 }));
+        descriptorOk = false;
+      }
+      if (hasLogicalLength && descriptor.contentByteLength !== physicalLength) {
+        diag.blockers.push(makeIssue('snapshot-logical-byte-length-mismatch-identity', 'identity files.snapshot.contentByteLength must equal byteLength', { byteLength: physicalLength, contentByteLength: descriptor.contentByteLength }));
+        descriptorOk = false;
+      }
+    } else if (encoding === 'gzip') {
+      if (!validSha256(descriptor.contentSha256)) {
+        diag.blockers.push(makeIssue('snapshot-logical-sha-invalid', 'gzip files.snapshot.contentSha256 is required and must be a SHA-256 value', descriptor.contentSha256));
+        descriptorOk = false;
+      }
+      if (!isFiniteNumber(descriptor.contentByteLength) || descriptor.contentByteLength < 0) {
+        diag.blockers.push(makeIssue('snapshot-logical-byte-length-invalid', 'gzip files.snapshot.contentByteLength is required', descriptor.contentByteLength));
+        descriptorOk = false;
+      }
+      diag.blockers.push(makeIssue('snapshot-encoding-not-enabled', 'gzip v3 snapshot decoding is not enabled before M03'));
+      descriptorOk = false;
+    }
+
+    /* Exact frozen normalization. Optional identity logical fields are accepted
+     * only when individually consistent with their physical counterparts. */
+    diag.hashChecks.logicalSnapshotSha = firstString(descriptor.contentSha256, physicalSha);
+    diag.hashChecks.logicalSnapshotByteLength = isFiniteNumber(descriptor.contentByteLength)
+      ? descriptor.contentByteLength : (isFiniteNumber(physicalLength) ? physicalLength : null);
+    return {
+      parseIdentity: descriptorOk && encoding === 'identity',
+      logicalSha256: diag.hashChecks.logicalSnapshotSha,
+    };
   }
 
   function defaultAssetChecks() {
@@ -622,8 +753,11 @@
 
   function snapshotHtmlTexts(snapshot) {
     var texts = [];
+    var canonicalParts = snapshot && snapshot.schemaVersion === 3;
     asArray(snapshot && snapshot.messages).forEach(function (message, messageIndex) {
-      if (typeof message.contentHtml === 'string' && message.contentHtml) {
+      /* V3 scans only canonical typed HTML. V1/v2 retain the historical scalar
+       * scan followed by structured content scanning. */
+      if (!canonicalParts && typeof message.contentHtml === 'string' && message.contentHtml) {
         texts.push({ label: 'snapshot.messages[' + messageIndex + '].contentHtml', text: message.contentHtml });
       }
       asArray(message && message.content).forEach(function (entry, entryIndex) {
@@ -970,26 +1104,45 @@
         diag.blockers.push(makeIssue('package-path-out-of-scope', 'packagePath must be under archive/packages and end with .h2ochat'));
       }
 
-      diag.manifestPresent = await fsExists(joinPath(packagePath, 'manifest.json'));
-      diag.snapshotPresent = await fsExists(joinPath(packagePath, 'snapshot.json'));
-      diag.markdownPresent = await fsExists(joinPath(packagePath, 'chat.md'));
-      diag.htmlPresent = await fsExists(joinPath(packagePath, 'chat.html'));
-      diag.assetsDirPresent = await fsExists(joinPath(packagePath, 'assets'));
-      if (!diag.manifestPresent) diag.blockers.push(makeIssue('manifest-missing', 'manifest.json is missing'));
-      if (!diag.snapshotPresent) diag.blockers.push(makeIssue('snapshot-missing', 'snapshot.json is missing'));
-      if (!diag.markdownPresent) diag.blockers.push(makeIssue('markdown-missing', 'chat.md is missing'));
-      if (!diag.htmlPresent) diag.blockers.push(makeIssue('html-missing', 'chat.html is missing'));
-
       var manifest = null;
       var snapshot = null;
       var snapshotBytes = null;
       var chatHtmlText = '';
+      var v3SnapshotVerification = null;
+      diag.manifestPresent = await fsExists(joinPath(packagePath, 'manifest.json'));
       if (diag.manifestPresent) {
         manifest = parseJsonFile(bytesToText(await fsReadBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', diag);
       }
+      if (manifest) {
+        if (manifest.schema && manifest.schema !== PACKAGE_SCHEMA) {
+          diag.blockers.push(makeIssue('manifest-schema-invalid', 'manifest schema is not h2o.savedChatPackage', manifest.schema));
+        }
+        validateManifestVersion(manifest, diag);
+        diag.chatId = firstString(manifest.chatId);
+        diag.snapshotId = firstString(manifest.snapshotId);
+      }
+
+      /* Manifest metadata selects the required inventory. A missing or
+       * malformed manifest retains the frozen legacy fail-closed inventory. */
+      diag.snapshotPresent = await fsExists(joinPath(packagePath, 'snapshot.json'));
+      diag.markdownPresent = await fsExists(joinPath(packagePath, 'chat.md'));
+      diag.htmlPresent = await fsExists(joinPath(packagePath, 'chat.html'));
+      diag.assetsDirPresent = await fsExists(joinPath(packagePath, 'assets'));
+      addMissingRequiredFileIssues(diag, requiredFilesForManifest(manifest));
+
       if (diag.snapshotPresent) {
         snapshotBytes = await fsReadBytes(joinPath(packagePath, 'snapshot.json'));
-        snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+        if (diag.schemaVersion === 3 && manifest) {
+          v3SnapshotVerification = await verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag);
+          /* V3 identity bytes are parsed only after stored-byte descriptor
+           * verification. Encoded bytes are never passed to JSON.parse here. */
+          if (v3SnapshotVerification.parseIdentity) {
+            snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+          }
+        } else {
+          /* Preserve the historical v1/v2 parse path unchanged. */
+          snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+        }
       }
       if (includeRendererChecks && diag.htmlPresent) {
         try { chatHtmlText = bytesToText(await fsReadBytes(joinPath(packagePath, 'chat.html'))); }
@@ -998,22 +1151,10 @@
         }
       }
 
-      if (manifest) {
-        if (manifest.schema && manifest.schema !== PACKAGE_SCHEMA) {
-          diag.blockers.push(makeIssue('manifest-schema-invalid', 'manifest schema is not h2o.savedChatPackage', manifest.schema));
-        }
-        diag.schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : null;
-        diag.payloadVersion = isFiniteNumber(manifest.payloadVersion) ? manifest.payloadVersion : null;
-        if (diag.schemaVersion !== 1 && diag.schemaVersion !== 2) {
-          diag.blockers.push(makeIssue('manifest-schema-version-invalid', 'manifest schemaVersion must be 1 or 2', manifest.schemaVersion));
-        }
-        if (diag.schemaVersion === 2 && diag.payloadVersion !== 2) {
-          diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v2 manifest payloadVersion must be 2', manifest.payloadVersion));
-        }
-        diag.chatId = firstString(manifest.chatId);
-        diag.snapshotId = firstString(manifest.snapshotId);
-      }
       if (snapshot) {
+        if (diag.schemaVersion === 3 && snapshot.schemaVersion !== 3) {
+          diag.blockers.push(makeIssue('snapshot-schema-version-invalid', 'v3 snapshot schemaVersion must be 3', snapshot.schemaVersion));
+        }
         if (snapshot.chatId && diag.chatId && snapshot.chatId !== diag.chatId) {
           diag.blockers.push(makeIssue('chat-id-mismatch', 'manifest.chatId does not match snapshot.chatId'));
         }
@@ -1029,10 +1170,12 @@
 
       if (manifest && snapshotBytes) {
         var fileSnapshotSha = firstString(manifest.files && manifest.files.snapshot && manifest.files.snapshot.sha256);
-        var actualSnapshotSha = await sha256Prefixed(snapshotBytes);
-        diag.hashChecks.snapshotShaOk = !!fileSnapshotSha && fileSnapshotSha === actualSnapshotSha;
-        if (!diag.hashChecks.snapshotShaOk) {
-          diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSnapshotSha, actual: fileSnapshotSha }));
+        if (diag.schemaVersion !== 3) {
+          var actualSnapshotSha = await sha256Prefixed(snapshotBytes);
+          diag.hashChecks.snapshotShaOk = !!fileSnapshotSha && fileSnapshotSha === actualSnapshotSha;
+          if (!diag.hashChecks.snapshotShaOk) {
+            diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSnapshotSha, actual: fileSnapshotSha }));
+          }
         }
         var expectedContentHash = '';
         if (diag.schemaVersion === 1) {
@@ -1044,6 +1187,18 @@
             return cleanString(asset && asset.sha256);
           }).filter(Boolean).sort();
           expectedContentHash = await sha256Prefixed(canonicalJson({ snapshot: fileSnapshotSha, assets: assetShas }));
+        } else if (diag.schemaVersion === 3) {
+          var v3AssetShas = asArray(manifest.assets).map(function (asset) {
+            return normalizeAssetSha(asset && asset.sha256);
+          }).filter(Boolean).sort();
+          var logicalSnapshotSha = v3SnapshotVerification && v3SnapshotVerification.logicalSha256;
+          if (logicalSnapshotSha) {
+            expectedContentHash = await sha256Prefixed(canonicalJson({
+              payloadVersion: 3,
+              snapshot: logicalSnapshotSha,
+              assets: v3AssetShas,
+            }));
+          }
         }
         diag.hashChecks.expectedContentHash = expectedContentHash;
         diag.hashChecks.actualContentHash = firstString(manifest.contentHash);
@@ -1061,7 +1216,7 @@
             diag.assetChecks.packageAssetCount = (await listPackageAssetRelativePaths(packagePath, diag)).length;
           }
           diag.assetChecks.packageAssetsOk = true;
-        } else if (diag.schemaVersion === 2) {
+        } else if (diag.schemaVersion === 2 || diag.schemaVersion === 3) {
           var manifestAssetInfo = validateManifestAssets(manifest, diag);
           await validatePackageAssetFiles(packagePath, manifestAssetInfo.list, diag);
           if (snapshot) validateSnapshotAssetRefs(snapshot, manifestAssetInfo.list, diag);

@@ -234,6 +234,50 @@ async function main() {
     assert.deepEqual([...d.supportedMimeTypes].sort(), ['image/gif', 'image/jpeg', 'image/png', 'image/webp']);
   });
 
+  let v3Out = null;
+  const scalarOnlyBytes = Buffer.from('scalar-lookalike-must-be-ignored');
+  const scalarOnlyUri = `data:image/png;base64,${scalarOnlyBytes.toString('base64')}`;
+  const v3Input = {
+    schemaVersion: 3,
+    snapshotId: 'snap_v3_asset',
+    chatId: 'chat_v3_asset',
+    messages: [{
+      id: 'v3-m0', turnIndex: 0,
+      contentHtml: `<p>legacy lookalike <img src="${scalarOnlyUri}"></p>`,
+      content: [
+        { type: 'text', text: 'canonical typed content' },
+        { type: 'html', html: `<p>canonical <img src="${imgPng}"></p>`, sanitized: true },
+      ],
+      assetRefs: [],
+    }],
+  };
+  const v3Before = JSON.stringify(v3Input);
+  const v3Cas = createMockCas();
+  const v3Store = createMockStore();
+
+  await checkAsync('v3 discovers and rewrites authoritative typed HTML while ignoring scalar lookalikes', async () => {
+    v3Out = await helper.materializeInlineImageAssetsV2({ snapshotJson: v3Input, assetCas: v3Cas.api, assetStore: v3Store.api });
+    assert.equal(v3Out.extractedCount, 1);
+    assert.equal(v3Out.uniqueAssetCount, 1);
+    assert.equal(v3Cas.calls.length, 1);
+    assert.equal(v3Cas.calls[0].sha256, pngSha);
+    const message = v3Out.snapshotJson.messages[0];
+    assert.ok(message.contentHtml.includes(scalarOnlyUri), 'v3 scalar lookalike must be ignored and untouched');
+    const typedHtml = message.content.find((part) => part.type === 'html').html;
+    assert.ok(typedHtml.includes(pngPath));
+    assert.doesNotMatch(typedHtml, /data:image\/png/i);
+    assert.deepEqual([...message.assetRefs], [pngSha]);
+    assert.equal(v3Out.manifestAssets[0].sha256, pngSha);
+    assert.equal(v3Out.manifestAssets[0].path, pngPath);
+    assert.equal(JSON.stringify(v3Input), v3Before, 'v3 source object must remain immutable');
+  });
+
+  check('v3 package asset references and hash identity are deterministic', () => {
+    assert.deepEqual(Array.from(v3Out.manifestAssets, (asset) => asset.sha256), [pngSha]);
+    assert.deepEqual(Array.from(v3Out.replacements, (entry) => entry.sha256), [pngSha]);
+    assert.equal(v3Out.snapshotJson.messages[0].assetRefs[0], v3Out.manifestAssets[0].sha256);
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {

@@ -11,6 +11,7 @@ Related:
 - [ADR-0009: Chat Saving Architecture - H2O Studio Archive Model](../../decisions/ADR-0009-chat-saving-architecture.md)
 - [ADR-0010: Saved Chat Asset CAS + Capability Gate](../../decisions/ADR-0010-saved-chat-asset-cas.md)
 - [Saved Chat Package v1 Schema Spec](saved-chat-package-v1.md) — canonical v1 (asset-less) contract
+- [Saved Chat Package v3 Contract](saved-chat-package-v3.md) — normative M02 v3 contract; implementation pending
 - [Chat Saving Architecture — Phase B Closure Note](chat-saving-phase-b-closure.md)
 
 ## Purpose
@@ -50,6 +51,10 @@ In short:
 |---|---|---|---|---|---|
 | **v1** | Implemented (Phase B) | No (`assets: []`) | 1 | `sha256(canonical snapshot.json)` | [saved-chat-package-v1.md](saved-chat-package-v1.md) |
 | **v2** | Design-only (Phase C, future) | Yes | 2 | `sha256(canonical preservation-payload descriptor)` | this umbrella → future `saved-chat-package-v2.md` |
+| **v3** | Normative M02 contract; implementation pending | Yes | 3 | `sha256(canonical logical-content descriptor)` | [saved-chat-package-v3.md](saved-chat-package-v3.md) |
+
+The v3 authority above supersedes this umbrella only for explicitly defined v3
+behavior. V1/v2 contracts and hash semantics remain unchanged.
 
 Rules:
 

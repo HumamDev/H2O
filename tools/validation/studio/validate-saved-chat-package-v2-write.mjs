@@ -45,12 +45,13 @@ const PNG_B64 = PNG_BYTES.toString('base64');
 const PNG_SHA = 'sha256-' + sha256Hex(PNG_BYTES);
 const PNG_PATH = `assets/${PNG_SHA}.png`;
 
-function createStrictFs() {
+function createStrictFs({ failWritePath = '' } = {}) {
   const dirs = new Set();
   const files = new Map();
   const calls = [];
   const writes = [];
   const removes = [];
+  const controls = { failWritePath };
 
   function parseWriteHeaders(meta) {
     const headers = meta?.headers || {};
@@ -104,10 +105,30 @@ function createStrictFs() {
       return files.get(p);
     }
 
+    if (cmd === 'plugin:fs|read_dir') {
+      const { path: p, options } = requireOptions(args, cmd);
+      calls.push({ cmd, path: p, baseDir: options.baseDir });
+      if (!dirs.has(p)) throw new Error('not found: ' + p);
+      const prefix = p.replace(/\/$/, '') + '/';
+      const names = new Map();
+      for (const dir of dirs) {
+        if (!dir.startsWith(prefix)) continue;
+        const rest = dir.slice(prefix.length);
+        if (rest && !rest.includes('/')) names.set(rest, { name: rest, isDirectory: true });
+      }
+      for (const file of files.keys()) {
+        if (!file.startsWith(prefix)) continue;
+        const rest = file.slice(prefix.length);
+        if (rest && !rest.includes('/')) names.set(rest, { name: rest, isFile: true });
+      }
+      return [...names.values()].sort((a, b) => a.name.localeCompare(b.name));
+    }
+
     if (cmd === 'plugin:fs|write_file') {
       const { path: p, options } = parseWriteHeaders(meta);
       if (!(args instanceof Uint8Array)) throw new Error('write_file body must be Uint8Array');
       if (p.includes('H2O Studio Sync')) throw new Error('write_file: sync folder path forbidden');
+      if (controls.failWritePath && p.endsWith(controls.failWritePath)) throw new Error('injected write failure: ' + controls.failWritePath);
       calls.push({ cmd, path: p, baseDir: options.baseDir });
       const copy = new Uint8Array(args);
       files.set(p, copy);
@@ -118,7 +139,7 @@ function createStrictFs() {
     throw new Error('unexpected fs command: ' + cmd);
   }
 
-  return { invoke, dirs, files, calls, writes, removes };
+  return { invoke, dirs, files, calls, writes, removes, controls };
 }
 
 function createStores({ withImage }) {
@@ -191,10 +212,10 @@ function createCas({ missingOnGet = false } = {}) {
   };
 }
 
-function loadProjector({ withImage, missingOnGet = false }) {
+function loadProjector({ withImage, missingOnGet = false, failWritePath = '' }) {
   const stores = createStores({ withImage });
   const cas = createCas({ missingOnGet });
-  const strictFs = createStrictFs();
+  const strictFs = createStrictFs({ failWritePath });
   const context = {
     console,
     setTimeout,
@@ -339,6 +360,81 @@ async function main() {
       }
       assert.equal(env.fs.calls.some((c) => c.cmd === 'plugin:fs|write_text_file'), false);
     }
+  });
+
+  // ── Additive v3 write/retry/coexistence coverage (M02 T06) ───────
+  let v3Env = null;
+  await checkAsync('v3 writes assets, snapshot, then manifest last with no persistent renderers', async () => {
+    v3Env = loadProjector({ withImage: true });
+    const out = await v3Env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v2_write' });
+    assert.equal(out.schemaVersion, 3);
+    assert.equal(out.manifest.files.snapshot.encoding, 'identity');
+    const paths = v3Env.fs.writes.map((write) => write.path);
+    assert.match(paths[0], /\/assets\/sha256-[0-9a-f]{64}\.png$/);
+    assert.match(paths[1], /\/snapshot\.json$/);
+    assert.match(paths[2], /\/manifest\.json$/);
+    assert.equal(paths.some((p) => /\/chat\.(md|html)$/.test(p)), false);
+    assert.deepEqual(Object.keys(out.files).sort(), ['manifest.json', 'snapshot.json']);
+  });
+
+  await checkAsync('v3 complete-package coexistence refusal preserves every existing byte', async () => {
+    const before = [...v3Env.fs.files.entries()].map(([p, b]) => [p, Buffer.from(b).toString('hex')]);
+    await assert.rejects(
+      () => v3Env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v2_write' }),
+      /already exists/
+    );
+    const after = [...v3Env.fs.files.entries()].map(([p, b]) => [p, Buffer.from(b).toString('hex')]);
+    assert.deepEqual(after, before);
+  });
+
+  await checkAsync('v3 rejects overwrite:true without remove/rename authority', async () => {
+    const env = loadProjector({ withImage: false });
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write', overwrite: true }),
+      /overwrite is forbidden/
+    );
+    assert.equal(env.fs.removes.length, 0);
+    assert.deepEqual(env.fs.writes, []);
+  });
+
+  await checkAsync('v3 interrupted manifest write leaves an exact subset and retries idempotently', async () => {
+    const env = loadProjector({ withImage: false, failWritePath: '/manifest.json' });
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+      /injected write failure/
+    );
+    assert.equal(env.fs.files.has(root + '/snapshot.json'), true);
+    assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+    assert.equal([...env.fs.files.keys()].some((p) => /chat\.(md|html)$/.test(p)), false);
+    env.fs.controls.failWritePath = '';
+    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+    assert.equal(resumed.resumedIncomplete, true);
+    assert.equal(env.fs.files.has(root + '/manifest.json'), true);
+    const rootWrites = env.fs.writes.filter((w) => w.path.startsWith(root + '/'));
+    assert.match(rootWrites[rootWrites.length - 1].path, /\/manifest\.json$/);
+    assert.equal(rootWrites.filter((w) => /\/snapshot\.json$/.test(w.path)).length, 1, 'matching snapshot must not be rewritten');
+  });
+
+  await checkAsync('v3 interrupted retry rejects mismatching and unexpected members fail-closed', async () => {
+    const mismatch = loadProjector({ withImage: false });
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    mismatch.fs.dirs.add(root);
+    mismatch.fs.files.set(root + '/snapshot.json', new Uint8Array(Buffer.from('mismatch')));
+    await assert.rejects(
+      () => mismatch.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+      /mismatching member/
+    );
+    assert.equal(mismatch.fs.files.has(root + '/manifest.json'), false);
+
+    const unexpected = loadProjector({ withImage: false });
+    unexpected.fs.dirs.add(root);
+    unexpected.fs.files.set(root + '/unexpected.bin', new Uint8Array([1, 2, 3]));
+    await assert.rejects(
+      () => unexpected.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+      /unexpected member/
+    );
+    assert.equal(unexpected.fs.files.has(root + '/manifest.json'), false);
   });
 
   console.log('');

@@ -19,6 +19,7 @@ const MODULE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagno
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_STUDIO_REL = 'tools/product/studio/pack-studio.mjs';
 const CAPABILITY_REL = 'apps/studio/desktop/src-tauri/capabilities/archive-cas.json';
+const V3_FIXTURE_REL = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
 
 const APP_LOCAL_DATA = 15;
 const PACKAGE_ROOT = 'archive/packages';
@@ -81,9 +82,39 @@ function encode(text) {
   return new TextEncoder().encode(text);
 }
 
+check('committed v3 fixture is renderer-free, canonical, and hash-consistent', () => {
+  const root = path.join(REPO_ROOT, V3_FIXTURE_REL);
+  const manifestBytes = fs.readFileSync(path.join(root, 'manifest.json'));
+  const snapshotBytes = fs.readFileSync(path.join(root, 'snapshot.json'));
+  const manifest = JSON.parse(manifestBytes.toString('utf8'));
+  const snapshot = JSON.parse(snapshotBytes.toString('utf8'));
+  assert.equal(manifest.schemaVersion, 3);
+  assert.equal(manifest.payloadVersion, 3);
+  assert.equal(manifest.files.snapshot.encoding, 'identity');
+  assert.equal(manifest.files.snapshot.sha256, sha256Prefixed(snapshotBytes));
+  assert.equal(manifest.files.snapshot.byteLength, snapshotBytes.length);
+  assert.equal(fs.existsSync(path.join(root, 'chat.md')), false);
+  assert.equal(fs.existsSync(path.join(root, 'chat.html')), false);
+  for (const message of snapshot.messages) {
+    assert.ok(Array.isArray(message.content));
+    assert.equal(Object.hasOwn(message, 'contentText'), false);
+    assert.equal(Object.hasOwn(message, 'contentHtml'), false);
+  }
+  const assetShas = manifest.assets.map((asset) => {
+    const bytes = fs.readFileSync(path.join(root, asset.path));
+    assert.equal(asset.byteLength, bytes.length);
+    assert.equal(asset.sha256, sha256Prefixed(bytes));
+    return asset.sha256;
+  }).sort();
+  const expected = sha256Prefixed(canonicalJson({ payloadVersion: 3, snapshot: manifest.files.snapshot.sha256, assets: assetShas }));
+  assert.equal(manifest.contentHash, expected);
+});
+
 const ASSET_BYTES = Buffer.from('archive-diagnostic-asset');
 const ASSET_SHA = sha256Prefixed(ASSET_BYTES);
 const ASSET_PATH = `assets/${ASSET_SHA}.png`;
+const ASSET_BYTES_2 = Buffer.from('archive-diagnostic-asset-two');
+const ASSET_SHA_2 = sha256Prefixed(ASSET_BYTES_2);
 
 function makePackage({ chatId, snapshotId, schemaVersion, assetSha = ASSET_SHA, dataImageResidue = false }) {
   const assetPath = `assets/${assetSha}.png`;
@@ -126,6 +157,85 @@ function makePackage({ chatId, snapshotId, schemaVersion, assetSha = ASSET_SHA, 
     htmlText,
     manifest,
     snapshot,
+  };
+}
+
+function makeV3Package({
+  chatId = 'chat_diag_v3',
+  snapshotId = 'snap_diag_v3',
+  encoding = 'identity',
+  payloadVersion = 3,
+  assets = [],
+} = {}) {
+  const descriptors = assets.map(({ bytes, ext = 'png', mimeType = 'image/png' }) => {
+    const body = Buffer.from(bytes);
+    const assetSha = sha256Prefixed(body);
+    return {
+      body,
+      descriptor: {
+        sha256: assetSha,
+        path: `assets/${assetSha}.${ext}`,
+        ext,
+        mimeType,
+        byteLength: body.length,
+        source: 'chatgpt-capture',
+      },
+    };
+  });
+  const assetRefs = descriptors.map((item) => item.descriptor.sha256);
+  const html = descriptors.length
+    ? `<p>${descriptors.map((item) => `<img src="${item.descriptor.path}">`).join('')}</p>`
+    : '<p>v3 identity</p>';
+  const snapshot = {
+    schema: 'h2o.savedChatSnapshot',
+    schemaVersion: 3,
+    chatId,
+    snapshotId,
+    title: 'Archive diagnostics v3',
+    capturedAt: '2026-08-24T00:00:00.000Z',
+    messages: [{
+      id: 'm0',
+      turnIndex: 0,
+      role: 'assistant',
+      content: [{ type: 'text', text: 'v3 identity' }, { type: 'html', html, sanitized: true }],
+      assetRefs,
+    }],
+  };
+  const snapshotText = canonicalJson(snapshot);
+  const logicalBytes = encode(snapshotText);
+  const logicalSha = sha256Prefixed(logicalBytes);
+  const storedBytes = encoding === 'identity' ? logicalBytes : encode('synthetic-pre-m03-gzip-member');
+  const descriptor = {
+    path: 'snapshot.json',
+    sha256: sha256Prefixed(storedBytes),
+    byteLength: storedBytes.byteLength,
+    encoding,
+  };
+  if (encoding !== 'identity') {
+    descriptor.contentSha256 = logicalSha;
+    descriptor.contentByteLength = logicalBytes.byteLength;
+  }
+  const manifestAssets = descriptors.map((item) => item.descriptor);
+  const contentHash = sha256Prefixed(canonicalJson({
+    payloadVersion: 3,
+    snapshot: descriptor.contentSha256 ?? descriptor.sha256,
+    assets: manifestAssets.map((asset) => asset.sha256).sort(),
+  }));
+  return {
+    manifest: {
+      schema: 'h2o.savedChatPackage',
+      schemaVersion: 3,
+      payloadVersion,
+      chatId,
+      snapshotId,
+      contentHash,
+      files: { snapshot: descriptor },
+      assets: manifestAssets,
+    },
+    snapshot,
+    snapshotText,
+    storedBytes,
+    descriptors,
   };
 }
 
@@ -264,6 +374,11 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     invoke,
     readCalls,
     mutationCalls,
+    dirs,
+    files,
+    entries,
+    addDir,
+    addFile,
     paths: {
       v1: `${PACKAGE_ROOT}/chat_diag_v1.h2ochat`,
       v2: `${PACKAGE_ROOT}/chat_diag_v2.h2ochat`,
@@ -276,6 +391,21 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     },
     store: buildDiagStore(storeOptions),
   };
+}
+
+function installV3Package(fixture, pkg, { manifest = true, snapshot = true } = {}) {
+  const dir = `${PACKAGE_ROOT}/${pkg.manifest.chatId}.h2ochat`;
+  fixture.addDir(dir);
+  if (manifest) fixture.addFile(`${dir}/manifest.json`, canonicalJson(pkg.manifest));
+  if (snapshot) fixture.addFile(`${dir}/snapshot.json`, pkg.storedBytes);
+  for (const item of pkg.descriptors) {
+    fixture.addDir(`${dir}/assets`);
+    fixture.addFile(`${dir}/${item.descriptor.path}`, item.body);
+  }
+  if (!fixture.entries.some((entry) => entry.name === `${pkg.manifest.chatId}.h2ochat`)) {
+    fixture.entries.push({ name: `${pkg.manifest.chatId}.h2ochat`, isDirectory: true });
+  }
+  return dir;
 }
 
 function loadModule(fixture) {
@@ -336,6 +466,14 @@ check('module has v1 and v2 contentHash validation logic', () => {
   assert.match(moduleSource, /diag\.schemaVersion === 2/);
   assert.match(moduleSource, /canonicalJson\(\{ snapshot: fileSnapshotSha, assets: assetShas \}\)/);
   assert.match(moduleSource, /sha256Prefixed/);
+});
+
+check('module has version-aware v3 descriptor and logical contentHash verification', () => {
+  assert.match(moduleSource, /REQUIRED_FILES_V3/);
+  assert.match(moduleSource, /verifyV3SnapshotDescriptor/);
+  assert.match(moduleSource, /payloadVersion:\s*3/);
+  assert.match(moduleSource, /logicalSnapshotSha/);
+  assert.match(moduleSource, /snapshot-encoding-not-enabled/);
 });
 
 check('module has C5.3 assetChecks schema and asset validation logic', () => {
@@ -516,6 +654,22 @@ await checkAsync('inventory lists package folders and warns on non-package entri
   assert.equal(fixture.mutationCalls.length, 0);
 });
 
+await checkAsync('inventory applies the v3 two-member required-file rule after reading manifest metadata', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_inventory', snapshotId: 'snap_diag_v3_inventory' });
+  installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.listSavedChatArchivePackagesV1({ limit: 20 });
+  const row = result.packages.find((item) => item.packageDirName === 'chat_diag_v3_inventory.h2ochat');
+  assert.ok(row);
+  assert.equal(row.status, 'ok');
+  assert.equal(row.schemaVersion, 3);
+  assert.equal(row.payloadVersion, 3);
+  assert.equal(row.markdownPresent, false);
+  assert.equal(row.htmlPresent, false);
+  assert.ok(!row.blockers.some((issue) => issue.code === 'markdown-missing' || issue.code === 'html-missing'));
+});
+
 await checkAsync('v1 package validation passes snapshot and content hash checks', async () => {
   const fixture = createFixtureFs();
   const ingestion = loadModule(fixture);
@@ -546,6 +700,131 @@ await checkAsync('v2 package validation uses locked descriptor content hash and 
   assert.equal(result.assetChecks.missingPackageAssets.length, 0);
   assert.equal(result.assetChecks.hashMismatches.length, 0);
   assert.equal(result.assetChecks.dataImageResidue.length, 0);
+});
+
+await checkAsync('v3 identity package validates without persistent renderers', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package();
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'ok');
+  assert.equal(result.schemaVersion, 3);
+  assert.equal(result.payloadVersion, 3);
+  assert.equal(result.markdownPresent, false);
+  assert.equal(result.htmlPresent, false);
+  assert.equal(result.hashChecks.snapshotByteLengthOk, true);
+  assert.equal(result.hashChecks.snapshotShaOk, true);
+  assert.equal(result.hashChecks.logicalSnapshotSha, pkg.manifest.files.snapshot.sha256);
+  assert.equal(result.hashChecks.logicalSnapshotByteLength, pkg.manifest.files.snapshot.byteLength);
+  assert.equal(result.hashChecks.contentHashOk, true);
+  assert.ok(!result.blockers.some((issue) => issue.code === 'markdown-missing' || issue.code === 'html-missing'));
+});
+
+await checkAsync('v3 identity optional logical fields must agree with physical fields', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_logical', snapshotId: 'snap_diag_v3_logical' });
+  pkg.manifest.files.snapshot.contentSha256 = 'sha256-' + 'f'.repeat(64);
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-logical-sha-mismatch-identity'));
+});
+
+await checkAsync('v3 stored snapshot hash mismatch fails closed', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_sha', snapshotId: 'snap_diag_v3_sha' });
+  pkg.storedBytes = encode(pkg.snapshotText + ' ');
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.hashChecks.snapshotShaOk, false);
+  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-sha-mismatch'));
+});
+
+await checkAsync('v3 stored snapshot byteLength mismatch fails closed', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_length', snapshotId: 'snap_diag_v3_length' });
+  pkg.manifest.files.snapshot.byteLength += 1;
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.hashChecks.snapshotByteLengthOk, false);
+  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-byte-length-mismatch'));
+});
+
+await checkAsync('v3 logical contentHash mismatch fails closed', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_content_hash', snapshotId: 'snap_diag_v3_content_hash' });
+  pkg.manifest.contentHash = 'sha256-' + '0'.repeat(64);
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.hashChecks.contentHashOk, false);
+  assert.ok(result.blockers.some((issue) => issue.code === 'content-hash-mismatch'));
+});
+
+await checkAsync('v3 contentHash sorts governed asset identities independently of manifest order', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({
+    chatId: 'chat_diag_v3_assets',
+    snapshotId: 'snap_diag_v3_assets',
+    assets: [{ bytes: ASSET_BYTES }, { bytes: ASSET_BYTES_2 }],
+  });
+  const expected = pkg.manifest.contentHash;
+  pkg.manifest.assets.reverse();
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'ok');
+  assert.equal(result.hashChecks.expectedContentHash, expected);
+  assert.equal(result.hashChecks.contentHashOk, true);
+  assert.equal(result.assetChecks.packageAssetsOk, true);
+});
+
+await checkAsync('incoherent v3 payloadVersion fails closed', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_version', snapshotId: 'snap_diag_v3_version', payloadVersion: 1 });
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.ok(result.blockers.some((issue) => issue.code === 'manifest-payload-version-invalid'));
+});
+
+await checkAsync('pre-M03 gzip descriptor verifies stored/logical identity but remains unsupported', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_gzip', snapshotId: 'snap_diag_v3_gzip', encoding: 'gzip' });
+  const packagePath = installV3Package(fixture, pkg);
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.equal(result.hashChecks.snapshotShaOk, true);
+  assert.equal(result.hashChecks.snapshotByteLengthOk, true);
+  assert.equal(result.hashChecks.contentHashOk, true);
+  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-encoding-not-enabled'));
+  assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'), 'encoded bytes must not be parsed as JSON');
+});
+
+await checkAsync('manifest-less and manifest-without-snapshot packages never verify', async () => {
+  const fixture = createFixtureFs();
+  const noManifest = makeV3Package({ chatId: 'chat_diag_v3_no_manifest', snapshotId: 'snap_diag_v3_no_manifest' });
+  const noManifestPath = installV3Package(fixture, noManifest, { manifest: false });
+  const noSnapshot = makeV3Package({ chatId: 'chat_diag_v3_no_snapshot', snapshotId: 'snap_diag_v3_no_snapshot' });
+  const noSnapshotPath = installV3Package(fixture, noSnapshot, { snapshot: false });
+  const ingestion = loadModule(fixture);
+  const first = await ingestion.validateSavedChatPackageV1({ packagePath: noManifestPath, includeCasChecks: false, includeDbChecks: false });
+  const second = await ingestion.validateSavedChatPackageV1({ packagePath: noSnapshotPath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(first.status, 'blocked');
+  assert.ok(first.blockers.some((issue) => issue.code === 'manifest-missing'));
+  assert.equal(second.status, 'blocked');
+  assert.ok(second.blockers.some((issue) => issue.code === 'snapshot-missing'));
+  assert.ok(!second.blockers.some((issue) => issue.code === 'markdown-missing' || issue.code === 'html-missing'));
 });
 
 await checkAsync('missing renderer file blocks package validation', async () => {

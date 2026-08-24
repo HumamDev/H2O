@@ -48,6 +48,7 @@ const VALIDATOR_REL = 'tools/validation/studio/validate-saved-chat-archive-impor
 const FIXTURE_DIR_REL = 'tools/validation/fixtures/saved-chat-archive/import-recovery';
 const FIXTURE_README_REL = FIXTURE_DIR_REL + '/README.md';
 const FIXTURE_PKG_REL = FIXTURE_DIR_REL + '/i-harness-source.h2ochat';
+const V3_FIXTURE_PKG_REL = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const LIB_RS_REL = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const WRITER_IDENTITY_RS_REL = 'apps/studio/desktop/src-tauri/src/sqlite_writer_identity.rs';
@@ -214,6 +215,16 @@ check('[SCAFFOLD] fixture is a verifiable v1 asset-free package (contentHash = s
   assert.ok(Array.isArray(snap.messages) && snap.messages.length >= 1);
   // diagnostics requires the package folder basename to equal chatId + '.h2ochat'
   assert.equal(FIXTURE_PKG_REL.split('/').pop(), manifest.chatId + '.h2ochat', 'fixture dir basename must equal chatId.h2ochat');
+});
+
+check('[M02 T06] committed canonical v3 fixture exists and is renderer-free', () => {
+  assert.ok(exists(V3_FIXTURE_PKG_REL + '/manifest.json'));
+  assert.ok(exists(V3_FIXTURE_PKG_REL + '/snapshot.json'));
+  assert.equal(exists(V3_FIXTURE_PKG_REL + '/chat.md'), false);
+  assert.equal(exists(V3_FIXTURE_PKG_REL + '/chat.html'), false);
+  const manifest = JSON.parse(readRepo(V3_FIXTURE_PKG_REL + '/manifest.json'));
+  assert.equal(manifest.schemaVersion, 3);
+  assert.equal(manifest.payloadVersion, 3);
 });
 
 // --- C. H.5 lessons locked against the real importer -------------------------
@@ -661,6 +672,60 @@ async function runHarness() {
 
 let H = null, harnessError = null;
 try { H = await runHarness(); } catch (e) { harnessError = e; }
+
+check('[M02 T06] v3 canonical typed parts reconstruct exact importer turns and metadata', () => {
+  assert.ok(!harnessError, 'harness runtime unavailable');
+  const importer = globalThis.H2O?.Studio?.archiveImporter;
+  assert.equal(typeof importer?.buildTurnsFromPackageSnapshot, 'function');
+  const snapshot = JSON.parse(readRepo(V3_FIXTURE_PKG_REL + '/snapshot.json'));
+  const turns = importer.buildTurnsFromPackageSnapshot(snapshot);
+  assert.equal(turns.length, 2);
+  assert.equal(turns[0].text, 'First synthetic fixture turn.');
+  assert.equal(turns[0].outerHtml, '<p>First synthetic fixture turn.</p><img src="assets/sha256-b6a38573d3cd8607b3cda428df2c4b2d05d976c58f55e47eeac8ffb0c34f780b.png">');
+  assert.deepEqual(Array.from(turns, (turn) => turn.turnIdx), [0, 1]);
+  assert.deepEqual(JSON.parse(JSON.stringify(turns[0].meta.content)), snapshot.messages[0].content);
+  assert.deepEqual(Array.from(turns[0].meta.assetRefs), snapshot.messages[0].assetRefs);
+  assert.deepEqual(JSON.parse(JSON.stringify(turns[0].meta.messageMetadata)), { fixture: true });
+  assert.equal(Object.hasOwn(snapshot.messages[0], 'contentText'), false);
+  assert.equal(Object.hasOwn(snapshot.messages[0], 'contentHtml'), false);
+});
+
+check('[M02 T06] restore and relink inherit the centralized v3 content reader', () => {
+  assert.match(importerCode, /var turns = buildTurnsFromPackageSnapshot\(snapshotJson\)/);
+  const restoreCode = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js');
+  const relinkCode = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-relink.studio.js');
+  for (const code of [restoreCode, relinkCode]) {
+    assert.ok(code.includes('archiveImporter'));
+    assert.ok(code.includes('buildTurnsFromPackageSnapshot'));
+    assert.doesNotMatch(code, /contentText|contentHtml/);
+  }
+});
+
+check('[M02 T06] v1 scalar precedence remains frozen in the centralized content reader', () => {
+  const importer = globalThis.H2O?.Studio?.archiveImporter;
+  const snapshot = readFixtureJson('snapshot.json');
+  const turns = importer.buildTurnsFromPackageSnapshot(snapshot);
+  assert.equal(turns[0].text, snapshot.messages[0].contentText);
+  assert.equal(turns[0].outerHtml, '');
+  assert.deepEqual(JSON.parse(JSON.stringify(turns[0].meta.content)), snapshot.messages[0].content);
+});
+
+check('[M02 T06] v2 scalar precedence remains frozen while structured content is preserved', () => {
+  const importer = globalThis.H2O?.Studio?.archiveImporter;
+  const snapshot = {
+    schemaVersion: 2,
+    messages: [{
+      id: 'legacy-v2', role: 'assistant', turnIndex: 0,
+      contentText: 'legacy scalar wins',
+      contentHtml: '<p>legacy scalar html remains historically ignored</p>',
+      content: [{ type: 'text', text: 'typed lookalike' }, { type: 'html', html: '<p>typed lookalike</p>', sanitized: true }],
+    }],
+  };
+  const turns = importer.buildTurnsFromPackageSnapshot(snapshot);
+  assert.equal(turns[0].text, 'legacy scalar wins');
+  assert.equal(turns[0].outerHtml, '');
+  assert.deepEqual(JSON.parse(JSON.stringify(turns[0].meta.content)), snapshot.messages[0].content);
+});
 
 check('[I.2] live harness built + ran without schema/trigger drift or build error', () => {
   assert.ok(!harnessError, 'harness error: ' + (harnessError && (harnessError.message || harnessError)));

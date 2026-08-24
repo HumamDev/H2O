@@ -179,14 +179,38 @@
       .then(function (t) { return safeParseJson(String(t || '').slice(0, SNAPSHOT_READ_CAP)); }, function () { return null; });
   }
 
+  function firstTypedPartBody(parts, type, field) {
+    var list = asArray(parts);
+    for (var i = 0; i < list.length; i += 1) {
+      var part = safeObject(list[i]);
+      if (part.type === type && typeof part[field] === 'string') return part[field];
+    }
+    return '';
+  }
+
+  /* V3 typed parts are authoritative. Legacy packages retain their historical
+   * scalar-text interpretation and empty outerHtml, even when they also carry
+   * typed parts, so this migration does not change v1/v2 recovery semantics. */
+  function packageMessageBodies(snapshot, message) {
+    var snap = safeObject(snapshot);
+    var msg = safeObject(message);
+    if (snap.schemaVersion === 3) {
+      return {
+        text: firstTypedPartBody(msg.content, 'text', 'text'),
+        outerHtml: firstTypedPartBody(msg.content, 'html', 'html'),
+      };
+    }
+    return {
+      text: (typeof msg.contentText === 'string') ? msg.contentText : '',
+      outerHtml: '',
+    };
+  }
+
   /* ── Pure mapping: package snapshot.json messages -> store snapshot turns ────
-   * The `.h2ochat` projection carries a portable content model
-   * (role / contentText / turnIndex / content parts), NOT the store's rich
-   * outerHtml. Recovery preserves text + role + order faithfully and keeps the
-   * original content parts + author/id/parentId/createdAt in turn meta. The
-   * original rendered outerHtml is not present in the package, so it is left
-   * empty (a documented, lossy-but-safe text recovery). Shape matches
-   * store.snapshots.create({ turns: [] }). */
+   * Recovery keeps canonical content parts + author/id/parentId/createdAt in
+   * turn meta. V3 additionally restores exact governed typed text/HTML bodies;
+   * v1/v2 keep the historical scalar-text/empty-outerHtml behavior. Shape
+   * matches store.snapshots.create({ turns: [] }). */
   function buildTurnsFromPackageSnapshot(snapshotJson) {
     var snap = safeObject(snapshotJson);
     var messages = asArray(snap.messages);
@@ -194,7 +218,7 @@
       var msg = safeObject(msgRaw);
       var turnIdx = isFiniteNumber(msg.turnIndex) ? Math.floor(msg.turnIndex) : i;
       var role = cleanString(msg.role) || cleanString(msg.author) || 'assistant';
-      var text = (typeof msg.contentText === 'string') ? msg.contentText : '';
+      var bodies = packageMessageBodies(snap, msg);
       var meta = {};
       if (msg.id != null) meta.sourceMessageId = cleanString(msg.id);
       if (msg.parentId != null) meta.parentId = cleanString(msg.parentId);
@@ -203,7 +227,7 @@
       if (msg.content != null) meta.content = msg.content;       /* portable content parts */
       if (Array.isArray(msg.assetRefs) && msg.assetRefs.length) meta.assetRefs = msg.assetRefs;
       if (isObject(msg.metadata)) meta.messageMetadata = msg.metadata;
-      return { turnIdx: turnIdx, role: role, text: text, outerHtml: '', meta: meta };
+      return { turnIdx: turnIdx, role: role, text: bodies.text, outerHtml: bodies.outerHtml, meta: meta };
     });
   }
 

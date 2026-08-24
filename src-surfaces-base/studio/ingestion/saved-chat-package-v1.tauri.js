@@ -25,7 +25,11 @@
   var MANIFEST_SCHEMA = 'h2o.savedChatPackage';
   var SNAPSHOT_SCHEMA = 'h2o.savedChatSnapshot';
   var SCHEMA_VERSION = 1;
+  var V3_SCHEMA_VERSION = 3;
+  var V3_PAYLOAD_VERSION = 3;
+  var V3_IDENTITY_ENCODING = 'identity';
   var RENDERER_VERSION = 'saved-chat-package-v1';
+  var V3_RENDERER_VERSION = 'saved-chat-package-v3';
   var MODULE_VERSION = '0.1.0-phase-b';
   var APP_LOCAL_DATA = 15;                 /* Tauri BaseDirectory.AppLocalData */
   var PACKAGE_ROOT = 'archive/packages';   /* relative to AppLocalData */
@@ -37,6 +41,7 @@
     lastPackage: null,
     lastError: null,
   };
+  var v3WritesInFlight = Object.create(null);
 
   function nowIso() {
     try { return new Date().toISOString(); }
@@ -259,6 +264,24 @@
     return message;
   }
 
+  /* V3 keeps the governed v1/v2 typed-part semantics while removing only the
+   * duplicate scalar bodies. Build from the already-normalized legacy message
+   * so the legacy path remains byte-for-byte untouched. */
+  function normalizeSavedChatMessageV3(projectedMessage) {
+    var message = safeObject(projectedMessage);
+    return {
+      id: firstString(message.id),
+      role: normalizeRole(message.role),
+      author: firstString(message.author),
+      createdAt: firstString(message.createdAt),
+      turnIndex: isFiniteNumber(message.turnIndex) ? Math.floor(message.turnIndex) : 0,
+      parentId: firstString(message.parentId),
+      content: asArray(message.content).map(canonicalize),
+      assetRefs: asArray(message.assetRefs).map(cleanString).filter(Boolean),
+      metadata: canonicalize(safeObject(message.metadata)),
+    };
+  }
+
   function compareMessages(a, b) {
     var av = isFiniteNumber(a && a.turnIndex) ? a.turnIndex : 0;
     var bv = isFiniteNumber(b && b.turnIndex) ? b.turnIndex : 0;
@@ -385,6 +408,23 @@
     };
   }
 
+  function projectSnapshotJsonV3(input) {
+    var legacy = projectSnapshotJsonV1(input);
+    return {
+      schema: SNAPSHOT_SCHEMA,
+      schemaVersion: V3_SCHEMA_VERSION,
+      chatId: legacy.chatId,
+      snapshotId: legacy.snapshotId,
+      capturedAt: legacy.capturedAt,
+      savedAt: legacy.savedAt,
+      title: legacy.title,
+      source: canonicalize(legacy.source),
+      library: canonicalize(legacy.library),
+      messages: asArray(legacy.messages).map(normalizeSavedChatMessageV3),
+      metadata: canonicalize(legacy.metadata),
+    };
+  }
+
   function getManifestInfo() {
     try {
       if (global.chrome && global.chrome.runtime && typeof global.chrome.runtime.getManifest === 'function') {
@@ -447,6 +487,28 @@
     /* payloadVersion is emitted only for asset-bearing (v2) packages; v1
      * manifests stay byte-identical to Phase B (no payloadVersion key). */
     if (isFiniteNumber(src.payloadVersion)) manifest.payloadVersion = src.payloadVersion;
+    return manifest;
+  }
+
+  function buildManifestJsonV3(input) {
+    var src = safeObject(input);
+    var snapshotJson = safeObject(src.snapshotJson);
+    var files = safeObject(src.files);
+    var snapshotFile = safeObject(files.snapshot);
+    if (snapshotJson.schemaVersion !== V3_SCHEMA_VERSION) throw new Error('v3 snapshot schemaVersion must be 3');
+    if (snapshotFile.encoding !== V3_IDENTITY_ENCODING) throw new Error('M02 v3 snapshot encoding must be identity');
+    var contentHash = firstString(src.contentHash);
+    if (!contentHash) throw new Error('v3 contentHash is required');
+    var manifest = buildManifestJsonV1({
+      snapshotJson: snapshotJson,
+      files: files,
+      provenance: safeObject(src.provenance),
+      schemaVersion: V3_SCHEMA_VERSION,
+      payloadVersion: V3_PAYLOAD_VERSION,
+      assets: asArray(src.assets),
+      contentHash: contentHash,
+    });
+    manifest.generator = Object.assign({}, safeObject(manifest.generator), { rendererVersion: V3_RENDERER_VERSION });
     return manifest;
   }
 
@@ -520,6 +582,96 @@
     return parts.join('\n');
   }
 
+  function typedMessageBodiesV3(message) {
+    var textParts = [];
+    var htmlParts = [];
+    asArray(message && message.content).forEach(function (part) {
+      if (!part || typeof part !== 'object') return;
+      if (part.type === 'text' && typeof part.text === 'string') textParts.push(part.text);
+      if (part.type === 'html' && typeof part.html === 'string') {
+        if (part.sanitized !== true) throw new Error('v3 export refuses an HTML part not marked sanitized');
+        htmlParts.push(part.html);
+      }
+    });
+    var text = textParts.join('\n\n');
+    if (!text && htmlParts.length) {
+      text = htmlParts.map(extractTextFromHtml).filter(Boolean).join('\n\n');
+    }
+    return { text: text, html: htmlParts.join('\n') };
+  }
+
+  function renderChatMarkdownV3(snapshotJson) {
+    var snap = safeObject(snapshotJson);
+    if (snap.schemaVersion !== V3_SCHEMA_VERSION) throw new Error('v3 Markdown renderer requires schemaVersion 3');
+    var lines = [];
+    lines.push('# ' + (firstString(snap.title, snap.chatId) || 'Saved Chat'));
+    lines.push('');
+    lines.push('- Studio chat id: `' + firstString(snap.chatId) + '`');
+    lines.push('- Snapshot id: `' + firstString(snap.snapshotId) + '`');
+    lines.push('- Captured: `' + firstString(snap.capturedAt) + '`');
+    var href = firstString(snap.source && snap.source.sourceHref);
+    if (href) lines.push('- Source: ' + href);
+    lines.push('');
+    asArray(snap.messages).forEach(function (message) {
+      var bodies = typedMessageBodiesV3(message);
+      lines.push('## ' + markdownRole(message && message.role) + ' ' + String(Number(message && message.turnIndex) || 0));
+      lines.push('');
+      lines.push(String(bodies.text || '').trim());
+      lines.push('');
+    });
+    return lines.join('\n').replace(/\n{4,}/g, '\n\n\n');
+  }
+
+  function renderChatHtmlV3(snapshotJson) {
+    var snap = safeObject(snapshotJson);
+    if (snap.schemaVersion !== V3_SCHEMA_VERSION) throw new Error('v3 HTML renderer requires schemaVersion 3');
+    var title = firstString(snap.title, snap.chatId) || 'Saved Chat';
+    var parts = [];
+    parts.push('<!doctype html>');
+    parts.push('<html lang="en">');
+    parts.push('<head>');
+    parts.push('<meta charset="utf-8">');
+    parts.push('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data: file: https:; style-src \'unsafe-inline\'; font-src data:; base-uri \'none\'; form-action \'none\'; frame-src \'none\'; object-src \'none\'">');
+    parts.push('<meta name="viewport" content="width=device-width, initial-scale=1">');
+    parts.push('<title>' + escapeHtml(title) + '</title>');
+    parts.push('<style>');
+    parts.push('body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.5;color:#171717;background:#fff;}');
+    parts.push('main{max-width:860px;margin:0 auto;}');
+    parts.push('.meta{color:#666;font-size:.9rem;margin-bottom:1.5rem;}');
+    parts.push('.msg{border-top:1px solid #ddd;padding:1rem 0;}');
+    parts.push('.role{font-weight:700;margin-bottom:.5rem;}');
+    parts.push('pre{white-space:pre-wrap;font:inherit;}');
+    parts.push('</style>');
+    parts.push('</head>');
+    parts.push('<body>');
+    parts.push('<main>');
+    parts.push('<h1>' + escapeHtml(title) + '</h1>');
+    parts.push('<div class="meta">Studio chat id: ' + escapeHtml(snap.chatId)
+      + '<br>Snapshot id: ' + escapeHtml(snap.snapshotId)
+      + '<br>Captured: ' + escapeHtml(snap.capturedAt) + '</div>');
+    asArray(snap.messages).forEach(function (message) {
+      var role = markdownRole(message && message.role);
+      var bodies = typedMessageBodiesV3(message);
+      var body = bodies.html || '<pre>' + escapeHtml(bodies.text) + '</pre>';
+      parts.push('<section class="msg" data-turn-index="' + escapeHtml(message && message.turnIndex) + '">');
+      parts.push('<div class="role">' + escapeHtml(role) + '</div>');
+      parts.push('<div class="content">' + body + '</div>');
+      parts.push('</section>');
+    });
+    parts.push('</main>');
+    parts.push('</body>');
+    parts.push('</html>');
+    return parts.join('\n');
+  }
+
+  function renderV3ExportCompanions(snapshotJson) {
+    var snapshot = safeObject(snapshotJson);
+    return Object.freeze({
+      markdownText: renderChatMarkdownV3(snapshot),
+      htmlText: renderChatHtmlV3(snapshot),
+    });
+  }
+
   function safePackageDirName(chatIdRaw) {
     var chatId = cleanString(chatIdRaw);
     if (!chatId) throw new Error('chatId is required for package directory name');
@@ -541,6 +693,54 @@
       sha256: hash,
       byteLength: byteLength(text),
     };
+  }
+
+  function fileDescriptorV3(path, physicalBytes, hash, encoding, logical) {
+    var value = cleanString(encoding) || V3_IDENTITY_ENCODING;
+    if (value !== V3_IDENTITY_ENCODING && value !== 'gzip') throw new Error('unsupported v3 file encoding: ' + value);
+    var descriptor = {
+      path: path,
+      sha256: hash,
+      byteLength: bytesFor(physicalBytes).byteLength,
+      encoding: value,
+    };
+    if (value !== V3_IDENTITY_ENCODING) {
+      var logicalValue = safeObject(logical);
+      descriptor.contentSha256 = firstString(logicalValue.sha256);
+      descriptor.contentByteLength = logicalValue.byteLength;
+      if (!descriptor.contentSha256 || !isFiniteNumber(descriptor.contentByteLength) || descriptor.contentByteLength < 0) {
+        throw new Error('encoded v3 files require contentSha256 and contentByteLength');
+      }
+    }
+    return descriptor;
+  }
+
+  function logicalSha256V3(descriptor) {
+    var file = safeObject(descriptor);
+    return firstString(file.contentSha256, file.sha256);
+  }
+
+  function logicalByteLengthV3(descriptor) {
+    var file = safeObject(descriptor);
+    return isFiniteNumber(file.contentByteLength) ? file.contentByteLength : numberOrZero(file.byteLength);
+  }
+
+  function sortedAssetShasV3(assets) {
+    return asArray(assets).map(function (asset) {
+      var sha = normalizeAssetSha(asset && asset.sha256);
+      if (!sha) throw new Error('invalid v3 asset sha256');
+      return sha;
+    }).sort();
+  }
+
+  async function contentHashV3(files, assets) {
+    var snapshotSha = logicalSha256V3(safeObject(files).snapshot);
+    if (!snapshotSha) throw new Error('v3 files.snapshot logical sha256 is required');
+    return sha256Prefixed(canonicalJson({
+      payloadVersion: V3_PAYLOAD_VERSION,
+      snapshot: snapshotSha,
+      assets: sortedAssetShasV3(assets),
+    }));
   }
 
   function getStores() {
@@ -761,6 +961,104 @@
     return result;
   }
 
+  async function buildSavedChatPackageV3(options) {
+    var opts = safeObject(options);
+    var stores = getStores();
+    var combined = await hydrateSnapshot(stores, opts);
+    var snapshot = safeObject(combined.snapshot);
+    var turns = asArray(combined.turns);
+    var chatId = firstString(opts.chatId, snapshot.chatId);
+    var chat = chatId ? await getStoreRow(stores.chats, chatId) : null;
+    if (!chat) chat = { chatId: chatId || firstString(snapshot.chatId) };
+    var related = await collectRelated(stores, chat);
+    var generatedAt = nowIso();
+    var projected = projectSnapshotJsonV3({ chat: chat, snapshot: snapshot, turns: turns, related: related });
+    var materialized = await maybeMaterializeAssetsV2(projected, opts);
+    var snapshotJson = safeObject(materialized.snapshotJson);
+    snapshotJson.schemaVersion = V3_SCHEMA_VERSION;
+    var manifestAssets = asArray(materialized.manifestAssets).slice().sort(function (a, b) {
+      var av = normalizeAssetSha(a && a.sha256);
+      var bv = normalizeAssetSha(b && b.sha256);
+      return av < bv ? -1 : av > bv ? 1 : 0;
+    });
+    var snapshotText = canonicalJson(snapshotJson);
+    var snapshotHash = await sha256Prefixed(snapshotText);
+    var manifestFiles = {
+      snapshot: fileDescriptorV3('snapshot.json', snapshotText, snapshotHash, V3_IDENTITY_ENCODING),
+    };
+    var contentHash = await contentHashV3(manifestFiles, manifestAssets);
+    var manifestJson = buildManifestJsonV3({
+      snapshotJson: snapshotJson,
+      files: manifestFiles,
+      provenance: Object.assign({}, safeObject(opts.provenance), { generatedAt: generatedAt }),
+      assets: manifestAssets,
+      contentHash: contentHash,
+    });
+    var manifestText = JSON.stringify(manifestJson, null, 2) + '\n';
+    var expectedPackageDirName = safePackageDirName(snapshotJson.chatId);
+    var packageDirName = firstString(opts.packageDirName) || expectedPackageDirName;
+    if (packageDirName !== expectedPackageDirName) {
+      throw new Error('packageDirName must match chatId basename: ' + expectedPackageDirName);
+    }
+    var packagePath = joinPath(PACKAGE_ROOT, packageDirName);
+    var result = {
+      ok: true,
+      schema: MANIFEST_SCHEMA,
+      schemaVersion: V3_SCHEMA_VERSION,
+      payloadVersion: V3_PAYLOAD_VERSION,
+      packageDirName: packageDirName,
+      packagePath: packagePath,
+      chatId: snapshotJson.chatId,
+      snapshotId: snapshotJson.snapshotId,
+      contentHash: contentHash,
+      assets: manifestAssets,
+      manifest: manifestJson,
+      snapshot: snapshotJson,
+      files: {
+        'manifest.json': Object.assign(
+          fileDescriptorV3('manifest.json', manifestText, await sha256Prefixed(manifestText), V3_IDENTITY_ENCODING),
+          { text: manifestText }
+        ),
+        'snapshot.json': Object.assign({}, manifestFiles.snapshot, { text: snapshotText }),
+      },
+      metadata: {
+        generatedAt: generatedAt,
+        projectionOnly: true,
+        assetsDirectoryRequired: manifestAssets.length > 0,
+        assetMaterialization: materialized.status,
+        assetCount: manifestAssets.length,
+        encoding: V3_IDENTITY_ENCODING,
+        liveMaterializerWired: false,
+      },
+    };
+    state.lastBuildAt = generatedAt;
+    state.lastPackage = {
+      packageDirName: packageDirName,
+      chatId: result.chatId,
+      snapshotId: result.snapshotId,
+      schemaVersion: result.schemaVersion,
+      contentHash: result.contentHash,
+      assetCount: manifestAssets.length,
+    };
+    return result;
+  }
+
+  async function resolvePackageTargetV3(options) {
+    var opts = safeObject(options);
+    var combined = await hydrateSnapshot(getStores(), opts);
+    var snapshot = safeObject(combined.snapshot);
+    var chatId = firstString(opts.chatId, snapshot.chatId);
+    var expectedPackageDirName = safePackageDirName(chatId);
+    var packageDirName = firstString(opts.packageDirName) || expectedPackageDirName;
+    if (packageDirName !== expectedPackageDirName) {
+      throw new Error('packageDirName must match chatId basename: ' + expectedPackageDirName);
+    }
+    return {
+      packageDirName: packageDirName,
+      packagePath: joinPath(PACKAGE_ROOT, packageDirName),
+    };
+  }
+
   function getTauriInvoke() {
     try {
       var internals = global.__TAURI_INTERNALS__;
@@ -846,6 +1144,18 @@
     var invoke = getTauriInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
     return decodeFsText(await invoke('plugin:fs|read_file', { path: path, options: options || fsOptions() }));
+  }
+
+  async function fsReadFileBytes(path, options) {
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
+    return bytesFor(await invoke('plugin:fs|read_file', { path: path, options: options || fsOptions() }));
+  }
+
+  async function fsReadDir(path, options) {
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs read_dir');
+    return asArray(await invoke('plugin:fs|read_dir', { path: path, options: options || fsOptions() }));
   }
 
   /* Conservative guard before a recursive overwrite delete: only ever delete a
@@ -942,6 +1252,136 @@
     return written;
   }
 
+  function fsEntryName(entry) {
+    var raw = (typeof entry === 'string') ? entry : firstString(
+      entry && entry.name,
+      entry && entry.fileName,
+      entry && entry.basename,
+      entry && entry.path
+    );
+    var text = cleanString(raw).replace(/[\/\\]+$/g, '');
+    var slash = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+    return slash >= 0 ? text.slice(slash + 1) : text;
+  }
+
+  function fsEntryIsDirectory(entry) {
+    if (!entry || typeof entry !== 'object') return null;
+    if (entry.isDirectory === true || entry.is_dir === true) return true;
+    if (entry.isFile === true || entry.is_file === true) return false;
+    var type = cleanString(entry.type).toLowerCase();
+    if (type === 'directory' || type === 'dir') return true;
+    if (type === 'file') return false;
+    return null;
+  }
+
+  function rejectSymlinkV3(entry, path) {
+    if (entry && typeof entry === 'object' && (entry.isSymlink === true || entry.is_symlink === true)) {
+      throw new Error('refusing interrupted v3 retry with symlink member: ' + path);
+    }
+  }
+
+  async function verifyExistingV3Member(path, expectedSha, expectedLength, options) {
+    var bytes = await fsReadFileBytes(path, options);
+    var actualSha = await sha256Prefixed(bytes);
+    if (actualSha !== expectedSha || bytes.byteLength !== expectedLength) {
+      throw new Error('refusing interrupted v3 retry with mismatching member: ' + path);
+    }
+  }
+
+  /* A no-manifest directory is resumable only when every present entry is an
+   * exact desired v3 member. Validate the entire shallow inventory before any
+   * missing member is written; unexpected or mismatching bytes fail closed. */
+  async function inspectIncompleteV3Package(packagePath, built, options) {
+    var expectedAssets = Object.create(null);
+    asArray(built.manifest && built.manifest.assets).forEach(function (asset) {
+      var relativePath = packageAssetPathForDescriptor(asset);
+      var name = relativePath.slice('assets/'.length);
+      if (expectedAssets[name]) throw new Error('duplicate v3 package asset path: ' + relativePath);
+      expectedAssets[name] = asset;
+    });
+    var rootEntries = await fsReadDir(packagePath, options);
+    var rootSeen = Object.create(null);
+    var snapshotPresent = false;
+    var assetsPresent = false;
+    for (var i = 0; i < rootEntries.length; i += 1) {
+      var entry = rootEntries[i];
+      var name = fsEntryName(entry);
+      if (!name || rootSeen[name]) throw new Error('refusing interrupted v3 retry with invalid package inventory');
+      rootSeen[name] = true;
+      rejectSymlinkV3(entry, joinPath(packagePath, name));
+      if (name === 'manifest.json') throw new Error('saved chat package already complete: ' + packagePath);
+      if (name === 'snapshot.json') {
+        if (fsEntryIsDirectory(entry) === true) throw new Error('refusing interrupted v3 retry: snapshot.json is not a file');
+        snapshotPresent = true;
+        continue;
+      }
+      if (name === 'assets' && Object.keys(expectedAssets).length) {
+        if (fsEntryIsDirectory(entry) === false) throw new Error('refusing interrupted v3 retry: assets is not a directory');
+        assetsPresent = true;
+        continue;
+      }
+      throw new Error('refusing interrupted v3 retry with unexpected member: ' + name);
+    }
+
+    if (snapshotPresent) {
+      var snapshotDescriptor = safeObject(built.manifest && built.manifest.files && built.manifest.files.snapshot);
+      await verifyExistingV3Member(
+        joinPath(packagePath, 'snapshot.json'),
+        firstString(snapshotDescriptor.sha256),
+        numberOrZero(snapshotDescriptor.byteLength),
+        options
+      );
+    }
+
+    var existingAssets = Object.create(null);
+    if (assetsPresent) {
+      var assetEntries = await fsReadDir(joinPath(packagePath, 'assets'), options);
+      for (var ai = 0; ai < assetEntries.length; ai += 1) {
+        var assetEntry = assetEntries[ai];
+        var assetName = fsEntryName(assetEntry);
+        if (!assetName || existingAssets[assetName]) throw new Error('refusing interrupted v3 retry with invalid asset inventory');
+        existingAssets[assetName] = true;
+        rejectSymlinkV3(assetEntry, joinPath(joinPath(packagePath, 'assets'), assetName));
+        if (fsEntryIsDirectory(assetEntry) === true || !expectedAssets[assetName]) {
+          throw new Error('refusing interrupted v3 retry with unexpected asset member: ' + assetName);
+        }
+        var expected = expectedAssets[assetName];
+        await verifyExistingV3Member(
+          joinPath(joinPath(packagePath, 'assets'), assetName),
+          normalizeAssetSha(expected.sha256),
+          numberOrZero(expected.byteLength),
+          options
+        );
+      }
+    }
+
+    var missingAssets = Object.keys(expectedAssets).sort().filter(function (name) {
+      return !existingAssets[name];
+    }).map(function (name) { return expectedAssets[name]; });
+    return { snapshotMissing: !snapshotPresent, missingAssets: missingAssets };
+  }
+
+  async function writeMissingPackageAssetCopiesV3(packagePath, assets, options) {
+    var list = asArray(assets);
+    if (!list.length) return [];
+    var assetsPath = joinPath(packagePath, 'assets');
+    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
+    var written = [];
+    for (var i = 0; i < list.length; i += 1) {
+      var asset = list[i] || {};
+      var relativePath = packageAssetPathForDescriptor(asset);
+      var path = joinPath(packagePath, relativePath);
+      var bytes = await readPackageAssetBytes(asset);
+      if (await fsExists(path, options)) {
+        await verifyExistingV3Member(path, normalizeAssetSha(asset.sha256), numberOrZero(asset.byteLength), options);
+        continue;
+      }
+      await fsWriteFile(path, bytes, options);
+      written.push({ path: path, relativePath: relativePath, sha256: normalizeAssetSha(asset.sha256), byteLength: bytes.length });
+    }
+    return written;
+  }
+
   async function writeSavedChatPackageV1(options) {
     var opts = safeObject(options);
     if (firstString(opts.targetDir, opts.targetFolder)) {
@@ -982,6 +1422,71 @@
     });
   }
 
+  async function writeSavedChatPackageV3(options) {
+    var opts = safeObject(options);
+    if (firstString(opts.targetDir, opts.targetFolder)) {
+      throw new Error('targetDir/targetFolder is deferred; saved chat packages write under AppLocalData archive/packages');
+    }
+    if (opts.overwrite === true) throw new Error('v3 package overwrite is forbidden');
+    var baseOptions = fsOptions();
+    var target = await resolvePackageTargetV3(opts);
+    var packagePath = target.packagePath;
+    if (v3WritesInFlight[packagePath]) throw new Error('v3 package write already in flight: ' + packagePath);
+    v3WritesInFlight[packagePath] = true;
+    try {
+      var exists = await fsExists(packagePath, baseOptions);
+      if (exists && await fsExists(joinPath(packagePath, 'manifest.json'), baseOptions)) {
+        throw new Error('saved chat package already exists: ' + packagePath);
+      }
+      var built = await buildSavedChatPackageV3(opts);
+      if (built.packagePath !== packagePath) throw new Error('v3 package target changed during build');
+      var plan;
+      if (exists) {
+        if (await fsExists(joinPath(packagePath, 'manifest.json'), baseOptions)) {
+          throw new Error('saved chat package already exists: ' + packagePath);
+        }
+        plan = await inspectIncompleteV3Package(packagePath, built, baseOptions);
+      } else {
+        await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
+        plan = { snapshotMissing: true, missingAssets: asArray(built.manifest.assets) };
+      }
+
+      var writtenAssets = await writeMissingPackageAssetCopiesV3(packagePath, plan.missingAssets, baseOptions);
+      var snapshotPath = joinPath(packagePath, 'snapshot.json');
+      var snapshotDescriptor = safeObject(built.manifest.files && built.manifest.files.snapshot);
+      if (plan.snapshotMissing) {
+        if (await fsExists(snapshotPath, baseOptions)) {
+          await verifyExistingV3Member(snapshotPath, snapshotDescriptor.sha256, snapshotDescriptor.byteLength, baseOptions);
+        } else {
+          await fsWriteFile(snapshotPath, textBytes(built.files['snapshot.json'].text), baseOptions);
+        }
+      }
+
+      var manifestPath = joinPath(packagePath, 'manifest.json');
+      if (await fsExists(manifestPath, baseOptions)) {
+        throw new Error('saved chat package became complete during v3 write: ' + packagePath);
+      }
+      await fsWriteFile(manifestPath, textBytes(built.files['manifest.json'].text), baseOptions);
+      var writtenAt = nowIso();
+      state.lastWriteAt = writtenAt;
+      return Object.assign({}, built, {
+        written: true,
+        writtenAt: writtenAt,
+        resumedIncomplete: exists,
+        packagePath: packagePath,
+        paths: {
+          root: packagePath,
+          manifest: manifestPath,
+          snapshot: snapshotPath,
+          assets: built.manifest.assets.length ? joinPath(packagePath, 'assets') : '',
+        },
+        writtenAssets: writtenAssets,
+      });
+    } finally {
+      delete v3WritesInFlight[packagePath];
+    }
+  }
+
   function diagnoseSavedChatPackageV1() {
     var stores = getStores();
     return {
@@ -1011,6 +1516,20 @@
     };
   }
 
+  function diagnoseSavedChatPackageV3() {
+    return {
+      installed: true,
+      version: MODULE_VERSION,
+      schema: MANIFEST_SCHEMA,
+      schemaVersion: V3_SCHEMA_VERSION,
+      payloadVersion: V3_PAYLOAD_VERSION,
+      encoding: V3_IDENTITY_ENCODING,
+      appOwnedMembers: ['manifest.json', 'snapshot.json'],
+      liveMaterializerWired: false,
+      gzipActive: false,
+    };
+  }
+
   var previous = H2O.Studio.ingestion;
   H2O.Studio.ingestion = Object.assign({}, previous, {
     buildSavedChatPackageV1: function (options) {
@@ -1025,7 +1544,20 @@
         throw error;
       });
     },
+    buildSavedChatPackageV3: function (options) {
+      return buildSavedChatPackageV3(options).catch(function (error) {
+        state.lastError = String(error && (error.stack || error.message || error));
+        throw error;
+      });
+    },
+    writeSavedChatPackageV3: function (options) {
+      return writeSavedChatPackageV3(options).catch(function (error) {
+        state.lastError = String(error && (error.stack || error.message || error));
+        throw error;
+      });
+    },
     diagnoseSavedChatPackageV1: diagnoseSavedChatPackageV1,
+    diagnoseSavedChatPackageV3: diagnoseSavedChatPackageV3,
     __savedChatPackageV1: Object.freeze({
       canonicalJson: canonicalJson,
       sha256Hex: sha256Hex,
@@ -1036,6 +1568,18 @@
       renderChatMarkdownV1: renderChatMarkdownV1,
       renderChatHtmlV1: renderChatHtmlV1,
     }),
+    __savedChatPackageV3: Object.freeze({
+      logicalSha256: logicalSha256V3,
+      logicalByteLength: logicalByteLengthV3,
+      contentHash: contentHashV3,
+      fileDescriptor: fileDescriptorV3,
+      normalizeSavedChatMessage: normalizeSavedChatMessageV3,
+      projectSnapshotJson: projectSnapshotJsonV3,
+      buildManifestJson: buildManifestJsonV3,
+    }),
+    savedChatPackageRenderers: Object.freeze({
+      renderV3ExportCompanions: renderV3ExportCompanions,
+    }),
     diagnose: function () {
       var base = {};
       if (previous && typeof previous.diagnose === 'function') {
@@ -1043,6 +1587,7 @@
         catch (_) { base = {}; }
       }
       base.savedChatPackageV1 = diagnoseSavedChatPackageV1();
+      base.savedChatPackageV3 = diagnoseSavedChatPackageV3();
       return base;
     },
   });

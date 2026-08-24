@@ -148,6 +148,24 @@
     return JSON.parse(JSON.stringify(value == null ? null : value));
   }
 
+  function usesCanonicalContentPartsV3(snapshotJson) {
+    return snapshotJson && snapshotJson.schemaVersion === 3;
+  }
+
+  function messageHtmlSources(snapshotJson, message) {
+    var sources = [];
+    /* Preserve v1/v2 dual-form behavior. V3 ignores any scalar lookalike and
+     * discovers assets only through its authoritative typed HTML parts. */
+    if (!usesCanonicalContentPartsV3(snapshotJson)
+      && typeof message.contentHtml === 'string' && message.contentHtml) {
+      sources.push(message.contentHtml);
+    }
+    asArray(message.content).forEach(function (entry) {
+      if (entry && entry.type === 'html' && typeof entry.html === 'string' && entry.html) sources.push(entry.html);
+    });
+    return sources;
+  }
+
   /* Main entry. Returns a transformed COPY; the input object is never mutated. */
   async function materializeInlineImageAssetsV2(input) {
     var opts = (input && typeof input === 'object') ? input : {};
@@ -177,12 +195,7 @@
       var turnIdx = turnIndexOf(message, mi);
       var sourceMessageId = cleanString(message.id);
 
-      /* Collect candidate HTML from contentHtml + any content[] html entries. */
-      var htmlSources = [];
-      if (typeof message.contentHtml === 'string' && message.contentHtml) htmlSources.push(message.contentHtml);
-      asArray(message.content).forEach(function (entry) {
-        if (entry && entry.type === 'html' && typeof entry.html === 'string' && entry.html) htmlSources.push(entry.html);
-      });
+      var htmlSources = messageHtmlSources(snapshotJson, message);
       if (!htmlSources.length) continue;
 
       /* Unique data URIs in this message. */
@@ -243,9 +256,10 @@
         }
       }
 
-      /* Rewrite the message's HTML (contentHtml + content[].html) in place on the copy. */
+      /* Rewrite authoritative typed HTML for v3; retain legacy dual-form
+       * rewriting for v1/v2 packages. */
       if (messageReplacements.length) {
-        if (typeof message.contentHtml === 'string') {
+        if (!usesCanonicalContentPartsV3(snapshotJson) && typeof message.contentHtml === 'string') {
           message.contentHtml = rewriteInlineImageRefsV2(message.contentHtml, messageReplacements);
         }
         asArray(message.content).forEach(function (entry) {

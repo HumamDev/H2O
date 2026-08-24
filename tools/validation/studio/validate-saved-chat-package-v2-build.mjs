@@ -239,6 +239,74 @@ async function main() {
     assert.deepEqual(Object.keys(v2.files).sort(), ['chat.html', 'chat.md', 'manifest.json', 'snapshot.json']);
   });
 
+  // ── Additive v3 contract coverage (M02 T06) ───────────────────────
+  let v3a = null;
+  let v3b = null;
+  await checkAsync('v3 build is deterministic and emits canonical typed content only', async () => {
+    const { ingestion } = buildProjector({ withImage: true });
+    v3a = await ingestion.buildSavedChatPackageV3({ snapshotId: 'snap_v2' });
+    v3b = await ingestion.buildSavedChatPackageV3({ snapshotId: 'snap_v2' });
+    assert.equal(v3a.schemaVersion, 3);
+    assert.equal(v3a.payloadVersion, 3);
+    assert.equal(v3a.files['snapshot.json'].text, v3b.files['snapshot.json'].text);
+    assert.equal(v3a.contentHash, v3b.contentHash);
+    for (const message of v3a.snapshot.messages) {
+      assert.ok(Array.isArray(message.content));
+      assert.equal(Object.hasOwn(message, 'contentText'), false);
+      assert.equal(Object.hasOwn(message, 'contentHtml'), false);
+    }
+  });
+
+  check('v3 identity descriptor matches exact stored snapshot bytes and logical fallback', () => {
+    const descriptor = v3a.manifest.files.snapshot;
+    const bytes = Buffer.from(v3a.files['snapshot.json'].text, 'utf8');
+    assert.equal(descriptor.encoding, 'identity');
+    assert.equal(descriptor.sha256, 'sha256-' + sha256Hex(bytes));
+    assert.equal(descriptor.byteLength, bytes.length);
+    assert.equal(Object.hasOwn(descriptor, 'contentSha256'), false);
+    assert.equal(Object.hasOwn(descriptor, 'contentByteLength'), false);
+    const api = buildProjector({ withImage: false }).ingestion.__savedChatPackageV3;
+    assert.equal(api.logicalSha256(descriptor), descriptor.sha256);
+    assert.equal(api.logicalByteLength(descriptor), descriptor.byteLength);
+  });
+
+  await checkAsync('v3 contentHash is exact, asset-order independent, and excludes renderers', async () => {
+    const assets = v3a.manifest.assets.map((asset) => asset.sha256).sort();
+    const expected = 'sha256-' + sha256Hex(canonicalJson({
+      payloadVersion: 3,
+      snapshot: v3a.manifest.files.snapshot.sha256,
+      assets,
+    }));
+    assert.equal(v3a.manifest.contentHash, expected);
+    assert.deepEqual(Object.keys(v3a.files).sort(), ['manifest.json', 'snapshot.json']);
+    assert.equal(v3a.manifest.files.markdown, undefined);
+    assert.equal(v3a.manifest.files.html, undefined);
+    const api = buildProjector({ withImage: false }).ingestion.__savedChatPackageV3;
+    const reversed = v3a.manifest.assets.slice().reverse();
+    assert.equal(await api.contentHash(v3a.manifest.files, reversed), v3a.contentHash);
+  });
+
+  await checkAsync('v3 logical identity is encoding-independent without producing gzip', async () => {
+    const api = buildProjector({ withImage: false }).ingestion.__savedChatPackageV3;
+    const logical = 'sha256-275b305bbd4d55874fe0508003fceedc5c41940139fb17376dd336e614b4fa3b';
+    const differentPhysical = 'sha256-181a911cccfe08bc59b0b12910dcea49d6eb958a9bbbfb7f7727b732744f163c';
+    const identity = { path: 'snapshot.json', sha256: logical, byteLength: 1143, encoding: 'identity' };
+    const futureEncoded = {
+      path: 'snapshot.json', sha256: differentPhysical, byteLength: 35, encoding: 'gzip',
+      contentSha256: logical, contentByteLength: 1143,
+    };
+    assert.notEqual(identity.sha256, futureEncoded.sha256);
+    assert.equal(api.logicalSha256(identity), logical);
+    assert.equal(api.logicalSha256(futureEncoded), logical);
+    assert.equal(api.logicalByteLength(identity), 1143);
+    assert.equal(api.logicalByteLength(futureEncoded), 1143);
+    const hashA = await api.contentHash({ snapshot: identity }, []);
+    const hashB = await api.contentHash({ snapshot: futureEncoded }, []);
+    assert.equal(hashA, 'sha256-ff93ad08a4e2342f051369f7a99c68930102a0ccd6736246bbbc9c0675d09075');
+    assert.equal(hashA, hashB);
+    assert.doesNotMatch(readRepo(PROJECTOR_REL), /CompressionStream|DecompressionStream|gunzip|inflate|zlib/);
+  });
+
   console.log('');
   console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {

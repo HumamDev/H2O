@@ -47,7 +47,7 @@
   var MODULE_VERSION = '0.1.0-phase-h-2';
   var APP_LOCAL_DATA = 15;                 /* Tauri BaseDirectory.AppLocalData */
   var PACKAGE_ROOT = 'archive/packages';
-  var SUPPORTED_SCHEMA_VERSIONS = [1, 2];
+  var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
   var PREVIEW_MAX_CHARS = 600;
   var MARKDOWN_READ_CAP = 64 * 1024;       /* preview read cap */
 
@@ -163,9 +163,10 @@
   var STATUS_PRESENTATION = {
     'verified': { tone: 'ok', label: 'Verified', note: 'Required files present, file hashes match the manifest, and the schema/payload version is supported.' },
     'corrupted': { tone: 'block', label: 'Corrupted', note: 'The package failed integrity validation (a manifest/asset blocker). It is not safe to import.' },
-    'missing-files': { tone: 'block', label: 'Missing files', note: 'One or more required package files (manifest.json / snapshot.json / chat.md / chat.html) are missing.' },
+    'missing-files': { tone: 'block', label: 'Missing files', note: 'One or more files required by this package version are missing.' },
     'hash-mismatch': { tone: 'block', label: 'Hash mismatch', note: 'A recomputed file hash does not match the manifest (or contentHash mismatched). The package content does not verify.' },
-    'unsupported-version': { tone: 'warn', label: 'Unsupported version', note: 'The package schemaVersion/payloadVersion is outside the supported range (v1/v2).' },
+    'unsupported-version': { tone: 'warn', label: 'Unsupported version', note: 'The package schemaVersion/payloadVersion pair is unsupported.' },
+    'unsupported-encoding': { tone: 'warn', label: 'Unsupported encoding', note: 'The package declares an encoding that this Desktop version cannot decode and verify.' },
     'read-error': { tone: 'neutral', label: 'Read error', note: 'The package could not be read or is outside the archive packages directory.' },
   };
 
@@ -179,9 +180,9 @@
   function isVersionSupported(schemaVersion, payloadVersion) {
     var sv = isFiniteNumber(schemaVersion) ? schemaVersion : (schemaVersion == null ? 1 : Number(schemaVersion));
     if (SUPPORTED_SCHEMA_VERSIONS.indexOf(sv) === -1) return false;
-    /* payloadVersion is absent on v1 (text) packages and a finite number on v2. */
-    if (payloadVersion == null) return true;
-    return isFiniteNumber(payloadVersion) || isFiniteNumber(Number(payloadVersion));
+    if (sv === 1) return payloadVersion == null;
+    var pv = isFiniteNumber(payloadVersion) ? payloadVersion : Number(payloadVersion);
+    return (sv === 2 && pv === 2) || (sv === 3 && pv === 3);
   }
 
   function blockerCodes(diag) {
@@ -200,6 +201,7 @@
     if (hashChecks.contentHashOk === false || hashChecks.snapshotShaOk === false
         || asArray(assetChecks.hashMismatches).length
         || codes.some(function (c) { return /sha|hash/i.test(c); })) return 'hash-mismatch';
+    if (codes.indexOf('snapshot-encoding-not-enabled') >= 0 || codes.indexOf('snapshot-encoding-invalid') >= 0) return 'unsupported-encoding';
     if (!isVersionSupported(d.schemaVersion, d.payloadVersion)) return 'unsupported-version';
     if (cleanString(d.status) === 'blocked' || codes.length) return 'corrupted';
     return 'verified';

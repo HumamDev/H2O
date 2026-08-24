@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import nodeCrypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -19,6 +21,11 @@ const RECOVERY_VALIDATOR = 'tools/validation/studio/validate-saved-chat-archive-
 const IMPORT_HARNESS = 'tools/validation/studio/validate-saved-chat-archive-import-recovery-harness-v1.mjs';
 const STUDIO_ROOT = 'src-surfaces-base/studio';
 const ARCHIVE_EXPORT_CAPABILITY = 'apps/studio/desktop/src-tauri/capabilities/archive-export.json';
+const PACKAGE_OWNER = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
+const HTML_SANITIZER = 'src-surfaces-base/studio/platform/html-sanitizer.js';
+const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
+const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
+const V3_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
 const CAPABILITY_FILES = [
   'apps/studio/desktop/src-tauri/capabilities/default.json',
   'apps/studio/desktop/src-tauri/capabilities/archive-cas.json',
@@ -160,8 +167,238 @@ function stripComments(text) {
 }
 
 const checks = [];
+const asyncChecks = [];
 function check(name, fn) {
   checks.push({ name, fn });
+}
+function checkAsync(name, fn) {
+  asyncChecks.push({ name, fn });
+}
+
+function canonicalize(value) {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value).sort()) if (value[key] !== undefined) out[key] = canonicalize(value[key]);
+    return out;
+  }
+  return value;
+}
+function canonicalJson(value) { return JSON.stringify(canonicalize(value)); }
+function sha256(value) {
+  return `sha256-${nodeCrypto.createHash('sha256').update(Buffer.from(value)).digest('hex')}`;
+}
+
+function createBehaviorFs() {
+  const dirs = new Set();
+  const files = new Map();
+  const APP = 15;
+  const HOME = 21;
+  const key = (baseDir, p) => `${baseDir}:${p}`;
+  const splitKey = (entry) => {
+    const index = entry.indexOf(':');
+    return { baseDir: Number(entry.slice(0, index)), path: entry.slice(index + 1) };
+  };
+  function parents(baseDir, p) {
+    const parts = p.split('/');
+    for (let i = 1; i < parts.length; i += 1) dirs.add(key(baseDir, parts.slice(0, i).join('/')));
+  }
+  function mkdir(baseDir, p) { parents(baseDir, p); dirs.add(key(baseDir, p)); }
+  function put(baseDir, p, value) { parents(baseDir, p); files.set(key(baseDir, p), Buffer.from(value)); }
+  function exists(baseDir, p) { return dirs.has(key(baseDir, p)) || files.has(key(baseDir, p)); }
+  function list(baseDir, p) {
+    const prefix = `${p.replace(/\/$/, '')}/`;
+    const out = new Map();
+    for (const entry of dirs) {
+      const parsed = splitKey(entry);
+      if (parsed.baseDir !== baseDir || !parsed.path.startsWith(prefix)) continue;
+      const rest = parsed.path.slice(prefix.length);
+      if (rest && !rest.includes('/')) out.set(rest, { name: rest, isDirectory: true });
+    }
+    for (const entry of files.keys()) {
+      const parsed = splitKey(entry);
+      if (parsed.baseDir !== baseDir || !parsed.path.startsWith(prefix)) continue;
+      const rest = parsed.path.slice(prefix.length);
+      if (rest && !rest.includes('/')) out.set(rest, { name: rest, isFile: true });
+    }
+    return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  function removeTree(baseDir, p) {
+    const exact = key(baseDir, p);
+    const prefix = `${exact}/`;
+    for (const entry of [...files.keys()]) if (entry === exact || entry.startsWith(prefix)) files.delete(entry);
+    for (const entry of [...dirs]) if (entry === exact || entry.startsWith(prefix)) dirs.delete(entry);
+  }
+  function renameTree(oldBaseDir, oldPath, newBaseDir, newPath) {
+    if (exists(newBaseDir, newPath)) throw new Error('destination exists');
+    const oldKey = key(oldBaseDir, oldPath);
+    const oldPrefix = `${oldKey}/`;
+    const fileMoves = [...files.entries()].filter(([entry]) => entry === oldKey || entry.startsWith(oldPrefix));
+    const dirMoves = [...dirs].filter((entry) => entry === oldKey || entry.startsWith(oldPrefix));
+    for (const [entry, bytes] of fileMoves) {
+      const suffix = entry.slice(oldKey.length);
+      files.set(key(newBaseDir, newPath) + suffix, bytes);
+      files.delete(entry);
+    }
+    for (const entry of dirMoves) {
+      const suffix = entry.slice(oldKey.length);
+      dirs.add(key(newBaseDir, newPath) + suffix);
+      dirs.delete(entry);
+    }
+  }
+  async function invoke(command, body, metadata) {
+    if (command === 'plugin:fs|write_file') {
+      const p = decodeURIComponent(metadata?.headers?.path || '');
+      const options = JSON.parse(metadata?.headers?.options || '{}');
+      put(options.baseDir, p, body);
+      return null;
+    }
+    if (command === 'plugin:fs|rename') {
+      const options = body.options || {};
+      renameTree(options.oldPathBaseDir, body.oldPath, options.newPathBaseDir, body.newPath);
+      return null;
+    }
+    const p = body?.path;
+    const options = body?.options || {};
+    if (command === 'plugin:fs|exists') return exists(options.baseDir, p);
+    if (command === 'plugin:fs|mkdir') { mkdir(options.baseDir, p); return null; }
+    if (command === 'plugin:fs|remove') { removeTree(options.baseDir, p); return null; }
+    if (command === 'plugin:fs|read_dir') {
+      if (!exists(options.baseDir, p)) throw new Error(`not found: ${p}`);
+      return list(options.baseDir, p);
+    }
+    if (command === 'plugin:fs|read_file') {
+      const value = files.get(key(options.baseDir, p));
+      if (!value) throw new Error(`not found: ${p}`);
+      return Uint8Array.from(value);
+    }
+    throw new Error(`unexpected fs command: ${command}`);
+  }
+  function inventory(baseDir, prefix) {
+    const marker = `${prefix.replace(/\/$/, '')}/`;
+    return [...files.entries()]
+      .map(([entry, bytes]) => ({ ...splitKey(entry), bytes }))
+      .filter((item) => item.baseDir === baseDir && (item.path === prefix || item.path.startsWith(marker)))
+      .map((item) => ({ path: item.path, sha256: sha256(item.bytes), byteLength: item.bytes.length }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+  mkdir(APP, 'archive/packages');
+  return { APP, HOME, dirs, files, invoke, mkdir, put, exists, inventory, key };
+}
+
+function makeBehaviorPackage({ schemaVersion, chatId, withAsset = false, encoding = 'identity' }) {
+  const snapshotId = `${chatId}_snapshot`;
+  const assetBytes = Buffer.from('t05-governed-image');
+  const assetSha = sha256(assetBytes);
+  const assetPath = `assets/${assetSha}.png`;
+  const htmlOne = `<p>First <strong>typed HTML</strong>${withAsset ? `<img src="${assetPath}">` : ''}</p>`;
+  const htmlTwo = '<p>Second <em>typed HTML</em></p>';
+  const messages = schemaVersion === 3
+    ? [
+      { id: 'm0', role: 'user', turnIndex: 0, content: [{ type: 'text', text: 'First typed message' }, { type: 'html', html: htmlOne, sanitized: true }], assetRefs: withAsset ? [assetSha] : [] },
+      { id: 'm1', role: 'assistant', turnIndex: 1, content: [{ type: 'text', text: 'Second typed message' }, { type: 'html', html: htmlTwo, sanitized: true }], assetRefs: [] },
+    ]
+    : [
+      { id: 'm0', role: 'user', turnIndex: 0, contentText: 'Legacy first', contentHtml: htmlOne, content: [{ type: 'text', text: 'Legacy first' }, { type: 'html', html: htmlOne, sanitized: true }], assetRefs: withAsset ? [assetSha] : [] },
+    ];
+  const snapshot = {
+    schema: 'h2o.savedChatSnapshot', schemaVersion, chatId, snapshotId,
+    title: `Export ${chatId}`, capturedAt: '2026-08-24T00:00:00.000Z', source: {}, messages,
+  };
+  const snapshotText = canonicalJson(snapshot);
+  const snapshotBytes = Buffer.from(snapshotText);
+  const snapshotSha = sha256(snapshotBytes);
+  const assets = withAsset ? [{ sha256: assetSha, path: assetPath, ext: 'png', mimeType: 'image/png', byteLength: assetBytes.length, source: 'chatgpt-capture' }] : [];
+  const files = {};
+  if (schemaVersion === 3) {
+    files.snapshot = { path: 'snapshot.json', sha256: snapshotSha, byteLength: snapshotBytes.length, encoding };
+    if (encoding !== 'identity') {
+      files.snapshot.contentSha256 = snapshotSha;
+      files.snapshot.contentByteLength = snapshotBytes.length;
+    }
+  } else {
+    const markdownText = `# Legacy ${chatId}\n`;
+    const htmlText = `<!doctype html><p>Legacy ${chatId}</p>${withAsset ? `<img src="${assetPath}">` : ''}`;
+    files.snapshot = { path: 'snapshot.json', sha256: snapshotSha, byteLength: snapshotBytes.length };
+    files.markdown = { path: 'chat.md', sha256: sha256(markdownText), byteLength: Buffer.byteLength(markdownText) };
+    files.html = { path: 'chat.html', sha256: sha256(htmlText), byteLength: Buffer.byteLength(htmlText) };
+    files.__texts = { markdownText, htmlText };
+  }
+  const contentHash = schemaVersion === 3
+    ? sha256(canonicalJson({ payloadVersion: 3, snapshot: files.snapshot.contentSha256 ?? snapshotSha, assets: assets.map((asset) => asset.sha256).sort() }))
+    : schemaVersion === 2
+      ? sha256(canonicalJson({ snapshot: snapshotSha, assets: assets.map((asset) => asset.sha256).sort() }))
+      : snapshotSha;
+  const manifestFiles = { snapshot: files.snapshot };
+  if (schemaVersion !== 3) { manifestFiles.markdown = files.markdown; manifestFiles.html = files.html; }
+  const manifest = {
+    schema: 'h2o.savedChatPackage', schemaVersion, chatId, snapshotId,
+    contentHash, files: manifestFiles, assets,
+  };
+  if (schemaVersion >= 2) manifest.payloadVersion = schemaVersion;
+  const manifestText = JSON.stringify(manifest, null, 2) + '\n';
+  return { chatId, snapshotId, snapshot, snapshotText, snapshotBytes, assetBytes, assetSha, assetPath, assets, files, manifest, manifestText };
+}
+
+function readCommittedV3Fixture() {
+  const root = path.join(repoRoot, V3_FIXTURE);
+  const manifestText = fs.readFileSync(path.join(root, 'manifest.json'), 'utf8');
+  const snapshotBytes = fs.readFileSync(path.join(root, 'snapshot.json'));
+  const manifest = JSON.parse(manifestText);
+  const snapshot = JSON.parse(snapshotBytes.toString('utf8'));
+  const assetPath = manifest.assets[0].path;
+  const assetBytes = fs.readFileSync(path.join(root, assetPath));
+  return {
+    chatId: manifest.chatId,
+    snapshotId: manifest.snapshotId,
+    snapshot,
+    snapshotBytes,
+    assetBytes,
+    assetSha: manifest.assets[0].sha256,
+    assetPath,
+    assets: manifest.assets,
+    files: { snapshot: manifest.files.snapshot },
+    manifest,
+    manifestText,
+  };
+}
+
+function installBehaviorPackage(mem, pkg) {
+  const root = `archive/packages/${pkg.chatId}.h2ochat`;
+  mem.mkdir(mem.APP, root);
+  mem.put(mem.APP, `${root}/manifest.json`, pkg.manifestText);
+  mem.put(mem.APP, `${root}/snapshot.json`, pkg.snapshotBytes);
+  if (pkg.manifest.schemaVersion !== 3) {
+    mem.put(mem.APP, `${root}/chat.md`, pkg.files.__texts.markdownText);
+    mem.put(mem.APP, `${root}/chat.html`, pkg.files.__texts.htmlText);
+  }
+  if (pkg.assets.length) {
+    mem.mkdir(mem.APP, `${root}/assets`);
+    mem.put(mem.APP, `${root}/${pkg.assetPath}`, pkg.assetBytes);
+  }
+  return root;
+}
+
+function loadBehaviorRuntime(mem) {
+  const context = {
+    console, setTimeout, clearTimeout, URL, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
+    atob: globalThis.atob, crypto: globalThis.crypto || nodeCrypto.webcrypto,
+    __TAURI_INTERNALS__: { invoke: mem.invoke },
+    H2O: { Studio: {
+      ingestion: { assetCas: { exists: async () => true, describe: async (id) => ({ exists: true, sha256: id }) } },
+      store: {
+        chats: { get: async (id) => ({ chatId: id }) },
+        snapshots: { get: async (id) => ({ snapshot: { snapshotId: id } }), listByChat: async () => [] },
+        assets: { listBySnapshot: async () => [] },
+      },
+    } },
+  };
+  context.globalThis = context; context.window = context;
+  const sandbox = vm.createContext(context);
+  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, DIAGNOSTICS, INSPECTOR, EXPORTER]) {
+    vm.runInContext(readRepo(relPath), sandbox, { filename: relPath });
+  }
+  return sandbox;
 }
 
 check('J.0 export/share contract exists', () => {
@@ -330,6 +567,15 @@ check('J.2 exporter verifies copied hashes and contentHash after copy', () => {
   assertIncludes(exporterCode, 'copied file hash mismatch');
 });
 
+check('M02 T05 uses the sanctioned v3 renderer surface and keeps companions outside logical identity', () => {
+  const owner = readRepo(PACKAGE_OWNER);
+  assertIncludes(owner, 'savedChatPackageRenderers');
+  assertIncludes(owner, 'renderV3ExportCompanions');
+  assertIncludes(exporterCode, 'writeV3DerivedExportCompanions');
+  assertIncludes(exporterSrc, 'Derived v3 companions are intentionally outside manifest.files');
+  assertMatches(exporterCode, /schemaVersion\s*===\s*3\s*\?\s*2\s*:\s*0/);
+});
+
 check('J.2 exporter does not call store/scanner/materializer/importer/sync paths', () => {
   for (const token of [
     'H2O.Studio.store',
@@ -467,10 +713,133 @@ check('no S0F0j/S0F1j files are staged by J.2', () => {
   assert.deepEqual(forbidden, [], `S0F0j/S0F1j files staged unexpectedly:\n${forbidden.join('\n')}`);
 });
 
+checkAsync('M02 T05 v3 export regenerates deterministic renderers without mutating source identity', async () => {
+  const mem = createBehaviorFs();
+  const pkg = readCommittedV3Fixture();
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const ingestion = runtime.H2O.Studio.ingestion;
+  const exporter = runtime.H2O.Studio.archiveExporter;
+
+  const before = mem.inventory(mem.APP, sourceRoot);
+  assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.md`));
+  assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.html`));
+  const diag = await ingestion.validateSavedChatPackageV1({ packagePath: sourceRoot, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(diag.status, 'ok');
+  assert.equal(diag.hashChecks.contentHashOk, true);
+
+  const first = await exporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't05-v3-first.h2ochat' });
+  const second = await exporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't05-v3-second.h2ochat' });
+  assert.equal(first.status, 'exported');
+  assert.equal(second.status, 'exported');
+  assert.equal(first.contentHash, pkg.manifest.contentHash);
+  assert.equal(first.fileCount, 5, 'manifest + snapshot + asset + two derived companions');
+
+  const firstRoot = 'H2O Studio Exports/t05-v3-first.h2ochat';
+  const secondRoot = 'H2O Studio Exports/t05-v3-second.h2ochat';
+  const firstMd = mem.files.get(mem.key(mem.HOME, `${firstRoot}/chat.md`));
+  const firstHtml = mem.files.get(mem.key(mem.HOME, `${firstRoot}/chat.html`));
+  const secondMd = mem.files.get(mem.key(mem.HOME, `${secondRoot}/chat.md`));
+  const secondHtml = mem.files.get(mem.key(mem.HOME, `${secondRoot}/chat.html`));
+  assert.ok(firstMd && firstHtml && secondMd && secondHtml);
+  assert.deepEqual(firstMd, secondMd);
+  assert.deepEqual(firstHtml, secondHtml);
+
+  const markdown = firstMd.toString('utf8');
+  const html = firstHtml.toString('utf8');
+  assert.ok(markdown.indexOf('First synthetic fixture turn.') < markdown.indexOf('Second synthetic fixture turn.'));
+  assert.ok(html.indexOf('First synthetic fixture turn.') < html.indexOf('Second <strong>synthetic</strong> fixture turn.'));
+  assert.ok(html.includes(pkg.assetPath), 'derived HTML keeps governed package-relative asset reference');
+  assert.deepEqual(
+    mem.files.get(mem.key(mem.HOME, `${firstRoot}/${pkg.assetPath}`)),
+    pkg.assetBytes,
+    'governed asset body copied byte-identically',
+  );
+
+  assert.deepEqual(mem.inventory(mem.APP, sourceRoot), before, 'source inventory and hashes unchanged');
+  assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.md`));
+  assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.html`));
+  assert.deepEqual(mem.files.get(mem.key(mem.APP, `${sourceRoot}/manifest.json`)), Buffer.from(pkg.manifestText));
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, `${firstRoot}/manifest.json`)), Buffer.from(pkg.manifestText));
+  const exportedManifest = JSON.parse(mem.files.get(mem.key(mem.HOME, `${firstRoot}/manifest.json`)).toString('utf8'));
+  assert.equal(exportedManifest.contentHash, pkg.manifest.contentHash);
+  assert.equal(exportedManifest.files.snapshot.sha256, pkg.manifest.files.snapshot.sha256);
+  assert.equal(exportedManifest.files.markdown, undefined);
+  assert.equal(exportedManifest.files.html, undefined);
+
+  const htmlOnly = JSON.parse(JSON.stringify(pkg.snapshot));
+  htmlOnly.messages = [{ id: 'html-only', role: 'assistant', turnIndex: 0, content: [{ type: 'html', html: '<p>Only <strong>governed HTML</strong></p>', sanitized: true }] }];
+  const htmlOnlyRendered = ingestion.savedChatPackageRenderers.renderV3ExportCompanions(htmlOnly);
+  assert.ok(htmlOnlyRendered.markdownText.includes('Only governed HTML'), 'Markdown uses governed HTML-to-text fallback when no typed text exists');
+  const textOnly = JSON.parse(JSON.stringify(pkg.snapshot));
+  textOnly.messages = [{ id: 'text-only', role: 'user', turnIndex: 0, content: [{ type: 'text', text: '<unsafe text>' }] }];
+  const textOnlyRendered = ingestion.savedChatPackageRenderers.renderV3ExportCompanions(textOnly);
+  assert.ok(textOnlyRendered.htmlText.includes('&lt;unsafe text&gt;'), 'HTML text fallback is escaped');
+});
+
+checkAsync('M02 T05 preserves v1/v2 byte-copy and collision behavior', async () => {
+  const mem = createBehaviorFs();
+  const v1 = makeBehaviorPackage({ schemaVersion: 1, chatId: 't05_v1' });
+  const v2 = makeBehaviorPackage({ schemaVersion: 2, chatId: 't05_v2', withAsset: true });
+  const v1Root = installBehaviorPackage(mem, v1);
+  const v2Root = installBehaviorPackage(mem, v2);
+  const runtime = loadBehaviorRuntime(mem);
+  const exporter = runtime.H2O.Studio.archiveExporter;
+  const one = await exporter.exportVerifiedPackage({ packagePath: v1Root, exportName: 'legacy-v1.h2ochat' });
+  const two = await exporter.exportVerifiedPackage({ packagePath: v2Root, exportName: 'legacy-v2.h2ochat' });
+  assert.equal(one.status, 'exported');
+  assert.equal(two.status, 'exported');
+
+  for (const leaf of ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html']) {
+    assert.deepEqual(
+      mem.files.get(mem.key(mem.HOME, `H2O Studio Exports/legacy-v1.h2ochat/${leaf}`)),
+      mem.files.get(mem.key(mem.APP, `${v1Root}/${leaf}`)),
+      `v1 ${leaf} copied byte-identically`,
+    );
+    assert.deepEqual(
+      mem.files.get(mem.key(mem.HOME, `H2O Studio Exports/legacy-v2.h2ochat/${leaf}`)),
+      mem.files.get(mem.key(mem.APP, `${v2Root}/${leaf}`)),
+      `v2 ${leaf} copied byte-identically`,
+    );
+  }
+  assert.deepEqual(
+    mem.files.get(mem.key(mem.HOME, `H2O Studio Exports/legacy-v2.h2ochat/${v2.assetPath}`)),
+    v2.assetBytes,
+  );
+
+  const exportedBeforeCollision = mem.inventory(mem.HOME, 'H2O Studio Exports/legacy-v1.h2ochat');
+  const collision = await exporter.exportVerifiedPackage({ packagePath: v1Root, exportName: 'legacy-v1.h2ochat' });
+  assert.equal(collision.status, 'destination-exists');
+  assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports/legacy-v1.h2ochat'), exportedBeforeCollision);
+});
+
+checkAsync('M02 T05 refuses pre-M03 gzip without creating an export', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 3, chatId: 't05_v3_gzip', encoding: 'gzip' });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 'must-not-export.h2ochat' });
+  assert.equal(result.status, 'unsupported-encoding');
+  assert.equal(result.ok, false);
+  assert.equal(mem.exists(mem.HOME, 'H2O Studio Exports/must-not-export.h2ochat'), false);
+  assert.doesNotMatch(readRepo(EXPORTER), /CompressionStream|DecompressionStream|gunzip|inflate|zlib/);
+});
+
 let failures = 0;
 for (const { name, fn } of checks) {
   try {
     fn();
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    failures += 1;
+    console.error(`FAIL ${name}`);
+    console.error(error?.stack || String(error));
+  }
+}
+
+for (const { name, fn } of asyncChecks) {
+  try {
+    await fn();
     console.log(`PASS ${name}`);
   } catch (error) {
     failures += 1;
@@ -484,4 +853,4 @@ if (failures > 0) {
   process.exit(1);
 }
 
-console.log(`\nPASS saved chat archive export/share J.2 implementation validation (${checks.length} checks)`);
+console.log(`\nPASS saved chat archive export/share J.2/M02 T05 implementation validation (${checks.length + asyncChecks.length} checks)`);
