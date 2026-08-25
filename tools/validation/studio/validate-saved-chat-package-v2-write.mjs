@@ -18,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const MATERIALIZER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-assets.tauri.js';
+const CODEC_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const PROJECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
 
 const APP_LOCAL_DATA = 15;
@@ -51,6 +52,7 @@ function createStrictFs({ failWritePath = '' } = {}) {
   const calls = [];
   const writes = [];
   const removes = [];
+  const lstatOverrides = new Map();
   const controls = { failWritePath };
 
   function parseWriteHeaders(meta) {
@@ -105,6 +107,15 @@ function createStrictFs({ failWritePath = '' } = {}) {
       return files.get(p);
     }
 
+    if (cmd === 'plugin:fs|lstat') {
+      const { path: p, options } = requireOptions(args, cmd);
+      calls.push({ cmd, path: p, baseDir: options.baseDir });
+      if (lstatOverrides.has(p)) return { ...lstatOverrides.get(p) };
+      if (files.has(p)) return { isFile: true, isSymlink: false, size: files.get(p).byteLength };
+      if (dirs.has(p)) return { isFile: false, isDirectory: true, isSymlink: false, size: 0 };
+      throw new Error('not found: ' + p);
+    }
+
     if (cmd === 'plugin:fs|read_dir') {
       const { path: p, options } = requireOptions(args, cmd);
       calls.push({ cmd, path: p, baseDir: options.baseDir });
@@ -139,16 +150,17 @@ function createStrictFs({ failWritePath = '' } = {}) {
     throw new Error('unexpected fs command: ' + cmd);
   }
 
-  return { invoke, dirs, files, calls, writes, removes, controls };
+  return { invoke, dirs, files, calls, writes, removes, lstatOverrides, controls };
 }
 
-function createStores({ withImage }) {
+function createStores({ withImage, turnText = '' }) {
   const chatId = withImage ? 'chat_v2_write' : 'chat_v1_write';
   const snapshotId = withImage ? 'snap_v2_write' : 'snap_v1_write';
   const img = `<img src="data:image/png;base64,${PNG_B64}">`;
+  const plainText = turnText || 'plain';
   const turns = withImage
     ? [{ turnIdx: 0, role: 'user', outerHtml: `<p>image ${img}</p>`, text: 'image', meta: { messageId: 'm0' } }]
-    : [{ turnIdx: 0, role: 'user', outerHtml: '<p>plain</p>', text: 'plain', meta: { messageId: 'm0' } }];
+    : [{ turnIdx: 0, role: 'user', outerHtml: `<p>${plainText}</p>`, text: plainText, meta: { messageId: 'm0' } }];
   const snapshot = {
     snapshotId,
     chatId,
@@ -212,8 +224,15 @@ function createCas({ missingOnGet = false } = {}) {
   };
 }
 
-function loadProjector({ withImage, missingOnGet = false, failWritePath = '' }) {
-  const stores = createStores({ withImage });
+function loadProjector({
+  withImage,
+  missingOnGet = false,
+  failWritePath = '',
+  turnText = '',
+  CompressionStreamImpl = CompressionStream,
+  DecompressionStreamImpl = DecompressionStream,
+}) {
+  const stores = createStores({ withImage, turnText });
   const cas = createCas({ missingOnGet });
   const strictFs = createStrictFs({ failWritePath });
   const context = {
@@ -225,6 +244,10 @@ function loadProjector({ withImage, missingOnGet = false, failWritePath = '' }) 
     TextDecoder,
     Uint8Array,
     ArrayBuffer,
+    ReadableStream,
+    TransformStream,
+    CompressionStream: CompressionStreamImpl,
+    DecompressionStream: DecompressionStreamImpl,
     crypto: globalThis.crypto || crypto.webcrypto,
     __TAURI_INTERNALS__: { invoke: strictFs.invoke },
     H2O: { Studio: { store: stores.stores, ingestion: { assetCas: cas.api } } },
@@ -234,6 +257,7 @@ function loadProjector({ withImage, missingOnGet = false, failWritePath = '' }) 
   const sandbox = vm.createContext(context);
   vm.runInContext(readRepo(SANITIZER_REL), sandbox, { filename: SANITIZER_REL });
   vm.runInContext(readRepo(MATERIALIZER_REL), sandbox, { filename: MATERIALIZER_REL });
+  vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
   vm.runInContext(readRepo(PROJECTOR_REL), sandbox, { filename: PROJECTOR_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion || typeof ingestion.writeSavedChatPackageV1 !== 'function') throw new Error('projector did not register');
@@ -254,6 +278,29 @@ function assertAllAppLocalData(fsShim) {
 
 function assertNoSyncPath(fsShim) {
   for (const call of fsShim.calls) assert.doesNotMatch(call.path || '', /H2O Studio Sync|\$HOME/i);
+}
+
+function passthroughCompressionStreamClass() {
+  return class PassthroughCompressionStream {
+    constructor() {
+      return new TransformStream({
+        transform(chunk, controller) { controller.enqueue(chunk); },
+      });
+    }
+  };
+}
+
+function snapshotReadCalls(env, root) {
+  return env.fs.calls.filter((call) => call.cmd === 'plugin:fs|read_file' && call.path === root + '/snapshot.json');
+}
+
+async function buildV3(env) {
+  return env.ingestion.buildSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+}
+
+function installInterruptedSnapshot(env, root, bytes) {
+  env.fs.dirs.add(root);
+  env.fs.files.set(root + '/snapshot.json', new Uint8Array(bytes));
 }
 
 async function main() {
@@ -368,13 +415,23 @@ async function main() {
     v3Env = loadProjector({ withImage: true });
     const out = await v3Env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v2_write' });
     assert.equal(out.schemaVersion, 3);
-    assert.equal(out.manifest.files.snapshot.encoding, 'identity');
+    assert.match(out.manifest.files.snapshot.encoding, /^(identity|gzip)$/);
     const paths = v3Env.fs.writes.map((write) => write.path);
     assert.match(paths[0], /\/assets\/sha256-[0-9a-f]{64}\.png$/);
     assert.match(paths[1], /\/snapshot\.json$/);
     assert.match(paths[2], /\/manifest\.json$/);
     assert.equal(paths.some((p) => /\/chat\.(md|html)$/.test(p)), false);
     assert.deepEqual(Object.keys(out.files).sort(), ['manifest.json', 'snapshot.json']);
+    const descriptor = out.manifest.files.snapshot;
+    assert.ok(out.metadata.logicalSnapshotByteLength > 0);
+    assert.ok(out.metadata.logicalSnapshotByteLength <= 8 * 1024 * 1024);
+    if (descriptor.encoding === 'gzip') {
+      assert.ok(descriptor.byteLength > 0);
+      assert.ok(descriptor.byteLength < descriptor.contentByteLength);
+      assert.ok(out.metadata.gzipTotalBytes < out.metadata.identityTotalBytes);
+    }
+    assert.deepEqual(v3Env.fs.files.get(out.paths.snapshot), out.files['snapshot.json'].bytes);
+    assert.deepEqual(v3Env.fs.files.get(out.paths.manifest), out.files['manifest.json'].bytes);
   });
 
   await checkAsync('v3 complete-package coexistence refusal preserves every existing byte', async () => {
@@ -416,6 +473,212 @@ async function main() {
     assert.equal(rootWrites.filter((w) => /\/snapshot\.json$/.test(w.path)).length, 1, 'matching snapshot must not be rewritten');
   });
 
+  await checkAsync('M03 T05 identity fallback is unreachable by payload size and needs a non-compressing encoder', async () => {
+    /* Permanent record of WHY the identity branch is exercised with a
+     * non-compressing encoder rather than a small on-disk fixture: every payload
+     * this projector can emit — including an empty turn — carries enough
+     * canonical JSON scaffolding that real gzip wins the exact whole-package
+     * comparison. There is no sub-threshold fixture that reaches the branch, and
+     * inventing a size threshold to force it would violate the approved rule. */
+    for (const probe of ['', 'a', 'ok', 'hello world']) {
+      const env = loadProjector({ withImage: false, turnText: probe });
+      const built = await buildV3(env);
+      assert.equal(built.metadata.encoding, 'gzip', `payload ${JSON.stringify(probe)} still compresses`);
+      assert.ok(built.metadata.gzipTotalBytes < built.metadata.identityTotalBytes,
+        'gzip must win the exact whole-package comparison for real payloads');
+    }
+    /* The governed fallback itself: with an encoder that cannot shrink the
+     * payload, the SAME rule selects identity and emits the frozen identity
+     * descriptor shape (no logical fields required). */
+    const flat = loadProjector({
+      withImage: false,
+      turnText: 'identity fallback probe',
+      CompressionStreamImpl: passthroughCompressionStreamClass(),
+    });
+    const identityBuilt = await buildV3(flat);
+    assert.equal(identityBuilt.metadata.encoding, 'identity');
+    assert.ok(identityBuilt.metadata.gzipTotalBytes >= identityBuilt.metadata.identityTotalBytes,
+      'identity must win when gzip produces no whole-package saving');
+    const d = identityBuilt.manifest.files.snapshot;
+    assert.equal(d.encoding, 'identity');
+    assert.equal(d.byteLength, identityBuilt.metadata.logicalSnapshotByteLength);
+    assert.equal(d.contentSha256, undefined, 'identity descriptors omit logical fields');
+    assert.equal(d.contentByteLength, undefined, 'identity descriptors omit logical fields');
+    assert.match(identityBuilt.manifest.contentHash, /^sha256-[0-9a-f]{64}$/);
+  });
+
+  await checkAsync('DP-M03-C R1 retains admissible gzip when fresh selection is identity', async () => {
+    const turnText = 'compressible branch flip '.repeat(600);
+    const native = loadProjector({ withImage: false, turnText });
+    const gzipBuilt = await buildV3(native);
+    assert.equal(gzipBuilt.metadata.encoding, 'gzip');
+    assert.ok(gzipBuilt.files['snapshot.json'].bytes.byteLength < gzipBuilt.metadata.logicalSnapshotByteLength);
+
+    const env = loadProjector({
+      withImage: false,
+      turnText,
+      CompressionStreamImpl: passthroughCompressionStreamClass(),
+    });
+    const fresh = await buildV3(env);
+    assert.equal(fresh.metadata.encoding, 'identity');
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    const retained = new Uint8Array(gzipBuilt.files['snapshot.json'].bytes);
+    installInterruptedSnapshot(env, root, retained);
+    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+    assert.equal(resumed.manifest.files.snapshot.encoding, 'gzip');
+    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), retained);
+  });
+
+  await checkAsync('DP-M03-C R2 retains identity equality when fresh selection is gzip', async () => {
+    const turnText = 'compressible identity branch '.repeat(600);
+    const env = loadProjector({ withImage: false, turnText });
+    const fresh = await buildV3(env);
+    assert.equal(fresh.metadata.encoding, 'gzip');
+    const identityBytes = new TextEncoder().encode(fresh.metadata.logicalSnapshotText);
+    assert.equal(identityBytes.byteLength, fresh.metadata.logicalSnapshotByteLength);
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    installInterruptedSnapshot(env, root, identityBytes);
+    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+    assert.equal(resumed.manifest.files.snapshot.encoding, 'identity');
+    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), identityBytes);
+  });
+
+  await checkAsync('DP-M03-C R3 retains physically different admissible gzip bytes', async () => {
+    const turnText = 'physical nondeterminism '.repeat(700);
+    const env = loadProjector({ withImage: false, turnText });
+    const fresh = await buildV3(env);
+    assert.equal(fresh.metadata.encoding, 'gzip');
+    const alternate = new Uint8Array(fresh.files['snapshot.json'].bytes);
+    alternate[4] ^= 1;
+    assert.notDeepEqual(alternate, fresh.files['snapshot.json'].bytes);
+    assert.ok(alternate.byteLength < fresh.metadata.logicalSnapshotByteLength);
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    installInterruptedSnapshot(env, root, alternate);
+    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+    assert.equal(resumed.manifest.files.snapshot.encoding, 'gzip');
+    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), alternate);
+  });
+
+  await checkAsync('DP-M03-C R4 retains identity equality when fresh selection is identity', async () => {
+    const env = loadProjector({
+      withImage: false,
+      CompressionStreamImpl: passthroughCompressionStreamClass(),
+    });
+    const fresh = await buildV3(env);
+    assert.equal(fresh.metadata.encoding, 'identity');
+    const identityBytes = new TextEncoder().encode(fresh.metadata.logicalSnapshotText);
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    installInterruptedSnapshot(env, root, identityBytes);
+    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
+    assert.equal(resumed.manifest.files.snapshot.encoding, 'identity');
+    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), identityBytes);
+  });
+
+  await checkAsync('DP-M03-C same-length gzip is read under the trusted cap then rejected before decode', async () => {
+    let decoderCalls = 0;
+    class ForbiddenDecoder {
+      constructor() { decoderCalls += 1; throw new Error('decoder must not run'); }
+    }
+    const env = loadProjector({ withImage: false, DecompressionStreamImpl: ForbiddenDecoder });
+    const built = await buildV3(env);
+    const sameLengthGzip = new Uint8Array(built.metadata.logicalSnapshotByteLength);
+    sameLengthGzip[0] = 0x1f;
+    sameLengthGzip[1] = 0x8b;
+    const root = 'archive/packages/chat_v1_write.h2ochat';
+    installInterruptedSnapshot(env, root, sameLengthGzip);
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+      /gzip snapshot physical byteLength must be smaller/
+    );
+    assert.equal(snapshotReadCalls(env, root).length, 1, 'bounded whole-file read should identify representation');
+    assert.equal(decoderCalls, 0, 'same-length gzip must fail before decoder construction');
+    assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+  });
+
+  await checkAsync('DP-M03-C oversized and empty members fail from metadata before read', async () => {
+    for (const kind of ['oversized', 'empty']) {
+      const env = loadProjector({ withImage: false });
+      const built = await buildV3(env);
+      const length = kind === 'oversized' ? built.metadata.logicalSnapshotByteLength + 1 : 0;
+      const bytes = new Uint8Array(length);
+      if (length >= 2) { bytes[0] = 0x1f; bytes[1] = 0x8b; }
+      const root = 'archive/packages/chat_v1_write.h2ochat';
+      installInterruptedSnapshot(env, root, bytes);
+      await assert.rejects(
+        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+        kind === 'oversized' ? /exceeds trusted logical/ : /must be positive/
+      );
+      assert.equal(snapshotReadCalls(env, root).length, 0, kind + ' member must fail before read_file');
+      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+    }
+  });
+
+  await checkAsync('DP-M03-C symlink and non-regular snapshot states fail before read', async () => {
+    for (const kind of ['symlink', 'non-regular']) {
+      const env = loadProjector({ withImage: false });
+      const root = 'archive/packages/chat_v1_write.h2ochat';
+      installInterruptedSnapshot(env, root, new Uint8Array([0x7b]));
+      env.fs.lstatOverrides.set(root + '/snapshot.json', kind === 'symlink'
+        ? { isFile: true, isSymlink: true, size: 1 }
+        : { isFile: false, isDirectory: true, isSymlink: false, size: 1 });
+      await assert.rejects(
+        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+        /regular non-symlink file/
+      );
+      assert.equal(snapshotReadCalls(env, root).length, 0);
+    }
+  });
+
+  await checkAsync('DP-M03-C unsupported and corrupt gzip representations remain fail-closed', async () => {
+    const cases = [
+      { bytes: new Uint8Array([0x00, 0x01]), error: /unknown snapshot representation/ },
+      { bytes: new Uint8Array([0x1f, 0x8b, 0x08]), error: /decompression failed|decoded-length-mismatch/ },
+    ];
+    for (const item of cases) {
+      const env = loadProjector({ withImage: false });
+      const root = 'archive/packages/chat_v1_write.h2ochat';
+      installInterruptedSnapshot(env, root, item.bytes);
+      await assert.rejects(
+        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+        item.error
+      );
+      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+    }
+  });
+
+  await checkAsync('DP-M03-C decoded overflow, length mismatch, and SHA mismatch remain fail-closed', async () => {
+    for (const kind of ['overflow', 'length', 'sha']) {
+      const turnText = 'bounded logical verification '.repeat(500);
+      const env = loadProjector({ withImage: false, turnText });
+      const built = await buildV3(env);
+      const expected = new TextEncoder().encode(built.metadata.logicalSnapshotText);
+      let logical;
+      let error;
+      if (kind === 'overflow') {
+        logical = new Uint8Array(expected.byteLength + 1).fill(65);
+        error = /decoded gzip output exceeds|decoded-output-exceeds-cap/;
+      } else if (kind === 'length') {
+        logical = expected.slice(0, expected.byteLength - 1);
+        error = /decoded gzip byteLength|decoded-length-mismatch/;
+      } else {
+        logical = new Uint8Array(expected);
+        logical[logical.byteLength - 1] ^= 1;
+        error = /decoded gzip SHA-256|decoded-hash-mismatch/;
+      }
+      const physical = await env.ingestion.savedChatPackageCodec.gzipEncodeBytes(logical, {
+        physicalByteCap: expected.byteLength,
+      });
+      assert.ok(physical.byteLength < expected.byteLength);
+      const root = 'archive/packages/chat_v1_write.h2ochat';
+      installInterruptedSnapshot(env, root, physical);
+      await assert.rejects(
+        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
+        error
+      );
+      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+    }
+  });
+
   await checkAsync('v3 interrupted retry rejects mismatching and unexpected members fail-closed', async () => {
     const mismatch = loadProjector({ withImage: false });
     const root = 'archive/packages/chat_v1_write.h2ochat';
@@ -423,7 +686,7 @@ async function main() {
     mismatch.fs.files.set(root + '/snapshot.json', new Uint8Array(Buffer.from('mismatch')));
     await assert.rejects(
       () => mismatch.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-      /mismatching member/
+      /unknown snapshot representation|logically mismatching snapshot/
     );
     assert.equal(mismatch.fs.files.has(root + '/manifest.json'), false);
 

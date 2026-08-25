@@ -151,6 +151,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Canonical base transcript Renderer. Loaded by studio.html after the shared
   // sanitizer and before studio.js Reader orchestration.
   "renderer/chat-renderer.studio.js",
+  // Desktop-only: governed v3 package-member gzip codec and bounded
+  // physical/logical verification. Must precede the package writer.
+  "ingestion/saved-chat-package-codec.tauri.js",
   // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
   // API only; no UI, import/recovery, sync transport, or CAS implementation.
   "ingestion/saved-chat-package-v1.tauri.js",
@@ -1349,6 +1352,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/export-bundle.tauri.js",
   "platform/html-sanitizer.js",
   "renderer/chat-renderer.studio.js",
+  "ingestion/saved-chat-package-codec.tauri.js",
   "ingestion/saved-chat-package-v1.tauri.js",
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",

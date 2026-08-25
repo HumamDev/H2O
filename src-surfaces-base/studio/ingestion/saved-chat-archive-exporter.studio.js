@@ -56,6 +56,19 @@
     return (ins && typeof ins.inspectPackage === 'function') ? ins : null;
   }
 
+  /* Single governed saved-chat package codec authority (M03 T02/T03). This
+   * module never implements gzip decoding, magic detection, physical/logical
+   * hashing or descriptor verification; it only consumes verified logical bytes. */
+  function savedChatPackageCodecV3() {
+    var codec = H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.savedChatPackageCodec;
+    if (!codec || codec.__installed !== true ||
+        typeof codec.verifyPackageMemberBytes !== 'function' ||
+        !isFiniteNumber(codec.LOGICAL_SNAPSHOT_CAP_BYTES)) {
+      return null;
+    }
+    return codec;
+  }
+
   function getPackageRenderers() {
     var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
     var renderers = ingestion.savedChatPackageRenderers;
@@ -447,15 +460,30 @@
     var schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
     if (schemaVersion !== 3) return [];
     var snapshotDescriptor = safeObject(safeObject(manifest.files).snapshot);
-    if (cleanString(snapshotDescriptor.encoding) !== 'identity') {
-      throw new Error('v3 export supports identity snapshot encoding only before M03');
-    }
     var snapshotCopy = null;
     for (var i = 0; i < copied.length; i += 1) {
       if (copied[i].relativePath === 'snapshot.json') { snapshotCopy = copied[i]; break; }
     }
     if (!snapshotCopy) throw new Error('verified v3 export is missing copied snapshot.json');
-    var snapshot = safeParseJson(decodeToText(snapshotCopy.bytes));
+    /* M03 T04: the durable snapshot member is copied byte-identically above and
+     * is never decoded-and-recompressed. The logical content used to regenerate
+     * the human-readable companions is obtained by verifying those SAME already
+     * copied bytes through the single governed codec — physical descriptor
+     * verification, encoding validation, bounded decode and logical length/SHA
+     * verification. Verifying the copied bytes rather than re-reading the source
+     * avoids a redundant read and leaves no TOCTOU window between the bytes that
+     * were exported and the bytes that were rendered. A governed failure throws,
+     * so the staged export is cleaned up and never published. */
+    var codec = savedChatPackageCodecV3();
+    if (!codec) throw new Error('governed saved-chat package codec unavailable for v3 export');
+    var verifiedMember = await codec.verifyPackageMemberBytes({
+      storedBytes: snapshotCopy.bytes,
+      descriptor: snapshotDescriptor,
+      expectedPath: 'snapshot.json',
+      physicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+      logicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+    });
+    var snapshot = safeParseJson(decodeToText(safeObject(verifiedMember).logicalBytes));
     if (!snapshot || snapshot.schemaVersion !== 3) throw new Error('verified v3 snapshot.json is not renderable');
     var renderers = getPackageRenderers();
     if (!renderers) throw new Error('v3 export renderer capability unavailable');

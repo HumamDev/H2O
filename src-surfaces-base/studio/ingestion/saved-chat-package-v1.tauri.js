@@ -28,6 +28,8 @@
   var V3_SCHEMA_VERSION = 3;
   var V3_PAYLOAD_VERSION = 3;
   var V3_IDENTITY_ENCODING = 'identity';
+  var V3_GZIP_ENCODING = 'gzip';
+  var V3_GZIP_DOMINANCE_ERROR = 'saved-chat-member-physical-output-exceeds-cap';
   var RENDERER_VERSION = 'saved-chat-package-v1';
   var V3_RENDERER_VERSION = 'saved-chat-package-v3';
   var MODULE_VERSION = '0.1.0-phase-b';
@@ -496,7 +498,9 @@
     var files = safeObject(src.files);
     var snapshotFile = safeObject(files.snapshot);
     if (snapshotJson.schemaVersion !== V3_SCHEMA_VERSION) throw new Error('v3 snapshot schemaVersion must be 3');
-    if (snapshotFile.encoding !== V3_IDENTITY_ENCODING) throw new Error('M02 v3 snapshot encoding must be identity');
+    if (snapshotFile.encoding !== V3_IDENTITY_ENCODING && snapshotFile.encoding !== V3_GZIP_ENCODING) {
+      throw new Error('v3 snapshot encoding must be identity or gzip');
+    }
     var contentHash = firstString(src.contentHash);
     if (!contentHash) throw new Error('v3 contentHash is required');
     var manifest = buildManifestJsonV1({
@@ -743,6 +747,88 @@
     }));
   }
 
+  function savedChatPackageCodecV3() {
+    var codec = H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.savedChatPackageCodec;
+    if (!codec || typeof codec.gzipEncodeBytes !== 'function' ||
+        typeof codec.sha256PrefixedBytes !== 'function' ||
+        typeof codec.verifyPackageMemberBytes !== 'function' ||
+        typeof codec.readBoundedPackageMemberBytes !== 'function') {
+      throw new Error('saved-chat package codec is required; load ingestion/saved-chat-package-codec.tauri.js before ingestion/saved-chat-package-v1.tauri.js');
+    }
+    return codec;
+  }
+
+  function candidateTotalBytesV3(snapshotBytes, manifestBytes) {
+    var snapshotLength = bytesFor(snapshotBytes).byteLength;
+    var manifestLength = bytesFor(manifestBytes).byteLength;
+    var total = snapshotLength + manifestLength;
+    if (!Number.isSafeInteger(total)) throw new Error('v3 candidate byte total exceeds safe integer range');
+    return total;
+  }
+
+  function gzipCandidateWinsV3(gzipTotalBytes, identityTotalBytes, gzipSnapshotByteLength, identitySnapshotByteLength) {
+    if (!Number.isSafeInteger(gzipTotalBytes) || gzipTotalBytes < 0 ||
+        !Number.isSafeInteger(identityTotalBytes) || identityTotalBytes < 0 ||
+        !Number.isSafeInteger(gzipSnapshotByteLength) || gzipSnapshotByteLength < 0 ||
+        !Number.isSafeInteger(identitySnapshotByteLength) || identitySnapshotByteLength < 0) {
+      throw new Error('v3 candidate totals and snapshot lengths must be non-negative safe integers');
+    }
+    return gzipSnapshotByteLength > 0 &&
+      gzipSnapshotByteLength < identitySnapshotByteLength &&
+      gzipTotalBytes < identityTotalBytes;
+  }
+
+  function isGzipDominanceOverflowV3(error, candidateCap) {
+    return !!(error && error.code === V3_GZIP_DOMINANCE_ERROR &&
+      error.detail && error.detail.byteCap === candidateCap);
+  }
+
+  async function packageCandidateV3(input) {
+    var src = safeObject(input);
+    var snapshotBytes = bytesFor(src.snapshotBytes);
+    var descriptor = safeObject(src.snapshotDescriptor);
+    var manifestJson = buildManifestJsonV3({
+      snapshotJson: safeObject(src.snapshotJson),
+      files: { snapshot: descriptor },
+      provenance: safeObject(src.provenance),
+      assets: asArray(src.assets),
+      contentHash: firstString(src.contentHash),
+    });
+    var manifestText = JSON.stringify(manifestJson, null, 2) + '\n';
+    var manifestBytes = textBytes(manifestText);
+    return {
+      encoding: descriptor.encoding,
+      snapshotBytes: snapshotBytes,
+      snapshotDescriptor: descriptor,
+      manifestJson: manifestJson,
+      manifestText: manifestText,
+      manifestBytes: manifestBytes,
+      totalBytes: candidateTotalBytesV3(snapshotBytes, manifestBytes),
+      manifestDescriptor: fileDescriptorV3(
+        'manifest.json',
+        manifestBytes,
+        await sha256Prefixed(manifestBytes),
+        V3_IDENTITY_ENCODING
+      ),
+    };
+  }
+
+  function installCandidateV3(built, candidate) {
+    var snapshotFile = Object.assign({}, candidate.snapshotDescriptor, { bytes: candidate.snapshotBytes });
+    if (candidate.encoding === V3_IDENTITY_ENCODING) snapshotFile.text = built.metadata.logicalSnapshotText;
+    built.manifest = candidate.manifestJson;
+    built.files = {
+      'manifest.json': Object.assign({}, candidate.manifestDescriptor, {
+        text: candidate.manifestText,
+        bytes: candidate.manifestBytes,
+      }),
+      'snapshot.json': snapshotFile,
+    };
+    built.metadata.encoding = candidate.encoding;
+    built.metadata.selectedTotalBytes = candidate.totalBytes;
+    return built;
+  }
+
   function getStores() {
     return (H2O.Studio && H2O.Studio.store) || {};
   }
@@ -981,20 +1067,68 @@
       var bv = normalizeAssetSha(b && b.sha256);
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
+    var codec = savedChatPackageCodecV3();
     var snapshotText = canonicalJson(snapshotJson);
-    var snapshotHash = await sha256Prefixed(snapshotText);
-    var manifestFiles = {
-      snapshot: fileDescriptorV3('snapshot.json', snapshotText, snapshotHash, V3_IDENTITY_ENCODING),
-    };
-    var contentHash = await contentHashV3(manifestFiles, manifestAssets);
-    var manifestJson = buildManifestJsonV3({
+    var logicalSnapshotBytes = textBytes(snapshotText);
+    if (!Number.isSafeInteger(logicalSnapshotBytes.byteLength) || logicalSnapshotBytes.byteLength <= 0 ||
+        logicalSnapshotBytes.byteLength > codec.LOGICAL_SNAPSHOT_CAP_BYTES) {
+      throw new Error('v3 logical snapshot byteLength must be positive and within the governed snapshot cap');
+    }
+    var logicalSnapshotHash = await codec.sha256PrefixedBytes(logicalSnapshotBytes);
+    var provenance = Object.assign({}, safeObject(opts.provenance), { generatedAt: generatedAt });
+    var identityDescriptor = fileDescriptorV3(
+      'snapshot.json',
+      logicalSnapshotBytes,
+      logicalSnapshotHash,
+      V3_IDENTITY_ENCODING
+    );
+    var contentHash = await contentHashV3({ snapshot: identityDescriptor }, manifestAssets);
+    var identityCandidate = await packageCandidateV3({
       snapshotJson: snapshotJson,
-      files: manifestFiles,
-      provenance: Object.assign({}, safeObject(opts.provenance), { generatedAt: generatedAt }),
+      snapshotBytes: logicalSnapshotBytes,
+      snapshotDescriptor: identityDescriptor,
+      provenance: provenance,
       assets: manifestAssets,
       contentHash: contentHash,
     });
-    var manifestText = JSON.stringify(manifestJson, null, 2) + '\n';
+    var candidateCap = identityCandidate.totalBytes;
+    var gzipCandidate = null;
+    var selectionReason = 'identity-smaller-or-tied';
+    try {
+      var gzipBytes = await codec.gzipEncodeBytes(logicalSnapshotBytes, { physicalByteCap: candidateCap });
+      var gzipDescriptor = fileDescriptorV3(
+        'snapshot.json',
+        gzipBytes,
+        await codec.sha256PrefixedBytes(gzipBytes),
+        V3_GZIP_ENCODING,
+        { sha256: logicalSnapshotHash, byteLength: logicalSnapshotBytes.byteLength }
+      );
+      var gzipContentHash = await contentHashV3({ snapshot: gzipDescriptor }, manifestAssets);
+      if (gzipContentHash !== contentHash) throw new Error('v3 candidate logical contentHash mismatch');
+      gzipCandidate = await packageCandidateV3({
+        snapshotJson: snapshotJson,
+        snapshotBytes: gzipBytes,
+        snapshotDescriptor: gzipDescriptor,
+        provenance: provenance,
+        assets: manifestAssets,
+        contentHash: gzipContentHash,
+      });
+    } catch (error) {
+      if (!isGzipDominanceOverflowV3(error, candidateCap)) throw error;
+      selectionReason = 'gzip-dominated-at-identity-total-cap';
+    }
+    var selectedCandidate = identityCandidate;
+    if (gzipCandidate && gzipCandidateWinsV3(
+      gzipCandidate.totalBytes,
+      identityCandidate.totalBytes,
+      gzipCandidate.snapshotBytes.byteLength,
+      identityCandidate.snapshotBytes.byteLength
+    )) {
+      selectedCandidate = gzipCandidate;
+      selectionReason = 'gzip-complete-representation-smaller';
+    } else if (gzipCandidate && gzipCandidate.totalBytes < identityCandidate.totalBytes) {
+      selectionReason = 'identity-no-physical-snapshot-savings';
+    }
     var expectedPackageDirName = safePackageDirName(snapshotJson.chatId);
     var packageDirName = firstString(opts.packageDirName) || expectedPackageDirName;
     if (packageDirName !== expectedPackageDirName) {
@@ -1012,25 +1146,27 @@
       snapshotId: snapshotJson.snapshotId,
       contentHash: contentHash,
       assets: manifestAssets,
-      manifest: manifestJson,
+      manifest: selectedCandidate.manifestJson,
       snapshot: snapshotJson,
-      files: {
-        'manifest.json': Object.assign(
-          fileDescriptorV3('manifest.json', manifestText, await sha256Prefixed(manifestText), V3_IDENTITY_ENCODING),
-          { text: manifestText }
-        ),
-        'snapshot.json': Object.assign({}, manifestFiles.snapshot, { text: snapshotText }),
-      },
+      files: {},
       metadata: {
         generatedAt: generatedAt,
         projectionOnly: true,
         assetsDirectoryRequired: manifestAssets.length > 0,
         assetMaterialization: materialized.status,
         assetCount: manifestAssets.length,
-        encoding: V3_IDENTITY_ENCODING,
+        encoding: selectedCandidate.encoding,
+        logicalSnapshotText: snapshotText,
+        logicalSnapshotSha256: logicalSnapshotHash,
+        logicalSnapshotByteLength: logicalSnapshotBytes.byteLength,
+        identityTotalBytes: identityCandidate.totalBytes,
+        gzipTotalBytes: gzipCandidate ? gzipCandidate.totalBytes : null,
+        candidateCap: candidateCap,
+        selectionReason: selectionReason,
         liveMaterializerWired: false,
       },
     };
+    installCandidateV3(result, selectedCandidate);
     state.lastBuildAt = generatedAt;
     state.lastPackage = {
       packageDirName: packageDirName,
@@ -1150,6 +1286,12 @@
     var invoke = getTauriInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
     return bytesFor(await invoke('plugin:fs|read_file', { path: path, options: options || fsOptions() }));
+  }
+
+  async function fsLstat(path, options) {
+    var invoke = getTauriInvoke();
+    if (!invoke) throw new Error('tauri invoke unavailable for fs lstat');
+    return invoke('plugin:fs|lstat', { path: path, options: options || fsOptions() });
   }
 
   async function fsReadDir(path, options) {
@@ -1288,6 +1430,92 @@
     }
   }
 
+  function detectInterruptedSnapshotEncodingV3(bytes) {
+    var value = bytesFor(bytes);
+    if (value.byteLength >= 2 && value[0] === 0x1f && value[1] === 0x8b) return V3_GZIP_ENCODING;
+    if (value.byteLength >= 1 && value[0] === 0x7b) return V3_IDENTITY_ENCODING;
+    throw new Error('refusing interrupted v3 retry with unknown snapshot representation');
+  }
+
+  async function inspectInterruptedSnapshotV3(packagePath, built) {
+    var codec = savedChatPackageCodecV3();
+    var expectedLogicalLength = numberOrZero(built.metadata && built.metadata.logicalSnapshotByteLength);
+    var expectedLogicalSha = firstString(built.metadata && built.metadata.logicalSnapshotSha256);
+    if (!Number.isSafeInteger(expectedLogicalLength) || expectedLogicalLength <= 0 ||
+        expectedLogicalLength > codec.LOGICAL_SNAPSHOT_CAP_BYTES || !expectedLogicalSha) {
+      throw new Error('v3 interrupted retry is missing trusted logical build metadata');
+    }
+    var snapshotPath = joinPath(packagePath, 'snapshot.json');
+    var metadata = await fsLstat(snapshotPath, fsOptions());
+    if (!metadata || metadata.isSymlink === true || metadata.is_symlink === true ||
+        !(metadata.isFile === true || metadata.is_file === true)) {
+      throw new Error('refusing interrupted v3 retry: snapshot.json must be a regular non-symlink file');
+    }
+    var metadataSize = metadata.size;
+    if (!Number.isSafeInteger(metadataSize) || metadataSize <= 0) {
+      throw new Error('refusing interrupted v3 retry: snapshot.json physical byteLength must be positive');
+    }
+    if (metadataSize > expectedLogicalLength) {
+      throw new Error('refusing interrupted v3 retry: snapshot.json physical byteLength exceeds trusted logical byteLength');
+    }
+    var bounded = await codec.readBoundedPackageMemberBytes({
+      packagePath: packagePath,
+      memberPath: 'snapshot.json',
+      physicalByteCap: expectedLogicalLength,
+    });
+    if (bounded.physicalByteLength !== metadataSize) {
+      throw new Error('refusing interrupted v3 retry: snapshot.json changed during bounded read');
+    }
+    var encoding = detectInterruptedSnapshotEncodingV3(bounded.storedBytes);
+    if (encoding === V3_GZIP_ENCODING && bounded.physicalByteLength >= expectedLogicalLength) {
+      throw new Error('refusing interrupted v3 retry: gzip snapshot physical byteLength must be smaller than trusted logical byteLength');
+    }
+    var logical = encoding === V3_GZIP_ENCODING
+      ? { sha256: expectedLogicalSha, byteLength: expectedLogicalLength }
+      : null;
+    var descriptor = fileDescriptorV3(
+      'snapshot.json',
+      bounded.storedBytes,
+      bounded.physicalSha256,
+      encoding,
+      logical
+    );
+    var verified = await codec.verifyPackageMemberBytes({
+      storedBytes: bounded.storedBytes,
+      descriptor: descriptor,
+      expectedPath: 'snapshot.json',
+      physicalByteCap: expectedLogicalLength,
+      logicalByteCap: Math.min(expectedLogicalLength, codec.LOGICAL_SNAPSHOT_CAP_BYTES),
+    });
+    if (verified.logicalByteLength !== expectedLogicalLength || verified.logicalSha256 !== expectedLogicalSha) {
+      throw new Error('refusing interrupted v3 retry with logically mismatching snapshot.json');
+    }
+    var manifestJson = Object.assign({}, built.manifest, {
+      files: Object.assign({}, safeObject(built.manifest && built.manifest.files), { snapshot: descriptor }),
+    });
+    var manifestText = JSON.stringify(manifestJson, null, 2) + '\n';
+    var manifestBytes = textBytes(manifestText);
+    var retainedCandidate = {
+      encoding: encoding,
+      snapshotBytes: bounded.storedBytes,
+      snapshotDescriptor: descriptor,
+      manifestJson: manifestJson,
+      manifestText: manifestText,
+      manifestBytes: manifestBytes,
+      totalBytes: candidateTotalBytesV3(bounded.storedBytes, manifestBytes),
+      manifestDescriptor: fileDescriptorV3(
+        'manifest.json',
+        manifestBytes,
+        await sha256Prefixed(manifestBytes),
+        V3_IDENTITY_ENCODING
+      ),
+    };
+    if (await contentHashV3({ snapshot: descriptor }, built.manifest.assets) !== built.contentHash) {
+      throw new Error('refusing interrupted v3 retry with logical contentHash mismatch');
+    }
+    return retainedCandidate;
+  }
+
   /* A no-manifest directory is resumable only when every present entry is an
    * exact desired v3 member. Validate the entire shallow inventory before any
    * missing member is written; unexpected or mismatching bytes fail closed. */
@@ -1323,15 +1551,9 @@
       throw new Error('refusing interrupted v3 retry with unexpected member: ' + name);
     }
 
-    if (snapshotPresent) {
-      var snapshotDescriptor = safeObject(built.manifest && built.manifest.files && built.manifest.files.snapshot);
-      await verifyExistingV3Member(
-        joinPath(packagePath, 'snapshot.json'),
-        firstString(snapshotDescriptor.sha256),
-        numberOrZero(snapshotDescriptor.byteLength),
-        options
-      );
-    }
+    var retainedSnapshotCandidate = snapshotPresent
+      ? await inspectInterruptedSnapshotV3(packagePath, built)
+      : null;
 
     var existingAssets = Object.create(null);
     if (assetsPresent) {
@@ -1358,7 +1580,11 @@
     var missingAssets = Object.keys(expectedAssets).sort().filter(function (name) {
       return !existingAssets[name];
     }).map(function (name) { return expectedAssets[name]; });
-    return { snapshotMissing: !snapshotPresent, missingAssets: missingAssets };
+    return {
+      snapshotMissing: !snapshotPresent,
+      missingAssets: missingAssets,
+      retainedSnapshotCandidate: retainedSnapshotCandidate,
+    };
   }
 
   async function writeMissingPackageAssetCopiesV3(packagePath, assets, options) {
@@ -1446,6 +1672,7 @@
           throw new Error('saved chat package already exists: ' + packagePath);
         }
         plan = await inspectIncompleteV3Package(packagePath, built, baseOptions);
+        if (plan.retainedSnapshotCandidate) installCandidateV3(built, plan.retainedSnapshotCandidate);
       } else {
         await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
         plan = { snapshotMissing: true, missingAssets: asArray(built.manifest.assets) };
@@ -1453,12 +1680,11 @@
 
       var writtenAssets = await writeMissingPackageAssetCopiesV3(packagePath, plan.missingAssets, baseOptions);
       var snapshotPath = joinPath(packagePath, 'snapshot.json');
-      var snapshotDescriptor = safeObject(built.manifest.files && built.manifest.files.snapshot);
       if (plan.snapshotMissing) {
         if (await fsExists(snapshotPath, baseOptions)) {
-          await verifyExistingV3Member(snapshotPath, snapshotDescriptor.sha256, snapshotDescriptor.byteLength, baseOptions);
+          installCandidateV3(built, await inspectInterruptedSnapshotV3(packagePath, built));
         } else {
-          await fsWriteFile(snapshotPath, textBytes(built.files['snapshot.json'].text), baseOptions);
+          await fsWriteFile(snapshotPath, built.files['snapshot.json'].bytes, baseOptions);
         }
       }
 
@@ -1466,7 +1692,7 @@
       if (await fsExists(manifestPath, baseOptions)) {
         throw new Error('saved chat package became complete during v3 write: ' + packagePath);
       }
-      await fsWriteFile(manifestPath, textBytes(built.files['manifest.json'].text), baseOptions);
+      await fsWriteFile(manifestPath, built.files['manifest.json'].bytes, baseOptions);
       var writtenAt = nowIso();
       state.lastWriteAt = writtenAt;
       return Object.assign({}, built, {
@@ -1523,10 +1749,11 @@
       schema: MANIFEST_SCHEMA,
       schemaVersion: V3_SCHEMA_VERSION,
       payloadVersion: V3_PAYLOAD_VERSION,
-      encoding: V3_IDENTITY_ENCODING,
+      encodings: [V3_IDENTITY_ENCODING, V3_GZIP_ENCODING],
       appOwnedMembers: ['manifest.json', 'snapshot.json'],
       liveMaterializerWired: false,
-      gzipActive: false,
+      gzipWriterSelectionActive: true,
+      gzipReaderMigrationActive: false,
     };
   }
 
@@ -1576,6 +1803,10 @@
       normalizeSavedChatMessage: normalizeSavedChatMessageV3,
       projectSnapshotJson: projectSnapshotJsonV3,
       buildManifestJson: buildManifestJsonV3,
+      candidateTotalBytes: candidateTotalBytesV3,
+      gzipCandidateWins: gzipCandidateWinsV3,
+      isGzipDominanceOverflow: isGzipDominanceOverflowV3,
+      detectInterruptedSnapshotEncoding: detectInterruptedSnapshotEncodingV3,
     }),
     savedChatPackageRenderers: Object.freeze({
       renderV3ExportCompanions: renderV3ExportCompanions,

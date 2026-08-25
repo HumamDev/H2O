@@ -19,6 +19,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const MATERIALIZER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-assets.tauri.js';
+const CODEC_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const PROJECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
 
 const PASS = [];
@@ -122,6 +123,10 @@ function buildProjector({ withImage }) {
     TextDecoder,
     Uint8Array,
     ArrayBuffer,
+    ReadableStream,
+    TransformStream,
+    CompressionStream,
+    DecompressionStream,
     crypto: globalThis.crypto || crypto.webcrypto,
     __TAURI_INTERNALS__: { invoke: async () => { throw new Error('build path must not invoke fs'); } },
     H2O: { Studio: { store: mocks.stores, ingestion: { assetCas: cas.api } } },
@@ -131,6 +136,7 @@ function buildProjector({ withImage }) {
   const sandbox = vm.createContext(context);
   vm.runInContext(readRepo(SANITIZER_REL), sandbox, { filename: SANITIZER_REL });
   vm.runInContext(readRepo(MATERIALIZER_REL), sandbox, { filename: MATERIALIZER_REL });
+  vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
   vm.runInContext(readRepo(PROJECTOR_REL), sandbox, { filename: PROJECTOR_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion || typeof ingestion.buildSavedChatPackageV1 !== 'function') throw new Error('projector did not register');
@@ -248,7 +254,7 @@ async function main() {
     v3b = await ingestion.buildSavedChatPackageV3({ snapshotId: 'snap_v2' });
     assert.equal(v3a.schemaVersion, 3);
     assert.equal(v3a.payloadVersion, 3);
-    assert.equal(v3a.files['snapshot.json'].text, v3b.files['snapshot.json'].text);
+    assert.equal(v3a.metadata.logicalSnapshotText, v3b.metadata.logicalSnapshotText);
     assert.equal(v3a.contentHash, v3b.contentHash);
     for (const message of v3a.snapshot.messages) {
       assert.ok(Array.isArray(message.content));
@@ -257,24 +263,47 @@ async function main() {
     }
   });
 
-  check('v3 identity descriptor matches exact stored snapshot bytes and logical fallback', () => {
+  check('v3 selected descriptor matches exact stored snapshot bytes and logical fallback', () => {
     const descriptor = v3a.manifest.files.snapshot;
-    const bytes = Buffer.from(v3a.files['snapshot.json'].text, 'utf8');
-    assert.equal(descriptor.encoding, 'identity');
+    const bytes = Buffer.from(v3a.files['snapshot.json'].bytes);
     assert.equal(descriptor.sha256, 'sha256-' + sha256Hex(bytes));
     assert.equal(descriptor.byteLength, bytes.length);
-    assert.equal(Object.hasOwn(descriptor, 'contentSha256'), false);
-    assert.equal(Object.hasOwn(descriptor, 'contentByteLength'), false);
     const api = buildProjector({ withImage: false }).ingestion.__savedChatPackageV3;
-    assert.equal(api.logicalSha256(descriptor), descriptor.sha256);
-    assert.equal(api.logicalByteLength(descriptor), descriptor.byteLength);
+    assert.equal(api.logicalSha256(descriptor), v3a.metadata.logicalSnapshotSha256);
+    assert.equal(api.logicalByteLength(descriptor), v3a.metadata.logicalSnapshotByteLength);
+    assert.ok(v3a.metadata.logicalSnapshotByteLength > 0);
+    assert.ok(v3a.metadata.logicalSnapshotByteLength <= 8 * 1024 * 1024);
+    if (descriptor.encoding === 'gzip') {
+      assert.ok(descriptor.byteLength > 0);
+      assert.ok(descriptor.byteLength < descriptor.contentByteLength);
+      assert.equal(descriptor.contentByteLength, v3a.metadata.logicalSnapshotByteLength);
+      assert.ok(v3a.metadata.gzipTotalBytes < v3a.metadata.identityTotalBytes);
+    }
+  });
+
+  check('v3 gzip admission independently requires physical and whole-package savings', () => {
+    const api = buildProjector({ withImage: false }).ingestion.__savedChatPackageV3;
+    assert.equal(api.gzipCandidateWins(99, 100, 49, 50), true);
+    assert.equal(api.gzipCandidateWins(100, 100, 49, 50), false, 'whole-package tie must select identity');
+    assert.equal(api.gzipCandidateWins(99, 100, 50, 50), false, 'snapshot tie must select identity');
+    assert.equal(api.gzipCandidateWins(99, 100, 51, 50), false, 'expanded gzip snapshot must select identity');
+    assert.equal(api.gzipCandidateWins(1, 100, 0, 50), false, 'empty gzip snapshot must select identity');
+    assert.throws(() => api.gzipCandidateWins(1, 100, 1), /snapshot lengths/);
+    assert.equal(api.candidateTotalBytes(new Uint8Array(40), new Uint8Array(60)), 100);
+    const exactOverflow = {
+      code: 'saved-chat-member-physical-output-exceeds-cap',
+      detail: { byteCap: 100 },
+    };
+    assert.equal(api.isGzipDominanceOverflow(exactOverflow, 100), true);
+    assert.equal(api.isGzipDominanceOverflow(exactOverflow, 99), false, 'wrong-cap overflow must fail closed');
+    assert.equal(api.isGzipDominanceOverflow(new Error('generic codec failure'), 100), false);
   });
 
   await checkAsync('v3 contentHash is exact, asset-order independent, and excludes renderers', async () => {
     const assets = v3a.manifest.assets.map((asset) => asset.sha256).sort();
     const expected = 'sha256-' + sha256Hex(canonicalJson({
       payloadVersion: 3,
-      snapshot: v3a.manifest.files.snapshot.sha256,
+      snapshot: v3a.metadata.logicalSnapshotSha256,
       assets,
     }));
     assert.equal(v3a.manifest.contentHash, expected);

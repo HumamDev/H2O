@@ -10,12 +10,14 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const MODULE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
+const CODEC_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_STUDIO_REL = 'tools/product/studio/pack-studio.mjs';
 const CAPABILITY_REL = 'apps/studio/desktop/src-tauri/capabilities/archive-cas.json';
@@ -166,6 +168,8 @@ function makeV3Package({
   encoding = 'identity',
   payloadVersion = 3,
   assets = [],
+  storedTransform = null,
+  descriptorPatch = null,
 } = {}) {
   const descriptors = assets.map(({ bytes, ext = 'png', mimeType = 'image/png' }) => {
     const body = Buffer.from(bytes);
@@ -204,7 +208,10 @@ function makeV3Package({
   const snapshotText = canonicalJson(snapshot);
   const logicalBytes = encode(snapshotText);
   const logicalSha = sha256Prefixed(logicalBytes);
-  const storedBytes = encoding === 'identity' ? logicalBytes : encode('synthetic-pre-m03-gzip-member');
+  /* M03: gzip fixtures carry REAL gzip bytes so the governed decoder is
+   * actually exercised. storedTransform builds corrupt/truncated variants. */
+  let storedBytes = encoding === 'identity' ? logicalBytes : new Uint8Array(zlib.gzipSync(Buffer.from(logicalBytes)));
+  if (typeof storedTransform === 'function') storedBytes = storedTransform(storedBytes);
   const descriptor = {
     path: 'snapshot.json',
     sha256: sha256Prefixed(storedBytes),
@@ -215,6 +222,7 @@ function makeV3Package({
     descriptor.contentSha256 = logicalSha;
     descriptor.contentByteLength = logicalBytes.byteLength;
   }
+  if (descriptorPatch) Object.assign(descriptor, typeof descriptorPatch === 'function' ? descriptorPatch(descriptor) : descriptorPatch);
   const manifestAssets = descriptors.map((item) => item.descriptor);
   const contentHash = sha256Prefixed(canonicalJson({
     payloadVersion: 3,
@@ -297,6 +305,8 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
   const files = new Map();
   const readCalls = [];
   const mutationCalls = [];
+  /* Per-path lstat metadata overrides for governed-reader negative cases. */
+  const metaOverrides = new Map();
   const v1 = makePackage({ chatId: 'chat_diag_v1', snapshotId: 'snap_diag_v1', schemaVersion: 1 });
   const v2 = makePackage({ chatId: 'chat_diag_v2', snapshotId: 'snap_diag_v2', schemaVersion: 2 });
   const bad = makePackage({ chatId: 'chat_diag_bad', snapshotId: 'snap_diag_bad', schemaVersion: 1 });
@@ -363,6 +373,14 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
       }
       return entries;
     }
+    if (cmd === 'plugin:fs|lstat') {
+      /* Derived from the same fixture filesystem state as read_file. */
+      let meta;
+      if (files.has(p)) meta = { isFile: true, isDirectory: false, isSymlink: false, size: files.get(p).byteLength };
+      else if (dirs.has(p)) meta = { isFile: false, isDirectory: true, isSymlink: false, size: 0 };
+      else throw new Error(`not found: ${p}`);
+      return Object.assign(meta, metaOverrides.get(p) || {});
+    }
     if (cmd === 'plugin:fs|read_file') {
       if (!files.has(p)) throw new Error(`not found: ${p}`);
       return files.get(p);
@@ -374,6 +392,8 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     invoke,
     readCalls,
     mutationCalls,
+    metaOverrides,
+    setMeta(path, patch) { metaOverrides.set(path, patch); },
     dirs,
     files,
     entries,
@@ -419,10 +439,17 @@ function loadModule(fixture) {
     setTimeout,
     __TAURI_INTERNALS__: { invoke: fixture.invoke },
     H2O: { Studio: { ingestion: { assetCas: fixture.assetCas }, store: fixture.store } },
+    /* Web streams the single governed codec authority requires. */
+    ReadableStream,
+    CompressionStream,
+    DecompressionStream,
   };
   context.globalThis = context;
   context.window = context;
   const sandbox = vm.createContext(context);
+  /* M03 T04: load the REAL governed saved-chat package codec, never a mock, so
+   * diagnostics is proven against the one shared gzip/verification authority. */
+  vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
   return sandbox.H2O.Studio.ingestion;
 }
@@ -473,7 +500,26 @@ check('module has version-aware v3 descriptor and logical contentHash verificati
   assert.match(moduleSource, /verifyV3SnapshotDescriptor/);
   assert.match(moduleSource, /payloadVersion:\s*3/);
   assert.match(moduleSource, /logicalSnapshotSha/);
-  assert.match(moduleSource, /snapshot-encoding-not-enabled/);
+  /* M03 T04: gzip is decoded through the single governed codec authority. */
+  assert.match(moduleSource, /savedChatPackageCodecV3/);
+  assert.match(moduleSource, /verifyPackageMemberBytes/);
+  assert.match(moduleSource, /snapshot-gzip-physical-bound-invalid/);
+  assert.doesNotMatch(moduleSource, /snapshot-encoding-not-enabled/);
+});
+
+check('diagnostics reads the v3 snapshot through the governed bounded reader', () => {
+  assert.match(moduleSource, /readBoundedPackageMemberBytes/);
+  assert.match(moduleSource, /physicalByteCap:\s*v3Codec\.LOGICAL_SNAPSHOT_CAP_BYTES/);
+  assert.match(moduleSource, /snapshot-bounded-read-failed/);
+  /* Diagnostics must not implement filesystem metadata admission itself. */
+  assert.doesNotMatch(moduleSource, /plugin:fs\|lstat/);
+});
+
+check('diagnostics owns no second gzip decoder or hash implementation', () => {
+  assert.doesNotMatch(moduleSource, /DecompressionStream/);
+  assert.doesNotMatch(moduleSource, /CompressionStream/);
+  assert.doesNotMatch(moduleSource, /0x1f/);
+  assert.doesNotMatch(moduleSource, /gzipDecode|inflate|gunzip/);
 });
 
 check('module has C5.3 assetChecks schema and asset validation logic', () => {
@@ -797,18 +843,148 @@ await checkAsync('incoherent v3 payloadVersion fails closed', async () => {
   assert.ok(result.blockers.some((issue) => issue.code === 'manifest-payload-version-invalid'));
 });
 
-await checkAsync('pre-M03 gzip descriptor verifies stored/logical identity but remains unsupported', async () => {
+await checkAsync('M03: valid gzip v3 package verifies through the governed codec', async () => {
   const fixture = createFixtureFs();
   const pkg = makeV3Package({ chatId: 'chat_diag_v3_gzip', snapshotId: 'snap_diag_v3_gzip', encoding: 'gzip' });
   const packagePath = installV3Package(fixture, pkg);
   const ingestion = loadModule(fixture);
   const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
-  assert.equal(result.status, 'blocked');
+  assert.equal(result.status, 'ok', JSON.stringify(result.blockers));
+  assert.equal(result.hashChecks.snapshotEncoding, 'gzip');
   assert.equal(result.hashChecks.snapshotShaOk, true);
   assert.equal(result.hashChecks.snapshotByteLengthOk, true);
   assert.equal(result.hashChecks.contentHashOk, true);
-  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-encoding-not-enabled'));
-  assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'), 'encoded bytes must not be parsed as JSON');
+  assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-encoding-not-enabled'));
+  assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'));
+  /* DP-M03-C persisted rule actually held for this fixture. */
+  assert.ok(pkg.manifest.files.snapshot.byteLength > 0);
+  assert.ok(pkg.manifest.files.snapshot.byteLength < pkg.manifest.files.snapshot.contentByteLength);
+});
+
+await checkAsync('M03: gzip and identity v3 with the same logical package are semantically equivalent', async () => {
+  /* Byte-identical logical content: same chatId/snapshotId, separate fixture
+   * filesystems so the identical package directory name does not collide. */
+  const idFixture = createFixtureFs();
+  const gzFixture = createFixtureFs();
+  const idPkg = makeV3Package({ chatId: 'chat_diag_v3_eq', snapshotId: 'snap_diag_v3_eq', encoding: 'identity' });
+  const gzPkg = makeV3Package({ chatId: 'chat_diag_v3_eq', snapshotId: 'snap_diag_v3_eq', encoding: 'gzip' });
+  const idPath = installV3Package(idFixture, idPkg);
+  const gzPath = installV3Package(gzFixture, gzPkg);
+  const idRes = await loadModule(idFixture).validateSavedChatPackageV1({ packagePath: idPath, includeCasChecks: false, includeDbChecks: false });
+  const gzRes = await loadModule(gzFixture).validateSavedChatPackageV1({ packagePath: gzPath, includeCasChecks: false, includeDbChecks: false });
+  /* Same logical package, different physical representation. */
+  assert.equal(idPkg.manifest.contentHash, gzPkg.manifest.contentHash);
+  assert.notEqual(idPkg.manifest.files.snapshot.sha256, gzPkg.manifest.files.snapshot.sha256);
+  assert.equal(idRes.status, 'ok');
+  assert.equal(gzRes.status, 'ok');
+  /* Logical identity is encoding-independent; only representation metadata differs. */
+  assert.equal(idRes.hashChecks.logicalSnapshotSha, gzRes.hashChecks.logicalSnapshotSha);
+  assert.equal(idRes.hashChecks.logicalSnapshotByteLength, gzRes.hashChecks.logicalSnapshotByteLength);
+  assert.equal(idRes.snapshotId, gzRes.snapshotId);
+  assert.equal(idRes.hashChecks.snapshotEncoding, 'identity');
+  assert.equal(gzRes.hashChecks.snapshotEncoding, 'gzip');
+  assert.notEqual(idRes.hashChecks.expectedContentHash, '');
+  assert.equal(idRes.hashChecks.expectedContentHash, gzRes.hashChecks.expectedContentHash);
+});
+
+await checkAsync('M03 T04: v3 snapshot read is lstat-bounded before whole-file read', async () => {
+  for (const encoding of ['identity', 'gzip']) {
+    const fixture = createFixtureFs();
+    const pkg = makeV3Package({ chatId: `chat_diag_v3_bound_${encoding}`, snapshotId: `snap_diag_v3_bound_${encoding}`, encoding });
+    const packagePath = installV3Package(fixture, pkg);
+    const ingestion = loadModule(fixture);
+    const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+    assert.equal(result.status, 'ok', `${encoding}: ${JSON.stringify(result.blockers)}`);
+    const snapshotPath = `${packagePath}/snapshot.json`;
+    const calls = fixture.readCalls.filter((c) => c.path === snapshotPath);
+    const lstatIdx = calls.findIndex((c) => c.cmd === 'plugin:fs|lstat');
+    const readIdx = calls.findIndex((c) => c.cmd === 'plugin:fs|read_file');
+    assert.ok(lstatIdx >= 0, `${encoding}: governed lstat must occur`);
+    assert.ok(readIdx >= 0, `${encoding}: bounded read must occur`);
+    assert.ok(lstatIdx < readIdx, `${encoding}: lstat must precede read_file`);
+    /* Physical member is within the governed logical snapshot cap. */
+    assert.ok(pkg.storedBytes.byteLength <= 8 * 1024 * 1024);
+  }
+});
+
+await checkAsync('M03 T04: oversized filesystem snapshot is rejected before read_file', async () => {
+  const fixture = createFixtureFs();
+  const pkg = makeV3Package({ chatId: 'chat_diag_v3_oversize', snapshotId: 'snap_diag_v3_oversize', encoding: 'gzip' });
+  const packagePath = installV3Package(fixture, pkg);
+  const snapshotPath = `${packagePath}/snapshot.json`;
+  /* lstat reports a member larger than the governed logical snapshot cap. */
+  fixture.setMeta(snapshotPath, { size: 9 * 1024 * 1024 });
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(result.status, 'blocked');
+  assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-bounded-read-failed'));
+  const calls = fixture.readCalls.filter((c) => c.path === snapshotPath);
+  assert.ok(calls.some((c) => c.cmd === 'plugin:fs|lstat'), 'lstat must be attempted');
+  assert.ok(!calls.some((c) => c.cmd === 'plugin:fs|read_file'), 'read_file must NOT be invoked for an oversized member');
+  assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'));
+});
+
+await checkAsync('M03 T04: non-regular/symlink snapshot member is rejected before body read', async () => {
+  for (const [label, patch] of [['symlink', { isSymlink: true }], ['non-regular', { isFile: false }]]) {
+    const fixture = createFixtureFs();
+    const pkg = makeV3Package({ chatId: `chat_diag_v3_${label.replace('-', '_')}`, snapshotId: `snap_diag_v3_${label.replace('-', '_')}`, encoding: 'gzip' });
+    const packagePath = installV3Package(fixture, pkg);
+    const snapshotPath = `${packagePath}/snapshot.json`;
+    fixture.setMeta(snapshotPath, patch);
+    const ingestion = loadModule(fixture);
+    const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+    assert.equal(result.status, 'blocked', label);
+    assert.ok(result.blockers.some((issue) => issue.code === 'snapshot-bounded-read-failed'), label);
+    const calls = fixture.readCalls.filter((c) => c.path === snapshotPath);
+    assert.ok(!calls.some((c) => c.cmd === 'plugin:fs|read_file'), `${label}: read_file must NOT be invoked`);
+  }
+});
+
+await checkAsync('M03 T04: physical mismatch and corrupt gzip read bounded bytes but never parse', async () => {
+  const cases = [
+    ['physical sha mismatch', { encoding: 'gzip', descriptorPatch: { sha256: `sha256-${'1'.repeat(64)}` } }, 'snapshot-sha-mismatch'],
+    ['corrupt gzip', { encoding: 'gzip', storedTransform: (b) => { const c = Uint8Array.from(b); c[Math.floor(c.length / 2)] ^= 0xff; return c; } }, 'snapshot-gzip-verification-failed'],
+  ];
+  let n = 0;
+  for (const [label, opts, expectedCode] of cases) {
+    n += 1;
+    const fixture = createFixtureFs();
+    const pkg = makeV3Package({ chatId: `chat_diag_v3_ord_${n}`, snapshotId: `snap_diag_v3_ord_${n}`, ...opts });
+    const packagePath = installV3Package(fixture, pkg);
+    const ingestion = loadModule(fixture);
+    const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+    assert.equal(result.status, 'blocked', label);
+    assert.ok(result.blockers.some((issue) => issue.code === expectedCode), `${label}: ${JSON.stringify(result.blockers.map((b) => b.code))}`);
+    const calls = fixture.readCalls.filter((c) => c.path === `${packagePath}/snapshot.json`);
+    assert.ok(calls.some((c) => c.cmd === 'plugin:fs|lstat'), `${label}: lstat`);
+    assert.ok(calls.some((c) => c.cmd === 'plugin:fs|read_file'), `${label}: bounded read occurs`);
+    assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'), `${label}: never parsed`);
+  }
+});
+
+await checkAsync('M03: gzip v3 negative matrix fails closed', async () => {
+  const cases = [
+    ['corrupt gzip stream', { encoding: 'gzip', storedTransform: (b) => { const c = Uint8Array.from(b); c[Math.floor(c.length / 2)] ^= 0xff; return c; } }, 'snapshot-gzip-verification-failed'],
+    ['truncated gzip stream', { encoding: 'gzip', storedTransform: (b) => b.slice(0, Math.max(1, b.length - 6)) }, 'snapshot-gzip-verification-failed'],
+    ['declared logical length below actual decoded (bomb guard)', { encoding: 'gzip', descriptorPatch: (d) => ({ contentByteLength: d.contentByteLength - 1 }) }, 'snapshot-gzip-verification-failed'],
+    ['declared logical sha mismatch', { encoding: 'gzip', descriptorPatch: { contentSha256: `sha256-${'0'.repeat(64)}` } }, 'snapshot-gzip-verification-failed'],
+    ['physical sha mismatch', { encoding: 'gzip', descriptorPatch: { sha256: `sha256-${'1'.repeat(64)}` } }, 'snapshot-sha-mismatch'],
+    ['physical byteLength mismatch', { encoding: 'gzip', descriptorPatch: { byteLength: 999999 } }, 'snapshot-byte-length-mismatch'],
+    ['unsupported encoding value', { encoding: 'deflate' }, 'snapshot-encoding-invalid'],
+    ['DP-M03-C physical bound violation', { encoding: 'gzip', descriptorPatch: { contentByteLength: 1 } }, 'snapshot-gzip-physical-bound-invalid'],
+  ];
+  const fixture = createFixtureFs();
+  const ingestion = loadModule(fixture);
+  let n = 0;
+  for (const [label, opts, expectedCode] of cases) {
+    n += 1;
+    const pkg = makeV3Package({ chatId: `chat_diag_v3_neg_${n}`, snapshotId: `snap_diag_v3_neg_${n}`, ...opts });
+    const packagePath = installV3Package(fixture, pkg);
+    const result = await ingestion.validateSavedChatPackageV1({ packagePath, includeCasChecks: false, includeDbChecks: false });
+    assert.equal(result.status, 'blocked', `${label} must block`);
+    assert.ok(result.blockers.some((issue) => issue.code === expectedCode), `${label} expected ${expectedCode}, got ${JSON.stringify(result.blockers.map((b) => b.code))}`);
+    assert.ok(!result.blockers.some((issue) => issue.code === 'snapshot-json-invalid'), `${label}: unverified bytes must never reach JSON.parse`);
+  }
 });
 
 await checkAsync('manifest-less and manifest-without-snapshot packages never verify', async () => {

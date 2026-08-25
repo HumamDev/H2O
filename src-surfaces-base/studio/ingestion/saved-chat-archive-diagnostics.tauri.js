@@ -149,6 +149,20 @@
     return getTextDecoder().decode(bytesFor(value));
   }
 
+  /* Single governed saved-chat package codec authority (M03 T02/T03). This
+   * module never implements its own gzip decoding, magic detection, physical or
+   * logical hashing; it only adapts governed codec output into diagnostics. */
+  function savedChatPackageCodecV3() {
+    var codec = H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.savedChatPackageCodec;
+    if (!codec || codec.__installed !== true ||
+        typeof codec.verifyPackageMemberBytes !== 'function' ||
+        typeof codec.readBoundedPackageMemberBytes !== 'function' ||
+        !isFiniteNumber(codec.LOGICAL_SNAPSHOT_CAP_BYTES)) {
+      return null;
+    }
+    return codec;
+  }
+
   async function fsReadBytes(path) {
     var invoke = getInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
@@ -539,6 +553,7 @@
     var actualLength = snapshotBytes ? snapshotBytes.byteLength : 0;
     var actualSha = snapshotBytes ? await sha256Prefixed(snapshotBytes) : '';
     var descriptorOk = true;
+    var logicalBytes = null;
 
     diag.hashChecks.snapshotEncoding = encoding;
     if (firstString(descriptor.path) !== 'snapshot.json') {
@@ -582,8 +597,37 @@
         diag.blockers.push(makeIssue('snapshot-logical-byte-length-invalid', 'gzip files.snapshot.contentByteLength is required', descriptor.contentByteLength));
         descriptorOk = false;
       }
-      diag.blockers.push(makeIssue('snapshot-encoding-not-enabled', 'gzip v3 snapshot decoding is not enabled before M03'));
-      descriptorOk = false;
+      /* DP-M03-C persisted rule: 0 < physicalByteLength < contentByteLength.
+       * This is a descriptor-shape assertion in the same role as the identity
+       * consistency checks above; gzip mechanics stay in the governed codec. */
+      if (descriptorOk && !(physicalLength > 0 && physicalLength < descriptor.contentByteLength)) {
+        diag.blockers.push(makeIssue('snapshot-gzip-physical-bound-invalid', 'gzip v3 snapshot must satisfy 0 < byteLength < contentByteLength', { byteLength: physicalLength, contentByteLength: descriptor.contentByteLength }));
+        descriptorOk = false;
+      }
+      /* Governed decode + logical verification through the single codec
+       * authority. Invoked only after the physical descriptor checks above
+       * passed, so codec failures report a distinct lower-level reason. */
+      if (descriptorOk) {
+        var codec = savedChatPackageCodecV3();
+        if (!codec) {
+          diag.blockers.push(makeIssue('snapshot-codec-unavailable', 'governed saved-chat package codec is unavailable for gzip v3 verification'));
+          descriptorOk = false;
+        } else {
+          try {
+            var verified = await codec.verifyPackageMemberBytes({
+              storedBytes: snapshotBytes,
+              descriptor: descriptor,
+              expectedPath: 'snapshot.json',
+              physicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+              logicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+            });
+            logicalBytes = verified.logicalBytes;
+          } catch (err) {
+            diag.blockers.push(makeIssue('snapshot-gzip-verification-failed', 'gzip v3 snapshot failed governed member verification', firstString(err && err.code) || String((err && err.message) || err)));
+            descriptorOk = false;
+          }
+        }
+      }
     }
 
     /* Exact frozen normalization. Optional identity logical fields are accepted
@@ -593,6 +637,8 @@
       ? descriptor.contentByteLength : (isFiniteNumber(physicalLength) ? physicalLength : null);
     return {
       parseIdentity: descriptorOk && encoding === 'identity',
+      parseLogical: descriptorOk && encoding === 'gzip' && !!logicalBytes,
+      logicalBytes: logicalBytes,
       logicalSha256: diag.hashChecks.logicalSnapshotSha,
     };
   }
@@ -1131,15 +1177,44 @@
       addMissingRequiredFileIssues(diag, requiredFilesForManifest(manifest));
 
       if (diag.snapshotPresent) {
-        snapshotBytes = await fsReadBytes(joinPath(packagePath, 'snapshot.json'));
         if (diag.schemaVersion === 3 && manifest) {
-          v3SnapshotVerification = await verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag);
-          /* V3 identity bytes are parsed only after stored-byte descriptor
-           * verification. Encoded bytes are never passed to JSON.parse here. */
-          if (v3SnapshotVerification.parseIdentity) {
-            snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+          /* M03 T04: the v3 snapshot member is obtained through the governed
+           * bounded reader, which performs filesystem metadata admission
+           * (lstat), rejects a member larger than the governed logical snapshot
+           * cap BEFORE any whole-file allocation, then returns the bounded
+           * stored bytes. The manifest descriptor is never the independent
+           * pre-read bound. Diagnostics implements none of that itself. */
+          var v3Codec = savedChatPackageCodecV3();
+          if (!v3Codec) {
+            diag.blockers.push(makeIssue('snapshot-codec-unavailable', 'governed saved-chat package codec is unavailable for v3 member reads'));
+          } else {
+            try {
+              var boundedSnapshot = await v3Codec.readBoundedPackageMemberBytes({
+                packagePath: packagePath,
+                memberPath: 'snapshot.json',
+                physicalByteCap: v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+              });
+              snapshotBytes = bytesFor(boundedSnapshot.storedBytes);
+            } catch (err) {
+              diag.blockers.push(makeIssue('snapshot-bounded-read-failed', 'v3 snapshot.json failed the governed bounded member read', firstString(err && err.code) || String((err && err.message) || err)));
+            }
           }
         } else {
+          /* Preserve the historical v1/v2 read path unchanged. */
+          snapshotBytes = await fsReadBytes(joinPath(packagePath, 'snapshot.json'));
+        }
+        if (diag.schemaVersion === 3 && manifest && snapshotBytes) {
+          v3SnapshotVerification = await verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag);
+          /* V3 identity bytes are parsed only after stored-byte descriptor
+           * verification. Encoded stored bytes are never passed to JSON.parse;
+           * gzip parses only the governed codec's verified decoded logical
+           * bytes, after physical, encoding and logical verification passed. */
+          if (v3SnapshotVerification.parseIdentity) {
+            snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
+          } else if (v3SnapshotVerification.parseLogical) {
+            snapshot = parseJsonFile(bytesToText(v3SnapshotVerification.logicalBytes), 'snapshot', diag);
+          }
+        } else if (snapshotBytes) {
           /* Preserve the historical v1/v2 parse path unchanged. */
           snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
         }

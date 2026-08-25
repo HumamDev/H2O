@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,9 +24,11 @@ const STUDIO_ROOT = 'src-surfaces-base/studio';
 const ARCHIVE_EXPORT_CAPABILITY = 'apps/studio/desktop/src-tauri/capabilities/archive-export.json';
 const PACKAGE_OWNER = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
 const HTML_SANITIZER = 'src-surfaces-base/studio/platform/html-sanitizer.js';
+const CODEC = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
 const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const V3_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
+const V3_GZIP_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/gzip/t06-canonical-assets.h2ochat';
 const CAPABILITY_FILES = [
   'apps/studio/desktop/src-tauri/capabilities/default.json',
   'apps/studio/desktop/src-tauri/capabilities/archive-cas.json',
@@ -267,6 +270,15 @@ function createBehaviorFs() {
       if (!exists(options.baseDir, p)) throw new Error(`not found: ${p}`);
       return list(options.baseDir, p);
     }
+    if (command === 'plugin:fs|lstat') {
+      /* Metadata derived from the same fixture filesystem state that backs
+       * exists()/read_file, so the governed bounded reader used by Diagnostics
+       * sees the real stored member size. No hard-coded sizes. */
+      const value = files.get(key(options.baseDir, p));
+      if (value) return { isFile: true, isDirectory: false, isSymlink: false, size: value.length };
+      if (dirs.has(key(options.baseDir, p))) return { isFile: false, isDirectory: true, isSymlink: false, size: 0 };
+      throw new Error(`not found: ${p}`);
+    }
     if (command === 'plugin:fs|read_file') {
       const value = files.get(key(options.baseDir, p));
       if (!value) throw new Error(`not found: ${p}`);
@@ -363,6 +375,36 @@ function readCommittedV3Fixture() {
   };
 }
 
+/* M03 T04: a REAL gzip-v3 package built from the committed identity fixture.
+ * Logical content is byte-identical to that fixture, so identity and gzip
+ * variants are directly comparable; only the physical representation differs.
+ * contentHash is logical and therefore unchanged. */
+function gzipCommittedV3Fixture({ corrupt = false } = {}) {
+  const base = readCommittedV3Fixture();
+  /* M03 T05: the valid gzip case reads the PERMANENT committed gzip-v3 fixture,
+   * so export assurance exercises the same repository bytes a maintainer can
+   * inspect. Corrupt variants are still derived in temporary memory only. */
+  let stored = fs.readFileSync(path.join(repoRoot, V3_GZIP_FIXTURE, 'snapshot.json'));
+  if (corrupt) { stored = Buffer.from(stored); stored[Math.floor(stored.length / 2)] ^= 0xff; }
+  const manifest = JSON.parse(base.manifestText);
+  manifest.files.snapshot = {
+    path: 'snapshot.json',
+    sha256: sha256(stored),
+    byteLength: stored.length,
+    encoding: 'gzip',
+    /* identity fixture stores plaintext, so its sha256 IS the logical sha */
+    contentSha256: base.manifest.files.snapshot.sha256,
+    contentByteLength: base.snapshotBytes.length,
+  };
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  return Object.assign({}, base, {
+    snapshotBytes: stored,
+    manifest,
+    manifestText,
+    files: { snapshot: manifest.files.snapshot },
+  });
+}
+
 function installBehaviorPackage(mem, pkg) {
   const root = `archive/packages/${pkg.chatId}.h2ochat`;
   mem.mkdir(mem.APP, root);
@@ -383,6 +425,8 @@ function loadBehaviorRuntime(mem) {
   const context = {
     console, setTimeout, clearTimeout, URL, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
     atob: globalThis.atob, crypto: globalThis.crypto || nodeCrypto.webcrypto,
+    /* Host Web Streams / compression primitives required by the governed codec. */
+    ReadableStream, CompressionStream, DecompressionStream,
     __TAURI_INTERNALS__: { invoke: mem.invoke },
     H2O: { Studio: {
       ingestion: { assetCas: { exists: async () => true, describe: async (id) => ({ exists: true, sha256: id }) } },
@@ -395,7 +439,11 @@ function loadBehaviorRuntime(mem) {
   };
   context.globalThis = context; context.window = context;
   const sandbox = vm.createContext(context);
-  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, DIAGNOSTICS, INSPECTOR, EXPORTER]) {
+  /* The governed saved-chat package codec must execute before Diagnostics,
+   * mirroring the product load order in studio.html. The REAL codec source is
+   * loaded here - never a mock - so this harness exercises the same single
+   * gzip/verification authority that product consumers use. */
+  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, CODEC, DIAGNOSTICS, INSPECTOR, EXPORTER]) {
     vm.runInContext(readRepo(relPath), sandbox, { filename: relPath });
   }
   return sandbox;
@@ -713,6 +761,19 @@ check('no S0F0j/S0F1j files are staged by J.2', () => {
   assert.deepEqual(forbidden, [], `S0F0j/S0F1j files staged unexpectedly:\n${forbidden.join('\n')}`);
 });
 
+checkAsync('M03 T04: behavior harness executes the real governed codec before Diagnostics', async () => {
+  const runtime = loadBehaviorRuntime(createBehaviorFs());
+  const codec = runtime.H2O?.Studio?.ingestion?.savedChatPackageCodec;
+  assert.ok(codec && codec.__installed === true, 'governed codec must be installed in the behavior sandbox');
+  assert.equal(typeof codec.readBoundedPackageMemberBytes, 'function');
+  assert.equal(typeof codec.verifyPackageMemberBytes, 'function');
+  /* Diagnostics loads after the codec and therefore resolves it rather than
+   * failing closed with snapshot-codec-unavailable. */
+  assert.equal(typeof runtime.H2O?.Studio?.ingestion?.validateSavedChatPackageV1, 'function');
+  /* The harness must never substitute its own compression path for the codec. */
+  assert.doesNotMatch(readRepo(DIAGNOSTICS), /DecompressionStream|CompressionStream/);
+});
+
 checkAsync('M02 T05 v3 export regenerates deterministic renderers without mutating source identity', async () => {
   const mem = createBehaviorFs();
   const pkg = readCommittedV3Fixture();
@@ -813,16 +874,85 @@ checkAsync('M02 T05 preserves v1/v2 byte-copy and collision behavior', async () 
   assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports/legacy-v1.h2ochat'), exportedBeforeCollision);
 });
 
-checkAsync('M02 T05 refuses pre-M03 gzip without creating an export', async () => {
+checkAsync('M03 T04 exports a valid gzip-v3 package, preserving the durable member byte-identically', async () => {
   const mem = createBehaviorFs();
-  const pkg = makeBehaviorPackage({ schemaVersion: 3, chatId: 't05_v3_gzip', encoding: 'gzip' });
+  const pkg = gzipCommittedV3Fixture();
   const sourceRoot = installBehaviorPackage(mem, pkg);
   const runtime = loadBehaviorRuntime(mem);
-  const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 'must-not-export.h2ochat' });
-  assert.equal(result.status, 'unsupported-encoding');
-  assert.equal(result.ok, false);
-  assert.equal(mem.exists(mem.HOME, 'H2O Studio Exports/must-not-export.h2ochat'), false);
+  const sourceBefore = mem.inventory(mem.APP, sourceRoot);
+
+  const diag = await runtime.H2O.Studio.ingestion.validateSavedChatPackageV1({ packagePath: sourceRoot, includeCasChecks: false, includeDbChecks: false });
+  assert.equal(diag.status, 'ok', JSON.stringify(diag.blockers));
+  assert.equal(diag.hashChecks.snapshotEncoding, 'gzip');
+
+  const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't04-v3-gzip.h2ochat' });
+  assert.equal(result.status, 'exported', result.reason);
+  assert.equal(result.contentHash, pkg.manifest.contentHash, 'logical contentHash is encoding-independent');
+  assert.equal(result.fileCount, 5, 'manifest + snapshot + asset + two derived companions');
+
+  const outRoot = 'H2O Studio Exports/t04-v3-gzip.h2ochat';
+  const out = Object.fromEntries(mem.inventory(mem.HOME, outRoot).map((f) => [f.path, f]));
+  /* The durable snapshot member is preserved byte-identically: no decode, no
+   * recompression, no gzip-header normalisation. Its stored SHA still equals the
+   * gzip physical descriptor, and its length is the gzip length, not the logical one. */
+  assert.equal(out[`${outRoot}/snapshot.json`].sha256, pkg.manifest.files.snapshot.sha256);
+  assert.equal(out[`${outRoot}/snapshot.json`].byteLength, pkg.snapshotBytes.length);
+  assert.equal(out[`${outRoot}/snapshot.json`].sha256, sha256(pkg.snapshotBytes));
+  assert.notEqual(out[`${outRoot}/snapshot.json`].byteLength, pkg.manifest.files.snapshot.contentByteLength);
+  /* manifest stays plaintext and byte-identical; the asset is untouched. */
+  assert.equal(out[`${outRoot}/manifest.json`].sha256, sha256(pkg.manifestText));
+  assert.equal(out[`${outRoot}/${pkg.assetPath}`].sha256, pkg.assetSha);
+  /* Human-readable companions were regenerated from verified logical content. */
+  assert.ok(mem.exists(mem.HOME, `${outRoot}/chat.md`));
+  assert.ok(mem.exists(mem.HOME, `${outRoot}/chat.html`));
+  /* Source archive package is unchanged by export. */
+  assert.deepEqual(mem.inventory(mem.APP, sourceRoot), sourceBefore);
+  /* Exporter still owns no compression implementation of its own. */
   assert.doesNotMatch(readRepo(EXPORTER), /CompressionStream|DecompressionStream|gunzip|inflate|zlib/);
+});
+
+checkAsync('M03 T04 gzip-v3 and identity-v3 produce identical human-readable companions', async () => {
+  /* Separate fixture filesystems so both variants can carry the SAME chatId and
+   * therefore byte-identical logical content. */
+  const idMem = createBehaviorFs();
+  const gzMem = createBehaviorFs();
+  const idPkg = readCommittedV3Fixture();
+  const gzPkg = gzipCommittedV3Fixture();
+  const idRoot = installBehaviorPackage(idMem, idPkg);
+  const gzRoot = installBehaviorPackage(gzMem, gzPkg);
+
+  const idOut = await loadBehaviorRuntime(idMem).H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: idRoot, exportName: 'eq-identity.h2ochat' });
+  const gzOut = await loadBehaviorRuntime(gzMem).H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: gzRoot, exportName: 'eq-gzip.h2ochat' });
+  assert.equal(idOut.status, 'exported');
+  assert.equal(gzOut.status, 'exported');
+  assert.equal(idOut.contentHash, gzOut.contentHash, 'logical identity must not depend on encoding');
+
+  const idInv = Object.fromEntries(idMem.inventory(idMem.HOME, 'H2O Studio Exports/eq-identity.h2ochat').map((f) => [f.path.split('/').pop(), f]));
+  const gzInv = Object.fromEntries(gzMem.inventory(gzMem.HOME, 'H2O Studio Exports/eq-gzip.h2ochat').map((f) => [f.path.split('/').pop(), f]));
+  assert.equal(gzInv['chat.md'].sha256, idInv['chat.md'].sha256, 'chat.md must be byte-identical across encodings');
+  assert.equal(gzInv['chat.html'].sha256, idInv['chat.html'].sha256, 'chat.html must be byte-identical across encodings');
+  assert.equal(gzInv['chat.md'].byteLength, idInv['chat.md'].byteLength);
+  assert.equal(gzInv['chat.html'].byteLength, idInv['chat.html'].byteLength);
+  /* The durable snapshot members legitimately differ physically. */
+  assert.notEqual(gzInv['snapshot.json'].sha256, idInv['snapshot.json'].sha256);
+  /* Physical durable members legitimately differ. */
+  assert.notEqual(gzPkg.manifest.files.snapshot.sha256, idPkg.manifest.files.snapshot.sha256);
+});
+
+checkAsync('M03 T04 corrupt gzip-v3 fails closed and creates no export', async () => {
+  const mem = createBehaviorFs();
+  const pkg = gzipCommittedV3Fixture({ corrupt: true });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const sourceBefore = mem.inventory(mem.APP, sourceRoot);
+  const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 'must-not-export.h2ochat' });
+  assert.equal(result.ok, false, 'corrupt gzip must not export');
+  assert.notEqual(result.status, 'exported');
+  /* No completed export and no staged leftovers were published. */
+  assert.equal(mem.exists(mem.HOME, 'H2O Studio Exports/must-not-export.h2ochat'), false);
+  assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports'), []);
+  /* Source archive package remains untouched. */
+  assert.deepEqual(mem.inventory(mem.APP, sourceRoot), sourceBefore);
 });
 
 let failures = 0;

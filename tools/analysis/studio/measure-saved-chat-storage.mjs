@@ -463,6 +463,93 @@ function packageFileRecord(file) {
   return { kind: 'other', identity, bytes: file.bytes };
 }
 
+/* DP-M03-E — gzip-v3 measurement compatibility.
+ *
+ * MEASUREMENT TOOLING ONLY. This is not product source, not a second product
+ * codec, and owns no `.h2ochat` semantics; the governed WebKit codec remains the
+ * sole product gzip authority. It exists so the existing semantic metrics can
+ * inspect a self-describing gzip-v3 snapshot.
+ *
+ * Physical byte accounting is UNCHANGED: package/snapshot/manifest/asset/renderer
+ * byte totals continue to come from actual on-disk sizes. Decoding is used only
+ * for metrics that require semantic snapshot inspection.
+ */
+const V3_LOGICAL_SNAPSHOT_CAP_BYTES = 8 * 1024 * 1024;
+
+function parseJsonBuffer(buffer, label) {
+  try {
+    return JSON.parse(buffer.toString('utf8'));
+  } catch (error) {
+    fail(`${label} is malformed JSON: ${error.message}`);
+  }
+}
+
+function resolveSnapshotContent(snapshotFile, manifest) {
+  const physicalBytes = fs.readFileSync(snapshotFile.fullPath);
+  const descriptor = manifest && manifest.files ? manifest.files.snapshot : null;
+  const encoding = String((descriptor && descriptor.encoding) ?? '').trim().toLowerCase();
+  const isV3 = safeVersion(manifest?.schemaVersion) === 3;
+
+  if (!isV3 || encoding === '' || encoding === 'identity') {
+    if (isV3 && encoding !== '' && encoding !== 'identity') {
+      fail(`unsupported v3 snapshot encoding: ${encoding}`);
+    }
+    return { encoding: encoding || null, physicalBytes, logicalBytes: physicalBytes, gzip: false };
+  }
+  if (encoding !== 'gzip') fail(`unsupported v3 snapshot encoding: ${encoding}`);
+
+  const declaredPhysicalLength = descriptor.byteLength;
+  if (!Number.isInteger(declaredPhysicalLength) || declaredPhysicalLength <= 0) {
+    fail('gzip snapshot descriptor byteLength must be a positive integer');
+  }
+  if (physicalBytes.length !== declaredPhysicalLength) {
+    fail(`gzip snapshot physical byteLength mismatch: descriptor ${declaredPhysicalLength}, on-disk ${physicalBytes.length}`);
+  }
+  const declaredPhysicalSha = normalizeSha(descriptor.sha256);
+  if (!declaredPhysicalSha) fail('gzip snapshot descriptor sha256 is missing or malformed');
+  const actualPhysicalSha = sha256Buffer(physicalBytes);
+  if (actualPhysicalSha !== declaredPhysicalSha) {
+    fail('gzip snapshot physical sha256 does not match its descriptor');
+  }
+
+  const declaredLogicalLength = descriptor.contentByteLength;
+  if (!Number.isInteger(declaredLogicalLength) || declaredLogicalLength <= 0) {
+    fail('gzip snapshot descriptor contentByteLength must be a positive integer');
+  }
+  if (declaredLogicalLength > V3_LOGICAL_SNAPSHOT_CAP_BYTES) {
+    fail('gzip snapshot contentByteLength exceeds the governed v3 logical cap');
+  }
+  /* DP-M03-C: 0 < physicalByteLength < contentByteLength <= 8 MiB. */
+  if (physicalBytes.length >= declaredLogicalLength) {
+    fail(`gzip snapshot violates DP-M03-C: expected 0 < ${physicalBytes.length} < ${declaredLogicalLength}`);
+  }
+  const declaredLogicalSha = normalizeSha(descriptor.contentSha256);
+  if (!declaredLogicalSha) fail('gzip snapshot descriptor contentSha256 is missing or malformed');
+
+  /* Bounded decode: the pinned Node runtime enforces a hard output ceiling. */
+  let logicalBytes;
+  try {
+    logicalBytes = zlib.gunzipSync(physicalBytes, { maxOutputLength: declaredLogicalLength });
+  } catch (error) {
+    fail(`gzip snapshot decode failed: ${error.message}`);
+  }
+  if (logicalBytes.length !== declaredLogicalLength) {
+    fail(`decoded gzip snapshot byteLength ${logicalBytes.length} does not match contentByteLength ${declaredLogicalLength}`);
+  }
+  const actualLogicalSha = sha256Buffer(logicalBytes);
+  if (actualLogicalSha !== declaredLogicalSha) {
+    fail('decoded gzip snapshot sha256 does not match contentSha256');
+  }
+  return {
+    encoding: 'gzip',
+    physicalBytes,
+    logicalBytes,
+    gzip: true,
+    physicalSha256: actualPhysicalSha,
+    logicalSha256: actualLogicalSha,
+  };
+}
+
 function measurePackage(packagePath, codecs, capabilities, timingSink) {
   const files = inventoryTree(packagePath);
   const byRelativePath = new Map(files.map((file) => [file.relativePath.split(path.sep).join('/'), file]));
@@ -470,7 +557,8 @@ function measurePackage(packagePath, codecs, capabilities, timingSink) {
   const snapshotFile = byRelativePath.get('snapshot.json');
   if (!manifestFile || !snapshotFile) fail('package shape requires manifest.json and snapshot.json');
   const manifest = parseJsonFile(manifestFile.fullPath, 'package manifest.json');
-  const snapshot = parseJsonFile(snapshotFile.fullPath, 'package snapshot.json');
+  const snapshotContent = resolveSnapshotContent(snapshotFile, manifest);
+  const snapshot = parseJsonBuffer(snapshotContent.logicalBytes, 'package snapshot.json');
   if (!manifest || typeof manifest !== 'object' || !snapshot || typeof snapshot !== 'object') {
     fail('unsupported package shape: manifest and snapshot must be JSON objects');
   }
@@ -496,7 +584,7 @@ function measurePackage(packagePath, codecs, capabilities, timingSink) {
       continue;
     }
     compression[logicalName] = benchmarkRepresentation(
-      fs.readFileSync(file.fullPath),
+      logicalName === 'snapshot.json' ? snapshotContent.logicalBytes : fs.readFileSync(file.fullPath),
       { scope: packageIdentity, representation: logicalName },
       codecs,
       capabilities,
@@ -545,9 +633,15 @@ function measurePackage(packagePath, codecs, capabilities, timingSink) {
       derivedRendererBytes: markdownBytes + htmlBytes,
       derivedRendererShare: ratio(markdownBytes + htmlBytes, totalBytes),
       derivedRendererPercentage: totalBytes > 0 ? round((markdownBytes + htmlBytes) * 100 / totalBytes, 3) : null,
+      ...(snapshotContent.gzip ? {
+        snapshotEncoding: 'gzip',
+        snapshotPhysicalSha256: snapshotContent.physicalSha256,
+        snapshotLogicalBytes: snapshotContent.logicalBytes.length,
+        snapshotLogicalSha256: snapshotContent.logicalSha256,
+      } : {}),
       packageAmplificationRatio: ratio(totalBytes, snapshotBytes),
       packageAmplificationBasis: 'total-package-bytes/snapshot-json-bytes',
-      contentArrayDuplication: packageContentDuplication(snapshot, snapshotBytes),
+      contentArrayDuplication: packageContentDuplication(snapshot, snapshotContent.logicalBytes.length),
       compression,
     },
     internal: {

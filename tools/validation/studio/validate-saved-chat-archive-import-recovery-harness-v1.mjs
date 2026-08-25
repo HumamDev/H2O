@@ -31,6 +31,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createRequire } from 'node:module';
@@ -49,11 +50,15 @@ const FIXTURE_DIR_REL = 'tools/validation/fixtures/saved-chat-archive/import-rec
 const FIXTURE_README_REL = FIXTURE_DIR_REL + '/README.md';
 const FIXTURE_PKG_REL = FIXTURE_DIR_REL + '/i-harness-source.h2ochat';
 const V3_FIXTURE_PKG_REL = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
+const V3_GZIP_FIXTURE_PKG_REL = 'tools/validation/fixtures/saved-chat-archive/v3/gzip/t06-canonical-assets.h2ochat';
 const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const LIB_RS_REL = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const WRITER_IDENTITY_RS_REL = 'apps/studio/desktop/src-tauri/src/sqlite_writer_identity.rs';
 const STORE_MODULES = [
   'store/index.js', 'store/snapshots.tauri.js', 'store/chats.tauri.js',
+  /* M03 T04: the governed saved-chat package codec must load before
+   * diagnostics/inspector, mirroring the product order in studio.html. */
+  'ingestion/saved-chat-package-codec.tauri.js',
   'ingestion/saved-chat-archive-diagnostics.tauri.js',
   'ingestion/saved-chat-archive-inspector.studio.js',
   'ingestion/saved-chat-archive-importer.studio.js',
@@ -217,6 +222,54 @@ check('[SCAFFOLD] fixture is a verifiable v1 asset-free package (contentHash = s
   assert.equal(FIXTURE_PKG_REL.split('/').pop(), manifest.chatId + '.h2ochat', 'fixture dir basename must equal chatId.h2ochat');
 });
 
+check('[M03 T05] permanent gzip-v3 fixture satisfies the frozen v3 contract', () => {
+  assert.ok(exists(V3_GZIP_FIXTURE_PKG_REL + '/manifest.json'));
+  assert.ok(exists(V3_GZIP_FIXTURE_PKG_REL + '/snapshot.json'));
+  /* renderer-free, exactly like the identity fixture it derives from */
+  assert.equal(exists(V3_GZIP_FIXTURE_PKG_REL + '/chat.md'), false);
+  assert.equal(exists(V3_GZIP_FIXTURE_PKG_REL + '/chat.html'), false);
+
+  const m = JSON.parse(readRepo(V3_GZIP_FIXTURE_PKG_REL + '/manifest.json'));
+  const stored = fs.readFileSync(path.join(REPO_ROOT, V3_GZIP_FIXTURE_PKG_REL, 'snapshot.json'));
+  const d = m.files.snapshot;
+  const sha = (b) => 'sha256-' + crypto.createHash('sha256').update(b).digest('hex');
+
+  assert.equal(m.schemaVersion, 3);
+  assert.equal(m.payloadVersion, 3);
+  assert.equal(d.encoding, 'gzip');
+  /* physical descriptor describes the STORED gzip bytes */
+  assert.equal(d.sha256, sha(stored));
+  assert.equal(d.byteLength, stored.length);
+  /* logical descriptor describes the canonical DECODED bytes */
+  const logical = zlib.gunzipSync(stored);
+  assert.equal(d.contentSha256, sha(logical));
+  assert.equal(d.contentByteLength, logical.length);
+  /* DP-M03-C: 0 < physical < logical <= 8 MiB */
+  assert.ok(d.byteLength > 0, 'physical length must be positive');
+  assert.ok(d.byteLength < d.contentByteLength, 'physical must be strictly smaller than logical');
+  assert.ok(d.contentByteLength <= 8 * 1024 * 1024, 'logical must respect the governed snapshot cap');
+  /* manifest stays plaintext JSON; assets stay identity-encoded */
+  assert.ok(m.assets.length > 0);
+  for (const a of m.assets) assert.ok(!a.encoding || a.encoding === 'identity');
+});
+
+check('[M03 T05] permanent gzip and identity fixtures share one logical identity', () => {
+  const idM = JSON.parse(readRepo(V3_FIXTURE_PKG_REL + '/manifest.json'));
+  const gzM = JSON.parse(readRepo(V3_GZIP_FIXTURE_PKG_REL + '/manifest.json'));
+  /* logical content is byte-identical, so logical identity must be identical */
+  assert.equal(gzM.chatId, idM.chatId);
+  assert.equal(gzM.snapshotId, idM.snapshotId);
+  assert.equal(gzM.files.snapshot.contentSha256, idM.files.snapshot.sha256);
+  assert.equal(gzM.files.snapshot.contentByteLength, idM.files.snapshot.byteLength);
+  assert.equal(gzM.contentHash, idM.contentHash, 'contentHash must be encoding-independent');
+  /* only the physical representation differs */
+  assert.notEqual(gzM.files.snapshot.sha256, idM.files.snapshot.sha256);
+  assert.equal(idM.files.snapshot.encoding, 'identity');
+  const idLogical = fs.readFileSync(path.join(REPO_ROOT, V3_FIXTURE_PKG_REL, 'snapshot.json'));
+  const gzLogical = zlib.gunzipSync(fs.readFileSync(path.join(REPO_ROOT, V3_GZIP_FIXTURE_PKG_REL, 'snapshot.json')));
+  assert.deepEqual(Buffer.from(gzLogical), Buffer.from(idLogical), 'decoded gzip must equal the identity payload byte-for-byte');
+});
+
 check('[M02 T06] committed canonical v3 fixture exists and is renderer-free', () => {
   assert.ok(exists(V3_FIXTURE_PKG_REL + '/manifest.json'));
   assert.ok(exists(V3_FIXTURE_PKG_REL + '/snapshot.json'));
@@ -346,6 +399,12 @@ async function runHarness() {
       const j = (p) => path.join(appDir, String(p || ''));
       try {
         if (cmd === 'plugin:fs|exists') return Promise.resolve(fs.existsSync(j(a.path)));
+        if (cmd === 'plugin:fs|lstat') {
+          /* Real metadata from the harness's own temp filesystem: no hard-coded
+           * sizes, no synthetic shapes. Feeds the governed bounded reader. */
+          const st = fs.lstatSync(j(a.path));
+          return Promise.resolve({ isFile: st.isFile(), isDirectory: st.isDirectory(), isSymlink: st.isSymbolicLink(), size: st.size });
+        }
         if (cmd === 'plugin:fs|read_file') return Promise.resolve(Array.from(fs.readFileSync(j(a.path))));
         if (cmd === 'plugin:fs|read_dir') return Promise.resolve(fs.existsSync(j(a.path)) ? fs.readdirSync(j(a.path), { withFileTypes: true }).map((e) => ({ name: e.name, isDirectory: e.isDirectory(), isFile: e.isFile() })) : []);
         if (cmd === 'plugin:sql|select') return Promise.resolve(db.prepare(a.query).all(...(a.values || [])).map(normRow));
@@ -377,6 +436,191 @@ async function runHarness() {
 
     const READY_REL = 'archive/packages/i-harness-import-ready-chat.h2ochat';
     const SRC_REL = 'archive/packages/i-harness-source.h2ochat';
+
+    /* ── M03 T04 Inspector: v3 gzip + v3 identity through the real chain ──
+     * Both variants are written to the SAME package path in sequence, so they
+     * carry byte-identical logical content and any Inspector difference is
+     * purely representation-specific. */
+    const V3_CHAT_ID = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, V3_FIXTURE_PKG_REL, 'manifest.json'), 'utf8')).chatId;
+    const V3_DIR = V3_CHAT_ID + '.h2ochat';
+    const V3_REL = 'archive/packages/' + V3_DIR;
+    const v3Abs = path.join(pkgRoot, V3_DIR);
+    const v3Src = path.join(REPO_ROOT, V3_FIXTURE_PKG_REL);
+    const sha256Pfx = (buf) => 'sha256-' + crypto.createHash('sha256').update(buf).digest('hex');
+    const v3BaseManifest = JSON.parse(fs.readFileSync(path.join(v3Src, 'manifest.json'), 'utf8'));
+    const v3LogicalBytes = fs.readFileSync(path.join(v3Src, 'snapshot.json'));
+    const v3GzipSrc = path.join(REPO_ROOT, V3_GZIP_FIXTURE_PKG_REL);
+    const v3PermanentGzipBytes = fs.readFileSync(path.join(v3GzipSrc, 'snapshot.json'));
+    const v3PermanentGzipManifest = JSON.parse(fs.readFileSync(path.join(v3GzipSrc, 'manifest.json'), 'utf8'));
+    const writeV3 = (encoding, snapshotBytesOverride) => {
+      fs.rmSync(v3Abs, { recursive: true, force: true });
+      fs.mkdirSync(v3Abs, { recursive: true });
+      const m = JSON.parse(JSON.stringify(v3BaseManifest));
+      let storedBytes = v3LogicalBytes;
+      const d = { path: 'snapshot.json' };
+      if (encoding === 'gzip') {
+        /* M03 T05: the valid gzip case is anchored to the PERMANENT committed
+         * gzip-v3 fixture, so consumer coverage exercises the same bytes a
+         * maintainer can inspect in the repository. Invalid variants are still
+         * derived in temporary state only. */
+        storedBytes = snapshotBytesOverride || v3PermanentGzipBytes;
+        d.sha256 = sha256Pfx(storedBytes); d.byteLength = storedBytes.length; d.encoding = 'gzip';
+        d.contentSha256 = sha256Pfx(v3LogicalBytes); d.contentByteLength = v3LogicalBytes.length;
+      } else {
+        d.sha256 = sha256Pfx(storedBytes); d.byteLength = storedBytes.length; d.encoding = 'identity';
+      }
+      m.files = Object.assign({}, m.files, { snapshot: d });
+      /* contentHash is logical, so it is identical for both representations. */
+      for (const a of (m.assets || [])) {
+        const src = path.join(v3Src, a.path);
+        if (fs.existsSync(src)) { fs.mkdirSync(path.join(v3Abs, path.dirname(a.path)), { recursive: true }); fs.copyFileSync(src, path.join(v3Abs, a.path)); }
+      }
+      fs.writeFileSync(path.join(v3Abs, 'snapshot.json'), storedBytes);
+      fs.writeFileSync(path.join(v3Abs, 'manifest.json'), JSON.stringify(m, null, 2) + '\n');
+      return m;
+    };
+    const v3GzipManifest = writeV3('gzip');
+    const v3GzipInspect = await inspector.inspectPackage({ packagePath: V3_REL });
+    const gzipStored = fs.readFileSync(path.join(v3Abs, 'snapshot.json'));
+    writeV3('identity');
+    const v3IdentityInspect = await inspector.inspectPackage({ packagePath: V3_REL });
+    /* Negative: valid physical descriptor over a corrupted gzip stream. */
+    const corrupt = Buffer.from(zlib.gzipSync(v3LogicalBytes)); corrupt[Math.floor(corrupt.length / 2)] ^= 0xff;
+    writeV3('gzip', corrupt);
+    const v3CorruptInspect = await inspector.inspectPackage({ packagePath: V3_REL });
+
+    /* ── M03 T04 Importer: v3 gzip / identity import + no-mutation negatives ──
+     * State-integrity: every negative case captures counts() and writes.length
+     * before the attempt and asserts both are unchanged afterwards, so a refusal
+     * is proven to occur BEFORE any persistent import mutation. */
+    const importSnapshotState = () => ({ counts: counts(), writes: writes.length });
+    const importedRows = (r) => {
+      const sid = r && r.recovered && r.recovered.newSnapshotId;
+      if (!sid) return null;
+      const snap = db.prepare('SELECT chat_id, title, message_count FROM snapshots WHERE id=?').get(sid);
+      const turns = db.prepare('SELECT turn_idx, role, text, outer_html FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(sid);
+      return { title: snap && snap.title, messageCount: snap && snap.message_count, turns };
+    };
+
+    writeV3('gzip');
+    const v3GzipPre = importSnapshotState();
+    const v3GzipImport = await importer.importVerifiedPackage({ packagePath: V3_REL, mode: 'import-as-new' });
+    const v3GzipRows = importedRows(v3GzipImport);
+
+    writeV3('identity');
+    const v3IdImport = await importer.importVerifiedPackage({ packagePath: V3_REL, mode: 'import-as-new' });
+    const v3IdRows = importedRows(v3IdImport);
+
+    /* Negative matrix — each must refuse with zero persistent mutation. */
+    const gzipBase = zlib.gzipSync(v3LogicalBytes);
+    const negCases = [
+      ['corrupt gzip', () => { const c = Buffer.from(gzipBase); c[Math.floor(c.length / 2)] ^= 0xff; writeV3('gzip', c); }],
+      ['truncated gzip', () => writeV3('gzip', Buffer.from(gzipBase.subarray(0, Math.max(1, gzipBase.length - 6))))],
+      ['physical sha mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.sha256 = 'sha256-' + '1'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['physical byteLength mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.byteLength = 999999; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['logical sha mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentSha256 = 'sha256-' + '2'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['logical length below actual (bomb guard)', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentByteLength = m.files.snapshot.contentByteLength - 1; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['unsupported encoding', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.encoding = 'deflate'; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['malformed logical JSON', () => { const bad = Buffer.from('{ not json'); writeV3('gzip', zlib.gzipSync(bad)); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); const gz = fs.readFileSync(path.join(v3Abs, 'snapshot.json')); m.files.snapshot.sha256 = 'sha256-' + crypto.createHash('sha256').update(gz).digest('hex'); m.files.snapshot.byteLength = gz.length; m.files.snapshot.contentSha256 = 'sha256-' + crypto.createHash('sha256').update(bad).digest('hex'); m.files.snapshot.contentByteLength = bad.length; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+    ];
+    const v3Negatives = [];
+    for (const [label, build] of negCases) {
+      build();
+      const pre = importSnapshotState();
+      let res = null, threw = null;
+      try { res = await importer.importVerifiedPackage({ packagePath: V3_REL, mode: 'import-as-new' }); }
+      catch (e) { threw = String((e && e.message) || e); }
+      const post = importSnapshotState();
+      v3Negatives.push({
+        label,
+        status: res && res.status,
+        threw,
+        mutated: JSON.stringify(pre.counts) !== JSON.stringify(post.counts),
+        writeDelta: post.writes - pre.writes,
+      });
+    }
+
+    /* ── M03 T04 Relink: v3 gzip / identity + zero-mutation negatives ─────────
+     * Runs BEFORE the v3 Restore block on purpose: Restore inserts the fixture's
+     * ORIGINAL snapshotId, which would then make relink refuse with
+     * snapshot-belongs-to-other-chat. Here the original id is still absent, so
+     * the real relink-ready path is exercised. */
+    const V3_RELINK_TARGET = 'v3-relink-target-chat';
+    db.prepare('INSERT INTO chats (id, title, meta_json) VALUES (?, ?, ?)').run(V3_RELINK_TARGET, 'V3 relink target', '{}');
+    const v3RelinkToken = 'RELINK:' + V3_RELINK_TARGET;
+    const v3RelinkTurnsOf = (snapId) => snapId
+      ? db.prepare('SELECT turn_idx, role, text, outer_html FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(snapId)
+      : [];
+
+    writeV3('gzip');
+    const v3RelinkGzip = await relink.relinkVerifiedPackage({ packagePath: V3_REL, targetChatId: V3_RELINK_TARGET, confirm: v3RelinkToken });
+    const v3RelinkNewSnapId = v3RelinkGzip.relinked && v3RelinkGzip.relinked.newSnapshotId;
+    const v3RelinkNewSnapRow = v3RelinkNewSnapId ? db.prepare('SELECT id, chat_id, message_count FROM snapshots WHERE id=?').get(v3RelinkNewSnapId) : null;
+    const v3RelinkRows = { snap: v3RelinkNewSnapRow, turns: v3RelinkTurnsOf(v3RelinkNewSnapId) };
+    /* Representation-independent expectation via the shared product mapping. */
+    const v3RelinkExpectedTurns = importer.buildTurnsFromPackageSnapshot(JSON.parse(v3LogicalBytes.toString('utf8')));
+    /* The package's ORIGINAL snapshot must not have been inserted by relink. */
+    const v3RelinkOriginalSnapId = JSON.parse(v3LogicalBytes.toString('utf8')).snapshotId;
+    const v3RelinkOriginalAbsent = !db.prepare('SELECT id FROM snapshots WHERE id=?').get(v3RelinkOriginalSnapId);
+
+    writeV3('identity');
+    const v3RelinkIdentityAgain = await relink.relinkVerifiedPackage({ packagePath: V3_REL, targetChatId: V3_RELINK_TARGET, confirm: v3RelinkToken });
+
+    const v3RelinkNegatives = [];
+    for (const [label, build] of negCases) {
+      build();
+      const pre = importSnapshotState();
+      let res = null, threw = null;
+      try { res = await relink.relinkVerifiedPackage({ packagePath: V3_REL, targetChatId: V3_RELINK_TARGET, confirm: v3RelinkToken }); }
+      catch (e) { threw = String((e && e.message) || e); }
+      const post = importSnapshotState();
+      v3RelinkNegatives.push({
+        label,
+        status: res && res.status,
+        threw,
+        mutated: JSON.stringify(pre.counts) !== JSON.stringify(post.counts),
+        writeDelta: post.writes - pre.writes,
+      });
+    }
+
+    /* ── M03 T04 Restore: v3 gzip / identity + zero-mutation negatives ────────
+     * Restore reuses the package's ORIGINAL chatId/snapshotId with absent-only
+     * insert semantics, so the gzip variant is restored first and the identity
+     * variant of the SAME logical package must then be refused as a conflict —
+     * which exercises the real state-authority rules rather than bypassing them. */
+    const v3RestorePre = importSnapshotState();
+    writeV3('gzip');
+    const v3RestoreGzip = await restore.restoreVerifiedPackage({ packagePath: V3_REL, mode: 'restore-original-ids', confirm: true });
+    const v3RestoredSnapId = JSON.parse(v3LogicalBytes.toString('utf8')).snapshotId;
+    const v3RestoredRows = (() => {
+      const snap = db.prepare('SELECT id, chat_id, message_count FROM snapshots WHERE id=?').get(v3RestoredSnapId);
+      const turns = db.prepare('SELECT turn_idx, role, text, outer_html FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(v3RestoredSnapId);
+      return snap ? { chatId: snap.chat_id, messageCount: snap.message_count, turns } : null;
+    })();
+    /* Representation-independent expectation: the turns the plaintext payload
+     * defines, computed through the same shared mapping the product uses. */
+    const v3ExpectedTurns = importer.buildTurnsFromPackageSnapshot(JSON.parse(v3LogicalBytes.toString('utf8')));
+
+    writeV3('identity');
+    const v3RestoreIdentityConflict = await restore.restoreVerifiedPackage({ packagePath: V3_REL, mode: 'restore-original-ids', confirm: true });
+
+    const v3RestoreNegatives = [];
+    for (const [label, build] of negCases) {
+      build();
+      const pre = importSnapshotState();
+      let res = null, threw = null;
+      try { res = await restore.restoreVerifiedPackage({ packagePath: V3_REL, mode: 'restore-original-ids', confirm: true }); }
+      catch (e) { threw = String((e && e.message) || e); }
+      const post = importSnapshotState();
+      v3RestoreNegatives.push({
+        label,
+        status: res && res.status,
+        threw,
+        mutated: JSON.stringify(pre.counts) !== JSON.stringify(post.counts),
+        writeDelta: post.writes - pre.writes,
+      });
+    }
+    fs.rmSync(v3Abs, { recursive: true, force: true });
 
     const before = counts();
     const srcChatSig = rowSig('chats', SRC_CHAT), srcSnapSig = rowSig('snapshots', SRC_SNAP);
@@ -574,6 +818,34 @@ async function runHarness() {
       ok: true,
       pkg: { readyChat: RDY_CHAT, readySnap: RDY_SNAP, srcChat: SRC_CHAT, srcSnap: SRC_SNAP, srcMsgs: SRC_MSGS },
       inspect: { status: insp.status, ok: insp.ok, contentHashOk: insp.checks && insp.checks.contentHashOk, blockers: insp.blockers },
+      v3Relink: {
+        gzipStatus: v3RelinkGzip.status,
+        rows: v3RelinkRows,
+        expectedTurns: v3RelinkExpectedTurns,
+        originalSnapshotAbsent: v3RelinkOriginalAbsent,
+        identityAgainStatus: v3RelinkIdentityAgain.status,
+        target: V3_RELINK_TARGET,
+        negatives: v3RelinkNegatives,
+      },
+      v3Restore: {
+        gzipStatus: v3RestoreGzip.status,
+        rows: v3RestoredRows,
+        expectedTurns: v3ExpectedTurns,
+        identityConflictStatus: v3RestoreIdentityConflict.status,
+        preWrites: v3RestorePre.writes,
+        negatives: v3RestoreNegatives,
+      },
+      v3Import: {
+        gzip: { status: v3GzipImport.status, rows: v3GzipRows, preWrites: v3GzipPre.writes },
+        identity: { status: v3IdImport.status, rows: v3IdRows },
+        negatives: v3Negatives,
+      },
+      v3Inspect: {
+        gzip: { status: v3GzipInspect.status, ok: v3GzipInspect.ok, identity: v3GzipInspect.identity, contentHashOk: v3GzipInspect.checks && v3GzipInspect.checks.contentHashOk, blockers: v3GzipInspect.blockers },
+        identity: { status: v3IdentityInspect.status, ok: v3IdentityInspect.ok, identity: v3IdentityInspect.identity, contentHashOk: v3IdentityInspect.checks && v3IdentityInspect.checks.contentHashOk, blockers: v3IdentityInspect.blockers },
+        corrupt: { status: v3CorruptInspect.status, ok: v3CorruptInspect.ok, blockers: v3CorruptInspect.blockers },
+        physical: { gzipEncoding: v3GzipManifest.files.snapshot.encoding, gzipStoredLen: gzipStored.length, logicalLen: v3LogicalBytes.length, gzipSha: v3GzipManifest.files.snapshot.sha256, logicalSha: v3GzipManifest.files.snapshot.contentSha256 },
+      },
       dry: { decision: dry.decision, writes: dryWrites },
       import: { status: imp.status, newChatId: imp.recovered && imp.recovered.newChatId, newSnapshotId: newSnapId, originalChatId: imp.recovered && imp.recovered.originalChatId, originalSnapshotId: imp.recovered && imp.recovered.originalSnapshotId },
       newRows: { snapshot: !!newSnapRow, chat: !!newChatRow, turns: newTurns, chatTitle: newChatRow && newChatRow.title, provOriginalChatId: prov.originalChatId, provOriginalSnapshotId: prov.originalSnapshotId },
@@ -738,6 +1010,192 @@ check('[I.2] inspectPackage returns verified (real diagnostics + inspector, hash
   assert.equal(H.inspect.ok, true);
   assert.equal(H.inspect.contentHashOk, true);
   assert.deepEqual(H.inspect.blockers || [], []);
+});
+
+check('[M03 T04] Relink relinks a valid v3 gzip package to the target chat', () => {
+  assert.ok(H, 'no harness');
+  const r = H.v3Relink;
+  assert.equal(r.gzipStatus, 'relinked', 'gzip v3 must relink');
+  assert.ok(r.rows.snap, 'a FRESH snapshot row must exist under the target chat');
+  assert.equal(r.rows.snap.chat_id, r.target, 'fresh snapshot must belong to the relink target');
+  assert.ok(r.rows.turns.length > 0);
+  /* Relink never re-parents the package's ORIGINAL snapshot id. */
+  assert.equal(r.originalSnapshotAbsent, true, 'relink must not insert the package original snapshotId');
+});
+
+check('[M03 T04] Relink v3 gzip yields the representation-independent logical state', () => {
+  assert.ok(H, 'no harness');
+  const r = H.v3Relink;
+  assert.equal(r.rows.turns.length, r.expectedTurns.length);
+  for (let i = 0; i < r.expectedTurns.length; i += 1) {
+    const got = r.rows.turns[i], want = r.expectedTurns[i];
+    assert.equal(got.turn_idx, want.turnIdx, 'turn order must match');
+    assert.equal(got.role, want.role);
+    assert.equal(got.text, want.text);
+    assert.equal(got.outer_html, want.outerHtml);
+  }
+  /* The identity representation of the SAME logical package is then correctly
+   * recognised as already relinked — existing revision/link authority intact. */
+  assert.equal(r.identityAgainStatus, 'already-relinked');
+});
+
+check('[M03 T04] Relink rejects every v3 integrity failure with ZERO persistent mutation', () => {
+  assert.ok(H, 'no harness');
+  const negs = H.v3Relink.negatives;
+  assert.equal(negs.length, 8, 'all negative cases must run');
+  for (const n of negs) {
+    assert.notEqual(n.status, 'relinked', n.label + ' must not relink');
+    assert.equal(n.threw, null, n.label + ' must fail closed, not throw');
+    assert.equal(n.mutated, false, n.label + ' mutated persistent state');
+    assert.equal(n.writeDelta, 0, n.label + ' issued ' + n.writeDelta + ' persistent writes');
+  }
+});
+
+check('[M03 T04] Relink owns no gzip/compression implementation', () => {
+  const src = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-relink.studio.js');
+  assert.doesNotMatch(src, /DecompressionStream|CompressionStream|gunzip|inflate|zlib/);
+  assert.doesNotMatch(src, /0x1f/);
+  assert.match(src, /readVerifiedPackageMember/);
+  assert.match(src, /LOGICAL_SNAPSHOT_CAP_BYTES/);
+});
+
+check('[M03 T04] Restore restores a valid v3 gzip package with original ids', () => {
+  assert.ok(H, 'no harness');
+  const r = H.v3Restore;
+  assert.equal(r.gzipStatus, 'restored', 'gzip v3 must restore');
+  assert.ok(r.rows, 'restored snapshot row must exist under the ORIGINAL snapshotId');
+  assert.ok(r.rows.messageCount > 0);
+  assert.ok(r.rows.turns.length > 0);
+});
+
+check('[M03 T04] Restore v3 gzip yields the representation-independent logical state', () => {
+  assert.ok(H, 'no harness');
+  const r = H.v3Restore;
+  assert.equal(r.rows.turns.length, r.expectedTurns.length);
+  for (let i = 0; i < r.expectedTurns.length; i += 1) {
+    const got = r.rows.turns[i], want = r.expectedTurns[i];
+    assert.equal(got.turn_idx, want.turnIdx, 'turn order must match');
+    assert.equal(got.role, want.role);
+    assert.equal(got.text, want.text);
+    assert.equal(got.outer_html, want.outerHtml);
+  }
+  /* The identity representation of the SAME logical package is then correctly
+   * refused by the existing absent-only restore rules. 'already-present' is the
+   * established Phase K outcome for a snapshot already in the store, and it also
+   * confirms the gzip restore really did insert under the ORIGINAL snapshotId. */
+  assert.equal(r.identityConflictStatus, 'already-present');
+});
+
+check('[M03 T04] Restore rejects every v3 integrity failure with ZERO persistent mutation', () => {
+  assert.ok(H, 'no harness');
+  const negs = H.v3Restore.negatives;
+  assert.equal(negs.length, 8, 'all negative cases must run');
+  for (const n of negs) {
+    assert.notEqual(n.status, 'restored', n.label + ' must not restore');
+    assert.equal(n.threw, null, n.label + ' must fail closed, not throw');
+    assert.equal(n.mutated, false, n.label + ' mutated persistent state');
+    assert.equal(n.writeDelta, 0, n.label + ' issued ' + n.writeDelta + ' persistent writes');
+  }
+});
+
+check('[M03 T04] Restore owns no gzip/compression implementation', () => {
+  const src = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js');
+  assert.doesNotMatch(src, /DecompressionStream|CompressionStream|gunzip|inflate|zlib/);
+  assert.doesNotMatch(src, /0x1f/);
+  assert.match(src, /readVerifiedPackageMember/);
+  assert.match(src, /LOGICAL_SNAPSHOT_CAP_BYTES/);
+});
+
+check('[M03 T04] Importer imports a valid v3 gzip package', () => {
+  assert.ok(H, 'no harness');
+  const g = H.v3Import.gzip;
+  assert.equal(g.status, 'imported');
+  assert.ok(g.rows, 'gzip import must create a recovered snapshot row');
+  assert.ok(g.rows.messageCount > 0);
+  assert.ok(g.rows.turns.length > 0);
+});
+
+check('[M03 T04] Importer v3 gzip and identity produce equivalent imported state', () => {
+  assert.ok(H, 'no harness');
+  const g = H.v3Import.gzip.rows, i = H.v3Import.identity.rows;
+  assert.equal(H.v3Import.identity.status, 'imported');
+  assert.ok(g && i, 'both variants must import');
+  /* Same logical package: identical recovered title, count and turn content. */
+  assert.equal(g.title, i.title);
+  assert.equal(g.messageCount, i.messageCount);
+  assert.equal(g.turns.length, i.turns.length);
+  assert.deepEqual(g.turns, i.turns, 'imported turns must be byte-equivalent across encodings');
+});
+
+check('[M03 T04] Importer rejects every v3 integrity failure with ZERO persistent mutation', () => {
+  assert.ok(H, 'no harness');
+  const negs = H.v3Import.negatives;
+  assert.equal(negs.length, 8, 'all negative cases must run');
+  for (const n of negs) {
+    assert.notEqual(n.status, 'imported', n.label + ' must not import');
+    assert.equal(n.threw, null, n.label + ' must fail closed, not throw');
+    assert.equal(n.mutated, false, n.label + ' mutated persistent state');
+    assert.equal(n.writeDelta, 0, n.label + ' issued ' + n.writeDelta + ' persistent writes');
+  }
+});
+
+check('[M03 T04] Importer owns no gzip/compression implementation', () => {
+  const src = readRepo(IMPORTER_REL);
+  assert.doesNotMatch(src, /DecompressionStream|CompressionStream|gunzip|inflate|zlib/);
+  assert.doesNotMatch(src, /0x1f/);
+  /* Governed reader is used for the v3 recovery payload. */
+  assert.match(src, /readVerifiedPackageMember/);
+  assert.match(src, /LOGICAL_SNAPSHOT_CAP_BYTES/);
+});
+
+check('[M03 T04] Inspector verifies a valid v3 gzip package through the governed chain', () => {
+  assert.ok(H, 'no harness');
+  const g = H.v3Inspect.gzip;
+  assert.equal(g.status, 'verified', JSON.stringify(g.blockers));
+  assert.equal(g.ok, true);
+  assert.equal(g.contentHashOk, true);
+  assert.deepEqual(g.blockers || [], []);
+  assert.equal(g.identity.schemaVersion, 3);
+  assert.equal(g.identity.payloadVersion, 3);
+});
+
+check('[M03 T04] Inspector v3 identity and gzip are semantically equivalent', () => {
+  assert.ok(H, 'no harness');
+  const g = H.v3Inspect.gzip, i = H.v3Inspect.identity, ph = H.v3Inspect.physical;
+  /* Same logical package written to the same path in two representations. */
+  assert.equal(i.status, 'verified', JSON.stringify(i.blockers));
+  assert.equal(g.status, i.status);
+  assert.equal(g.ok, i.ok);
+  assert.equal(g.contentHashOk, i.contentHashOk);
+  assert.equal(g.identity.chatId, i.identity.chatId);
+  assert.equal(g.identity.snapshotId, i.identity.snapshotId);
+  assert.equal(g.identity.schemaVersion, i.identity.schemaVersion);
+  assert.equal(g.identity.payloadVersion, i.identity.payloadVersion);
+  /* Logical package identity is encoding-independent. */
+  assert.equal(g.identity.contentHash, i.identity.contentHash);
+  /* Only the physical representation differs, and DP-M03-C holds. */
+  assert.equal(ph.gzipEncoding, 'gzip');
+  assert.ok(ph.gzipStoredLen > 0);
+  assert.ok(ph.gzipStoredLen < ph.logicalLen, 'DP-M03-C: 0 < physical < logical');
+  assert.notEqual(ph.gzipSha, ph.logicalSha);
+});
+
+check('[M03 T04] Inspector fails closed on a corrupt gzip v3 member', () => {
+  assert.ok(H, 'no harness');
+  const c = H.v3Inspect.corrupt;
+  assert.notEqual(c.status, 'verified');
+  assert.equal(c.ok, false);
+  assert.ok((c.blockers || []).length > 0, 'corrupt gzip must report blockers');
+  /* Unverified payload never reaches semantic JSON parsing. */
+  assert.ok(!(c.blockers || []).includes('snapshot-json-invalid'));
+});
+
+check('[M03 T04] Inspector owns no gzip/compression implementation', () => {
+  const src = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js');
+  assert.doesNotMatch(src, /DecompressionStream|CompressionStream|gunzip|inflate|zlib/);
+  assert.doesNotMatch(src, /0x1f/);
+  /* The obsolete pre-M03 gzip refusal no longer exists anywhere. */
+  assert.doesNotMatch(src, /snapshot-encoding-not-enabled/);
 });
 
 check('[I.2] dryRunImportPackage returns import-ready with zero writes', () => {

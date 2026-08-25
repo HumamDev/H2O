@@ -201,7 +201,11 @@
     if (hashChecks.contentHashOk === false || hashChecks.snapshotShaOk === false
         || asArray(assetChecks.hashMismatches).length
         || codes.some(function (c) { return /sha|hash/i.test(c); })) return 'hash-mismatch';
-    if (codes.indexOf('snapshot-encoding-not-enabled') >= 0 || codes.indexOf('snapshot-encoding-invalid') >= 0) return 'unsupported-encoding';
+    /* M03 T04: gzip v3 is decoded and verified by the governed codec inside
+     * diagnostics, so the pre-M03 gzip-not-enabled blocker no longer exists. Only a
+     * genuinely unsupported encoding value maps to unsupported-encoding; every
+     * governed integrity failure falls through to the hash/corrupted branches. */
+    if (codes.indexOf('snapshot-encoding-invalid') >= 0) return 'unsupported-encoding';
     if (!isVersionSupported(d.schemaVersion, d.payloadVersion)) return 'unsupported-version';
     if (cleanString(d.status) === 'blocked' || codes.length) return 'corrupted';
     return 'verified';

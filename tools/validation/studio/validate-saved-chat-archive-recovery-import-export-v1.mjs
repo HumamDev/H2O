@@ -63,6 +63,11 @@ const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.stud
 // No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
+  /* M03 T02/T03: the single governed saved-chat package codec authority. It owns
+   * gzip encode/decode, bounded package-member reads, physical/logical member
+   * verification and the logical snapshot cap, so it legitimately resolves
+   * `.h2ochat` package paths. Accepted alongside the writer, not in place of it. */
+  'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js',
@@ -222,7 +227,13 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/impo
       if (!ALLOWED_H2OCHAT.has(rel)) offenders.push(rel);
     }
   }
-  assert.deepEqual(offenders, [], '.h2ochat referenced outside writer/diagnostics/inspector/importer/exporter (unexpected reader?): ' + offenders.join(', '));
+  assert.deepEqual(offenders, [], '.h2ochat referenced outside the sanctioned owner allowlist (unexpected reader?): ' + offenders.join(', '));
+  /* The allowlist stays an exact-path membership test, never a permissive
+   * pattern: an arbitrary unrelated studio module is still an offender, and the
+   * sanctioned owner count is pinned so it cannot grow silently. */
+  assert.equal(ALLOWED_H2OCHAT.has('src-surfaces-base/studio/ingestion/saved-chat-archive-materializer.tauri.js'), false);
+  assert.equal(ALLOWED_H2OCHAT.has('src-surfaces-base/studio/ingestion/some-unrelated-module.js'), false);
+  assert.equal(ALLOWED_H2OCHAT.size, 8, 'sanctioned .h2ochat owner count changed');
   // Legacy placeholder names must not appear anywhere.
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));

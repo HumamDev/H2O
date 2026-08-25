@@ -1,0 +1,39 @@
+{
+  "schema": "h2o.savedChatPackage",
+  "schemaVersion": 3,
+  "payloadVersion": 3,
+  "chatId": "t06-canonical-assets",
+  "snapshotId": "snap_t06_canonical_assets",
+  "contentHash": "sha256-f8d91c31d938ca650cab78223716d055d9968fcbedd9c11406c94985dc9f9433",
+  "files": {
+    "snapshot": {
+      "path": "snapshot.json",
+      "sha256": "sha256-508c62358abd7ddc250139da224a353e41af8672a13142b905008193d8ad9959",
+      "byteLength": 497,
+      "encoding": "gzip",
+      "contentSha256": "sha256-275b305bbd4d55874fe0508003fceedc5c41940139fb17376dd336e614b4fa3b",
+      "contentByteLength": 1143
+    }
+  },
+  "assets": [
+    {
+      "sha256": "sha256-b6a38573d3cd8607b3cda428df2c4b2d05d976c58f55e47eeac8ffb0c34f780b",
+      "path": "assets/sha256-b6a38573d3cd8607b3cda428df2c4b2d05d976c58f55e47eeac8ffb0c34f780b.png",
+      "mimeType": "image/png",
+      "ext": "png",
+      "byteLength": 20,
+      "source": "synthetic-fixture",
+      "sourceMessageId": "m0",
+      "turnRef": 0
+    }
+  ],
+  "provenance": {
+    "generatedAt": "2026-08-24T00:00:00.000Z",
+    "projectionOnly": true
+  },
+  "generator": {
+    "name": "h2o-studio",
+    "version": "t06-fixture",
+    "rendererVersion": "saved-chat-package-v3"
+  }
+}

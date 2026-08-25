@@ -148,9 +148,53 @@
     try { var v = JSON.parse(text); return isObject(v) ? v : null; } catch (_) { return null; }
   }
 
+  /* Single governed saved-chat package codec authority (M03 T02/T03). This
+   * module never implements gzip decoding, magic detection, physical/logical
+   * hashing or descriptor verification; it only consumes verified logical bytes. */
+  function savedChatPackageCodecV3() {
+    var codec = H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.savedChatPackageCodec;
+    if (!codec || codec.__installed !== true ||
+        typeof codec.readVerifiedPackageMember !== 'function' ||
+        !isFiniteNumber(codec.LOGICAL_SNAPSHOT_CAP_BYTES)) {
+      return null;
+    }
+    return codec;
+  }
+
+  function readPackageManifestJson(packagePath) {
+    return readPackageTextFile(packagePath, 'manifest.json')
+      .then(function (t) { return safeParseJson(String(t || '')); }, function () { return null; });
+  }
+
+  /* M03 T04: the recovery payload this module turns into restored persistent
+   * rows is read through the governed codec for v3 packages — filesystem
+   * metadata admission (lstat), an independent physical cap, bounded read,
+   * physical descriptor verification, encoding-aware bounded decode and logical
+   * length/SHA verification all complete before a single byte is parsed. The
+   * manifest descriptor is never the independent pre-read bound, and the
+   * write-time re-inspection alone is not treated as sufficient for this second
+   * read. Any governed failure yields null, which the caller already treats as a
+   * hard refusal, so no unverified payload can reach insertRestoreRows. v1/v2
+   * keep the historical read path unchanged. */
   function readPackageSnapshotJson(packagePath) {
-    return readPackageTextFile(packagePath, 'snapshot.json')
-      .then(function (t) { return safeParseJson(String(t || '').slice(0, SNAPSHOT_READ_CAP)); }, function () { return null; });
+    return readPackageManifestJson(packagePath).then(function (manifest) {
+      var m = safeObject(manifest);
+      var descriptor = safeObject(safeObject(m.files).snapshot);
+      var codec = savedChatPackageCodecV3();
+      if (m.schemaVersion === 3 && codec && cleanString(descriptor.path)) {
+        return Promise.resolve(codec.readVerifiedPackageMember({
+          packagePath: packagePath,
+          descriptor: descriptor,
+          expectedPath: 'snapshot.json',
+          physicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+          logicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+        })).then(function (verified) {
+          return safeParseJson(decodeToText(safeObject(verified).logicalBytes));
+        }, function () { return null; });
+      }
+      return readPackageTextFile(packagePath, 'snapshot.json')
+        .then(function (t) { return safeParseJson(String(t || '').slice(0, SNAPSHOT_READ_CAP)); }, function () { return null; });
+    });
   }
 
   function snapshotRowId(snap) {
