@@ -443,8 +443,28 @@ async function main() {
     assert.deepEqual(
       env.fs.writes.map((w) => w.path),
       [],
-      'a half-written package directory would strand the request permanently',
+      'no file may be written after the refusal',
     );
+    // The refusal must be atomic on disk: the writer refuses an EXISTING
+    // package path, so even an empty directory created before verification
+    // would strand the request permanently. Verification therefore runs
+    // before mkdir, and a retry after fixing the CAS must succeed.
+    assert.equal(
+      [...env.fs.dirs].filter((d) => d.startsWith('archive/packages/')).length,
+      0,
+      'a package directory created before verification would strand the request',
+    );
+  });
+
+  await checkAsync('after the CAS is fixed, the same request succeeds (no strand)', async () => {
+    // corruptOnNthRead: 2 corrupts only the SECOND verified read overall, so a
+    // second attempt on the same fixture sees clean reads and must succeed —
+    // proving the earlier refusal left nothing behind that blocks retry.
+    const env = loadProjector({ withImage: true, secondImage: true, corruptOnNthRead: 2 });
+    await assert.rejects(() => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }));
+    const out = await env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' });
+    assert.equal(out.written, true, 'the retry must succeed once the corrupt read clears');
+    assert.ok(assetWrites(env.fs).length >= 2, 'both assets must be copied on the retry');
   });
 
   await checkAsync('the package writer actually calls the verified read, not the raw one', async () => {

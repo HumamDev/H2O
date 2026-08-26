@@ -1419,12 +1419,16 @@
     return prepared;
   }
 
-  async function writePackageAssetCopies(packagePath, assets, options) {
+  async function writePackageAssetCopies(packagePath, assets, options, preparedOpt) {
     var list = asArray(assets);
     if (!list.length) return [];
     /* Verify first: no directory is created and no byte is written until every
-     * asset in the set has proven its identity. */
-    var prepared = await readVerifiedPackageAssetSet(list);
+     * asset in the set has proven its identity. The v1 writer verifies even
+     * earlier — before the package directory itself exists — and hands the
+     * prepared set in, so the bytes here are the ones already proven. */
+    var prepared = Array.isArray(preparedOpt) && preparedOpt.length === list.length
+      ? preparedOpt
+      : await readVerifiedPackageAssetSet(list);
     var assetsPath = joinPath(packagePath, 'assets');
     await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
     var written = [];
@@ -1672,12 +1676,18 @@
     if (exists && !opts.overwrite) {
       throw new Error('saved chat package already exists: ' + packagePath);
     }
+    /* Verify the ENTIRE asset set before the package directory exists (and,
+     * on the overwrite path, before the old package is destroyed). The writer
+     * refuses an existing package path, so a directory created ahead of a
+     * failed verification would strand the request permanently; verifying
+     * first keeps the refusal atomic — nothing on disk changes at all. */
+    var preparedAssets = await readVerifiedPackageAssetSet(built.manifest.assets);
     if (exists && opts.overwrite) {
       await assertOverwritableSavedChatPackage(packagePath, baseOptions);
       await fsRemove(packagePath, Object.assign({}, baseOptions, { recursive: true }));
     }
     await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
-    var writtenAssets = await writePackageAssetCopies(packagePath, built.manifest.assets, baseOptions);
+    var writtenAssets = await writePackageAssetCopies(packagePath, built.manifest.assets, baseOptions, preparedAssets);
     await fsWriteFile(joinPath(packagePath, 'manifest.json'), textBytes(built.files['manifest.json'].text), baseOptions);
     await fsWriteFile(joinPath(packagePath, 'snapshot.json'), textBytes(built.files['snapshot.json'].text), baseOptions);
     await fsWriteFile(joinPath(packagePath, 'chat.md'), textBytes(built.files['chat.md'].text), baseOptions);

@@ -509,8 +509,12 @@ mod confined {
                 }
                 return Err(err);
             }
-            // The destination now names the same inode; drop our staging name.
-            self.unlink_child(from)?;
+            // The destination now names the same inode — the promotion IS
+            // committed. A failure to drop our staging name must therefore
+            // never surface as an error (the caller would conclude nothing
+            // happened, which the result contract forbids); the leftover name
+            // is ordinary stale-temp litter.
+            let _ = self.unlink_child(from);
             Ok(true)
         }
 
@@ -1232,6 +1236,14 @@ mod tests {
             "assets/aa".to_string(),
             "assets/aa/blob".to_string(),
             format!("assets/zz/sha256-{hex}"),
+            // A VALID-hex shard that simply is not hex[0..2] — this is the
+            // entry that reaches the shard-match comparison itself (a non-hex
+            // shard like "zz" is refused earlier by the hex check).
+            format!(
+                "assets/{}/sha256-{hex}",
+                if &hex[0..2] == "00" { "11" } else { "00" }
+            ),
+            format!("assets/AA/sha256-{hex}"),
             format!("assets/{}/sha256-{}", &hex[0..2], hex.to_uppercase()),
             format!("assets/{}/sha256-{}", &hex[0..2], &hex[0..40]),
             format!("assets/{}/extra/sha256-{hex}", &hex[0..2]),
