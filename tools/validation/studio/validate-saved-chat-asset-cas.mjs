@@ -95,6 +95,13 @@ function createFsShim() {
       if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) {
         throw new Error('durable_write: destination must be a contained archive-relative path: ' + rel);
       }
+      // Mirrors the narrowed Rust authority: the create-only command admits
+      // ONLY canonical CAS blobs. The JS module must never send anything else,
+      // so a violation here is a loud harness failure, not a soft refusal.
+      const shape = rel.match(/^assets\/([0-9a-f]{2})\/sha256-([0-9a-f]{64})$/);
+      if (!shape || shape[2].slice(0, 2) !== shape[1]) {
+        throw new Error('durable_write: create-only authority is CAS-scoped; refused: ' + rel);
+      }
       // The Rust root is $APPLOCALDATA/archive, so the AppLocalData-relative
       // path the rest of the shim stores is the archive-root path plus that
       // prefix. Recording it keeps the layout assertion meaningful.

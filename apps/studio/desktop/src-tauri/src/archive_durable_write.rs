@@ -14,6 +14,15 @@
 // authority: the only unlink that can ever happen is of this module's own
 // private temporary artifact on a failed write.
 //
+// AUTHORITY IS CAS-SCOPED. The create-only command's sole production consumer
+// is the saved-chat asset CAS, so its admitted destinations are exactly the
+// canonical blob shape `assets/<aa>/sha256-<hex>` — not packages, not
+// manifests, not snapshots, not arbitrary archive paths. The traversal
+// machinery below is deliberately more general (the CAS repair path derives
+// its own destinations through it), but nothing renderer-reachable inherits
+// that generality. When durable v3 package publication is adopted it gets its
+// own separately reviewed, purpose-bounded operation.
+//
 // CONTAINMENT IS DESCRIPTOR-RELATIVE, NOT PATHNAME-RELATIVE.
 //
 // A custom command bypasses the `plugin:fs` scope entirely, so this module's own
@@ -604,18 +613,70 @@ where
     ))
 }
 
-/// Durably CREATES `relative` beneath `root`. Never replaces.
+/// Asserts that a validated component list names exactly one canonical CAS
+/// blob: `assets/<aa>/sha256-<64 lowercase hex>` with `<aa>` equal to the
+/// first two hex digits. Anything else — packages, manifests, snapshots, any
+/// other archive path, wrong shard, wrong case, wrong depth — is refused.
+fn assert_cas_blob_shape(components: &[Vec<u8>]) -> Result<(), &'static str> {
+    const OUTSIDE: &str = "durable-write-path-outside-cas";
+    if components.len() != 3 {
+        return Err(OUTSIDE);
+    }
+    if components[0] != CAS_DIR.as_bytes() {
+        return Err(OUTSIDE);
+    }
+    let shard = &components[1];
+    if shard.len() != 2
+        || !shard
+            .iter()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(OUTSIDE);
+    }
+    let name = &components[2];
+    let Some(hex) = name.strip_prefix(b"sha256-") else {
+        return Err(OUTSIDE);
+    };
+    if hex.len() != 64
+        || !hex
+            .iter()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(OUTSIDE);
+    }
+    if &hex[0..2] != shard.as_slice() {
+        return Err(OUTSIDE);
+    }
+    Ok(())
+}
+
+/// Durably CREATES one canonical CAS blob beneath `root`. Never replaces.
 ///
-/// This is the only write surface reachable from the renderer, and it is
-/// create-only: an existing destination is refused with
-/// `durable-write-destination-exists`. Replacement authority lives solely in
-/// `cas_repair_write_within_root`, which derives its own destination.
+/// This is the only write surface reachable from the renderer, and its
+/// authority is deliberately NARROWER than the traversal machinery beneath it:
+/// the sole production consumer is the saved-chat asset CAS, so the admitted
+/// destinations are exactly `assets/<aa>/sha256-<hex>` and nothing else.
+/// Package members, manifests and snapshots are refused here even though the
+/// machinery could write them — a future durable package publication must
+/// arrive as its own separately reviewed, purpose-bounded operation rather
+/// than inheriting archive-wide reach from this one. Replacement authority
+/// lives solely in `cas_repair_write_within_root`, which derives its own
+/// destination.
 #[cfg(unix)]
 pub fn durable_write_within_root(
     root: &Path,
     relative: &str,
     bytes: &[u8],
 ) -> Result<DurableWriteResult, String> {
+    // Reuse the same component validation the machinery applies, so traversal
+    // and reserved-name refusals keep their specific codes, then narrow.
+    let components = match validated_components(relative) {
+        Ok(components) => components,
+        Err(code) => return Ok(DurableWriteResult::blocked(code)),
+    };
+    if let Err(code) = assert_cas_blob_shape(&components) {
+        return Ok(DurableWriteResult::blocked(code));
+    }
     durable_write_impl(root, relative, bytes, ExistingPolicy::Fail)
 }
 
@@ -1120,35 +1181,83 @@ mod tests {
     #[test]
     fn writes_exact_bytes_and_leaves_no_temp_artifact() {
         let (base, root) = scratch_root("happy");
-        let result =
-            durable_write_within_root(&root, "assets/aa/sha256-abc", b"hello").expect("write");
+        let relative = cas_relative(b"happy");
+        let result = durable_write_within_root(&root, &relative, b"hello").expect("write");
 
         assert!(result.ok);
         assert!(result.committed);
         assert!(result.durability_complete);
         assert!(!result.replaced);
         assert_eq!(result.byte_length, 5);
-        assert_eq!(
-            fs::read(root.join("assets/aa/sha256-abc")).unwrap(),
-            b"hello"
-        );
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), b"hello");
         assert!(temp_artifacts(&root).is_empty());
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// Machinery-level: the internal impl (which the CAS repair path drives
+    /// with derived destinations) can create arbitrary-depth ancestors. The
+    /// renderer-reachable command cannot reach such paths — see the authority
+    /// matrix test below.
     #[test]
-    fn creates_nested_directories() {
+    fn machinery_creates_nested_directories() {
         let (base, root) = scratch_root("nested");
-        let result = durable_write_within_root(
+        let result = durable_write_impl(
             &root,
             "packages/a.h2ochat/nested/deeper/manifest.json",
             b"{}",
+            ExistingPolicy::Fail,
         )
         .expect("write");
         assert!(result.ok);
         assert!(root
             .join("packages/a.h2ochat/nested/deeper/manifest.json")
             .is_file());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The renderer-reachable create surface admits exactly one shape:
+    /// `assets/<aa>/sha256-<64 lowercase hex>` with a matching shard. Every
+    /// other archive destination the machinery could write is refused here.
+    #[test]
+    fn create_only_command_admits_only_canonical_cas_blobs() {
+        let (base, root) = scratch_root("authority");
+        let hex = sha_hex(b"authority-probe");
+        let refused: Vec<String> = vec![
+            "packages/a.h2ochat/manifest.json".to_string(),
+            "packages/a.h2ochat/snapshot.json".to_string(),
+            format!("packages/a.h2ochat/assets/sha256-{hex}.png"),
+            "manifest.json".to_string(),
+            "snapshot.json".to_string(),
+            "assets".to_string(),
+            "assets/aa".to_string(),
+            "assets/aa/blob".to_string(),
+            format!("assets/zz/sha256-{hex}"),
+            format!("assets/{}/sha256-{}", &hex[0..2], hex.to_uppercase()),
+            format!("assets/{}/sha256-{}", &hex[0..2], &hex[0..40]),
+            format!("assets/{}/extra/sha256-{hex}", &hex[0..2]),
+            format!("assets/{}/{hex}", &hex[0..2]),
+        ];
+        for relative in &refused {
+            let result = durable_write_within_root(&root, relative, b"x").expect("call");
+            assert!(!result.ok, "{relative} must be refused");
+            assert!(!result.committed, "{relative} must not commit");
+            assert_eq!(
+                blocker_codes(&result.blockers),
+                vec!["durable-write-path-outside-cas".to_string()],
+                "{relative}"
+            );
+            assert!(
+                !root.join(relative).exists(),
+                "{relative} must not be created"
+            );
+        }
+        // Nothing was created at all — no shard dirs, no packages dir.
+        assert!(!root.join("packages").exists());
+
+        let admitted = cas_relative(b"authority-probe");
+        let result = durable_write_within_root(&root, &admitted, b"x").expect("write");
+        assert!(result.ok, "the canonical CAS shape must remain admitted");
+        assert!(root.join(&admitted).is_file());
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -1207,16 +1316,17 @@ mod tests {
     #[test]
     fn an_existing_destination_is_always_refused_and_never_replaced() {
         let (base, root) = scratch_root("create-only");
-        durable_write_within_root(&root, "assets/aa/blob", b"first").expect("seed");
+        let relative = cas_relative(b"create-only");
+        durable_write_within_root(&root, &relative, b"first").expect("seed");
 
-        let refused = durable_write_within_root(&root, "assets/aa/blob", b"second").expect("call");
+        let refused = durable_write_within_root(&root, &relative, b"second").expect("call");
         assert!(!refused.ok);
         assert!(!refused.committed, "a refusal must not commit");
         assert_eq!(
             blocker_codes(&refused.blockers),
             vec!["durable-write-destination-exists".to_string()]
         );
-        assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"first");
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), b"first");
         assert!(temp_artifacts(&root).is_empty());
         let _ = fs::remove_dir_all(&base);
     }
@@ -1226,17 +1336,18 @@ mod tests {
     /// simply not part of the contract and the write stays create-only.
     #[test]
     fn the_write_options_contract_exposes_no_replacement_field() {
+        let relative = cas_relative(b"no-replace-field");
         let parsed: DurableWriteOptions =
-            serde_json::from_str(r#"{"path":"assets/aa/x","existing":"replace"}"#)
+            serde_json::from_str(&format!(r#"{{"path":"{relative}","existing":"replace"}}"#))
                 .expect("options parse");
-        assert_eq!(parsed.path, "assets/aa/x");
+        assert_eq!(parsed.path, relative);
 
         // Proof by construction: the only public entry point takes no policy.
         let (base, root) = scratch_root("no-replace-field");
         durable_write_within_root(&root, &parsed.path, b"first").expect("seed");
         let second = durable_write_within_root(&root, &parsed.path, b"second").expect("call");
         assert!(!second.ok, "an `existing` key must not enable replacement");
-        assert_eq!(fs::read(root.join("assets/aa/x")).unwrap(), b"first");
+        assert_eq!(fs::read(root.join(&parsed.path)).unwrap(), b"first");
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -1248,9 +1359,11 @@ mod tests {
         let victim = outside.join("victim.txt");
         fs::write(&victim, b"original").expect("victim");
 
-        fs::create_dir_all(root.join("assets")).expect("assets");
-        std::os::unix::fs::symlink(&victim, root.join("assets/linked")).expect("file symlink");
-        let result = durable_write_within_root(&root, "assets/linked", b"pwned").expect("call");
+        // Destination symlink standing at a canonical CAS name.
+        let dest = cas_relative(b"symlink-dest");
+        fs::create_dir_all(root.join(&dest).parent().unwrap()).expect("shard");
+        std::os::unix::fs::symlink(&victim, root.join(&dest)).expect("file symlink");
+        let result = durable_write_within_root(&root, &dest, b"pwned").expect("call");
         assert!(!result.ok);
         assert_eq!(
             blocker_codes(&result.blockers),
@@ -1258,8 +1371,22 @@ mod tests {
         );
         assert_eq!(fs::read(&victim).unwrap(), b"original");
 
+        // A symlinked SHARD directory is refused on the narrowed surface.
+        let sharded = cas_relative(b"symlink-shard");
+        let shard_parent = root.join(&sharded);
+        std::os::unix::fs::symlink(&outside, shard_parent.parent().unwrap())
+            .expect("shard symlink");
+        let via_shard = durable_write_within_root(&root, &sharded, b"pwned").expect("call");
+        assert!(!via_shard.ok);
+        assert_eq!(
+            blocker_codes(&via_shard.blockers),
+            vec!["durable-write-parent-symlink".to_string()]
+        );
+
+        // Machinery-level: an arbitrary symlinked ancestor is refused too.
         std::os::unix::fs::symlink(&outside, root.join("hop")).expect("dir symlink");
-        let via_dir = durable_write_within_root(&root, "hop/planted.txt", b"pwned").expect("call");
+        let via_dir = durable_write_impl(&root, "hop/planted.txt", b"pwned", ExistingPolicy::Fail)
+            .expect("call");
         assert!(!via_dir.ok);
         assert_eq!(
             blocker_codes(&via_dir.blockers),
@@ -1278,7 +1405,8 @@ mod tests {
         std::os::unix::fs::symlink(&outside, base.join(ARCHIVE_ROOT)).expect("root symlink");
 
         let root = base.join(ARCHIVE_ROOT);
-        let result = durable_write_within_root(&root, "assets/aa/blob", b"x");
+        let relative = cas_relative(b"root-symlink");
+        let result = durable_write_within_root(&root, &relative, b"x");
 
         assert!(
             result.is_err(),
@@ -1294,8 +1422,9 @@ mod tests {
     #[test]
     fn refuses_a_directory_standing_where_the_file_belongs() {
         let (base, root) = scratch_root("dir-dest");
-        fs::create_dir_all(root.join("assets/aa/blob")).expect("dir");
-        let result = durable_write_within_root(&root, "assets/aa/blob", b"x").expect("call");
+        let relative = cas_relative(b"dir-dest");
+        fs::create_dir_all(root.join(&relative)).expect("dir");
+        let result = durable_write_within_root(&root, &relative, b"x").expect("call");
         assert!(!result.ok);
         assert_eq!(
             blocker_codes(&result.blockers),
@@ -1309,21 +1438,32 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (base, root) = scratch_root("stage-fail");
-        durable_write_within_root(&root, "assets/aa/blob", b"canonical").expect("seed");
+        let bytes = b"stage-fail-payload";
+        let relative = cas_relative(bytes);
+        let shard = root.join(&relative);
+        let shard = shard.parent().unwrap().to_path_buf();
 
-        let parent = root.join("assets/aa");
-        let original = fs::metadata(&parent).unwrap().permissions();
+        // A corrupt object stands at the canonical hash-derived path, so the
+        // repair path will attempt a replacement — whose staging then fails.
+        fs::create_dir_all(&shard).expect("shard");
+        fs::write(root.join(&relative), b"corrupt-before").expect("corrupt seed");
+
+        let original = fs::metadata(&shard).unwrap().permissions();
         let mut locked = original.clone();
         locked.set_mode(0o500);
-        fs::set_permissions(&parent, locked).expect("lock");
+        fs::set_permissions(&shard, locked).expect("lock");
 
-        // Repair is the only replacement path, so drive the failure through it.
-        let result = cas_repair_write_within_root(&root, b"canonical", None);
+        let result = cas_repair_write_within_root(&root, bytes, None);
 
-        fs::set_permissions(&parent, original).expect("unlock");
+        fs::set_permissions(&shard, original).expect("unlock");
 
-        assert!(result.is_ok(), "an already-valid object needs no write");
-        assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"canonical");
+        let err = result.expect_err("a staging failure must surface");
+        assert!(
+            err.contains("durable-write-temp"),
+            "unexpected error: {err}"
+        );
+        // The canonical destination is exactly as it was: untouched, un-fixed.
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), b"corrupt-before");
         assert!(temp_artifacts(&root).is_empty());
         let _ = fs::remove_dir_all(&base);
     }
@@ -1331,20 +1471,19 @@ mod tests {
     #[test]
     fn zero_byte_writes_are_permitted_and_durable() {
         let (base, root) = scratch_root("empty");
-        let result = durable_write_within_root(&root, "assets/aa/empty", b"").expect("write");
+        let relative = cas_relative(b"empty-tag");
+        let result = durable_write_within_root(&root, &relative, b"").expect("write");
         assert!(result.ok);
         assert_eq!(result.byte_length, 0);
-        assert_eq!(
-            fs::read(root.join("assets/aa/empty")).unwrap(),
-            Vec::<u8>::new()
-        );
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), Vec::<u8>::new());
         let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
     fn contents_are_synced_and_the_parent_entry_is_synced() {
         let (base, root) = scratch_root("sync");
-        let result = durable_write_within_root(&root, "assets/aa/sync", b"bytes").expect("write");
+        let relative = cas_relative(b"sync-tag");
+        let result = durable_write_within_root(&root, &relative, b"bytes").expect("write");
         assert!(result.ok);
         assert!(
             result.durability_complete,
@@ -1530,7 +1669,7 @@ mod tests {
         let mut refusals = 0u32;
 
         for round in 0..300u32 {
-            let relative = format!("assets/aa/contended-{round}");
+            let relative = cas_relative(format!("contended-{round}").as_bytes());
             let barrier = Arc::new(Barrier::new(2));
             let handles: Vec<_> = [b"payload-a".as_slice(), b"payload-b".as_slice()]
                 .into_iter()
@@ -1651,12 +1790,27 @@ mod tests {
 
         // Seed unrelated archive state that must remain untouched.
         let pkg = "packages/chat-1.h2ochat";
-        durable_write_within_root(&root, &format!("{pkg}/manifest.json"), b"{\"real\":true}")
-            .expect("manifest");
-        durable_write_within_root(&root, &format!("{pkg}/snapshot.json"), b"{\"snap\":1}")
-            .expect("snapshot");
-        durable_write_within_root(&root, &format!("{pkg}/assets/sha256-x.png"), b"pkgasset")
-            .expect("pkg asset");
+        durable_write_impl(
+            &root,
+            &format!("{pkg}/manifest.json"),
+            b"{\"real\":true}",
+            ExistingPolicy::Fail,
+        )
+        .expect("manifest");
+        durable_write_impl(
+            &root,
+            &format!("{pkg}/snapshot.json"),
+            b"{\"snap\":1}",
+            ExistingPolicy::Fail,
+        )
+        .expect("snapshot");
+        durable_write_impl(
+            &root,
+            &format!("{pkg}/assets/sha256-x.png"),
+            b"pkgasset",
+            ExistingPolicy::Fail,
+        )
+        .expect("pkg asset");
         let decoy = b"decoy object";
         let decoy_rel = cas_relative(decoy);
         durable_write_within_root(&root, &decoy_rel, decoy).expect("decoy");
@@ -1809,7 +1963,7 @@ mod tests {
         let mut wrote = 0u64;
         for i in 0..4000u64 {
             let rel = format!("hop/blob-{i}");
-            match durable_write_within_root(&root, &rel, b"payload") {
+            match durable_write_impl(&root, &rel, b"payload", ExistingPolicy::Fail) {
                 Ok(result) if result.ok => wrote += 1,
                 // Losing the race is fine; being redirected is not.
                 Ok(_) => {}

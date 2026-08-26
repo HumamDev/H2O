@@ -63,9 +63,11 @@ mod folder_metadata_apply_proof;
 #[cfg(debug_assertions)]
 pub mod f5h_final_validation_seed;
 
-// Saved-chat archive durable write. Bounded temp+fsync+rename promotion for
-// files under $APPLOCALDATA/archive only. Not a rename API: no source path is
-// accepted from the renderer and no delete authority is exposed.
+// Saved-chat archive durable write. Bounded temp+fsync+rename promotion,
+// CAS-scoped: the create-only command admits only canonical asset blobs at
+// $APPLOCALDATA/archive/assets/<aa>/sha256-<hex>, and CAS repair derives its
+// destination internally from bytes it hashed itself. Not a rename API: no
+// source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
