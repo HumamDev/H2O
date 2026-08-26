@@ -566,6 +566,106 @@ async function main() {
     assert.equal(d.dedupeCount, 0, 'a lying alreadyValid must never become a dedupe');
   });
 
+  // ── DP-PRE-M05-ASSET-BOUND: 32 MiB per newly ingested asset ──────────────
+  const ASSET_CAP = 33554432;
+
+  check('the governed cap is exposed as a single named authority value', () => {
+    assert.equal(api.assetBlobCapBytes, ASSET_CAP, 'assetCas must publish the canonical value');
+    assert.equal(api.diagnoseAssetCas().assetBlobCapBytes, ASSET_CAP);
+    const src = readRepo(MODULE_REL);
+    // Exactly one numeric literal, on the constant definition.
+    const literals = src.match(/33554432/g) || [];
+    assert.equal(literals.length, 1, 'the numeric literal must not be scattered');
+    assert.match(src, /var GOVERNED_ASSET_BLOB_CAP_BYTES = 33554432;/);
+    // Cross-language agreement: the trusted side is the authority, and a drift
+    // between the two constants would make JS admit what Rust refuses (a
+    // permanent, silent save failure) or vice versa.
+    const rust = readRepo('apps/studio/desktop/src-tauri/src/archive_durable_write.rs');
+    assert.match(
+      rust,
+      /pub const GOVERNED_ASSET_BLOB_CAP_BYTES: u64 = 33_554_432;/,
+      'the Rust authority must govern the same 32 MiB value',
+    );
+  });
+
+  await checkAsync('exactly at and one byte under the cap are accepted', async () => {
+    const cas = loadCas();
+    // A 32 MiB body converted to a number array would be ~33M elements, so the
+    // durable write is stubbed to keep the Uint8Array intact; everything before
+    // it (the bound check, hashing, path derivation) is the module's real code.
+    const realInvoke = cas.shim.invoke;
+    const bodyLengths = [];
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'h2o_archive_durable_write') {
+        bodyLengths.push(a.length);
+        const opts = JSON.parse(decodeURIComponent(b.headers.options));
+        cas.shim.files.set('archive/' + opts.path, a);
+        return { ok: true, committed: true, durabilityComplete: true, replaced: false, byteLength: a.length, blockers: [] };
+      }
+      return realInvoke(cmd, a, b);
+    };
+    for (const n of [ASSET_CAP - 1, ASSET_CAP]) {
+      const out = await cas.api.putAssetBytes({ bytes: new Uint8Array(n) });
+      assert.equal(out.wrote, true, `${n} bytes must be accepted`);
+      assert.equal(out.byteLength, n);
+    }
+    assert.deepEqual(bodyLengths, [ASSET_CAP - 1, ASSET_CAP], 'both sizes must reach the writer');
+    assert.equal(cas.api.diagnoseAssetCas().oversizeRejectCount, 0);
+  });
+
+  await checkAsync('one byte over the cap is refused before any hashing or write', async () => {
+    const cas = loadCas();
+    let invoked = 0;
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => { invoked += 1; return realInvoke(cmd, a, b); };
+
+    await assert.rejects(
+      () => cas.api.putAssetBytes({ bytes: new Uint8Array(ASSET_CAP + 1) }),
+      /exceeds the governed ingest bound/,
+    );
+    assert.equal(invoked, 0, 'an oversized asset must not reach the filesystem at all');
+    assert.equal(cas.shim.writes.length, 0, 'no CAS object may be created');
+    assert.equal(cas.shim.files.size, 0, 'nothing may be stored');
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.oversizeRejectCount, 1, 'the refusal must be reported');
+    assert.equal(d.putCount, 0, 'a refused put must not count as a put');
+    assert.equal(d.writeCount, 0);
+    assert.equal(d.repairCount, 0, 'an oversized asset must never trigger repair');
+  });
+
+  await checkAsync('caller-supplied byteLength is never the enforcement authority', async () => {
+    const cas = loadCas();
+    // Oversized CLAIM, small actual bytes → must be accepted (claim ignored).
+    const small = new TextEncoder().encode('small actual bytes');
+    const ok = await cas.api.putAssetBytes({ bytes: small, byteLength: ASSET_CAP + 1 });
+    assert.equal(ok.wrote, true, 'an oversized claim must not falsely reject small bytes');
+    assert.equal(ok.byteLength, small.length, 'byteLength is derived, never echoed from the caller');
+
+    // Small CLAIM, oversized actual bytes → must still be refused.
+    await assert.rejects(
+      () => cas.api.putAssetBytes({ bytes: new Uint8Array(ASSET_CAP + 1), byteLength: 10 }),
+      /exceeds the governed ingest bound/,
+      'a small claim must not smuggle oversized bytes past the bound',
+    );
+  });
+
+  check('the bound is an ingest ceiling, never a read ceiling', () => {
+    const src = readRepo(MODULE_REL);
+    // The cap must be consulted only on the put path.
+    const guardUses = (src.match(/GOVERNED_ASSET_BLOB_CAP_BYTES/g) || []).length;
+    assert.ok(guardUses >= 4, 'constant should be defined, enforced, diagnosed and exposed');
+    for (const readFn of ['async function getAssetBytes', 'async function readVerifiedAssetBytes', 'async function describe', 'async function verifyBlobAt']) {
+      const start = src.indexOf(readFn);
+      assert.ok(start > 0, `${readFn} not found`);
+      const body = src.slice(start, src.indexOf('\n  }', start));
+      assert.doesNotMatch(
+        body,
+        /GOVERNED_ASSET_BLOB_CAP_BYTES/,
+        `${readFn} must not apply the ingest cap — historical oversized objects stay readable`,
+      );
+    }
+  });
+
   check('diagnoseAssetCas reports sane status', () => {
     const d = api.diagnoseAssetCas();
     assert.equal(d.installed, true);

@@ -38,12 +38,22 @@ function stripComments(src) {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
-function createMockCas() {
+// The real CAS publishes the DP-PRE-M05-ASSET-BOUND authority; the mock must
+// too, or the ingest surface silently loses its early bound. `capBytes` lets a
+// test exercise the mechanism at a small size instead of allocating 32 MiB.
+// Default derived from the CAS authority itself, so the mock can never drift
+// from the real governed value.
+const CAS_MODULE_REL = 'src-surfaces-base/studio/ingestion/asset-cas.tauri.js';
+const GOVERNED_ASSET_CAP = Number(
+  /var GOVERNED_ASSET_BLOB_CAP_BYTES = (\d+);/.exec(readRepo(CAS_MODULE_REL))[1],
+);
+function createMockCas({ capBytes = GOVERNED_ASSET_CAP } = {}) {
   const calls = [];
   const seen = new Set();
   return {
     calls,
     api: {
+      assetBlobCapBytes: capBytes,
       putAssetBytes: async ({ bytes, mimeType, ext, source, meta }) => {
         const hex = sha256Hex(bytes);
         const sha256 = 'sha256-' + hex;
@@ -124,6 +134,53 @@ async function main() {
     assert.ok(helper.decodeDataImageUriV2(okUri));
     assert.equal(helper.decodeDataImageUriV2('data:image/svg+xml;base64,YWJj'), null);
     assert.equal(helper.decodeDataImageUriV2('https://example.com/y.png'), null);
+    // No cap supplied → the decoder applies none; the CAS remains the enforcer.
+    assert.ok(helper.decodeDataImageUriV2(okUri).bytes);
+  });
+
+  // ── DP-PRE-M05-ASSET-BOUND at the data-URI ingest boundary ───────────────
+  check('the data-URI boundary refuses oversized assets, pre-decode where provable', () => {
+    const helper = loadHelper();
+    const uriFor = (bytes) => 'data:image/png;base64,' + Buffer.from(bytes).toString('base64');
+    // Small cap chosen congruent to the real one (33554432 % 3 === 2) so the
+    // just-over case lands on the same code path it does at 32 MiB.
+    const CAP = 98;
+
+    // Exactly at the cap must NOT be rejected — the pre-decode bound is a
+    // lower bound precisely so it can never fire on a valid payload.
+    const atCap = helper.decodeDataImageUriV2(uriFor(Buffer.alloc(CAP, 1)), CAP);
+    assert.ok(atCap && atCap.bytes, 'a payload exactly at the cap must be accepted');
+    assert.equal(atCap.bytes.length, CAP);
+    assert.equal(atCap.oversize, undefined);
+
+    // One byte over: refused. At this cap — as at the real 32 MiB — the encoded
+    // length alone cannot prove it, so the AUTHORITATIVE post-decode check is
+    // what catches it, and the actual decoded length is reported.
+    const overByOne = helper.decodeDataImageUriV2(uriFor(Buffer.alloc(CAP + 1, 1)), CAP);
+    assert.equal(overByOne.oversize, true, 'one byte over the cap must be refused');
+    assert.equal(overByOne.decodedLength, CAP + 1, 'the actual decoded length is authoritative');
+
+    // Clearly oversized: refused WITHOUT decoding — decodedLength stays null,
+    // proving no decoded buffer was ever allocated.
+    const huge = helper.decodeDataImageUriV2(uriFor(Buffer.alloc(CAP * 4, 1)), CAP);
+    assert.equal(huge.oversize, true);
+    assert.equal(huge.decodedLength, null, 'a provably oversized payload must be refused pre-decode');
+    assert.ok(huge.encodedLength > 0, 'the encoded length must be reported');
+
+    // Sanity across the whole valid range, at three caps chosen to cover every
+    // residue of the cap mod 3. The residue matters: a payload of n bytes with
+    // n % 3 === 1 encodes with TWO padding chars, and that is the only case
+    // where the `- 2` slack in minimumDecodedBytes is actually load-bearing.
+    // Without a cap congruent to 1 (mod 3) here, weakening the lower bound to
+    // `- 1` would falsely reject an exactly-at-cap asset with the suite still
+    // green. 98 is congruent to the real cap (33554432 % 3 === 2).
+    for (const cap of [98, 99, 100]) {
+      for (const n of [1, 2, 3, 4, 5, cap - 3, cap - 2, cap - 1, cap]) {
+        const out = helper.decodeDataImageUriV2(uriFor(Buffer.alloc(n, 2)), cap);
+        assert.ok(out && out.bytes, `${n} bytes must not be falsely rejected at cap ${cap}`);
+        assert.equal(out.bytes.length, n);
+      }
+    }
   });
 
   // Fixtures
@@ -151,6 +208,75 @@ async function main() {
   const cas = createMockCas();
   const store = createMockStore();
   let out = null;
+
+  await checkAsync('an oversized inline asset fails the whole materialization closed', async () => {
+    const cap = 98;
+    const bigB64 = Buffer.alloc(cap * 4, 3).toString('base64');
+    const bigHtml = `<p>big <img src="data:image/png;base64,${bigB64}"></p>`;
+    const oversizeInput = {
+      snapshotId: 'snap_oversize',
+      chatId: 'chat_oversize',
+      messages: [
+        { id: 'm0', turnIndex: 0, contentHtml: bigHtml, content: [{ type: 'html', html: bigHtml, sanitized: true }], assetRefs: [] },
+      ],
+    };
+    const boundedCas = createMockCas({ capBytes: cap });
+    const boundedStore = createMockStore();
+    await assert.rejects(
+      () => helper.materializeInlineImageAssetsV2({ snapshotJson: oversizeInput, assetCas: boundedCas.api, assetStore: boundedStore.api }),
+      /exceeds the governed ingest bound/,
+      'an oversized inline asset must fail closed, not be silently dropped',
+    );
+    assert.equal(boundedCas.calls.length, 0, 'no CAS object may be created');
+    assert.equal(boundedStore.upserts.length, 0, 'no registry row may be written');
+    assert.equal(boundedStore.links.length, 0, 'no turn link may be written');
+  });
+
+  await checkAsync('a valid asset before an oversized one is still not committed', async () => {
+    // The single-asset case above passes even if the bound is checked INSIDE
+    // the per-asset loop, so on its own it proves nothing about atomicity. Here
+    // a perfectly valid asset precedes the oversized one in an earlier message:
+    // a per-asset check would have already written its CAS object, registry row
+    // and turn link before reaching the refusal, leaving the snapshot half
+    // ingested. Only a whole-snapshot pre-scan keeps all three counters at zero.
+    const cap = 98;
+    const goodB64 = Buffer.from('valid-first-asset').toString('base64');
+    const goodHtml = `<p>ok <img src="data:image/png;base64,${goodB64}"></p>`;
+    // cap + 1 decoded bytes: too small for the pre-decode lower bound to prove
+    // oversize, so the authoritative post-decode check is what must fire.
+    const badB64 = Buffer.alloc(cap + 1, 7).toString('base64');
+    const badHtml = `<p>too big <img src="data:image/png;base64,${badB64}"></p>`;
+    const mixedInput = {
+      snapshotId: 'snap_mixed',
+      chatId: 'chat_mixed',
+      messages: [
+        { id: 'm0', turnIndex: 0, contentHtml: goodHtml, content: [{ type: 'html', html: goodHtml, sanitized: true }], assetRefs: [] },
+        { id: 'm1', turnIndex: 1, contentHtml: badHtml, content: [{ type: 'html', html: badHtml, sanitized: true }], assetRefs: [] },
+      ],
+    };
+    const boundedCas = createMockCas({ capBytes: cap });
+    const boundedStore = createMockStore();
+    await assert.rejects(
+      () => helper.materializeInlineImageAssetsV2({ snapshotJson: mixedInput, assetCas: boundedCas.api, assetStore: boundedStore.api }),
+      /exceeds the governed ingest bound/,
+      'the oversized second asset must fail the whole materialization',
+    );
+    assert.equal(boundedCas.calls.length, 0, 'the earlier valid asset must not have been written');
+    assert.equal(boundedStore.upserts.length, 0, 'the earlier valid asset must not have a registry row');
+    assert.equal(boundedStore.links.length, 0, 'the earlier valid asset must not be linked to its turn');
+    // Guard the fixture itself: if the "valid" asset were not actually valid,
+    // the zeros above would be vacuous.
+    const soloCas = createMockCas({ capBytes: cap });
+    const soloStore = createMockStore();
+    const solo = await helper.materializeInlineImageAssetsV2({
+      snapshotJson: { snapshotId: 's', chatId: 'c', messages: [mixedInput.messages[0]] },
+      assetCas: soloCas.api,
+      assetStore: soloStore.api,
+    });
+    assert.equal(solo.uniqueAssetCount, 1, 'the first asset is accepted on its own');
+    assert.equal(soloCas.calls.length, 1);
+    assert.equal(soloStore.links.length, 1);
+  });
 
   await checkAsync('materialize extracts the inline PNG and reports counts', async () => {
     out = await helper.materializeInlineImageAssetsV2({ snapshotJson: input, assetCas: cas.api, assetStore: store.api });

@@ -63,6 +63,23 @@
   var APP_LOCAL_DATA = 15;            /* Tauri BaseDirectory.AppLocalData */
   var CAS_ROOT = 'archive/assets';    /* relative to AppLocalData */
   var ARCHIVE_ROOT_PREFIX = 'archive/';
+
+  /* DP-PRE-M05-ASSET-BOUND (ACCEPTED): the governed decoded-byte ceiling for
+   * ONE newly ingested saved-chat binary asset — 32 MiB. This module is the
+   * canonical JS home for the value; every other JS surface reads it from
+   * `assetCas.assetBlobCapBytes` rather than repeating the literal. The
+   * trusted side carries its own independent copy in
+   * archive_durable_write.rs (GOVERNED_ASSET_BLOB_CAP_BYTES) and re-checks it,
+   * so this enforcement is the early refusal, not the authority.
+   *
+   * SCOPE: one newly ingested asset. NOT snapshot.json (DP-M03-C's separate
+   * 8 MiB logical bound), not total package size, not total chat size, not
+   * aggregate assets across a package.
+   *
+   * COMPATIBILITY: an ingest ceiling, never a read ceiling — getAssetBytes,
+   * readVerifiedAssetBytes, describe and verifyBlobAt never apply it, so a
+   * historical object larger than the cap stays readable. */
+  var GOVERNED_ASSET_BLOB_CAP_BYTES = 33554432;
   var DURABLE_WRITE_COMMAND = 'h2o_archive_durable_write';
   var CAS_REPAIR_COMMAND = 'h2o_archive_cas_repair_write';
   var DESTINATION_EXISTS_BLOCKER = 'durable-write-destination-exists';
@@ -76,6 +93,7 @@
     verifyCount: 0,
     mismatchCount: 0,
     repairCount: 0,
+    oversizeRejectCount: 0,
     lastPutAt: null,
     lastMismatchAt: null,
     lastError: null,
@@ -257,6 +275,18 @@
     var opts = safeObject(input);
     var u8 = toUint8(opts.bytes);
     if (!u8 || u8.length === 0) throw new Error('putAssetBytes: non-empty bytes required');
+    /* DP-PRE-M05-ASSET-BOUND, enforced on the ACTUAL decoded bytes before any
+     * hashing, path derivation or write. A caller-supplied byteLength is echoed
+     * metadata and is never the authority for this decision. */
+    if (u8.length > GOVERNED_ASSET_BLOB_CAP_BYTES) {
+      state.oversizeRejectCount += 1;
+      var oversize = new Error(
+        'putAssetBytes: asset exceeds the governed ingest bound: ' +
+        u8.length + ' > ' + GOVERNED_ASSET_BLOB_CAP_BYTES + ' bytes'
+      );
+      recordError('putAssetBytes', oversize);
+      throw oversize;
+    }
     state.putCount += 1;
     try {
       var hex = await sha256HexOf(u8);
@@ -429,6 +459,8 @@
       verifyCount: state.verifyCount,
       mismatchCount: state.mismatchCount,
       repairCount: state.repairCount,
+      oversizeRejectCount: state.oversizeRejectCount,
+      assetBlobCapBytes: GOVERNED_ASSET_BLOB_CAP_BYTES,
       lastPutAt: state.lastPutAt,
       lastMismatchAt: state.lastMismatchAt,
       lastError: state.lastError,
@@ -439,6 +471,8 @@
     assetCas: {
       __installed: true,
       __version: MODULE_VERSION,
+      /* Canonical authority value for other JS surfaces to read. */
+      assetBlobCapBytes: GOVERNED_ASSET_BLOB_CAP_BYTES,
       putAssetBytes: putAssetBytes,
       getAssetBytes: getAssetBytes,
       readVerifiedAssetBytes: readVerifiedAssetBytes,

@@ -63,6 +63,24 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub const DURABLE_WRITE_SCHEMA: &str = "h2o.studio.archive.durable-write.v1";
 pub const CAS_REPAIR_SCHEMA: &str = "h2o.studio.archive.cas-repair-write.v1";
 
+/// DP-PRE-M05-ASSET-BOUND (ACCEPTED): the governed decoded-byte ceiling for
+/// ONE newly ingested saved-chat binary asset — 32 MiB.
+///
+/// This is the trusted side of the authority. The renderer carries its own
+/// copy (`asset-cas.tauri.js`, `assetBlobCapBytes`) and enforces it earlier at
+/// the data-URI/ingest boundary, but that copy is a convenience, not the
+/// authority: this check is independent and a caller that bypasses the JS
+/// layer is still refused here, before any hashing, staging, durable write or
+/// CAS replacement.
+///
+/// SCOPE — this governs one newly ingested asset only. It does NOT govern
+/// `snapshot.json` (that is DP-M03-C's separate 8 MiB logical bound), total
+/// package size, total chat size, or aggregate assets across a package.
+///
+/// COMPATIBILITY — an ingest ceiling, never a read ceiling. Historical CAS
+/// objects larger than this stay readable; nothing here is applied to reads.
+pub const GOVERNED_ASSET_BLOB_CAP_BYTES: u64 = 33_554_432;
+
 /// Every admitted destination lives under `$APPLOCALDATA/<ARCHIVE_ROOT>`.
 pub const ARCHIVE_ROOT: &str = "archive";
 
@@ -672,6 +690,10 @@ pub fn durable_write_within_root(
     relative: &str,
     bytes: &[u8],
 ) -> Result<DurableWriteResult, String> {
+    // DP-PRE-M05-ASSET-BOUND: refuse before any traversal, staging or write.
+    if bytes.len() as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
+        return Ok(DurableWriteResult::blocked("durable-write-asset-too-large"));
+    }
     // Reuse the same component validation the machinery applies, so traversal
     // and reserved-name refusals keep their specific codes, then narrow.
     let components = match validated_components(relative) {
@@ -937,6 +959,12 @@ pub fn cas_repair_write_within_root(
 ) -> Result<CasRepairResult, String> {
     use confined::Dir;
 
+    // DP-PRE-M05-ASSET-BOUND: refuse before hashing, shard creation, the
+    // existing-object read, or any replacement.
+    if bytes.len() as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
+        return Ok(CasRepairResult::blocked("cas-repair-asset-too-large"));
+    }
+
     let hex = sha256_hex(bytes);
 
     if let Some(asserted) = expected_sha256 {
@@ -1041,6 +1069,16 @@ fn archive_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base.join(ARCHIVE_ROOT))
 }
 
+/// Length of the raw invoke body WITHOUT materializing a copy, so an oversized
+/// payload is refused before the `clone` in `body_bytes` doubles it.
+fn body_len(request: &tauri::ipc::Request<'_>) -> Result<usize, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(data) => Ok(data.len()),
+        tauri::ipc::InvokeBody::Json(serde_json::Value::Array(data)) => Ok(data.len()),
+        _ => Err("durable-write-body-unexpected".to_string()),
+    }
+}
+
 /// Extracts the raw invoke body as bytes, mirroring `plugin:fs|write_file`'s
 /// marshaling so a multi-megabyte asset is not expanded into a JSON number
 /// array.
@@ -1100,6 +1138,9 @@ pub async fn h2o_archive_durable_write(
     request: tauri::ipc::Request<'_>,
 ) -> Result<DurableWriteResult, String> {
     let options: DurableWriteOptions = required_options(&request)?;
+    if body_len(&request)? as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
+        return Ok(DurableWriteResult::blocked("durable-write-asset-too-large"));
+    }
     let bytes = body_bytes(&request)?;
     let root = archive_root(&app)?;
     durable_write_within_root(&root, &options.path, &bytes)
@@ -1117,6 +1158,9 @@ pub async fn h2o_archive_cas_repair_write(
     request: tauri::ipc::Request<'_>,
 ) -> Result<CasRepairResult, String> {
     let options: CasRepairOptions = optional_options(&request)?;
+    if body_len(&request)? as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
+        return Ok(CasRepairResult::blocked("cas-repair-asset-too-large"));
+    }
     let bytes = body_bytes(&request)?;
     let root = archive_root(&app)?;
     cas_repair_write_within_root(&root, &bytes, options.expected_sha256.as_deref())
@@ -1738,6 +1782,111 @@ mod tests {
         assert!(
             temp_artifacts(&root).is_empty(),
             "no staging litter may remain"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── DP-PRE-M05-ASSET-BOUND (32 MiB per ingested asset) ─────────────────
+
+    /// Exact boundary: one byte under and exactly at the cap are accepted.
+    #[test]
+    fn assets_at_and_just_under_the_governed_cap_are_accepted() {
+        let (base, root) = scratch_root("bound-accept");
+        // Pin the VALUE, not just the symbol: every other assertion here is
+        // relative to the constant, so a drift to 8 MiB or 64 MiB would leave
+        // the whole suite green while silently changing governed behaviour.
+        assert_eq!(
+            GOVERNED_ASSET_BLOB_CAP_BYTES, 33_554_432,
+            "DP-PRE-M05-ASSET-BOUND governs 32 MiB per ingested asset"
+        );
+        for len in [
+            GOVERNED_ASSET_BLOB_CAP_BYTES - 1,
+            GOVERNED_ASSET_BLOB_CAP_BYTES,
+        ] {
+            let bytes = vec![0u8; len as usize];
+            let relative = cas_relative(&bytes);
+            let result = durable_write_within_root(&root, &relative, &bytes).expect("write");
+            assert!(result.ok, "{len} bytes must be accepted");
+            assert!(result.committed);
+            assert_eq!(result.byte_length, len);
+
+            // The repair entry has its own guard and must accept the same
+            // sizes; testing only refusal there leaves an off-by-one able to
+            // make an exactly-at-cap object permanently unrepairable.
+            let repaired = cas_repair_write_within_root(&root, &bytes, None).expect("repair");
+            assert!(
+                repaired.ok,
+                "{len} bytes must be accepted by the repair entry too"
+            );
+            assert!(repaired.already_valid, "the object is already correct");
+        }
+        assert!(temp_artifacts(&root).is_empty());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Exact boundary: one byte over the cap is refused, by BOTH trusted
+    /// entries, before anything is created and with no staging residue.
+    #[test]
+    fn an_asset_one_byte_over_the_governed_cap_is_refused_before_any_write() {
+        let (base, root) = scratch_root("bound-refuse");
+        let bytes = vec![0u8; (GOVERNED_ASSET_BLOB_CAP_BYTES + 1) as usize];
+        let relative = cas_relative(&bytes);
+
+        let created = durable_write_within_root(&root, &relative, &bytes).expect("call");
+        assert!(!created.ok);
+        assert!(!created.committed, "an oversized asset must never commit");
+        assert_eq!(
+            blocker_codes(&created.blockers),
+            vec!["durable-write-asset-too-large".to_string()]
+        );
+        assert!(
+            !root.join(&relative).exists(),
+            "no CAS object may be created"
+        );
+        // Refused before traversal: not even the shard directory exists.
+        assert!(!root.join(CAS_DIR).exists(), "no shard may be created");
+
+        let repaired = cas_repair_write_within_root(&root, &bytes, None).expect("call");
+        assert!(!repaired.ok);
+        assert!(!repaired.repaired, "an oversized asset must never repair");
+        assert!(!repaired.committed);
+        assert_eq!(
+            blocker_codes(&repaired.blockers),
+            vec!["cas-repair-asset-too-large".to_string()]
+        );
+        assert!(!root.join(CAS_DIR).exists());
+        assert!(
+            temp_artifacts(&root).is_empty(),
+            "no temp residue may remain"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The bound is an INGEST ceiling, never a read ceiling: a historical
+    /// object larger than the cap stays readable and verifiable.
+    #[test]
+    fn an_existing_oversized_object_remains_readable() {
+        let (base, root) = scratch_root("bound-legacy-read");
+        let bytes = vec![7u8; (GOVERNED_ASSET_BLOB_CAP_BYTES + 1) as usize];
+        let relative = cas_relative(&bytes);
+
+        // Stand a historical oversized object at its canonical path directly,
+        // as an older build would have left it.
+        fs::create_dir_all(root.join(&relative).parent().unwrap()).expect("shard");
+        fs::write(root.join(&relative), &bytes).expect("legacy object");
+
+        let dir = confined::Dir::open_root(&root).expect("root");
+        let shard = dir
+            .open_child_nofollow(CAS_DIR.as_bytes())
+            .expect("assets")
+            .open_child_nofollow(&relative.as_bytes()[CAS_DIR.len() + 1..CAS_DIR.len() + 3])
+            .expect("shard");
+        let name = relative.rsplit('/').next().unwrap().as_bytes();
+        let read = read_child_bounded(&shard, name, bytes.len()).expect("read");
+        assert_eq!(
+            read.expect("present").len(),
+            bytes.len(),
+            "an oversized historical object must stay readable"
         );
         let _ = fs::remove_dir_all(&base);
     }
