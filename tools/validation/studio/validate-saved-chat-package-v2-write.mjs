@@ -46,6 +46,11 @@ const PNG_B64 = PNG_BYTES.toString('base64');
 const PNG_SHA = 'sha256-' + sha256Hex(PNG_BYTES);
 const PNG_PATH = `assets/${PNG_SHA}.png`;
 
+// A distinct second asset, so a fixture can place corruption BEHIND a good one.
+const PNG2_BYTES = Buffer.from('second-package-image-bytes');
+const PNG2_B64 = PNG2_BYTES.toString('base64');
+const PNG2_SHA = 'sha256-' + sha256Hex(PNG2_BYTES);
+
 function createStrictFs({ failWritePath = '' } = {}) {
   const dirs = new Set();
   const files = new Map();
@@ -153,13 +158,15 @@ function createStrictFs({ failWritePath = '' } = {}) {
   return { invoke, dirs, files, calls, writes, removes, lstatOverrides, controls };
 }
 
-function createStores({ withImage, turnText = '' }) {
+function createStores({ withImage, turnText = '', secondImage = false }) {
   const chatId = withImage ? 'chat_v2_write' : 'chat_v1_write';
   const snapshotId = withImage ? 'snap_v2_write' : 'snap_v1_write';
   const img = `<img src="data:image/png;base64,${PNG_B64}">`;
   const plainText = turnText || 'plain';
+  const img2 = `<img src="data:image/png;base64,${PNG2_B64}">`;
+  const bothImages = secondImage ? `<p>image ${img}</p><p>image2 ${img2}</p>` : `<p>image ${img}</p>`;
   const turns = withImage
-    ? [{ turnIdx: 0, role: 'user', outerHtml: `<p>image ${img}</p>`, text: 'image', meta: { messageId: 'm0' } }]
+    ? [{ turnIdx: 0, role: 'user', outerHtml: bothImages, text: 'image', meta: { messageId: 'm0' } }]
     : [{ turnIdx: 0, role: 'user', outerHtml: `<p>${plainText}</p>`, text: plainText, meta: { messageId: 'm0' } }];
   const snapshot = {
     snapshotId,
@@ -194,7 +201,7 @@ function createStores({ withImage, turnText = '' }) {
 
 // `corruptOnGet` plants bytes that do NOT hash to the key they are stored
 // under, so the verified read has something real to reject.
-function createCas({ missingOnGet = false, corruptOnGet = false } = {}) {
+function createCas({ missingOnGet = false, corruptOnGet = false, corruptOnNthRead = 0 } = {}) {
   const bytesBySha = new Map();
   const puts = [];
   const gets = [];
@@ -233,9 +240,9 @@ function createCas({ missingOnGet = false, corruptOnGet = false } = {}) {
         if (missingOnGet) return null;
         const stored = bytesBySha.get(sha256);
         if (!stored) return null;
-        const planted = corruptOnGet
-          ? Uint8Array.from([...stored, 0xff])
-          : stored;
+        const corruptThis = corruptOnGet
+          || (corruptOnNthRead > 0 && verifiedGets.length === corruptOnNthRead);
+        const planted = corruptThis ? Uint8Array.from([...stored, 0xff]) : stored;
         if ('sha256-' + sha256Hex(planted) !== sha256) {
           throw new Error('readVerifiedAssetBytes: CAS object failed verification: ' + sha256);
         }
@@ -249,13 +256,15 @@ function loadProjector({
   withImage,
   missingOnGet = false,
   corruptOnGet = false,
+  corruptOnNthRead = 0,
+  secondImage = false,
   failWritePath = '',
   turnText = '',
   CompressionStreamImpl = CompressionStream,
   DecompressionStreamImpl = DecompressionStream,
 }) {
-  const stores = createStores({ withImage, turnText });
-  const cas = createCas({ missingOnGet, corruptOnGet });
+  const stores = createStores({ withImage, turnText, secondImage });
+  const cas = createCas({ missingOnGet, corruptOnGet, corruptOnNthRead });
   const strictFs = createStrictFs({ failWritePath });
   const context = {
     console,
@@ -415,6 +424,27 @@ async function main() {
     assert.equal(assetWrites(env.fs).length, 0, 'no asset copy may be written from unverified bytes');
     assert.equal(textWrites(env.fs).length, 0, 'no manifest/snapshot may be written after the refusal');
     assertAllAppLocalData(env.fs);
+  });
+
+  // A single-asset fixture cannot observe an interleaved read/write loop: the
+  // corruption has to sit behind a good asset for the partial-write to appear.
+  await checkAsync('a corrupt SECOND asset leaves no partial package directory', async () => {
+    const env = loadProjector({ withImage: true, secondImage: true, corruptOnNthRead: 2 });
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
+      /failed verification/,
+    );
+    assert.equal(
+      assetWrites(env.fs).length,
+      0,
+      'no asset copy may be written when a later asset in the set fails verification',
+    );
+    assert.equal(textWrites(env.fs).length, 0, 'no manifest/snapshot may be written');
+    assert.deepEqual(
+      env.fs.writes.map((w) => w.path),
+      [],
+      'a half-written package directory would strand the request permanently',
+    );
   });
 
   await checkAsync('the package writer actually calls the verified read, not the raw one', async () => {

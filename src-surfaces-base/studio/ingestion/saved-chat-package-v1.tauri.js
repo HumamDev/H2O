@@ -1397,19 +1397,42 @@
     return u8;
   }
 
+  /* Verifies EVERY asset before writing ANY of them.
+   *
+   * Interleaving read-verify with write is only fail-closed for a single-asset
+   * package: with two or more, a corrupt blob behind the first good one leaves
+   * asset copies already written into a package directory that never receives a
+   * manifest. Because the v1 writer refuses an existing package path, such a
+   * half-written directory strands the request permanently instead of letting
+   * it retry. Reading the whole set first keeps the refusal atomic. */
+  async function readVerifiedPackageAssetSet(assets) {
+    var list = asArray(assets);
+    var prepared = [];
+    for (var i = 0; i < list.length; i += 1) {
+      var asset = list[i] || {};
+      prepared.push({
+        asset: asset,
+        relativePath: packageAssetPathForDescriptor(asset),
+        bytes: await readPackageAssetBytes(asset),
+      });
+    }
+    return prepared;
+  }
+
   async function writePackageAssetCopies(packagePath, assets, options) {
     var list = asArray(assets);
     if (!list.length) return [];
+    /* Verify first: no directory is created and no byte is written until every
+     * asset in the set has proven its identity. */
+    var prepared = await readVerifiedPackageAssetSet(list);
     var assetsPath = joinPath(packagePath, 'assets');
     await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
     var written = [];
-    for (var i = 0; i < list.length; i += 1) {
-      var asset = list[i] || {};
-      var relativePath = packageAssetPathForDescriptor(asset);
-      var bytes = await readPackageAssetBytes(asset);
-      var path = joinPath(packagePath, relativePath);
-      await fsWriteFile(path, bytes, options);
-      written.push({ path: path, relativePath: relativePath, sha256: normalizeAssetSha(asset.sha256), byteLength: bytes.length });
+    for (var j = 0; j < prepared.length; j += 1) {
+      var entry = prepared[j];
+      var path = joinPath(packagePath, entry.relativePath);
+      await fsWriteFile(path, entry.bytes, options);
+      written.push({ path: path, relativePath: entry.relativePath, sha256: normalizeAssetSha(entry.asset.sha256), byteLength: entry.bytes.length });
     }
     return written;
   }
@@ -1610,20 +1633,29 @@
   async function writeMissingPackageAssetCopiesV3(packagePath, assets, options) {
     var list = asArray(assets);
     if (!list.length) return [];
-    var assetsPath = joinPath(packagePath, 'assets');
-    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
-    var written = [];
+    /* Same atomic-refusal rule as the v1 path: every asset in the set proves
+     * its identity before any member is written. A member already present from
+     * an interrupted write is verified in place and needs no CAS read, so the
+     * existence check runs first. */
+    var prepared = [];
     for (var i = 0; i < list.length; i += 1) {
       var asset = list[i] || {};
       var relativePath = packageAssetPathForDescriptor(asset);
       var path = joinPath(packagePath, relativePath);
-      var bytes = await readPackageAssetBytes(asset);
       if (await fsExists(path, options)) {
         await verifyExistingV3Member(path, normalizeAssetSha(asset.sha256), numberOrZero(asset.byteLength), options);
         continue;
       }
-      await fsWriteFile(path, bytes, options);
-      written.push({ path: path, relativePath: relativePath, sha256: normalizeAssetSha(asset.sha256), byteLength: bytes.length });
+      prepared.push({ asset: asset, relativePath: relativePath, path: path, bytes: await readPackageAssetBytes(asset) });
+    }
+    if (!prepared.length) return [];
+    var assetsPath = joinPath(packagePath, 'assets');
+    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
+    var written = [];
+    for (var j = 0; j < prepared.length; j += 1) {
+      var entry = prepared[j];
+      await fsWriteFile(entry.path, entry.bytes, options);
+      written.push({ path: entry.path, relativePath: entry.relativePath, sha256: normalizeAssetSha(entry.asset.sha256), byteLength: entry.bytes.length });
     }
     return written;
   }

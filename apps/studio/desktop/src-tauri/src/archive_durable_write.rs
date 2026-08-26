@@ -424,6 +424,10 @@ mod confined {
 
         /// Renames within this same directory descriptor, so the promotion can
         /// never cross a filesystem or be redirected by a path swap.
+        ///
+        /// This CLOBBERS an existing destination and is therefore reserved for
+        /// the proven-mismatch CAS repair path. Create-only callers must use
+        /// `promote_exclusive`.
         pub fn rename_within(&self, from: &[u8], to: &[u8]) -> io::Result<()> {
             let from_c = cstr(from)?;
             let to_c = cstr(to)?;
@@ -439,6 +443,66 @@ mod confined {
                 return Err(io::Error::last_os_error());
             }
             Ok(())
+        }
+
+        /// Promotes `from` to `to` ONLY IF `to` does not already exist, as a
+        /// single atomic operation.
+        ///
+        /// An `fstatat` followed by `renameat` is a check-then-act race: two
+        /// writers both observe an absent destination and both rename, so both
+        /// report success and one payload is silently destroyed. macOS exposes
+        /// `renameatx_np(RENAME_EXCL)`, which performs the existence test and
+        /// the rename indivisibly; elsewhere the portable equivalent is
+        /// `linkat`, which fails with `EEXIST` rather than clobbering, followed
+        /// by unlinking our own staging name.
+        ///
+        /// Returns `Ok(false)` when the destination already existed.
+        #[cfg(target_os = "macos")]
+        pub fn promote_exclusive(&self, from: &[u8], to: &[u8]) -> io::Result<bool> {
+            let from_c = cstr(from)?;
+            let to_c = cstr(to)?;
+            let rc = unsafe {
+                libc::renameatx_np(
+                    self.0.as_raw_fd(),
+                    from_c.as_ptr(),
+                    self.0.as_raw_fd(),
+                    to_c.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST) {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+            Ok(true)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        pub fn promote_exclusive(&self, from: &[u8], to: &[u8]) -> io::Result<bool> {
+            let from_c = cstr(from)?;
+            let to_c = cstr(to)?;
+            let rc = unsafe {
+                libc::linkat(
+                    self.0.as_raw_fd(),
+                    from_c.as_ptr(),
+                    self.0.as_raw_fd(),
+                    to_c.as_ptr(),
+                    0,
+                )
+            };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST) {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+            // The destination now names the same inode; drop our staging name.
+            self.unlink_child(from)?;
+            Ok(true)
         }
 
         /// Unlinks a child of this directory. Only ever called on this
@@ -670,9 +734,30 @@ where
     // Close before promoting so no buffered state can outlive the rename.
     drop(handle);
 
-    if let Err(err) = dir.rename_within(&temp, file_name) {
-        let _ = dir.unlink_child(&temp);
-        return Err(format!("durable-write-promote-failed:{err}"));
+    // Create-only promotion must be atomic: the earlier `stat_child_nofollow`
+    // only narrows the window, it cannot close it. Two writers that both saw an
+    // absent destination would both rename, both report success, and one
+    // payload would be silently destroyed.
+    match existing {
+        ExistingPolicy::Fail => match dir.promote_exclusive(&temp, file_name) {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = dir.unlink_child(&temp);
+                return Ok(DurableWriteResult::blocked(
+                    "durable-write-destination-exists",
+                ));
+            }
+            Err(err) => {
+                let _ = dir.unlink_child(&temp);
+                return Err(format!("durable-write-promote-failed:{err}"));
+            }
+        },
+        ExistingPolicy::Replace => {
+            if let Err(err) = dir.rename_within(&temp, file_name) {
+                let _ = dir.unlink_child(&temp);
+                return Err(format!("durable-write-promote-failed:{err}"));
+            }
+        }
     }
 
     // Past this point the destination HAS changed. A sync failure is reported
@@ -1428,6 +1513,80 @@ mod tests {
         assert!(
             !again.committed,
             "nothing may be committed for a valid object"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Create-only must be atomic, not check-then-act. Two writers racing for
+    /// the same absent destination must not both commit: exactly one wins and
+    /// the loser is refused, so no committed payload is ever silently
+    /// destroyed. A single-threaded existence test cannot prove this.
+    #[test]
+    fn concurrent_create_only_writers_cannot_both_commit() {
+        use std::sync::{Arc, Barrier};
+
+        let (base, root) = scratch_root("create-only-race");
+        let mut both_committed = 0u32;
+        let mut refusals = 0u32;
+
+        for round in 0..300u32 {
+            let relative = format!("assets/aa/contended-{round}");
+            let barrier = Arc::new(Barrier::new(2));
+            let handles: Vec<_> = [b"payload-a".as_slice(), b"payload-b".as_slice()]
+                .into_iter()
+                .map(|payload| {
+                    let barrier = Arc::clone(&barrier);
+                    let root = root.clone();
+                    let relative = relative.clone();
+                    let payload = payload.to_vec();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        durable_write_within_root(&root, &relative, &payload)
+                    })
+                })
+                .collect();
+
+            let results: Vec<_> = handles
+                .into_iter()
+                .map(|h| h.join().expect("writer thread"))
+                .collect();
+            let committed = results
+                .iter()
+                .filter(|r| matches!(r, Ok(result) if result.committed))
+                .count();
+            let refused = results
+                .iter()
+                .filter(|r| {
+                    matches!(r, Ok(result)
+                        if !result.committed
+                            && blocker_codes(&result.blockers)
+                                .contains(&"durable-write-destination-exists".to_string()))
+                })
+                .count();
+            if committed > 1 {
+                both_committed += 1;
+            }
+            refusals += refused as u32;
+
+            // Whoever won, the destination holds one intact payload.
+            let landed = fs::read(root.join(&relative)).expect("destination exists");
+            assert!(
+                landed == b"payload-a" || landed == b"payload-b",
+                "destination must hold exactly one writer's payload"
+            );
+        }
+
+        assert_eq!(
+            both_committed, 0,
+            "two writers must never both commit to the same create-only destination"
+        );
+        assert!(
+            refusals > 0,
+            "the race was never actually contended; the test proved nothing"
+        );
+        assert!(
+            temp_artifacts(&root).is_empty(),
+            "no staging litter may remain"
         );
         let _ = fs::remove_dir_all(&base);
     }
