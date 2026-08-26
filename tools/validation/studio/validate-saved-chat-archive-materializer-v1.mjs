@@ -307,22 +307,28 @@ await checkAsync('two claimants race for one validated row: exactly one calls th
   assert.equal(fx.queue.get('req_1').status, 'written');
 });
 
-await checkAsync('a stale worker cannot regress written -> failed', async () => {
+await checkAsync('a worker whose writer threw cannot stamp failed over a written row', async () => {
   const fx = loadFixture({
     row: validatedRow(),
     resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
     writerThrows: 'package writer exploded',
   });
-  // The row is already `written` by whoever actually owned it; this worker is
-  // acting on a stale read and must not overwrite that outcome.
-  fx.queue.get('req_1').status = 'writing';
+  // This worker legitimately claims the row, then its writer throws — but by
+  // the time it reports, another actor has completed the row. The guard must
+  // stop `writing -> failed` from regressing that outcome. Driving it through
+  // a real claim matters: setting the row to `writing` up front would only
+  // exercise the eligibility gate and never reach a guarded UPDATE.
+  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1;
+  fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1 = async (opts) => {
+    try { return await original(opts); }
+    finally { fx.queue.get('req_1').status = 'written'; }
+  };
   const r = await fx.api({ requestId: 'req_1' });
-  assert.equal(r.status, 'not-eligible', 'a writing row is not claimable');
-
-  fx.queue.get('req_1').status = 'written';
-  const after = await fx.api({ requestId: 'req_1' });
-  assert.equal(after.status, 'already-written', 'written stays idempotent');
-  assert.equal(fx.queue.get('req_1').status, 'written', 'the written row must survive');
+  assert.equal(fx.queue.get('req_1').status, 'written', 'writing -> failed must not regress a written row');
+  assert.equal(r.status, 'transition-conflict');
+  assert.equal(r.ok, false);
+  assert.equal(r.transitionConflict.expectedStatus, 'writing');
+  assert.equal(r.transitionConflict.nextStatus, 'failed');
 });
 
 await checkAsync('losing writing -> written reports the conflict and still surfaces the package', async () => {

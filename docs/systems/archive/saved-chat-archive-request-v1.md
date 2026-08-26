@@ -276,6 +276,11 @@ not exercised by D.2C (a true overwrite policy is deferred).
 - A lost transition returns `transition-conflict` and performs no further work.
   If the package was already written when `writing -> written` was lost, the
   result still carries the package metadata but reports `ok: false`.
+  One exception: when the materializer's own ingestion dependencies are missing,
+  the persisted report is best-effort and the result keeps `db-unavailable` (the
+  actionable truth) while still setting the `transitionConflict` field. Consumers
+  that need to detect a lost transition must therefore read `transitionConflict`,
+  not only `status`.
 - Recovering a conflicted or stranded row (retry, stale-`writing` recovery,
   `failed -> validated` re-arm) remains **deferred** — see below.
 - If re-resolution no longer validates, update the queue row to

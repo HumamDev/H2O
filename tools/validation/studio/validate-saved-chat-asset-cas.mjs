@@ -394,7 +394,7 @@ async function main() {
     assert.equal(d.gcEnabled, false);
     assert.equal(d.removeRenameExposed, false);
     assert.equal(d.durableWrites, true);
-    assert.equal(d.trustsPathExistence, false);
+    assert.equal(d.putTrustsPathExistence, false);
     assert.ok(d.writeCount >= 1 && d.dedupeCount >= 1);
     assert.ok(d.verifyCount >= 1, 'puts must verify bytes');
     assert.equal(d.repairCount, 0, 'the healthy path must not report repairs');

@@ -382,7 +382,9 @@
       gcEnabled: false,
       removeRenameExposed: false,
       durableWrites: true,
-      trustsPathExistence: false,
+      /* Scoped deliberately to the put path. exists()/describe() remain
+       * existence-only probes by design and prove nothing about bytes. */
+      putTrustsPathExistence: false,
       putCount: state.putCount,
       writeCount: state.writeCount,
       dedupeCount: state.dedupeCount,

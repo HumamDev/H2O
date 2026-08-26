@@ -14,10 +14,18 @@
 // authority: the only unlink that can ever happen is of this module's own
 // private temporary artifact on a failed write.
 //
-// Because a custom command bypasses the `plugin:fs` scope entirely, the
-// containment check in `resolve_destination` IS the security boundary for this
-// path — it replaces what `capabilities/archive-cas.json` enforces for the
-// plugin. Every destination is admitted only under $APPLOCALDATA/archive.
+// A custom command bypasses the `plugin:fs` scope entirely, so this module
+// carries its own admission check in place of what `capabilities/archive-cas.json`
+// enforces for the plugin. That check is PATH-SYNTACTIC: it admits only relative,
+// normal-component destinations under $APPLOCALDATA/archive, which is exactly the
+// surface `fs:allow-write-file` already grants. It is not a filesystem-level
+// sandbox — the symlinked-ancestor check is a best-effort probe with a window
+// before create_dir_all, and the archive root itself is not verified to be a real
+// directory. An actor that can already create entries inside the archive root can
+// still redirect a write, exactly as it can today through `plugin:fs|write_file`,
+// which performs no symlink check at all. Closing that properly needs O_NOFOLLOW
+// directory-fd traversal and is a separate decision; this module deliberately does
+// not widen the existing surface, and does not claim to narrow it either.
 //
 // Ordering follows the established durable-write discipline (temp in the
 // destination directory -> write -> sync contents -> close -> atomic rename ->
@@ -254,8 +262,16 @@ fn temp_path_for(parent: &Path) -> PathBuf {
 ///
 /// Domain refusals (traversal, symlink, destination-exists) come back as
 /// `Ok(result)` with `ok: false` and a blocker code; only infrastructure
-/// faults return `Err`. On any failure the canonical destination is left
-/// exactly as it was and only this module's own temp artifact is removed.
+/// faults return `Err`. Any failure up to and including the promotion leaves
+/// the canonical destination exactly as it was, and removes only this module's
+/// own temp artifact.
+///
+/// The one exception is deliberate: if the parent-directory sync fails AFTER a
+/// successful rename, the new bytes are already committed and this still
+/// returns `Err`. The caller must therefore treat `Err` as "committed state
+/// unknown", not as "nothing happened". Content-addressed callers are immune —
+/// a re-put verifies whatever is on disk — which is why the failure is reported
+/// rather than swallowed.
 pub fn durable_write_within_root(
     root: &Path,
     relative: &str,
@@ -442,9 +458,13 @@ mod tests {
     #[test]
     fn writes_exact_bytes_and_leaves_no_temp_artifact() {
         let root = scratch_root("happy");
-        let result =
-            durable_write_within_root(&root, "assets/aa/sha256-abc", b"hello", ExistingPolicy::Fail)
-                .expect("write");
+        let result = durable_write_within_root(
+            &root,
+            "assets/aa/sha256-abc",
+            b"hello",
+            ExistingPolicy::Fail,
+        )
+        .expect("write");
 
         assert!(result.ok);
         assert!(result.wrote);
@@ -461,9 +481,13 @@ mod tests {
     #[test]
     fn creates_nested_directories() {
         let root = scratch_root("nested");
-        let result =
-            durable_write_within_root(&root, "packages/a.h2ochat/manifest.json", b"{}", ExistingPolicy::Fail)
-                .expect("write");
+        let result = durable_write_within_root(
+            &root,
+            "packages/a.h2ochat/manifest.json",
+            b"{}",
+            ExistingPolicy::Fail,
+        )
+        .expect("write");
         assert!(result.ok);
         assert!(root.join("packages/a.h2ochat/manifest.json").is_file());
         let _ = fs::remove_dir_all(&root);
@@ -481,10 +505,14 @@ mod tests {
             (".h2o-durable-1-0.tmp", "durable-write-path-reserved"),
         ];
         for (relative, expected) in cases {
-            let result =
-                durable_write_within_root(&root, relative, b"x", ExistingPolicy::Fail).expect("call");
+            let result = durable_write_within_root(&root, relative, b"x", ExistingPolicy::Fail)
+                .expect("call");
             assert!(!result.ok, "{relative} must be refused");
-            assert_eq!(blocker_codes(&result), vec![expected.to_string()], "{relative}");
+            assert_eq!(
+                blocker_codes(&result),
+                vec![expected.to_string()],
+                "{relative}"
+            );
         }
 
         let absolute = root.join("absolute.bin");
@@ -517,7 +545,10 @@ mod tests {
             durable_write_within_root(&root, &relative, b"x", ExistingPolicy::Fail).expect("call");
 
         assert!(!result.ok);
-        assert!(!sibling.exists(), "traversal must not create a file outside the root");
+        assert!(
+            !sibling.exists(),
+            "traversal must not create a file outside the root"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -620,13 +651,19 @@ mod tests {
         locked.set_mode(0o500);
         fs::set_permissions(&parent, locked).expect("lock");
 
-        let result =
-            durable_write_within_root(&root, "assets/aa/blob", b"replacement", ExistingPolicy::Replace);
+        let result = durable_write_within_root(
+            &root,
+            "assets/aa/blob",
+            b"replacement",
+            ExistingPolicy::Replace,
+        );
 
         fs::set_permissions(&parent, original).expect("unlock");
 
         assert!(result.is_err(), "staging failure must surface");
-        assert!(result.unwrap_err().starts_with("durable-write-temp-create-failed:"));
+        assert!(result
+            .unwrap_err()
+            .starts_with("durable-write-temp-create-failed:"));
         assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"canonical");
         assert!(temp_artifacts(&root).is_empty());
         let _ = fs::remove_dir_all(&root);
@@ -635,20 +672,23 @@ mod tests {
     #[test]
     fn zero_byte_writes_are_permitted_and_durable() {
         let root = scratch_root("empty");
-        let result =
-            durable_write_within_root(&root, "assets/aa/empty", b"", ExistingPolicy::Fail)
-                .expect("write");
+        let result = durable_write_within_root(&root, "assets/aa/empty", b"", ExistingPolicy::Fail)
+            .expect("write");
         assert!(result.ok);
         assert_eq!(result.byte_length, 0);
-        assert_eq!(fs::read(root.join("assets/aa/empty")).unwrap(), Vec::<u8>::new());
+        assert_eq!(
+            fs::read(root.join("assets/aa/empty")).unwrap(),
+            Vec::<u8>::new()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn contents_are_synced_and_the_parent_entry_is_synced_on_unix() {
         let root = scratch_root("sync");
-        let result = durable_write_within_root(&root, "assets/aa/sync", b"bytes", ExistingPolicy::Fail)
-            .expect("write");
+        let result =
+            durable_write_within_root(&root, "assets/aa/sync", b"bytes", ExistingPolicy::Fail)
+                .expect("write");
         assert!(result.ok);
         if cfg!(unix) {
             assert!(result.parent_synced, "unix must sync the parent directory");
