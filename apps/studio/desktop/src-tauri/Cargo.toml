@@ -30,6 +30,13 @@ reqwest = { version = "0.13.3", default-features = false, features = ["blocking"
 # Already pinned transitively via the sqlx/digest chain; promoting to a
 # direct dep so synthetic_cleanup_dryrun.rs can `use sha2::*` cleanly.
 sha2 = "0.10"
+# Archive durable write — macOS `F_FULLFSYNC` (plain fsync(2) does not flush
+# the drive cache on Darwin) and percent-decoding of the destination header,
+# mirroring `plugin:fs|write_file`'s marshaling. Both are already pinned
+# transitively via the tauri/libsqlite3-sys chain; promoting them to direct
+# deps so archive_durable_write.rs can `use` them cleanly.
+libc = "0.2"
+percent-encoding = "2"
 
 [profile.release]
 panic = "abort"

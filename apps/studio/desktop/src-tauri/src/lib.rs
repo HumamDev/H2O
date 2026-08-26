@@ -63,6 +63,11 @@ mod folder_metadata_apply_proof;
 #[cfg(debug_assertions)]
 pub mod f5h_final_validation_seed;
 
+// Saved-chat archive durable write. Bounded temp+fsync+rename promotion for
+// files under $APPLOCALDATA/archive only. Not a rename API: no source path is
+// accepted from the renderer and no delete authority is exposed.
+pub mod archive_durable_write;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
     TombstoneInsert,
@@ -2499,6 +2504,7 @@ macro_rules! h2o_studio_invoke_handler {
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
             apply_folder_metadata_color,
+            archive_durable_write::h2o_archive_durable_write,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2527,7 +2533,8 @@ macro_rules! h2o_studio_invoke_handler {
             ingest_conflict_candidates,
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
-            apply_folder_metadata_color
+            apply_folder_metadata_color,
+            archive_durable_write::h2o_archive_durable_write
         ]
     };
 }

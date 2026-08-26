@@ -1486,7 +1486,9 @@ dependencies = [
 name = "h2o-studio-desktop"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "libsqlite3-sys",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",
