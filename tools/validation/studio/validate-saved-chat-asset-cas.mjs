@@ -83,6 +83,37 @@ function createFsShim() {
       calls.push({ cmd, path: p, baseDir: opts.baseDir });
       return null;
     }
+    // Mirrors the app-owned durable writer (archive_durable_write.rs): the
+    // destination is ARCHIVE-ROOT-relative in a percent-encoded options header,
+    // bytes are the request body, and the promotion is atomic. Domain refusals
+    // come back as ok:false + blocker codes rather than throwing.
+    if (cmd === 'h2o_archive_durable_write') {
+      const headers = (b && b.headers) || {};
+      if (!headers.options) throw new Error('durable_write: missing options header');
+      let opts = {};
+      try { opts = JSON.parse(decodeURIComponent(headers.options)); }
+      catch (_) { throw new Error('durable_write: options header must be percent-encoded JSON'); }
+      const rel = String(opts.path || '');
+      if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) {
+        throw new Error('durable_write: destination must be a contained archive-relative path: ' + rel);
+      }
+      // The Rust root is $APPLOCALDATA/archive, so the AppLocalData-relative
+      // path the rest of the shim stores is the archive-root path plus that
+      // prefix. Recording it keeps the layout assertion meaningful.
+      const p = 'archive/' + rel;
+      let bytes = null;
+      if (a instanceof Uint8Array) bytes = Array.from(a);
+      else if (Array.isArray(a)) bytes = a.slice();
+      else if (a && a.buffer) bytes = Array.from(new Uint8Array(a.buffer, a.byteOffset || 0, a.byteLength));
+      if (!bytes) throw new Error('durable_write: body must be bytes (Uint8Array)');
+      calls.push({ cmd, path: p, baseDir: null, viaArchiveRoot: true });
+      if (files.has(p) && opts.existing !== 'replace') {
+        return { schema: 'h2o.studio.archive.durable-write.v1', ok: false, wrote: false, replaced: false, blockers: [{ code: 'durable-write-destination-exists' }] };
+      }
+      const replaced = files.has(p);
+      files.set(p, bytes); writes.push(p);
+      return { schema: 'h2o.studio.archive.durable-write.v1', ok: true, wrote: true, replaced, byteLength: bytes.length, fullFsync: true, parentSynced: true, blockers: [] };
+    }
     throw new Error('shim: unhandled invoke command: ' + cmd);
   };
 
@@ -131,7 +162,7 @@ async function main() {
 
   check('registers the required private Desktop API only (no remove/rename/gc)', () => {
     assert.ok(api, 'assetCas registered');
-    for (const m of ['putAssetBytes', 'getAssetBytes', 'exists', 'describe', 'diagnoseAssetCas']) {
+    for (const m of ['putAssetBytes', 'getAssetBytes', 'readVerifiedAssetBytes', 'exists', 'describe', 'diagnoseAssetCas']) {
       assert.equal(typeof api[m], 'function', `missing ${m}`);
     }
     for (const banned of ['remove', 'delete', 'rename', 'gc', 'collect', 'purge']) {
@@ -163,15 +194,26 @@ async function main() {
     assert.deepEqual([...got], [...helloBytes], 'roundtrip bytes differ');
   });
 
-  await checkAsync('write_file used the request body+headers form; legacy JSON object form is rejected', async () => {
-    // putAssetBytes above must have written via the body+headers form (the shim
-    // only accepts that form), so a write was recorded.
-    assert.ok(shim.writes.length >= 1, 'putAssetBytes must write via the body+headers form');
+  await checkAsync('blob bytes are committed through the durable writer, in the body+headers form', async () => {
+    // putAssetBytes above must have committed via the body+headers form (the
+    // shim only accepts that form), so a write was recorded.
+    assert.ok(shim.writes.length >= 1, 'putAssetBytes must commit via the body+headers form');
+    const durable = shim.calls.filter((c) => c.cmd === 'h2o_archive_durable_write');
+    assert.ok(durable.length >= 1, 'the first write must go through h2o_archive_durable_write');
+    assert.ok(
+      shim.calls.every((c) => c.cmd !== 'plugin:fs|write_file'),
+      'the CAS must not commit blobs through the non-durable plugin write',
+    );
     // Regression guard for the real "missing file path" failure: the legacy
-    // JSON object form must be rejected exactly like the real plugin.
+    // JSON object form must still be rejected exactly like the real plugin.
     await assert.rejects(
       () => shim.invoke('plugin:fs|write_file', { path: 'archive/assets/aa/sha256-x', contents: [1, 2, 3], options: { baseDir: 15 } }),
       /missing file path/i,
+    );
+    // The durable command likewise refuses a body without an options header.
+    await assert.rejects(
+      () => shim.invoke('h2o_archive_durable_write', new Uint8Array([1]), {}),
+      /missing options header/i,
     );
   });
 
@@ -209,18 +251,136 @@ async function main() {
     assert.equal(d.byteLength, helloBytes.length);
   });
 
-  check('all fs calls use baseDir 15 and the archive/assets layout; none touch the sync folder', () => {
+  check('every call stays in the archive/assets layout; none touch the sync folder', () => {
     assert.ok(shim.calls.length > 0);
     for (const c of shim.calls) {
-      assert.equal(c.baseDir, 15, `fs call ${c.cmd} did not use baseDir 15`);
+      if (c.viaArchiveRoot) {
+        // The durable writer is admitted by its own archive root rather than a
+        // baseDir, so it carries no baseDir by design.
+        assert.equal(c.baseDir, null, `${c.cmd} must be root-admitted, not baseDir-scoped`);
+      } else {
+        assert.equal(c.baseDir, 15, `fs call ${c.cmd} did not use baseDir 15`);
+      }
       assert.doesNotMatch(String(c.path || ''), /H2O Studio Sync/, 'must not touch the sync folder');
       assert.match(String(c.path || ''), /^archive\/assets(\/|$)/, `unexpected path: ${c.path}`);
     }
   });
 
-  check('only exists/mkdir/write_file/read_file commands were invoked (no remove/rename/gc)', () => {
+  check('only exists/mkdir/read_file plus the durable writer were invoked (no remove/rename/gc)', () => {
     const cmds = [...new Set(shim.calls.map((c) => c.cmd))].sort();
-    assert.deepEqual(cmds, ['plugin:fs|exists', 'plugin:fs|mkdir', 'plugin:fs|read_file', 'plugin:fs|write_file']);
+    assert.deepEqual(cmds, ['h2o_archive_durable_write', 'plugin:fs|exists', 'plugin:fs|mkdir', 'plugin:fs|read_file']);
+  });
+
+  // ── Integrity: a hash-addressed path is trusted only after its bytes prove
+  // it. Each case uses a fresh module instance so counters are unambiguous.
+  await checkAsync('a truncated object at the destination is repaired, not reported as dedupe', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('truncation victim');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    cas.shim.files.set(p, Array.from(bytes).slice(0, 3)); // torn write
+
+    const put = await cas.api.putAssetBytes({ bytes });
+    assert.equal(put.deduped, false, 'a truncated object must not dedupe');
+    assert.equal(put.repaired, true, 'repair must be reported on the descriptor');
+    assert.equal(put.wrote, true);
+    assert.deepEqual(cas.shim.files.get(p), Array.from(bytes), 'destination must hold the correct bytes');
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.repairCount, 1);
+    assert.equal(d.mismatchCount, 1);
+    assert.equal(d.dedupeCount, 0);
+  });
+
+  await checkAsync('wrong bytes standing at the hash-derived path are repaired', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('authentic content');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    cas.shim.files.set(p, Array.from(new TextEncoder().encode('planted content of equal-ish size')));
+
+    const put = await cas.api.putAssetBytes({ bytes });
+    assert.equal(put.repaired, true);
+    assert.equal(put.verified, true);
+    assert.deepEqual(cas.shim.files.get(p), Array.from(bytes));
+    assert.equal(cas.api.diagnoseAssetCas().repairCount, 1);
+  });
+
+  await checkAsync('a valid existing object still dedupes without any write', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('already correct');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    cas.shim.files.set(p, Array.from(bytes));
+
+    const put = await cas.api.putAssetBytes({ bytes });
+    assert.equal(put.deduped, true);
+    assert.equal(put.wrote, false);
+    assert.equal(put.repaired, false);
+    assert.equal(cas.shim.writes.length, 0, 'a verified dedupe must not write');
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.repairCount, 0);
+    assert.equal(d.dedupeCount, 1);
+  });
+
+  await checkAsync('a lost write race verifies the winner: valid winner dedupes, invalid winner is repaired', async () => {
+    // Winner is valid: the durable write returns destination-exists and the
+    // module must verify rather than assume.
+    const good = loadCas();
+    const bytes = new TextEncoder().encode('race payload');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    const realGoodInvoke = good.shim.invoke;
+    good.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'plugin:fs|exists') { const r = await realGoodInvoke(cmd, a, b); if (!r) good.shim.files.set(p, Array.from(bytes)); return r; }
+      return realGoodInvoke(cmd, a, b);
+    };
+    const dedupedPut = await good.api.putAssetBytes({ bytes });
+    assert.equal(dedupedPut.deduped, true, 'a valid race winner must dedupe');
+    assert.equal(dedupedPut.repaired, false);
+
+    // Winner is corrupt: the same lost race must repair instead of trusting it.
+    const bad = loadCas();
+    const realBadInvoke = bad.shim.invoke;
+    bad.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'plugin:fs|exists') { const r = await realBadInvoke(cmd, a, b); if (!r) bad.shim.files.set(p, [1, 2, 3]); return r; }
+      return realBadInvoke(cmd, a, b);
+    };
+    const repairedPut = await bad.api.putAssetBytes({ bytes });
+    assert.equal(repairedPut.repaired, true, 'a corrupt race winner must be repaired');
+    assert.deepEqual(bad.shim.files.get(p), Array.from(bytes));
+  });
+
+  await checkAsync('a refused durable write surfaces instead of reporting success', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('refused payload');
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'h2o_archive_durable_write') {
+        return { ok: false, wrote: false, blockers: [{ code: 'durable-write-parent-symlink' }] };
+      }
+      return realInvoke(cmd, a, b);
+    };
+    await assert.rejects(() => cas.api.putAssetBytes({ bytes }), /durable write refused/i);
+    assert.equal(cas.shim.writes.length, 0, 'a refused write must not mutate the store');
+  });
+
+  await checkAsync('readVerifiedAssetBytes returns verified bytes, null when absent, and throws on corruption', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('verified read');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    await cas.api.putAssetBytes({ bytes });
+
+    const got = await cas.api.readVerifiedAssetBytes('sha256-' + hex);
+    assert.deepEqual([...got], [...bytes]);
+    assert.equal(await cas.api.readVerifiedAssetBytes('sha256-' + 'a'.repeat(64)), null, 'absent must read as null');
+
+    cas.shim.files.set(p, [9, 9, 9]); // corrupt underneath the reader
+    await assert.rejects(
+      () => cas.api.readVerifiedAssetBytes('sha256-' + hex),
+      /failed verification/i,
+      'a corrupt object must never read as a missing one',
+    );
   });
 
   check('diagnoseAssetCas reports sane status', () => {
@@ -233,7 +393,11 @@ async function main() {
     assert.equal(d.mutatesDb, false);
     assert.equal(d.gcEnabled, false);
     assert.equal(d.removeRenameExposed, false);
+    assert.equal(d.durableWrites, true);
+    assert.equal(d.trustsPathExistence, false);
     assert.ok(d.writeCount >= 1 && d.dedupeCount >= 1);
+    assert.ok(d.verifyCount >= 1, 'puts must verify bytes');
+    assert.equal(d.repairCount, 0, 'the healthy path must not report repairs');
   });
 
   console.log('');
