@@ -83,16 +83,14 @@ function createFsShim() {
       calls.push({ cmd, path: p, baseDir: opts.baseDir });
       return null;
     }
-    // Mirrors the app-owned durable writer (archive_durable_write.rs): the
-    // destination is ARCHIVE-ROOT-relative in a percent-encoded options header,
-    // bytes are the request body, and the promotion is atomic. Domain refusals
-    // come back as ok:false + blocker codes rather than throwing.
+    // Mirrors the app-owned durable writer (archive_durable_write.rs). It is
+    // CREATE-ONLY: there is no replacement parameter, and an occupied
+    // destination is refused with a blocker code rather than throwing.
     if (cmd === 'h2o_archive_durable_write') {
-      const headers = (b && b.headers) || {};
-      if (!headers.options) throw new Error('durable_write: missing options header');
-      let opts = {};
-      try { opts = JSON.parse(decodeURIComponent(headers.options)); }
-      catch (_) { throw new Error('durable_write: options header must be percent-encoded JSON'); }
+      const opts = readOptions(b, 'durable_write');
+      if ('existing' in opts) {
+        throw new Error('durable_write: the create-only command must not carry a replacement policy');
+      }
       const rel = String(opts.path || '');
       if (!rel || rel.startsWith('/') || rel.split('/').includes('..')) {
         throw new Error('durable_write: destination must be a contained archive-relative path: ' + rel);
@@ -101,21 +99,65 @@ function createFsShim() {
       // path the rest of the shim stores is the archive-root path plus that
       // prefix. Recording it keeps the layout assertion meaningful.
       const p = 'archive/' + rel;
-      let bytes = null;
-      if (a instanceof Uint8Array) bytes = Array.from(a);
-      else if (Array.isArray(a)) bytes = a.slice();
-      else if (a && a.buffer) bytes = Array.from(new Uint8Array(a.buffer, a.byteOffset || 0, a.byteLength));
-      if (!bytes) throw new Error('durable_write: body must be bytes (Uint8Array)');
+      const bytes = readBody(a, 'durable_write');
       calls.push({ cmd, path: p, baseDir: null, viaArchiveRoot: true });
-      if (files.has(p) && opts.existing !== 'replace') {
-        return { schema: 'h2o.studio.archive.durable-write.v1', ok: false, wrote: false, replaced: false, blockers: [{ code: 'durable-write-destination-exists' }] };
+      if (files.has(p)) {
+        return { schema: 'h2o.studio.archive.durable-write.v1', ok: false, committed: false, durabilityComplete: false, replaced: false, blockers: [{ code: 'durable-write-destination-exists' }] };
       }
-      const replaced = files.has(p);
       files.set(p, bytes); writes.push(p);
-      return { schema: 'h2o.studio.archive.durable-write.v1', ok: true, wrote: true, replaced, byteLength: bytes.length, fullFsync: true, parentSynced: true, blockers: [] };
+      return { schema: 'h2o.studio.archive.durable-write.v1', ok: true, committed: true, durabilityComplete: true, replaced: false, byteLength: bytes.length, fullFsync: true, blockers: [] };
+    }
+    // Mirrors h2o_archive_cas_repair_write: BYTES ONLY. The destination is
+    // derived here from a hash computed over the body, exactly as the trusted
+    // Rust side does — the caller supplies no path, shard or basename.
+    if (cmd === 'h2o_archive_cas_repair_write') {
+      const opts = readOptions(b, 'cas_repair', /* required */ false);
+      for (const forbidden of ['path', 'destination', 'shard', 'basename']) {
+        if (forbidden in opts) {
+          throw new Error(`cas_repair: caller must not be able to name a destination (${forbidden})`);
+        }
+      }
+      const bytes = readBody(a, 'cas_repair');
+      const hex = sha256HexNode(Uint8Array.from(bytes));
+      if (opts.expectedSha256 != null && String(opts.expectedSha256) !== '') {
+        const asserted = String(opts.expectedSha256).toLowerCase().replace(/^sha256-/, '');
+        if (!/^[0-9a-f]{64}$/.test(asserted)) {
+          return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: false, blockers: [{ code: 'cas-repair-expected-sha-malformed' }] };
+        }
+        if (asserted !== hex) {
+          return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: false, blockers: [{ code: 'cas-repair-expected-sha-mismatch' }] };
+        }
+      }
+      const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+      calls.push({ cmd, path: p, baseDir: null, viaArchiveRoot: true });
+      const existing = files.get(p);
+      const alreadyValid = !!existing && existing.length === bytes.length
+        && sha256HexNode(Uint8Array.from(existing)) === hex;
+      if (alreadyValid) {
+        return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: true, alreadyValid: true, repaired: false, committed: false, durabilityComplete: false, sha256: 'sha256-' + hex, path: p.slice('archive/'.length), byteLength: bytes.length, blockers: [] };
+      }
+      files.set(p, bytes); writes.push(p);
+      return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: true, alreadyValid: false, repaired: !!existing, committed: true, durabilityComplete: true, sha256: 'sha256-' + hex, path: p.slice('archive/'.length), byteLength: bytes.length, fullFsync: true, blockers: [] };
     }
     throw new Error('shim: unhandled invoke command: ' + cmd);
   };
+
+  function readOptions(b, label, required = true) {
+    const headers = (b && b.headers) || {};
+    if (!headers.options) {
+      if (required) throw new Error(`${label}: missing options header`);
+      return {};
+    }
+    try { return JSON.parse(decodeURIComponent(headers.options)); }
+    catch (_) { throw new Error(`${label}: options header must be percent-encoded JSON`); }
+  }
+
+  function readBody(a, label) {
+    if (a instanceof Uint8Array) return Array.from(a);
+    if (Array.isArray(a)) return a.slice();
+    if (a && a.buffer) return Array.from(new Uint8Array(a.buffer, a.byteOffset || 0, a.byteLength));
+    throw new Error(`${label}: body must be bytes (Uint8Array)`);
+  }
 
   return { invoke, files, dirs, calls, writes };
 }
@@ -380,6 +422,63 @@ async function main() {
       () => cas.api.readVerifiedAssetBytes('sha256-' + hex),
       /failed verification/i,
       'a corrupt object must never read as a missing one',
+    );
+  });
+
+  // ── Replacement authority is CAS-scoped (T06) ────────────────────────────
+  await checkAsync('the create-only write carries no replacement policy and repair carries no destination', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('authority probe');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+
+    await cas.api.putAssetBytes({ bytes });
+    const writeCalls = cas.shim.calls.filter((c) => c.cmd === 'h2o_archive_durable_write');
+    assert.ok(writeCalls.length >= 1, 'the first write must use the create-only command');
+
+    // Force a repair so the repair command is exercised.
+    cas.shim.files.set(p, [0, 1, 2]);
+    const repaired = await cas.api.putAssetBytes({ bytes });
+    assert.equal(repaired.repaired, true);
+    const repairCalls = cas.shim.calls.filter((c) => c.cmd === 'h2o_archive_cas_repair_write');
+    assert.equal(repairCalls.length, 1, 'repair must go through the CAS-scoped command');
+    // The shim throws if either command is sent a forbidden field, so reaching
+    // here already proves no `existing` policy and no destination were sent.
+    assert.equal(repairCalls[0].path, p, 'the repair destination is derived, not supplied');
+  });
+
+  check('the module never sends a destination or a replacement policy to the trusted side', () => {
+    const src = readRepo(MODULE_REL);
+    // The repair call site must pass bytes + an assertion only.
+    assert.match(src, /casRepairWrite\(u8,\s*descriptor\.sha256\)/, 'repair must send bytes + hash assertion only');
+    assert.doesNotMatch(src, /CAS_REPAIR_COMMAND[\s\S]{0,400}?path:/, 'the repair options must not carry a path');
+    assert.doesNotMatch(src, /existing:\s*['"]replace['"]/, 'no caller-selected replacement policy may remain');
+    assert.doesNotMatch(src, /durableWrite\([^)]*,\s*['"](fail|replace)['"]\s*\)/, 'the create-only writer takes no policy argument');
+  });
+
+  await checkAsync('a committed-but-unfenced write is not rewritten', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('durability incomplete');
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      const out = await realInvoke(cmd, a, b);
+      // The bytes really are committed; only the directory fence failed.
+      if (cmd === 'h2o_archive_durable_write' && out && out.committed) {
+        return Object.assign({}, out, {
+          ok: false,
+          durabilityComplete: false,
+          blockers: [{ code: 'durable-write-parent-sync-failed' }],
+        });
+      }
+      return out;
+    };
+    const put = await cas.api.putAssetBytes({ bytes });
+    assert.equal(put.wrote, true, 'a committed write must be reported as written');
+    assert.equal(put.durabilityComplete, false, 'incomplete durability must be surfaced');
+    assert.equal(
+      cas.shim.writes.length,
+      1,
+      'the caller must not write a second time because the fence failed',
     );
   });
 

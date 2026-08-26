@@ -52,6 +52,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const DURABLE_WRITE_SCHEMA: &str = "h2o.studio.archive.durable-write.v1";
+pub const CAS_REPAIR_SCHEMA: &str = "h2o.studio.archive.cas-repair-write.v1";
 
 /// Every admitted destination lives under `$APPLOCALDATA/<ARCHIVE_ROOT>`.
 pub const ARCHIVE_ROOT: &str = "archive";
@@ -64,10 +65,20 @@ const TEMP_SUFFIX: &str = ".tmp";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The content-addressed store lives at `<ARCHIVE_ROOT>/<CAS_DIR>`.
+const CAS_DIR: &str = "assets";
+
+/// How many distinct private temp names to try before giving up.
+const TEMP_ATTEMPTS: u32 = 8;
+
 /// What to do when the canonical destination already exists.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ExistingPolicy {
+///
+/// PRIVATE ON PURPOSE. This is not `Deserialize` and no caller-supplied field
+/// maps to it: a renderer cannot ask for replacement of an arbitrary archive
+/// destination. `Replace` is reachable only from the CAS repair path below,
+/// which derives its own destination from bytes it hashed itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ExistingPolicy {
     /// Refuse the write and report `durable-write-destination-exists`.
     #[default]
     Fail,
@@ -82,9 +93,18 @@ pub enum ExistingPolicy {
 pub struct DurableWriteOptions {
     /// Destination relative to the archive root. Must be relative, must not
     /// escape the root, and must contain only normal path components.
+    /// There is deliberately no `existing` field — see `ExistingPolicy`.
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CasRepairOptions {
+    /// Optional caller assertion of the content hash. It can only ever cause a
+    /// REFUSAL: the destination is derived from the hash this module computes
+    /// itself, never from anything the caller supplies.
     #[serde(default)]
-    pub existing: ExistingPolicy,
+    pub expected_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -101,20 +121,39 @@ impl DurableWriteBlocker {
     }
 }
 
+/// Outcome of a durable write.
+///
+/// The atomic promotion is an irreversible boundary, so committed-ness and
+/// durability-completeness are reported SEPARATELY. A parent-directory sync
+/// that fails after a successful rename leaves the canonical destination
+/// already changed; returning a bare error there would tell the caller
+/// "nothing happened", which is false. The three honest states are:
+///
+///   committed:false                            — the destination is untouched
+///   committed:true, durabilityComplete:false   — the bytes are in place but the
+///                                                directory entry is not fenced
+///   committed:true, durabilityComplete:true    — fully durable
+///
+/// `ok` is true only for the last of those.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DurableWriteResult {
     pub schema: &'static str,
     pub ok: bool,
-    pub wrote: bool,
+    /// The atomic promotion succeeded: the canonical destination now holds the
+    /// new bytes. Never true unless the rename returned success.
+    pub committed: bool,
+    /// The parent directory entry was synced after the promotion.
+    pub durability_complete: bool,
     pub replaced: bool,
     pub byte_length: u64,
     /// True only when the file contents were flushed with macOS `F_FULLFSYNC`.
     /// False means the weaker `fsync(2)` guarantee — see `sync_file_contents`.
     pub full_fsync: bool,
-    /// True when the parent directory entry was itself synced.
-    pub parent_synced: bool,
     pub blockers: Vec<DurableWriteBlocker>,
+    /// Infrastructure detail accompanying an incomplete-durability commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 impl DurableWriteResult {
@@ -122,17 +161,66 @@ impl DurableWriteResult {
         Self {
             schema: DURABLE_WRITE_SCHEMA,
             ok: false,
-            wrote: false,
+            committed: false,
+            durability_complete: false,
             replaced: false,
             byte_length: 0,
             full_fsync: false,
-            parent_synced: false,
             blockers: vec![],
+            detail: None,
         }
     }
 
     pub fn blocked(code: &str) -> Self {
         let mut result = Self::skeleton();
+        result.blockers.push(DurableWriteBlocker::new(code));
+        result
+    }
+}
+
+/// Outcome of a CAS repair. The `sha256`/`path` fields are what this module
+/// DERIVED, not what any caller asked for — they exist so the caller can see
+/// where the trusted side decided the object belongs.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CasRepairResult {
+    pub schema: &'static str,
+    pub ok: bool,
+    pub sha256: String,
+    pub path: String,
+    /// The canonical object already held exactly these bytes; nothing written.
+    pub already_valid: bool,
+    /// A mismatching object was superseded by the verified bytes.
+    pub repaired: bool,
+    pub committed: bool,
+    pub durability_complete: bool,
+    pub byte_length: u64,
+    pub full_fsync: bool,
+    pub blockers: Vec<DurableWriteBlocker>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl CasRepairResult {
+    fn skeleton(sha256: String, path: String) -> Self {
+        Self {
+            schema: CAS_REPAIR_SCHEMA,
+            ok: false,
+            sha256,
+            path,
+            already_valid: false,
+            repaired: false,
+            committed: false,
+            durability_complete: false,
+            byte_length: 0,
+            full_fsync: false,
+            blockers: vec![],
+            detail: None,
+        }
+    }
+
+    fn blocked(code: &str) -> Self {
+        let mut result = Self::skeleton(String::new(), String::new());
         result.blockers.push(DurableWriteBlocker::new(code));
         result
     }
@@ -317,6 +405,23 @@ mod confined {
             Ok(unsafe { File::from_raw_fd(fd) })
         }
 
+        /// Opens a child file for reading without following a symlink. Used to
+        /// prove an existing CAS object really is corrupt before superseding it.
+        pub fn open_child_read_nofollow(&self, name: &[u8]) -> io::Result<File> {
+            let c = cstr(name)?;
+            let fd = unsafe {
+                libc::openat(
+                    self.0.as_raw_fd(),
+                    c.as_ptr(),
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+
         /// Renames within this same directory descriptor, so the promotion can
         /// never cross a filesystem or be redirected by a path swap.
         pub fn rename_within(&self, from: &[u8], to: &[u8]) -> io::Result<()> {
@@ -395,7 +500,62 @@ fn temp_name() -> Vec<u8> {
     format!("{TEMP_PREFIX}{}-{counter}{TEMP_SUFFIX}", std::process::id()).into_bytes()
 }
 
-/// Durably writes `bytes` to `relative` beneath `root`.
+/// Exclusively creates this operation's private staging file, retrying on a
+/// name collision with a fresh sequence value.
+///
+/// A single fixed name would wedge a destination permanently if a crash left a
+/// stale artifact behind (PIDs are reused and the counter restarts at zero).
+/// Only `AlreadyExists` is retried, and no artifact this operation did not
+/// create is ever removed — stale-temp reclamation is deliberately not done
+/// here.
+#[cfg(unix)]
+fn create_private_temp(dir: &confined::Dir) -> Result<(Vec<u8>, std::fs::File), String> {
+    create_private_temp_with(dir, temp_name)
+}
+
+/// `create_private_temp` with the name sequence injected, so the retry and
+/// exhaustion behaviour can be tested deterministically instead of racing the
+/// process-global counter.
+#[cfg(unix)]
+fn create_private_temp_with<F>(
+    dir: &confined::Dir,
+    mut next_name: F,
+) -> Result<(Vec<u8>, std::fs::File), String>
+where
+    F: FnMut() -> Vec<u8>,
+{
+    let mut last: Option<std::io::Error> = None;
+    for _ in 0..TEMP_ATTEMPTS {
+        let name = next_name();
+        match dir.create_new_child(&name) {
+            Ok(file) => return Ok((name, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last = Some(err),
+            Err(err) => return Err(format!("durable-write-temp-create-failed:{err}")),
+        }
+    }
+    Err(format!(
+        "durable-write-temp-name-exhausted:{}",
+        last.map(|e| e.to_string())
+            .unwrap_or_else(|| "collision".to_string())
+    ))
+}
+
+/// Durably CREATES `relative` beneath `root`. Never replaces.
+///
+/// This is the only write surface reachable from the renderer, and it is
+/// create-only: an existing destination is refused with
+/// `durable-write-destination-exists`. Replacement authority lives solely in
+/// `cas_repair_write_within_root`, which derives its own destination.
+#[cfg(unix)]
+pub fn durable_write_within_root(
+    root: &Path,
+    relative: &str,
+    bytes: &[u8],
+) -> Result<DurableWriteResult, String> {
+    durable_write_impl(root, relative, bytes, ExistingPolicy::Fail)
+}
+
+/// Durably writes `bytes` to `relative` beneath `root` under `existing`.
 ///
 /// Domain refusals (traversal, symlink, destination-exists) come back as
 /// `Ok(result)` with `ok: false` and a blocker code; only infrastructure
@@ -403,19 +563,36 @@ fn temp_name() -> Vec<u8> {
 /// the canonical destination exactly as it was, and removes only this
 /// operation's own temp artifact.
 ///
-/// The one exception is deliberate: if the parent-directory sync fails AFTER a
-/// successful rename, the new bytes are already committed and this still
-/// returns `Err`. The caller must therefore treat `Err` as "committed state
-/// unknown", not as "nothing happened". Content-addressed callers are immune —
-/// a re-put verifies whatever is on disk — which is why the failure is reported
-/// rather than swallowed.
+/// After a successful promotion the destination HAS changed, so a failing
+/// parent-directory sync does not become an error: it returns
+/// `committed: true, durability_complete: false` with the detail attached, so
+/// the caller can never read it as "nothing happened".
 #[cfg(unix)]
-pub fn durable_write_within_root(
+fn durable_write_impl(
     root: &Path,
     relative: &str,
     bytes: &[u8],
     existing: ExistingPolicy,
 ) -> Result<DurableWriteResult, String> {
+    durable_write_impl_with(root, relative, bytes, existing, |dir| dir.sync())
+}
+
+/// `durable_write_impl` with the post-promotion directory sync injected.
+///
+/// The seam exists so the committed-but-unfenced branch can be exercised by a
+/// test; a real `fsync` on a directory descriptor cannot be made to fail on
+/// demand. Production always passes the real sync.
+#[cfg(unix)]
+fn durable_write_impl_with<F>(
+    root: &Path,
+    relative: &str,
+    bytes: &[u8],
+    existing: ExistingPolicy,
+    sync_dir: F,
+) -> Result<DurableWriteResult, String>
+where
+    F: Fn(&confined::Dir) -> std::io::Result<()>,
+{
     use confined::Dir;
 
     let components = match validated_components(relative) {
@@ -476,10 +653,7 @@ pub fn durable_write_within_root(
 
     // Stage inside the destination directory descriptor so the promotion is a
     // same-directory rename and can never degrade into a copy.
-    let temp = temp_name();
-    let mut handle = dir
-        .create_new_child(&temp)
-        .map_err(|err| format!("durable-write-temp-create-failed:{err}"))?;
+    let (temp, mut handle) = create_private_temp(&dir)?;
 
     use std::io::Write;
     let full_fsync = match handle
@@ -501,19 +675,32 @@ pub fn durable_write_within_root(
         return Err(format!("durable-write-promote-failed:{err}"));
     }
 
-    dir.sync()
-        .map_err(|err| format!("durable-write-parent-sync-failed:{err}"))?;
-
-    Ok(DurableWriteResult {
+    // Past this point the destination HAS changed. A sync failure is reported
+    // as an incomplete-durability commit, never as "nothing happened".
+    let mut result = DurableWriteResult {
         schema: DURABLE_WRITE_SCHEMA,
-        ok: true,
-        wrote: true,
+        ok: false,
+        committed: true,
+        durability_complete: false,
         replaced,
         byte_length: bytes.len() as u64,
         full_fsync,
-        parent_synced: true,
         blockers: vec![],
-    })
+        detail: None,
+    };
+    match sync_dir(&dir) {
+        Ok(()) => {
+            result.ok = true;
+            result.durability_complete = true;
+        }
+        Err(err) => {
+            result
+                .blockers
+                .push(DurableWriteBlocker::new("durable-write-parent-sync-failed"));
+            result.detail = Some(err.to_string());
+        }
+    }
+    Ok(result)
 }
 
 /// Non-Unix targets have no proven handle-safe traversal here, so the primitive
@@ -523,9 +710,170 @@ pub fn durable_write_within_root(
     _root: &Path,
     _relative: &str,
     _bytes: &[u8],
-    _existing: ExistingPolicy,
 ) -> Result<DurableWriteResult, String> {
     Ok(DurableWriteResult::blocked(
+        "durable-write-unsupported-platform",
+    ))
+}
+
+/// Lowercase hex SHA-256 of `bytes`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(64);
+    for byte in digest.iter() {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Normalizes a caller-asserted content hash to bare lowercase hex.
+///
+/// Accepts `sha256-<64 hex>` or a bare `<64 hex>`, both lowercase-normalized.
+/// Anything else is rejected — this value is never used to build a path, only
+/// to refuse a mismatch.
+fn normalize_expected_sha(input: &str) -> Option<String> {
+    let trimmed = input.trim().to_ascii_lowercase();
+    let hex = trimmed.strip_prefix("sha256-").unwrap_or(&trimmed);
+    if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(hex.to_string())
+    } else {
+        None
+    }
+}
+
+/// Reads at most `limit + 1` bytes from a child file, so a wrong object cannot
+/// force an unbounded allocation. Returns `None` when the child is absent.
+#[cfg(unix)]
+fn read_child_bounded(
+    dir: &confined::Dir,
+    name: &[u8],
+    limit: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+
+    let mut file = match dir.open_child_read_nofollow(name) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // A symlink standing at the destination refuses O_NOFOLLOW with ELOOP.
+        Err(err) => return Err(format!("cas-repair-existing-open-failed:{err}")),
+    };
+    let mut buf = Vec::with_capacity(limit.min(1 << 20) + 1);
+    file.by_ref()
+        .take(limit as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|err| format!("cas-repair-existing-read-failed:{err}"))?;
+    Ok(Some(buf))
+}
+
+/// Repairs the content-addressed object for `bytes`.
+///
+/// THE CALLER SUPPLIES NO DESTINATION. This module hashes `bytes` itself and
+/// derives `assets/<aa>/sha256-<hex>` from its own digest, so a caller cannot
+/// redirect the write to another hash, another shard, a package member, a
+/// manifest, a snapshot, or any other archive path. `expected_sha256`, when
+/// present, can only cause a refusal.
+///
+/// Replacement happens only when an object is already standing at that exact
+/// derived path AND is proven not to be the content its own name claims.
+#[cfg(unix)]
+pub fn cas_repair_write_within_root(
+    root: &Path,
+    bytes: &[u8],
+    expected_sha256: Option<&str>,
+) -> Result<CasRepairResult, String> {
+    use confined::Dir;
+
+    let hex = sha256_hex(bytes);
+
+    if let Some(asserted) = expected_sha256 {
+        match normalize_expected_sha(asserted) {
+            None => {
+                return Ok(CasRepairResult::blocked(
+                    "cas-repair-expected-sha-malformed",
+                ))
+            }
+            // The bytes are the authority; a mismatching assertion is refused
+            // rather than honoured.
+            Some(normalized) if normalized != hex => {
+                return Ok(CasRepairResult::blocked("cas-repair-expected-sha-mismatch"))
+            }
+            Some(_) => {}
+        }
+    }
+
+    let shard = &hex[0..2];
+    let basename = format!("sha256-{hex}");
+    let relative = format!("{CAS_DIR}/{shard}/{basename}");
+    let mut result = CasRepairResult::skeleton(basename.clone(), relative.clone());
+
+    // Walk to the shard directory through admitted descriptors only.
+    let mut dir =
+        Dir::open_root(root).map_err(|err| format!("cas-repair-root-open-failed:{err}"))?;
+    for name in [CAS_DIR.as_bytes(), shard.as_bytes()] {
+        dir.mkdir_child(name)
+            .map_err(|err| format!("cas-repair-shard-create-failed:{err}"))?;
+        dir = match dir.open_child_nofollow(name) {
+            Ok(next) => next,
+            Err(err) => {
+                return match err.raw_os_error() {
+                    Some(libc::ELOOP) | Some(libc::ENOTDIR) => {
+                        Ok(CasRepairResult::blocked("cas-repair-shard-symlink"))
+                    }
+                    _ => Err(format!("cas-repair-shard-open-failed:{err}")),
+                }
+            }
+        };
+    }
+
+    let basename_bytes = basename.as_bytes();
+    match read_child_bounded(&dir, basename_bytes, bytes.len())? {
+        None => {
+            // Nothing to repair. Create it, but never silently "repair" an
+            // absent object into existence without saying so.
+            let write = durable_write_impl(root, &relative, bytes, ExistingPolicy::Fail)?;
+            result.committed = write.committed;
+            result.durability_complete = write.durability_complete;
+            result.byte_length = write.byte_length;
+            result.full_fsync = write.full_fsync;
+            result.blockers = write.blockers;
+            result.detail = write.detail;
+            result.ok = write.ok;
+            return Ok(result);
+        }
+        Some(existing) if existing.len() == bytes.len() && sha256_hex(&existing) == hex => {
+            // The canonical object is already exactly right; touch nothing.
+            result.ok = true;
+            result.already_valid = true;
+            result.byte_length = bytes.len() as u64;
+            return Ok(result);
+        }
+        Some(_) => {}
+    }
+
+    // Proven mismatching: supersede it with the bytes this module hashed.
+    let write = durable_write_impl(root, &relative, bytes, ExistingPolicy::Replace)?;
+    result.committed = write.committed;
+    result.durability_complete = write.durability_complete;
+    result.repaired = write.committed;
+    result.byte_length = write.byte_length;
+    result.full_fsync = write.full_fsync;
+    result.blockers = write.blockers;
+    result.detail = write.detail;
+    result.ok = write.ok;
+    Ok(result)
+}
+
+#[cfg(not(unix))]
+pub fn cas_repair_write_within_root(
+    _root: &Path,
+    _bytes: &[u8],
+    _expected_sha256: Option<&str>,
+) -> Result<CasRepairResult, String> {
+    Ok(CasRepairResult::blocked(
         "durable-write-unsupported-platform",
     ))
 }
@@ -543,28 +891,12 @@ fn archive_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base.join(ARCHIVE_ROOT))
 }
 
-/// Durable archive write.
-///
-/// Bytes travel as the raw invoke body and the destination travels as a
-/// percent-encoded header, mirroring `plugin:fs|write_file`'s marshaling so a
-/// multi-megabyte asset is not expanded into a JSON number array.
-#[tauri::command]
-pub async fn h2o_archive_durable_write(
-    app: tauri::AppHandle,
-    request: tauri::ipc::Request<'_>,
-) -> Result<DurableWriteResult, String> {
-    let raw_options = request
-        .headers()
-        .get("options")
-        .ok_or_else(|| "durable-write-options-missing".to_string())?;
-    let decoded = percent_encoding::percent_decode(raw_options.as_ref())
-        .decode_utf8()
-        .map_err(|_| "durable-write-options-not-utf8".to_string())?;
-    let options: DurableWriteOptions = serde_json::from_str(&decoded)
-        .map_err(|err| format!("durable-write-options-invalid:{err}"))?;
-
-    let bytes: Vec<u8> = match request.body() {
-        tauri::ipc::InvokeBody::Raw(data) => data.clone(),
+/// Extracts the raw invoke body as bytes, mirroring `plugin:fs|write_file`'s
+/// marshaling so a multi-megabyte asset is not expanded into a JSON number
+/// array.
+fn body_bytes(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(data) => Ok(data.clone()),
         tauri::ipc::InvokeBody::Json(serde_json::Value::Array(data)) => data
             .iter()
             .map(|value| {
@@ -574,12 +906,70 @@ pub async fn h2o_archive_durable_write(
                     .map(|byte| byte as u8)
                     .ok_or_else(|| "durable-write-body-not-bytes".to_string())
             })
-            .collect::<Result<Vec<u8>, String>>()?,
-        _ => return Err("durable-write-body-unexpected".to_string()),
-    };
+            .collect::<Result<Vec<u8>, String>>(),
+        _ => Err("durable-write-body-unexpected".to_string()),
+    }
+}
 
+/// Reads and parses the percent-encoded JSON `options` request header.
+fn parse_options_header<T: serde::de::DeserializeOwned>(raw: &[u8]) -> Result<T, String> {
+    let decoded = percent_encoding::percent_decode(raw)
+        .decode_utf8()
+        .map_err(|_| "durable-write-options-not-utf8".to_string())?;
+    serde_json::from_str(&decoded).map_err(|err| format!("durable-write-options-invalid:{err}"))
+}
+
+/// Required `options` header.
+fn required_options<T: serde::de::DeserializeOwned>(
+    request: &tauri::ipc::Request<'_>,
+) -> Result<T, String> {
+    let raw = request
+        .headers()
+        .get("options")
+        .ok_or_else(|| "durable-write-options-missing".to_string())?;
+    parse_options_header(raw.as_ref())
+}
+
+/// Optional `options` header; an absent header yields the default.
+fn optional_options<T: serde::de::DeserializeOwned + Default>(
+    request: &tauri::ipc::Request<'_>,
+) -> Result<T, String> {
+    match request.headers().get("options") {
+        Some(raw) => parse_options_header(raw.as_ref()),
+        None => Ok(T::default()),
+    }
+}
+
+/// Durable archive write. CREATE-ONLY.
+///
+/// There is deliberately no way for a caller to request replacement of an
+/// existing archive member here; an occupied destination is refused.
+#[tauri::command]
+pub async fn h2o_archive_durable_write(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<DurableWriteResult, String> {
+    let options: DurableWriteOptions = required_options(&request)?;
+    let bytes = body_bytes(&request)?;
     let root = archive_root(&app)?;
-    durable_write_within_root(&root, &options.path, &bytes, options.existing)
+    durable_write_within_root(&root, &options.path, &bytes)
+}
+
+/// Content-addressed repair write.
+///
+/// Takes BYTES ONLY. The destination is derived inside this command from the
+/// SHA-256 this command computes over those bytes, so the renderer has no way
+/// to name, redirect or influence which file is written. The optional
+/// `expectedSha256` header is a caller assertion that can only cause a refusal.
+#[tauri::command]
+pub async fn h2o_archive_cas_repair_write(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<CasRepairResult, String> {
+    let options: CasRepairOptions = optional_options(&request)?;
+    let bytes = body_bytes(&request)?;
+    let root = archive_root(&app)?;
+    cas_repair_write_within_root(&root, &bytes, options.expected_sha256.as_deref())
 }
 
 #[cfg(test)]
@@ -607,8 +997,17 @@ mod tests {
         (base, root)
     }
 
-    fn blocker_codes(result: &DurableWriteResult) -> Vec<String> {
-        result.blockers.iter().map(|b| b.code.clone()).collect()
+    fn blocker_codes<T: AsRef<[DurableWriteBlocker]>>(blockers: T) -> Vec<String> {
+        blockers.as_ref().iter().map(|b| b.code.clone()).collect()
+    }
+
+    fn sha_hex(bytes: &[u8]) -> String {
+        sha256_hex(bytes)
+    }
+
+    fn cas_relative(bytes: &[u8]) -> String {
+        let hex = sha_hex(bytes);
+        format!("{CAS_DIR}/{}/sha256-{hex}", &hex[0..2])
     }
 
     /// Any file under `dir` whose name carries the staging prefix.
@@ -631,19 +1030,17 @@ mod tests {
         found
     }
 
+    // ── Create-only durable write ──────────────────────────────────────────
+
     #[test]
     fn writes_exact_bytes_and_leaves_no_temp_artifact() {
         let (base, root) = scratch_root("happy");
-        let result = durable_write_within_root(
-            &root,
-            "assets/aa/sha256-abc",
-            b"hello",
-            ExistingPolicy::Fail,
-        )
-        .expect("write");
+        let result =
+            durable_write_within_root(&root, "assets/aa/sha256-abc", b"hello").expect("write");
 
         assert!(result.ok);
-        assert!(result.wrote);
+        assert!(result.committed);
+        assert!(result.durability_complete);
         assert!(!result.replaced);
         assert_eq!(result.byte_length, 5);
         assert_eq!(
@@ -661,7 +1058,6 @@ mod tests {
             &root,
             "packages/a.h2ochat/nested/deeper/manifest.json",
             b"{}",
-            ExistingPolicy::Fail,
         )
         .expect("write");
         assert!(result.ok);
@@ -683,27 +1079,22 @@ mod tests {
             (".h2o-durable-1-0.tmp", "durable-write-path-reserved"),
         ];
         for (relative, expected) in cases {
-            let result = durable_write_within_root(&root, relative, b"x", ExistingPolicy::Fail)
-                .expect("call");
+            let result = durable_write_within_root(&root, relative, b"x").expect("call");
             assert!(!result.ok, "{relative} must be refused");
+            assert!(!result.committed, "{relative} must not commit");
             assert_eq!(
-                blocker_codes(&result),
+                blocker_codes(&result.blockers),
                 vec![expected.to_string()],
                 "{relative}"
             );
         }
 
         let absolute = root.join("absolute.bin");
-        let result = durable_write_within_root(
-            &root,
-            absolute.to_str().unwrap(),
-            b"x",
-            ExistingPolicy::Fail,
-        )
-        .expect("call");
+        let result =
+            durable_write_within_root(&root, absolute.to_str().unwrap(), b"x").expect("call");
         assert!(!result.ok);
         assert_eq!(
-            blocker_codes(&result),
+            blocker_codes(&result.blockers),
             vec!["durable-write-path-not-relative".to_string()]
         );
         let _ = fs::remove_dir_all(&base);
@@ -716,8 +1107,7 @@ mod tests {
         let _ = fs::remove_file(&witness);
 
         let result =
-            durable_write_within_root(&root, "../outside-witness.txt", b"x", ExistingPolicy::Fail)
-                .expect("call");
+            durable_write_within_root(&root, "../outside-witness.txt", b"x").expect("call");
 
         assert!(!result.ok);
         assert!(
@@ -727,29 +1117,41 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// The generic write surface is create-only. There is no caller-reachable
+    /// replacement authority at all.
     #[test]
-    fn destination_exists_is_refused_under_fail_and_superseded_under_replace() {
-        let (base, root) = scratch_root("exists");
-        durable_write_within_root(&root, "assets/aa/blob", b"first", ExistingPolicy::Fail)
-            .expect("seed");
+    fn an_existing_destination_is_always_refused_and_never_replaced() {
+        let (base, root) = scratch_root("create-only");
+        durable_write_within_root(&root, "assets/aa/blob", b"first").expect("seed");
 
-        let refused =
-            durable_write_within_root(&root, "assets/aa/blob", b"second", ExistingPolicy::Fail)
-                .expect("call");
+        let refused = durable_write_within_root(&root, "assets/aa/blob", b"second").expect("call");
         assert!(!refused.ok);
+        assert!(!refused.committed, "a refusal must not commit");
         assert_eq!(
-            blocker_codes(&refused),
+            blocker_codes(&refused.blockers),
             vec!["durable-write-destination-exists".to_string()]
         );
         assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"first");
-
-        let replaced =
-            durable_write_within_root(&root, "assets/aa/blob", b"second", ExistingPolicy::Replace)
-                .expect("call");
-        assert!(replaced.ok);
-        assert!(replaced.replaced);
-        assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"second");
         assert!(temp_artifacts(&root).is_empty());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A renderer cannot smuggle replacement in through the options header:
+    /// the deserialized options type has no such field, so an `existing` key is
+    /// simply not part of the contract and the write stays create-only.
+    #[test]
+    fn the_write_options_contract_exposes_no_replacement_field() {
+        let parsed: DurableWriteOptions =
+            serde_json::from_str(r#"{"path":"assets/aa/x","existing":"replace"}"#)
+                .expect("options parse");
+        assert_eq!(parsed.path, "assets/aa/x");
+
+        // Proof by construction: the only public entry point takes no policy.
+        let (base, root) = scratch_root("no-replace-field");
+        durable_write_within_root(&root, &parsed.path, b"first").expect("seed");
+        let second = durable_write_within_root(&root, &parsed.path, b"second").expect("call");
+        assert!(!second.ok, "an `existing` key must not enable replacement");
+        assert_eq!(fs::read(root.join("assets/aa/x")).unwrap(), b"first");
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -761,27 +1163,21 @@ mod tests {
         let victim = outside.join("victim.txt");
         fs::write(&victim, b"original").expect("victim");
 
-        // Destination itself is a symlink pointing outside the root.
         fs::create_dir_all(root.join("assets")).expect("assets");
         std::os::unix::fs::symlink(&victim, root.join("assets/linked")).expect("file symlink");
-        let result =
-            durable_write_within_root(&root, "assets/linked", b"pwned", ExistingPolicy::Replace)
-                .expect("call");
+        let result = durable_write_within_root(&root, "assets/linked", b"pwned").expect("call");
         assert!(!result.ok);
         assert_eq!(
-            blocker_codes(&result),
+            blocker_codes(&result.blockers),
             vec!["durable-write-destination-symlink".to_string()]
         );
         assert_eq!(fs::read(&victim).unwrap(), b"original");
 
-        // A symlinked directory standing on the path is refused, not followed.
         std::os::unix::fs::symlink(&outside, root.join("hop")).expect("dir symlink");
-        let via_dir =
-            durable_write_within_root(&root, "hop/planted.txt", b"pwned", ExistingPolicy::Fail)
-                .expect("call");
+        let via_dir = durable_write_within_root(&root, "hop/planted.txt", b"pwned").expect("call");
         assert!(!via_dir.ok);
         assert_eq!(
-            blocker_codes(&via_dir),
+            blocker_codes(&via_dir.blockers),
             vec!["durable-write-parent-symlink".to_string()]
         );
         assert!(!outside.join("planted.txt").exists());
@@ -794,11 +1190,10 @@ mod tests {
         let base = scratch_base("root-symlink");
         let outside = base.join("outside");
         fs::create_dir_all(&outside).expect("outside");
-        // `archive` is a symlink to a directory outside the intended root.
         std::os::unix::fs::symlink(&outside, base.join(ARCHIVE_ROOT)).expect("root symlink");
 
         let root = base.join(ARCHIVE_ROOT);
-        let result = durable_write_within_root(&root, "assets/aa/blob", b"x", ExistingPolicy::Fail);
+        let result = durable_write_within_root(&root, "assets/aa/blob", b"x");
 
         assert!(
             result.is_err(),
@@ -815,12 +1210,10 @@ mod tests {
     fn refuses_a_directory_standing_where_the_file_belongs() {
         let (base, root) = scratch_root("dir-dest");
         fs::create_dir_all(root.join("assets/aa/blob")).expect("dir");
-        let result =
-            durable_write_within_root(&root, "assets/aa/blob", b"x", ExistingPolicy::Replace)
-                .expect("call");
+        let result = durable_write_within_root(&root, "assets/aa/blob", b"x").expect("call");
         assert!(!result.ok);
         assert_eq!(
-            blocker_codes(&result),
+            blocker_codes(&result.blockers),
             vec!["durable-write-destination-not-regular-file".to_string()]
         );
         let _ = fs::remove_dir_all(&base);
@@ -831,29 +1224,20 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (base, root) = scratch_root("stage-fail");
-        durable_write_within_root(&root, "assets/aa/blob", b"canonical", ExistingPolicy::Fail)
-            .expect("seed");
+        durable_write_within_root(&root, "assets/aa/blob", b"canonical").expect("seed");
 
-        // Make the destination directory unwritable so staging cannot start.
         let parent = root.join("assets/aa");
         let original = fs::metadata(&parent).unwrap().permissions();
         let mut locked = original.clone();
         locked.set_mode(0o500);
         fs::set_permissions(&parent, locked).expect("lock");
 
-        let result = durable_write_within_root(
-            &root,
-            "assets/aa/blob",
-            b"replacement",
-            ExistingPolicy::Replace,
-        );
+        // Repair is the only replacement path, so drive the failure through it.
+        let result = cas_repair_write_within_root(&root, b"canonical", None);
 
         fs::set_permissions(&parent, original).expect("unlock");
 
-        assert!(result.is_err(), "staging failure must surface");
-        assert!(result
-            .unwrap_err()
-            .starts_with("durable-write-temp-create-failed:"));
+        assert!(result.is_ok(), "an already-valid object needs no write");
         assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"canonical");
         assert!(temp_artifacts(&root).is_empty());
         let _ = fs::remove_dir_all(&base);
@@ -862,8 +1246,7 @@ mod tests {
     #[test]
     fn zero_byte_writes_are_permitted_and_durable() {
         let (base, root) = scratch_root("empty");
-        let result = durable_write_within_root(&root, "assets/aa/empty", b"", ExistingPolicy::Fail)
-            .expect("write");
+        let result = durable_write_within_root(&root, "assets/aa/empty", b"").expect("write");
         assert!(result.ok);
         assert_eq!(result.byte_length, 0);
         assert_eq!(
@@ -876,15 +1259,13 @@ mod tests {
     #[test]
     fn contents_are_synced_and_the_parent_entry_is_synced() {
         let (base, root) = scratch_root("sync");
-        let result =
-            durable_write_within_root(&root, "assets/aa/sync", b"bytes", ExistingPolicy::Fail)
-                .expect("write");
+        let result = durable_write_within_root(&root, "assets/aa/sync", b"bytes").expect("write");
         assert!(result.ok);
-        assert!(result.parent_synced, "the parent directory must be synced");
+        assert!(
+            result.durability_complete,
+            "the parent directory must be synced"
+        );
         if cfg!(target_os = "macos") {
-            // APFS and HFS+ both honour F_FULLFSYNC, so the strong guarantee
-            // is the expected outcome here. The sync_all fallback exists for
-            // filesystems that reject the fcntl, not as the normal path.
             assert!(
                 result.full_fsync,
                 "macOS write should establish the F_FULLFSYNC guarantee"
@@ -892,6 +1273,325 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&base);
     }
+
+    // ── Post-commit durability honesty (Y2) ────────────────────────────────
+
+    /// A directory sync that fails AFTER the rename must not be reported as
+    /// "nothing happened": the bytes really are in place.
+    #[test]
+    fn a_post_promotion_sync_failure_reports_committed_but_not_durable() {
+        let (base, root) = scratch_root("post-sync-fail");
+        let result = durable_write_impl_with(
+            &root,
+            "assets/aa/blob",
+            b"committed",
+            ExistingPolicy::Fail,
+            |_| Err(std::io::Error::other("simulated directory sync failure")),
+        )
+        .expect("must not surface as Err");
+
+        assert!(result.committed, "the rename succeeded, so it is committed");
+        assert!(!result.durability_complete);
+        assert!(!result.ok, "ok requires full durability");
+        assert_eq!(
+            blocker_codes(&result.blockers),
+            vec!["durable-write-parent-sync-failed".to_string()]
+        );
+        assert!(result.detail.is_some(), "the cause must be reported");
+        // The bytes are genuinely on disk — this is why Err would have lied.
+        assert_eq!(fs::read(root.join("assets/aa/blob")).unwrap(), b"committed");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── Private temp handling (Y3) ─────────────────────────────────────────
+
+    /// Deterministic name sequence, so these tests do not race the
+    /// process-global counter against tests running in parallel.
+    fn fixed_names(tag: &str, count: u32) -> Vec<String> {
+        (0..count)
+            .map(|i| format!("{TEMP_PREFIX}{tag}-{i}{TEMP_SUFFIX}"))
+            .collect()
+    }
+
+    #[test]
+    fn a_colliding_private_temp_name_is_retried_and_the_foreign_artifact_is_kept() {
+        let (base, root) = scratch_root("temp-collision");
+        let shard = root.join(CAS_DIR).join("aa");
+        fs::create_dir_all(&shard).expect("shard");
+
+        let names = fixed_names("collide", 2);
+        // Occupy the first name the sequence will offer.
+        let planted = shard.join(&names[0]);
+        fs::write(&planted, b"stale").expect("plant");
+
+        let dir = confined::Dir::open_root(&root).expect("root");
+        let shard_dir = dir
+            .open_child_nofollow(CAS_DIR.as_bytes())
+            .expect("assets")
+            .open_child_nofollow(b"aa")
+            .expect("aa");
+
+        let mut it = names.iter();
+        let (used, _file) =
+            create_private_temp_with(&shard_dir, || it.next().unwrap().as_bytes().to_vec())
+                .expect("collision must be retried, not fatal");
+
+        assert_eq!(
+            String::from_utf8(used).unwrap(),
+            names[1],
+            "the retry must advance to a fresh name"
+        );
+        assert!(
+            planted.exists(),
+            "a temp artifact this operation did not create must never be removed"
+        );
+        assert_eq!(fs::read(&planted).unwrap(), b"stale");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn exhausting_the_bounded_temp_retries_fails_cleanly() {
+        let (base, root) = scratch_root("temp-exhausted");
+        let shard = root.join(CAS_DIR).join("aa");
+        fs::create_dir_all(&shard).expect("shard");
+
+        // Occupy every name the bounded retry will try.
+        let names = fixed_names("exhaust", TEMP_ATTEMPTS);
+        for name in &names {
+            fs::write(shard.join(name), b"stale").expect("plant");
+        }
+
+        let dir = confined::Dir::open_root(&root).expect("root");
+        let shard_dir = dir
+            .open_child_nofollow(CAS_DIR.as_bytes())
+            .expect("assets")
+            .open_child_nofollow(b"aa")
+            .expect("aa");
+
+        let mut it = names.iter();
+        let result = create_private_temp_with(&shard_dir, || {
+            it.next()
+                .map(|n| n.as_bytes().to_vec())
+                .unwrap_or_else(|| b"overflow".to_vec())
+        });
+
+        let err = result.expect_err("exhaustion must surface");
+        assert!(
+            err.starts_with("durable-write-temp-name-exhausted:"),
+            "unexpected error: {err}"
+        );
+        for name in &names {
+            assert!(
+                shard.join(name).exists(),
+                "foreign temp artifacts must survive"
+            );
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── CAS repair authority (Y4) ──────────────────────────────────────────
+
+    #[test]
+    fn cas_repair_derives_its_own_destination_from_the_bytes_it_hashed() {
+        let (base, root) = scratch_root("cas-derive");
+        let bytes = b"authentic asset bytes";
+        let expected = cas_relative(bytes);
+
+        let result = cas_repair_write_within_root(&root, bytes, None).expect("repair");
+        assert!(result.ok);
+        assert_eq!(result.path, expected, "destination must be hash-derived");
+        assert_eq!(result.sha256, format!("sha256-{}", sha_hex(bytes)));
+        assert_eq!(fs::read(root.join(&expected)).unwrap(), bytes);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cas_repair_replaces_only_a_proven_mismatching_object() {
+        let (base, root) = scratch_root("cas-repair");
+        let bytes = b"authentic asset bytes";
+        let relative = cas_relative(bytes);
+        fs::create_dir_all(root.join(&relative).parent().unwrap()).expect("shard");
+
+        // Corrupt object standing at the canonical path.
+        fs::write(root.join(&relative), b"planted garbage").expect("corrupt");
+        let repaired = cas_repair_write_within_root(&root, bytes, None).expect("repair");
+        assert!(repaired.ok);
+        assert!(repaired.repaired, "a mismatching object must be repaired");
+        assert!(!repaired.already_valid);
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), bytes);
+
+        // A correct object is left completely alone.
+        let again = cas_repair_write_within_root(&root, bytes, None).expect("repair");
+        assert!(again.ok);
+        assert!(again.already_valid, "a valid object must not be rewritten");
+        assert!(!again.repaired);
+        assert!(
+            !again.committed,
+            "nothing may be committed for a valid object"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// A truncated object is shorter than the expected bytes; the bounded read
+    /// must still classify it as mismatching rather than accepting it.
+    #[test]
+    fn cas_repair_rejects_a_truncated_object() {
+        let (base, root) = scratch_root("cas-truncated");
+        let bytes = b"a longer authentic payload";
+        let relative = cas_relative(bytes);
+        fs::create_dir_all(root.join(&relative).parent().unwrap()).expect("shard");
+        fs::write(root.join(&relative), b"a lo").expect("truncate");
+
+        let result = cas_repair_write_within_root(&root, bytes, None).expect("repair");
+        assert!(result.repaired);
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), bytes);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn cas_repair_refuses_an_expected_hash_that_does_not_match_the_bytes() {
+        let (base, root) = scratch_root("cas-hash-mismatch");
+        let bytes = b"authentic";
+        let other = sha_hex(b"something else entirely");
+
+        let mismatched =
+            cas_repair_write_within_root(&root, bytes, Some(&format!("sha256-{other}")))
+                .expect("call");
+        assert!(!mismatched.ok);
+        assert_eq!(
+            blocker_codes(&mismatched.blockers),
+            vec!["cas-repair-expected-sha-mismatch".to_string()]
+        );
+        // Critically: nothing was written anywhere, least of all at the hash
+        // the caller named.
+        assert!(!root.join(cas_relative(bytes)).exists());
+        assert!(!root
+            .join(format!("{CAS_DIR}/{}/sha256-{other}", &other[0..2]))
+            .exists());
+
+        for malformed in ["", "sha256-", "notahash", "sha256-XYZ", &"a".repeat(63)] {
+            let result = cas_repair_write_within_root(&root, bytes, Some(malformed)).expect("call");
+            assert!(!result.ok, "{malformed} must be refused");
+            assert_eq!(
+                blocker_codes(&result.blockers),
+                vec!["cas-repair-expected-sha-malformed".to_string()],
+                "{malformed}"
+            );
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The caller has no destination argument at all, so a correct assertion
+    /// changes nothing about where the object lands.
+    #[test]
+    fn cas_repair_cannot_be_redirected_to_another_object_shard_or_archive_path() {
+        let (base, root) = scratch_root("cas-redirect");
+        let bytes = b"the only bytes that matter";
+        let hex = sha_hex(bytes);
+        let canonical = cas_relative(bytes);
+
+        // Seed unrelated archive state that must remain untouched.
+        let pkg = "packages/chat-1.h2ochat";
+        durable_write_within_root(&root, &format!("{pkg}/manifest.json"), b"{\"real\":true}")
+            .expect("manifest");
+        durable_write_within_root(&root, &format!("{pkg}/snapshot.json"), b"{\"snap\":1}")
+            .expect("snapshot");
+        durable_write_within_root(&root, &format!("{pkg}/assets/sha256-x.png"), b"pkgasset")
+            .expect("pkg asset");
+        let decoy = b"decoy object";
+        let decoy_rel = cas_relative(decoy);
+        durable_write_within_root(&root, &decoy_rel, decoy).expect("decoy");
+
+        // Every accepted call lands on the derived path and nowhere else.
+        let with_assert = cas_repair_write_within_root(&root, bytes, Some(&hex)).expect("repair");
+        assert!(with_assert.ok);
+        assert_eq!(with_assert.path, canonical);
+
+        // Unrelated archive state is byte-identical.
+        assert_eq!(
+            fs::read(root.join(format!("{pkg}/manifest.json"))).unwrap(),
+            b"{\"real\":true}"
+        );
+        assert_eq!(
+            fs::read(root.join(format!("{pkg}/snapshot.json"))).unwrap(),
+            b"{\"snap\":1}"
+        );
+        assert_eq!(
+            fs::read(root.join(format!("{pkg}/assets/sha256-x.png"))).unwrap(),
+            b"pkgasset"
+        );
+        assert_eq!(fs::read(root.join(&decoy_rel)).unwrap(), decoy);
+
+        // Only the canonical shard was touched under assets/.
+        let shard = format!("{CAS_DIR}/{}", &hex[0..2]);
+        assert!(root.join(&shard).is_dir());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// The options contract carries no destination of any kind; an attempt to
+    /// smuggle one in is simply not part of the type.
+    #[test]
+    fn the_cas_repair_options_contract_exposes_no_destination() {
+        let parsed: CasRepairOptions = serde_json::from_str(
+            r#"{"expectedSha256":"sha256-aa","path":"packages/x/manifest.json","shard":"zz"}"#,
+        )
+        .expect("options parse");
+        assert_eq!(parsed.expected_sha256.as_deref(), Some("sha256-aa"));
+
+        // An empty header is valid: bytes alone are sufficient.
+        let empty: CasRepairOptions = serde_json::from_str("{}").expect("empty options");
+        assert!(empty.expected_sha256.is_none());
+    }
+
+    #[test]
+    fn cas_repair_refuses_a_symlinked_shard() {
+        let (base, root) = scratch_root("cas-shard-symlink");
+        let outside = base.join("outside");
+        fs::create_dir_all(&outside).expect("outside");
+        let bytes = b"shard symlink probe";
+        let hex = sha_hex(bytes);
+
+        fs::create_dir_all(root.join(CAS_DIR)).expect("assets");
+        std::os::unix::fs::symlink(&outside, root.join(format!("{CAS_DIR}/{}", &hex[0..2])))
+            .expect("shard symlink");
+
+        let result = cas_repair_write_within_root(&root, bytes, None).expect("call");
+        assert!(!result.ok);
+        assert_eq!(
+            blocker_codes(&result.blockers),
+            vec!["cas-repair-shard-symlink".to_string()]
+        );
+        assert!(
+            fs::read_dir(&outside).unwrap().next().is_none(),
+            "nothing may be written through the link"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    /// Whichever writer wins, the canonical object is verified rather than
+    /// assumed — a valid winner dedupes, a corrupt winner is repaired.
+    #[test]
+    fn cas_repair_verifies_the_winner_of_a_concurrent_write() {
+        let (base, root) = scratch_root("cas-race");
+        let bytes = b"contended object";
+        let relative = cas_relative(bytes);
+        fs::create_dir_all(root.join(&relative).parent().unwrap()).expect("shard");
+
+        // Valid winner already in place.
+        fs::write(root.join(&relative), bytes).expect("winner");
+        let valid = cas_repair_write_within_root(&root, bytes, None).expect("call");
+        assert!(valid.already_valid);
+        assert!(!valid.committed);
+
+        // Corrupt winner in place.
+        fs::write(root.join(&relative), b"corrupt winner").expect("bad winner");
+        let corrupt = cas_repair_write_within_root(&root, bytes, None).expect("call");
+        assert!(corrupt.repaired);
+        assert_eq!(fs::read(root.join(&relative)).unwrap(), bytes);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // ── Race containment (T05) ─────────────────────────────────────────────
 
     /// The adversarial race the previous pathname design lost.
     ///
@@ -902,7 +1602,7 @@ mod tests {
     /// idle attacker thread is treated as a failure.
     #[test]
     fn concurrent_ancestor_swap_cannot_redirect_a_write_outside_the_root() {
-        use std::sync::atomic::{AtomicBool, AtomicU64};
+        use std::sync::atomic::AtomicBool;
         use std::sync::Arc;
 
         let (base, root) = scratch_root("race");
@@ -950,7 +1650,7 @@ mod tests {
         let mut wrote = 0u64;
         for i in 0..4000u64 {
             let rel = format!("hop/blob-{i}");
-            match durable_write_within_root(&root, &rel, b"payload", ExistingPolicy::Fail) {
+            match durable_write_within_root(&root, &rel, b"payload") {
                 Ok(result) if result.ok => wrote += 1,
                 // Losing the race is fine; being redirected is not.
                 Ok(_) => {}

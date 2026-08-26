@@ -64,6 +64,7 @@
   var CAS_ROOT = 'archive/assets';    /* relative to AppLocalData */
   var ARCHIVE_ROOT_PREFIX = 'archive/';
   var DURABLE_WRITE_COMMAND = 'h2o_archive_durable_write';
+  var CAS_REPAIR_COMMAND = 'h2o_archive_cas_repair_write';
   var DESTINATION_EXISTS_BLOCKER = 'durable-write-destination-exists';
 
   var state = {
@@ -203,12 +204,29 @@
    * syncs the contents, atomically promotes, then syncs the parent directory.
    * Bytes travel as the request BODY with options in request HEADERS, the same
    * marshaling tauri-plugin-fs v2 requires (a JSON object form would be read as
-   * a missing path). `existing` is 'fail' for a first write and 'replace' only
-   * for a verified repair of a corrupt content-addressed object. */
-  async function durableWrite(path, u8, existing) {
+   * a missing path).
+   *
+   * This surface is CREATE-ONLY. There is no replacement parameter, because a
+   * renderer must not be able to name an arbitrary archive destination and ask
+   * for it to be overwritten. */
+  async function durableWrite(path, u8) {
     var invoke = invokeOrThrow();
-    var options = { path: archiveRelativeOf(path), existing: existing };
+    var options = { path: archiveRelativeOf(path) };
     var result = await invoke(DURABLE_WRITE_COMMAND, u8, {
+      headers: { options: encodeURIComponent(JSON.stringify(options)) },
+    });
+    return safeObject(result);
+  }
+
+  /* Content-addressed repair. Sends BYTES ONLY — the trusted side hashes them
+   * and derives archive/assets/<aa>/sha256-<hex> itself, so this call carries
+   * no destination and cannot be pointed at another object, another shard, a
+   * package member or a manifest. The hash we already computed travels only as
+   * an assertion the trusted side may refuse. */
+  async function casRepairWrite(u8, sha256) {
+    var invoke = invokeOrThrow();
+    var options = { expectedSha256: cleanString(sha256) };
+    var result = await invoke(CAS_REPAIR_COMMAND, u8, {
       headers: { options: encodeURIComponent(JSON.stringify(options)) },
     });
     return safeObject(result);
@@ -263,8 +281,8 @@
       }
 
       await fsMkdirRecursive(shardDirForHex(hex));
-      var write = await durableWrite(path, u8, 'fail');
-      if (!write.ok) {
+      var write = await durableWrite(path, u8);
+      if (!write.ok && !write.committed) {
         var codes = blockerCodes(write);
         /* Another writer committed between the existence probe and the write.
          * The winner is authoritative only if it too verifies. */
@@ -282,33 +300,52 @@
       }
       state.writeCount += 1;
       state.lastPutAt = Date.now();
-      return Object.assign(descriptor, { deduped: false, wrote: true, verified: true, repaired: false });
+      return Object.assign(descriptor, {
+        deduped: false,
+        wrote: true,
+        verified: true,
+        repaired: false,
+        /* The bytes are committed and verified; this reports only whether the
+         * directory entry was fenced. A false value must NOT trigger another
+         * write — the content is already proven correct on disk. */
+        durabilityComplete: write.durabilityComplete !== false,
+      });
     } catch (e) { recordError('putAssetBytes', e); throw e; }
   }
 
   function dedupeResult(descriptor) {
     state.dedupeCount += 1;
     state.lastPutAt = Date.now();
-    return Object.assign(descriptor, { deduped: true, wrote: false, verified: true, repaired: false });
+    return Object.assign(descriptor, { deduped: true, wrote: false, verified: true, repaired: false, durabilityComplete: true });
   }
 
-  /* Replaces a content-addressed object whose bytes do not match its own name.
-   * Safe by construction: the destination filename is the SHA-256 of the bytes
-   * being written, so this can only move the object from wrong to right. */
+  /* Repairs a content-addressed object whose bytes do not match its own name.
+   * The destination is NOT passed: the trusted side re-derives it from a hash
+   * it computes over these exact bytes, so repair authority cannot be aimed at
+   * anything other than the object these bytes belong in. */
   async function repairBlob(descriptor, path, hex, u8) {
     state.mismatchCount += 1;
     state.lastMismatchAt = Date.now();
-    var repair = await durableWrite(path, u8, 'replace');
-    if (!repair.ok) {
+    var repair = await casRepairWrite(u8, descriptor.sha256);
+    if (!repair.ok && !repair.committed) {
       throw new Error('putAssetBytes: corrupt CAS object could not be repaired: ' + descriptor.sha256 + ' (' + (blockerCodes(repair).join(',') || 'unknown') + ')');
     }
     if (!(await verifyBlobAt(path, hex, u8.length))) {
       throw new Error('putAssetBytes: repaired CAS object failed verification: ' + descriptor.sha256);
     }
+    /* alreadyValid means the trusted side found the canonical object correct
+     * and wrote nothing; that is a dedupe, not a repair. */
+    if (repair.alreadyValid) return dedupeResult(descriptor);
     state.repairCount += 1;
     state.writeCount += 1;
     state.lastPutAt = Date.now();
-    return Object.assign(descriptor, { deduped: false, wrote: true, verified: true, repaired: true });
+    return Object.assign(descriptor, {
+      deduped: false,
+      wrote: true,
+      verified: true,
+      repaired: true,
+      durabilityComplete: repair.durabilityComplete !== false,
+    });
   }
 
   async function getAssetBytes(sha256Input) {

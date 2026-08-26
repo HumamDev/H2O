@@ -2505,6 +2505,7 @@ macro_rules! h2o_studio_invoke_handler {
             prove_folder_metadata_color_apply_rollback,
             apply_folder_metadata_color,
             archive_durable_write::h2o_archive_durable_write,
+            archive_durable_write::h2o_archive_cas_repair_write,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2534,7 +2535,8 @@ macro_rules! h2o_studio_invoke_handler {
             mark_sync_conflict_decision,
             prove_folder_metadata_color_apply_rollback,
             apply_folder_metadata_color,
-            archive_durable_write::h2o_archive_durable_write
+            archive_durable_write::h2o_archive_durable_write,
+            archive_durable_write::h2o_archive_cas_repair_write
         ]
     };
 }
