@@ -192,13 +192,18 @@ function createStores({ withImage, turnText = '' }) {
   };
 }
 
-function createCas({ missingOnGet = false } = {}) {
+// `corruptOnGet` plants bytes that do NOT hash to the key they are stored
+// under, so the verified read has something real to reject.
+function createCas({ missingOnGet = false, corruptOnGet = false } = {}) {
   const bytesBySha = new Map();
   const puts = [];
   const gets = [];
+  const verifiedGets = [];
   return {
     puts,
     gets,
+    verifiedGets,
+    bytesBySha,
     api: {
       putAssetBytes: async ({ bytes, mimeType, ext }) => {
         const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -220,6 +225,22 @@ function createCas({ missingOnGet = false } = {}) {
         if (missingOnGet) return null;
         return bytesBySha.get(sha256) || null;
       },
+      // Faithful model of the real verified read: absent is null, but bytes
+      // that contradict the requested identity THROW rather than returning.
+      readVerifiedAssetBytes: async (sha256) => {
+        gets.push(sha256);
+        verifiedGets.push(sha256);
+        if (missingOnGet) return null;
+        const stored = bytesBySha.get(sha256);
+        if (!stored) return null;
+        const planted = corruptOnGet
+          ? Uint8Array.from([...stored, 0xff])
+          : stored;
+        if ('sha256-' + sha256Hex(planted) !== sha256) {
+          throw new Error('readVerifiedAssetBytes: CAS object failed verification: ' + sha256);
+        }
+        return planted;
+      },
     },
   };
 }
@@ -227,13 +248,14 @@ function createCas({ missingOnGet = false } = {}) {
 function loadProjector({
   withImage,
   missingOnGet = false,
+  corruptOnGet = false,
   failWritePath = '',
   turnText = '',
   CompressionStreamImpl = CompressionStream,
   DecompressionStreamImpl = DecompressionStream,
 }) {
   const stores = createStores({ withImage, turnText });
-  const cas = createCas({ missingOnGet });
+  const cas = createCas({ missingOnGet, corruptOnGet });
   const strictFs = createStrictFs({ failWritePath });
   const context = {
     console,
@@ -261,7 +283,7 @@ function loadProjector({
   vm.runInContext(readRepo(PROJECTOR_REL), sandbox, { filename: PROJECTOR_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion || typeof ingestion.writeSavedChatPackageV1 !== 'function') throw new Error('projector did not register');
-  return { ingestion, stores, cas, fs: strictFs };
+  return { ingestion, stores, cas, fs: strictFs, sandbox };
 }
 
 function textWrites(fsShim) {
@@ -380,6 +402,59 @@ async function main() {
     assert.equal(textWrites(env.fs).length, 0, 'text files must not be written after missing asset failure');
     assert.equal(assetWrites(env.fs).length, 0, 'asset copy must not be written when CAS read returns null');
     assertAllAppLocalData(env.fs);
+  });
+
+  // ── Package copies consume VERIFIED CAS bytes (T07) ──────────────────────
+  await checkAsync('corrupt CAS bytes are refused before any package member is written', async () => {
+    const env = loadProjector({ withImage: true, corruptOnGet: true });
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
+      /failed verification/,
+      'a CAS object contradicting its own name must fail the package write',
+    );
+    assert.equal(assetWrites(env.fs).length, 0, 'no asset copy may be written from unverified bytes');
+    assert.equal(textWrites(env.fs).length, 0, 'no manifest/snapshot may be written after the refusal');
+    assertAllAppLocalData(env.fs);
+  });
+
+  await checkAsync('the package writer actually calls the verified read, not the raw one', async () => {
+    const env = loadProjector({ withImage: true });
+    await env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' });
+    assert.ok(
+      env.cas.verifiedGets.length >= 1,
+      'readVerifiedAssetBytes must be exercised by the package asset copy path',
+    );
+    assert.ok(env.cas.verifiedGets.includes(PNG_SHA), 'the descriptor sha must be the verified identity');
+  });
+
+  // Negative control: if the projector were reverted to the unverified reader,
+  // the corruption test above could not fail, so assert the call site directly.
+  check('a revert to the unverified reader would be caught (negative control)', () => {
+    const src = readRepo(PROJECTOR_REL);
+    const body = src.slice(src.indexOf('async function readPackageAssetBytes'));
+    const fn = body.slice(0, body.indexOf('\n  }') + 4);
+    assert.match(fn, /readVerifiedAssetBytes\(sha\)/, 'the asset copy path must use the verified read');
+    assert.doesNotMatch(fn, /getAssetBytes\(sha\)/, 'the unverified read must not be used for package copies');
+    assert.match(fn, /byteLength/, 'the descriptor byteLength must be enforced where present');
+  });
+
+  await checkAsync('a descriptor length that disagrees with the CAS object is refused', async () => {
+    const env = loadProjector({ withImage: true });
+    // Same bytes, but the descriptor claims a different length.
+    const original = env.ingestion.__savedChatPackageV1;
+    void original;
+    const stack = env.sandbox.H2O.Studio.ingestion;
+    const realRead = stack.assetCas.readVerifiedAssetBytes;
+    stack.assetCas.readVerifiedAssetBytes = async (sha) => {
+      const bytes = await realRead(sha);
+      return bytes ? Uint8Array.from([...bytes, 0x00]) : bytes;
+    };
+    await assert.rejects(
+      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
+      /length mismatch/,
+      'a length disagreeing with the descriptor must fail closed',
+    );
+    assert.equal(assetWrites(env.fs).length, 0, 'no asset copy may be written on length mismatch');
   });
 
   await checkAsync('overwrite defaults to fail-if-existing', async () => {

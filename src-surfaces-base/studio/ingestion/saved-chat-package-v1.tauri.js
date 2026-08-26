@@ -1363,17 +1363,37 @@
     return path;
   }
 
+  /* Reads live CAS bytes for a package asset copy.
+   *
+   * The identity check is LOAD-BEARING here: these bytes are about to be
+   * written into a `.h2ochat` member whose name asserts a SHA-256, and the
+   * package contentHash is then computed over that identity. Copying whatever
+   * happens to sit at the content-addressed path would let a corrupt blob
+   * become a package member that claims to be something else, so the verified
+   * read is required and its absence is fatal rather than a silent downgrade
+   * to the unverified reader.
+   *
+   * `readVerifiedAssetBytes` proves the bytes hash to the DESCRIPTOR's sha
+   * (the value passed in here), not to any registry- or path-derived value
+   * that could have drifted from it. Where the descriptor also carries a
+   * byteLength, that is enforced too. Nothing is repaired from this path:
+   * package writing consumes valid CAS state, it never mutates corrupt CAS as
+   * a side effect of reading. */
   async function readPackageAssetBytes(asset) {
     var stack = getAssetStack();
-    if (!stack.assetCas || typeof stack.assetCas.getAssetBytes !== 'function') {
-      throw new Error('H2O.Studio.ingestion.assetCas.getAssetBytes unavailable for package asset copy');
+    if (!stack.assetCas || typeof stack.assetCas.readVerifiedAssetBytes !== 'function') {
+      throw new Error('H2O.Studio.ingestion.assetCas.readVerifiedAssetBytes unavailable for package asset copy');
     }
     var sha = normalizeAssetSha(asset && asset.sha256);
     if (!sha) throw new Error('invalid package asset sha256');
-    var bytes = await stack.assetCas.getAssetBytes(sha);
+    var bytes = await stack.assetCas.readVerifiedAssetBytes(sha);
     if (!bytes) throw new Error('missing CAS asset for package copy: ' + sha);
     var u8 = bytesFor(bytes);
     if (!u8 || u8.length <= 0) throw new Error('missing CAS asset bytes for package copy: ' + sha);
+    var expectedLength = numberOrZero(asset && asset.byteLength);
+    if (expectedLength > 0 && u8.length !== expectedLength) {
+      throw new Error('CAS asset length mismatch for package copy: ' + sha);
+    }
     return u8;
   }
 
