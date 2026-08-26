@@ -136,15 +136,19 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
     }
     if (cmd === 'plugin:sql|execute') {
       assert.match(q, /UPDATE saved_chat_archive_requests/, 'only the queue table may be written');
-      // columns are status, updated_at, meta_json [, snapshot_id], request_id (last)
-      const reqId = v[v.length - 1];
+      // Every transition must be compare-and-swap guarded, so the bind tuple is
+      // status, updated_at, meta_json [, snapshot_id], request_id, expected_status.
+      assert.match(q, /WHERE request_id = \? AND status = \?/, 'transitions must be status-guarded');
+      const expectedStatus = v[v.length - 1];
+      const reqId = v[v.length - 2];
       const cur = queue.get(reqId);
-      if (cur) {
-        cur.status = v[0];
-        cur.updated_at = v[1];
-        cur.meta_json = v[2];
-        if (v.length === 5) cur.snapshot_id = v[3];
-      }
+      // Mirrors SQLite: the UPDATE matches nothing unless the row is still in
+      // the state the caller expected to move away from.
+      if (!cur || cur.status !== expectedStatus) return [0, 0];
+      cur.status = v[0];
+      cur.updated_at = v[1];
+      cur.meta_json = v[2];
+      if (v.length === 6) cur.snapshot_id = v[3];
       return [1, 0];
     }
     throw new Error('unexpected invoke: ' + cmd);
@@ -173,7 +177,7 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
   vm.runInContext(src, sandbox, { filename: MODULE_REL });
   const api = sandbox.H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1;
   if (typeof api !== 'function') throw new Error('materialize API did not register');
-  return { api, queue, sqlCalls, writerCalls };
+  return { api, queue, sqlCalls, writerCalls, context };
 }
 
 function validatedRow() {
@@ -280,6 +284,67 @@ await checkAsync('missing request -> not-found, no writer call', async () => {
   const r = await fx.api({ requestId: 'nope' });
   assert.equal(r.status, 'not-found');
   assert.equal(fx.writerCalls.length, 0);
+});
+
+// ── Transition integrity: the guard exists so a stale view of the row can
+// never win. Each case drives a real conflict through the SQL mock.
+await checkAsync('two claimants race for one validated row: exactly one calls the writer', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    writerResult: { packagePath: 'archive/packages/chat_1.h2ochat', schemaVersion: 2, payloadVersion: 2, contentHash: 'sha256-' + 'b'.repeat(64), snapshotId: 'snap_1', written: true, writtenAt: '2026-06-24T00:00:00.000Z' },
+  });
+  // Both callers observe `validated`; only one can move the row out of it.
+  const [a, b] = await Promise.all([fx.api({ requestId: 'req_1' }), fx.api({ requestId: 'req_1' })]);
+  const outcomes = [a.status, b.status].sort();
+  assert.deepEqual(outcomes, ['transition-conflict', 'written'], `unexpected outcomes: ${outcomes}`);
+  assert.equal(fx.writerCalls.length, 1, 'the package writer must run exactly once');
+  const loser = a.status === 'transition-conflict' ? a : b;
+  assert.equal(loser.ok, false, 'a lost claim must not report success');
+  // Compared field-wise: the result object is built inside the VM realm.
+  assert.equal(loser.transitionConflict.expectedStatus, 'validated');
+  assert.equal(loser.transitionConflict.nextStatus, 'writing');
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('a stale worker cannot regress written -> failed', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    writerThrows: 'package writer exploded',
+  });
+  // The row is already `written` by whoever actually owned it; this worker is
+  // acting on a stale read and must not overwrite that outcome.
+  fx.queue.get('req_1').status = 'writing';
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'not-eligible', 'a writing row is not claimable');
+
+  fx.queue.get('req_1').status = 'written';
+  const after = await fx.api({ requestId: 'req_1' });
+  assert.equal(after.status, 'already-written', 'written stays idempotent');
+  assert.equal(fx.queue.get('req_1').status, 'written', 'the written row must survive');
+});
+
+await checkAsync('losing writing -> written reports the conflict and still surfaces the package', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    writerResult: { packagePath: 'archive/packages/chat_1.h2ochat', schemaVersion: 2, payloadVersion: 2, contentHash: 'sha256-' + 'c'.repeat(64), snapshotId: 'snap_1', written: true, writtenAt: '2026-06-24T00:00:00.000Z' },
+  });
+  // Simulate another actor moving the row out of `writing` while the package
+  // write was in flight.
+  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1;
+  fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1 = async (opts) => {
+    const out = await original(opts);
+    fx.queue.get('req_1').status = 'failed';
+    return out;
+  };
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'transition-conflict');
+  assert.equal(r.ok, false, 'a lost completion must not be reported as success');
+  assert.equal(r.package.packagePath, 'archive/packages/chat_1.h2ochat', 'the written package must still be surfaced');
+  assert.equal(r.transitionConflict.expectedStatus, 'writing');
+  assert.equal(r.transitionConflict.nextStatus, 'written');
 });
 
 console.log('');

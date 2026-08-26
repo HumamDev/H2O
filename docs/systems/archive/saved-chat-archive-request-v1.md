@@ -261,12 +261,23 @@ not exercised by D.2C (a true overwrite policy is deferred).
 | `db-unavailable` | Re-resolution could not read Desktop store; not written. |
 | `not-found` | No queue row exists for `requestId`. |
 | `not-eligible` | The queue row is not currently `validated` (and not `written`). |
+| `transition-conflict` | A guarded transition matched no row: the queue row moved out of the expected status under this caller. Never a persisted status, and never treated as success. |
 
 ### State behavior
 
 - Only a persisted **`validated`** request is eligible for materialization.
 - `validated -> writing -> written` on writer success.
 - `validated -> writing -> failed` on writer failure.
+- Every transition is **compare-and-swap guarded**: the `UPDATE` names both the
+  `request_id` and the status it expects to move away from, and must affect
+  exactly one row. Claiming a row (`validated -> writing`) is therefore atomic in
+  SQLite, so two concurrent or stale callers can never both reach the package
+  writer, and a stale worker cannot regress a `written` row to `failed`.
+- A lost transition returns `transition-conflict` and performs no further work.
+  If the package was already written when `writing -> written` was lost, the
+  result still carries the package metadata but reports `ok: false`.
+- Recovering a conflicted or stranded row (retry, stale-`writing` recovery,
+  `failed -> validated` re-arm) remains **deferred** — see below.
 - If re-resolution no longer validates, update the queue row to
   `needs-desktop-snapshot` or `db-unavailable` and **do not write**.
 - A `written` request returns `already-written` (idempotent no-op; no writer call,

@@ -14,6 +14,15 @@
  *     passing ONLY the resolved Desktop snapshotId, then transitions
  *     writing -> written (or writing -> failed).
  *
+ * Every status transition is compare-and-swap guarded: the UPDATE names the
+ * status it expects to move away from and must affect exactly one row. Reading
+ * `validated` and then writing unconditionally would let two concurrent or
+ * stale callers both claim the same row and both invoke the package writer,
+ * and would let a stale worker regress a correct `written` row to `failed`
+ * while a valid package sits on disk. A lost transition is surfaced as
+ * `transition-conflict`, never treated as success and never retried here —
+ * retry, stale-`writing` recovery and re-arm policy remain M05 lifecycle work.
+ *
  * Trust boundary: Desktop is the only package writer. Chrome/request content is
  * NON-AUTHORITATIVE — it is never passed to the writer and is never used to build
  * package files or compute contentHash. The only DB mutation is the
@@ -56,6 +65,10 @@
   var STATUS_NEEDS_DESKTOP_SNAPSHOT = 'needs-desktop-snapshot';
   var STATUS_DB_UNAVAILABLE = 'db-unavailable';
 
+  /* Result code only — never a persisted queue status. Reported when a guarded
+   * transition matched no row, i.e. the row moved under this caller. */
+  var RESULT_TRANSITION_CONFLICT = 'transition-conflict';
+
   function nowIso() { try { return new Date().toISOString(); } catch (_) { return ''; } }
   function cleanString(v) { return String(v == null ? '' : v).trim(); }
   function isObject(v) { return !!v && typeof v === 'object' && !Array.isArray(v); }
@@ -89,6 +102,20 @@
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable'));
     return invoke('plugin:sql|execute', { db: DB_URL, query: query, values: values || [] });
   }
+  /* tauri-plugin-sql v2's execute command returns a Rust tuple (u64, i64) =
+   * (rows_affected, last_insert_id), which Tauri serializes as a JSON array
+   * [rowsAffected, lastInsertId]. Some build/version permutations have
+   * historically surfaced object shapes too, so we tolerate both. */
+  function readRowsAffected(result) {
+    if (Array.isArray(result)) return Number(result[0]) || 0;
+    if (result && typeof result === 'object') {
+      if (result.rowsAffected != null) return Number(result.rowsAffected) || 0;
+      if (result.rows_affected != null) return Number(result.rows_affected) || 0;
+      if (result.affected != null) return Number(result.affected) || 0;
+    }
+    if (typeof result === 'number') return result;
+    return 0;
+  }
 
   function getIngestion() { return (H2O.Studio && H2O.Studio.ingestion) || {}; }
 
@@ -103,17 +130,44 @@
 
   /* Update only the saved_chat_archive_requests row: status / updated_at /
    * meta_json (+ snapshot_id when provided). Merges patch into
-   * meta_json.materialization. */
-  async function updateQueueRow(requestId, status, materializationPatch, currentMeta, snapshotIdOpt) {
-    var meta = safeObject(currentMeta);
-    var materialization = Object.assign({}, safeObject(meta.materialization), safeObject(materializationPatch));
+   * meta_json.materialization.
+   *
+   * The WHERE clause pins BOTH the request id and the status this transition
+   * expects to move away from, so the claim is atomic in SQLite rather than
+   * dependent on the caller's earlier read still being true. `expectedStatus`
+   * is required; a caller that cannot name the state it is leaving has no
+   * business writing the row. Returns { ok, rowsAffected, meta } — ok:false
+   * means the row moved under us and nothing was written. */
+  async function transitionRequestStatus(input) {
+    var opts = safeObject(input);
+    var requestId = cleanString(opts.requestId);
+    var expectedStatus = cleanString(opts.expectedStatus);
+    var nextStatus = cleanString(opts.nextStatus);
+    if (!requestId || !expectedStatus || !nextStatus) {
+      throw new Error('transitionRequestStatus: requestId, expectedStatus and nextStatus are required');
+    }
+    var meta = safeObject(opts.currentMeta);
+    var materialization = Object.assign({}, safeObject(meta.materialization), safeObject(opts.patch));
     var newMeta = Object.assign({}, meta, { materialization: materialization });
     var cols = ['status = ?', 'updated_at = ?', 'meta_json = ?'];
-    var values = [status, nowIso(), JSON.stringify(newMeta)];
-    if (snapshotIdOpt != null && cleanString(snapshotIdOpt)) { cols.push('snapshot_id = ?'); values.push(cleanString(snapshotIdOpt)); }
+    var values = [nextStatus, nowIso(), JSON.stringify(newMeta)];
+    if (opts.snapshotId != null && cleanString(opts.snapshotId)) { cols.push('snapshot_id = ?'); values.push(cleanString(opts.snapshotId)); }
     values.push(requestId);
-    await sqlExecute('UPDATE ' + QUEUE_TABLE + ' SET ' + cols.join(', ') + ' WHERE request_id = ?', values);
-    return newMeta;
+    values.push(expectedStatus);
+    var executed = await sqlExecute(
+      'UPDATE ' + QUEUE_TABLE + ' SET ' + cols.join(', ') + ' WHERE request_id = ? AND status = ?',
+      values
+    );
+    var rowsAffected = readRowsAffected(executed);
+    return { ok: rowsAffected === 1, rowsAffected: rowsAffected, meta: newMeta };
+  }
+
+  function conflictResult(result, expectedStatus, nextStatus) {
+    result.ok = false;
+    result.status = RESULT_TRANSITION_CONFLICT;
+    result.transitionConflict = { expectedStatus: expectedStatus, nextStatus: nextStatus };
+    result.error = 'transition-conflict:' + expectedStatus + '->' + nextStatus;
+    return result;
   }
 
   function packageFromMaterialization(mat) {
@@ -139,6 +193,7 @@
       chromeRuntime: false,
       syncTransport: false,
       package: null,
+      transitionConflict: null,
       error: null,
     };
   }
@@ -180,8 +235,16 @@
     if (typeof ingestion.resolveSavedChatArchiveRequestV1 !== 'function' || typeof ingestion.writeSavedChatPackageV1 !== 'function') {
       result.status = STATUS_DB_UNAVAILABLE;
       result.error = 'materializer-dependencies-missing';
-      try { await updateQueueRow(requestId, STATUS_DB_UNAVAILABLE, { errorCode: 'materializer-dependencies-missing', errorMessage: 'resolve/writer ingestion API unavailable', processingFinishedAt: nowIso(), overwrite: false }, currentMeta); }
-      catch (_) { /* best-effort */ }
+      /* Best-effort report: the missing dependency is the actionable truth, so
+       * a lost race is noted but does not replace it. */
+      try {
+        var depNote = await transitionRequestStatus({
+          requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_DB_UNAVAILABLE,
+          patch: { errorCode: 'materializer-dependencies-missing', errorMessage: 'resolve/writer ingestion API unavailable', processingFinishedAt: nowIso(), overwrite: false },
+          currentMeta: currentMeta,
+        });
+        if (!depNote.ok) result.transitionConflict = { expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_DB_UNAVAILABLE };
+      } catch (_) { /* best-effort */ }
       return result;
     }
 
@@ -192,28 +255,52 @@
     catch (err) {
       result.status = STATUS_DB_UNAVAILABLE;
       result.error = String((err && err.message) || err || 're-resolution failed');
-      await updateQueueRow(requestId, STATUS_DB_UNAVAILABLE, { errorCode: 're-resolution-threw', errorMessage: result.error, processingFinishedAt: nowIso(), overwrite: false }, currentMeta);
+      var threwMove = await transitionRequestStatus({
+        requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_DB_UNAVAILABLE,
+        patch: { errorCode: 're-resolution-threw', errorMessage: result.error, processingFinishedAt: nowIso(), overwrite: false },
+        currentMeta: currentMeta,
+      });
+      if (!threwMove.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_DB_UNAVAILABLE);
       return result;
     }
 
     var reStatus = cleanString(reresolve && reresolve.status);
     if (reStatus !== STATUS_VALIDATED) {
       var newStatus = reStatus === STATUS_DB_UNAVAILABLE ? STATUS_DB_UNAVAILABLE : STATUS_NEEDS_DESKTOP_SNAPSHOT;
-      await updateQueueRow(requestId, newStatus, { reresolveStatus: reStatus || 'unknown', errorCode: 're-resolution-not-validated', errorMessage: 'Request no longer validates against Desktop store; not written.', processingFinishedAt: nowIso(), overwrite: false }, currentMeta);
+      var reMove = await transitionRequestStatus({
+        requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: newStatus,
+        patch: { reresolveStatus: reStatus || 'unknown', errorCode: 're-resolution-not-validated', errorMessage: 'Request no longer validates against Desktop store; not written.', processingFinishedAt: nowIso(), overwrite: false },
+        currentMeta: currentMeta,
+      });
+      if (!reMove.ok) return conflictResult(result, STATUS_VALIDATED, newStatus);
       result.status = newStatus;
       return result;
     }
 
     var snapshotId = cleanString(reresolve.resolution && reresolve.resolution.snapshotId) || cleanString(row.snapshot_id);
     if (!snapshotId) {
-      await updateQueueRow(requestId, STATUS_NEEDS_DESKTOP_SNAPSHOT, { errorCode: 'snapshot-id-unresolved', errorMessage: 'Re-resolution returned no snapshotId; not written.', processingFinishedAt: nowIso(), overwrite: false }, currentMeta);
+      var noSnapshotMove = await transitionRequestStatus({
+        requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_NEEDS_DESKTOP_SNAPSHOT,
+        patch: { errorCode: 'snapshot-id-unresolved', errorMessage: 'Re-resolution returned no snapshotId; not written.', processingFinishedAt: nowIso(), overwrite: false },
+        currentMeta: currentMeta,
+      });
+      if (!noSnapshotMove.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_NEEDS_DESKTOP_SNAPSHOT);
       result.status = STATUS_NEEDS_DESKTOP_SNAPSHOT;
       return result;
     }
 
-    /* validated -> writing */
+    /* validated -> writing. This is the claim: only the caller that actually
+     * moves the row out of `validated` may call the package writer. */
     var processingStartedAt = nowIso();
-    await updateQueueRow(requestId, STATUS_WRITING, { processingStartedAt: processingStartedAt, snapshotId: snapshotId, overwrite: false }, currentMeta, snapshotId);
+    var claim = await transitionRequestStatus({
+      requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_WRITING,
+      patch: { processingStartedAt: processingStartedAt, snapshotId: snapshotId, overwrite: false },
+      currentMeta: currentMeta, snapshotId: snapshotId,
+    });
+    /* Returning here rather than falling through is load-bearing: `currentMeta`
+     * is the pre-claim snapshot, so a later write would stamp stale metadata
+     * over whichever caller actually owns the row. */
+    if (!claim.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_WRITING);
 
     /* Call the existing Desktop writer with ONLY the resolved snapshotId.
      * Never pass request/Chrome content as package source; overwrite stays false. */
@@ -223,7 +310,16 @@
     } catch (err) {
       var errorMessage = String((err && err.message) || err || 'package writer failed');
       var errorCode = /already exists/i.test(errorMessage) ? 'package-already-exists' : 'package-writer-threw';
-      await updateQueueRow(requestId, STATUS_FAILED, { errorCode: errorCode, errorMessage: errorMessage, snapshotId: snapshotId, processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false }, currentMeta, snapshotId);
+      var failMove = await transitionRequestStatus({
+        requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED,
+        patch: { errorCode: errorCode, errorMessage: errorMessage, snapshotId: snapshotId, processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false },
+        currentMeta: currentMeta, snapshotId: snapshotId,
+      });
+      if (!failMove.ok) {
+        conflictResult(result, STATUS_WRITING, STATUS_FAILED);
+        result.error = 'transition-conflict:' + STATUS_WRITING + '->' + STATUS_FAILED + ' (' + errorCode + ')';
+        return result;
+      }
       result.status = STATUS_FAILED;
       result.error = errorCode;
       return result;
@@ -239,7 +335,18 @@
       writtenAt: cleanString(w.writtenAt) || nowIso(),
     };
     /* writing -> written */
-    await updateQueueRow(requestId, STATUS_WRITTEN, Object.assign({}, pkg, { processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false }), currentMeta, pkg.snapshotId);
+    var doneMove = await transitionRequestStatus({
+      requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
+      patch: Object.assign({}, pkg, { processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false }),
+      currentMeta: currentMeta, snapshotId: pkg.snapshotId,
+    });
+    if (!doneMove.ok) {
+      /* The package exists on disk but this caller no longer owns the row.
+       * Report both facts rather than claiming a success we cannot record. */
+      conflictResult(result, STATUS_WRITING, STATUS_WRITTEN);
+      result.package = pkg;
+      return result;
+    }
     result.status = STATUS_WRITTEN;
     result.ok = true;
     result.package = pkg;
