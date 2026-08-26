@@ -482,6 +482,83 @@ async function main() {
     );
   });
 
+  // ── The re-verification guards are load-bearing (T09) ────────────────────
+  // Headline invariant: no put/repair/dedupe success may be returned unless
+  // the canonical object is PROVEN to hold the expected bytes. The shim
+  // normally stores exactly what it is handed, which makes the "trusted side
+  // reported success but the disk is wrong" branches unreachable — so these
+  // fixtures make the trusted side lie.
+  await checkAsync('a committed write whose canonical object is wrong is refused, not reported as success', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('post-commit guard probe');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      const out = await realInvoke(cmd, a, b);
+      if (cmd === 'h2o_archive_durable_write' && out && out.committed) {
+        // The trusted side claims full success while the disk holds garbage.
+        cas.shim.files.set(p, [9, 9, 9]);
+      }
+      return out;
+    };
+    await assert.rejects(
+      () => cas.api.putAssetBytes({ bytes }),
+      /committed CAS object failed verification/,
+      'success without proven canonical content must be refused',
+    );
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.writeCount, 0, 'a refused commit must not count as a write');
+    assert.equal(d.mismatchCount, 1, 'the mismatch must be recorded');
+  });
+
+  await checkAsync('a repair whose canonical object is still wrong is refused, not reported as repaired', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('post-repair guard probe');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    cas.shim.files.set(p, [1, 2, 3]); // corrupt object triggers the repair path
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'h2o_archive_cas_repair_write') {
+        // The trusted side claims the repair landed but never fixes the disk.
+        return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: true, alreadyValid: false, repaired: true, committed: true, durabilityComplete: true, sha256: 'sha256-' + hex, byteLength: bytes.length, blockers: [] };
+      }
+      return realInvoke(cmd, a, b);
+    };
+    await assert.rejects(
+      () => cas.api.putAssetBytes({ bytes }),
+      /repaired CAS object failed verification/,
+      'a repair success without proven canonical content must be refused',
+    );
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.repairCount, 0, 'a refused repair must not count as a repair');
+    assert.deepEqual(cas.shim.files.get(p), [1, 2, 3], 'the caller must not paper over the lie with its own write');
+  });
+
+  await checkAsync('a lying alreadyValid over a still-corrupt object is refused, not deduped', async () => {
+    const cas = loadCas();
+    const bytes = new TextEncoder().encode('stale alreadyValid probe');
+    const hex = sha256HexNode(bytes);
+    const p = `archive/assets/${hex.slice(0, 2)}/sha256-${hex}`;
+    cas.shim.files.set(p, [4, 5, 6]);
+    const realInvoke = cas.shim.invoke;
+    cas.sandbox.__TAURI_INTERNALS__.invoke = async (cmd, a, b) => {
+      if (cmd === 'h2o_archive_cas_repair_write') {
+        // The trusted side asserts the object was already correct. It is not.
+        return { schema: 'h2o.studio.archive.cas-repair-write.v1', ok: true, alreadyValid: true, repaired: false, committed: false, durabilityComplete: false, sha256: 'sha256-' + hex, byteLength: bytes.length, blockers: [] };
+      }
+      return realInvoke(cmd, a, b);
+    };
+    await assert.rejects(
+      () => cas.api.putAssetBytes({ bytes }),
+      /repaired CAS object failed verification/,
+      'the re-verify must run BEFORE alreadyValid is honoured',
+    );
+    const d = cas.api.diagnoseAssetCas();
+    assert.equal(d.dedupeCount, 0, 'a lying alreadyValid must never become a dedupe');
+  });
+
   check('diagnoseAssetCas reports sane status', () => {
     const d = api.diagnoseAssetCas();
     assert.equal(d.installed, true);
