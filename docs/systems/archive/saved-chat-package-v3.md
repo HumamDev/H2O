@@ -156,6 +156,15 @@ M05 — durable archive preservation, freshness, and coverage. M02 introduces no
 package-selection index solely for coexistence and admits no new remove/rename
 Tauri capability.
 
+> **M05 supersession note (2026-08-26).** The M05 generation contract
+> ([saved-chat-generations.md](saved-chat-generations.md)) supersedes this
+> section's path behavior for packages newly published **after** M05: new
+> packages are immutable generation-named
+> (`<chatId>.g<full-64-hex>.h2ochat`), and `<chatId>.h2ochat` names are only
+> ever pre-M05 grandfathered legacy artifacts, which remain preserved
+> untouched. This note records the deferral being exercised; the historical
+> M02 meaning of this section is unchanged.
+
 ## Write order and failure atomicity
 
 An app-owned v3 package is written in this order:
