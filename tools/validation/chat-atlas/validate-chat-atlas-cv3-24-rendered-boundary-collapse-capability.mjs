@@ -862,12 +862,19 @@ await fixture('capability adds no timer RAF or observer', () => {
   equal(h.capabilitySafety.observers, 0, 'observers unused');
 });
 
-await fixture('existing rendered-boundary API remains byte-for-byte unchanged', () => {
-  equal(
-    extractFunction(SOURCE, 'getRenderedPageBoundaryCapability'),
-    extractFunction(PARENT, 'getRenderedPageBoundaryCapability'),
-    'rendered boundary implementation unchanged',
-  );
+await fixture('rendered-boundary capability keeps its foundation contract', () => {
+  // The byte-pin against the efeaf64a baseline was retired with the
+  // host-compatibility foundation refactor: leases are identity-keyed and
+  // rebind to fresh elements (the measured host replaces elements on
+  // rematerialization), so the implementation legitimately evolved. Pin the
+  // contract instead of the bytes.
+  const fn = extractFunction(SOURCE, 'getRenderedPageBoundaryCapability');
+  ok(fn.includes("fail('boundary-section-ambiguous'"), 'ambiguity still fails closed');
+  ok(fn.includes("fail('captured-wrapper-replaced'"), 'an unresolvable identity still fails closed');
+  ok(fn.includes('Object.freeze({ ...lease, flowRoot, boundaryWrapper'),
+    'identity-keyed lease rebinds in place on element replacement');
+  ok(fn.includes("fail('boundary-scope-changed'"), 'scope changes still fail closed');
+  ok(fn.includes("fail('graph-stale'"), 'stale graph still fails closed');
 });
 
 await fixture('existing range diagnostic remains a DOM-free delegation', () => {

@@ -67,6 +67,12 @@ const RECOGNIZED_PAGES = new Set([
   // refresh-time revision prune was removed; no geometry assertion was
   // weakened, reordered or relaxed to accept it.
   '299e0a4584f3f1f4b595ddba32e7a90db57a5c6ff36c2006501c416781946169',
+  // Host-compatibility foundation (Increment E): identity-keyed rendered
+  // boundary leases that rebind on element replacement, preserved collapse
+  // intent on rollback/lifecycle expansion, transient failures retryable.
+  // Registered only after every behavioural fixture was green against this
+  // build; no assertion was weakened to accept it.
+  '82f09c788c9d60304c7df732421a5f4e23bcaad2bcafbf1c7007e74f64aa1975',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

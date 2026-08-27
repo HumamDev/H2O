@@ -3524,6 +3524,99 @@
     };
   }
 
+  /* Complete-index identity proof: answers "is this id a proven product
+     turn in the current authoritative scope" purely from the Tier-0
+     host-payload-proven index — no identity GRAPH required. The graph needs
+     an active backend fetch (includeIdentityGraph) that the profile
+     capability gates off on unauthorized activations (measured live:
+     profile-not-authorized), and the SSR boot payload is not fetch-visible,
+     so graph-gated consumers were structurally dead there. Consumers that
+     only need per-id membership + role proof (the rendered-boundary
+     collapse chain) belong on THIS surface; cross-branch topology consumers
+     stay on getGraphIdentityDiagnostics. */
+  function getCompleteIndexIdentityProof(ids = []) {
+    const requestedIds = chatAtlasNormalizeGraphDiagnosticIds(ids);
+    const miss = (requestedId) => ({
+      requestedId,
+      found: false,
+      role: null,
+      order: 0,
+      productUser: false,
+      productAnswer: false,
+      stopped: false,
+    });
+    const unavailable = (reason) => chatAtlasFreeze({
+      version: 1,
+      available: false,
+      reason,
+      scope: null,
+      records: requestedIds.map(miss),
+    });
+    const authority = completeTurnIndexAuthorityState;
+    const route = chatAtlasFullIndexRoute();
+    if (
+      authority.enabled !== true
+      || !chatAtlasCompleteIndexAuthorityActive()
+      || !authority.index
+      || !route?.chatId
+      || !route?.routeKey
+      || chatAtlasCompleteIndexIdentity(authority.chatId) !== chatAtlasCompleteIndexIdentity(route.chatId)
+      || String(authority.routeKey || '') !== String(route.routeKey || '')
+    ) return unavailable('authority-unavailable');
+    const turns = Array.isArray(authority.index?.turns) ? authority.index.turns : [];
+    const fingerprint = String(authority.index?.sourceFingerprint || '') || null;
+    if (!turns.length || !fingerprint) return unavailable('authority-unavailable');
+    const scope = chatAtlasFreeze({
+      chatId: chatAtlasCompleteIndexIdentity(authority.chatId) || null,
+      routeKey: String(authority.routeKey || ''),
+      generation: Math.max(0, Number(authority.generation || 0)),
+      fingerprint,
+      turnCount: turns.length,
+    });
+    const records = requestedIds.map((requestedId) => {
+      for (const turn of turns) {
+        const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+        if (qId && qId === requestedId) {
+          return {
+            requestedId,
+            found: true,
+            role: 'user',
+            order: Math.max(0, Number(turn?.order || 0)),
+            productUser: true,
+            productAnswer: false,
+            stopped: turn?.stopped === true,
+          };
+        }
+        const primary = chatAtlasCompleteIndexIdentity(turn?.primaryAId);
+        const variants = Array.isArray(turn?.answerVariants) ? turn.answerVariants : [];
+        const selectedNode = chatAtlasCompleteIndexIdentity(turn?.branch?.selectedAssistantNodeId);
+        if (
+          (primary && primary === requestedId)
+          || (selectedNode && selectedNode === requestedId)
+          || variants.some((variant) => chatAtlasCompleteIndexIdentity(variant) === requestedId)
+        ) {
+          return {
+            requestedId,
+            found: true,
+            role: 'assistant',
+            order: Math.max(0, Number(turn?.order || 0)),
+            productUser: false,
+            productAnswer: true,
+            stopped: turn?.stopped === true,
+          };
+        }
+      }
+      return miss(requestedId);
+    });
+    return chatAtlasFreeze({
+      version: 1,
+      available: true,
+      reason: null,
+      scope,
+      records,
+    });
+  }
+
   function getGraphIdentityDiagnostics(ids = []) {
     const requestedIds = chatAtlasNormalizeGraphDiagnosticIds(ids);
     const unavailable = (reason, scope = null) => chatAtlasFreeze({
@@ -11351,6 +11444,7 @@
         getSelectedPathAcquisitionStatus,
         getSelectedPathDerivationDiagnostics,
         getGraphIdentityDiagnostics,
+        getCompleteIndexIdentityProof,
         getEffectivePresentationIndex,
         getEffectivePresentationStatus,
         getEffectiveTurnRecordByQId,

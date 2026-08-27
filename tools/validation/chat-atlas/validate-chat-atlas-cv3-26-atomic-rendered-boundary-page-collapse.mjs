@@ -538,7 +538,10 @@ function collapse(h) {
   return h.api.collapse(1, { chatId: h.plan.chatId, source: 'validator' });
 }
 function expand(h) {
-  return h.api.expand(1, { chatId: h.plan.chatId, source: 'validator' });
+  // Models the user's second click on the divider control: an explicit
+  // chat-page-divider source clears the persisted collapse intent, while
+  // lifecycle expansions (rollback, host churn) preserve it.
+  return h.api.expand(1, { chatId: h.plan.chatId, source: 'chat-page-divider:validator' });
 }
 
 const parent = parentCapability();
@@ -750,7 +753,12 @@ await fixture('product feedback excludes technical internals', () => {
   ok(!/native-slot|graph|wrapper|fingerprint/.test(String(h.capability.productReason)), 'safe product reason');
 });
 await fixture('1C1b is sole native-hidden transaction writer', () => {
-  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 1, 'one writer statement');
+  // Two statements, one owner: the commit stamp in applyCollapsedNativeRange
+  // and the committed-state maintenance restamp in
+  // rebindCommittedAtomicPageCollapse (host element replacement inside a
+  // hidden range delivers replacements without the stamp). Both live in this
+  // module's transaction owner; no other module writes the attribute.
+  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 2, 'transaction-owner writer statements');
 });
 await fixture('1A1b remains Page-unit-only', () => {
   const core = fs.readFileSync(path.join(ROOT, 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js'), 'utf8');
