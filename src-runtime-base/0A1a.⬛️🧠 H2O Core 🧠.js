@@ -720,6 +720,8 @@
     crossQIdAnswerConflictCount: 0,
     recentCrossQIdAnswerConflicts: [],
     lastCrossQIdAnswerConflict: null,
+    duplicateAnswerAppendSuppressedCount: 0,
+    ambiguousAnswerOwnerCount: 0,
     lastStructureDecision: null,
   };
 
@@ -1758,6 +1760,65 @@
     return { record: null, basis: 'unmatched', candidateCount: 0 };
   }
 
+  /* An assistant-only draft names a canonical answer but carries no question of
+     its own. Windowing can mount an answer whose question shell sits behind a
+     gap, and the cross-gap fix deliberately emits that draft unpaired rather
+     than rebinding it to whichever question happens to precede it — that
+     protection stands. What it cannot see is that the answer may already belong
+     to a committed turn whose question matched separately from its own mounted
+     shell: canonicalLiveDraftMatch() skips records already consumed this pass,
+     so the owner is invisible to the answer-identity tier and the draft is
+     appended as a second turn claiming one answer message. Membership would
+     then follow the mounted window instead of the conversation.
+
+     Ownership is proven by canonical answer identity alone — never proximity,
+     ordinal, or DOM neighbour — so this stays narrower than the rebinding the
+     cross-gap fix forbids. It applies only to drafts with no question of their
+     own, and fails closed unless exactly one committed turn claims the answer. */
+  function canonicalCommittedAnswerOwner(records, draft) {
+    if (normalizeTurnAlias(draft?.qId || '')) {
+      return { record: null, basis: 'draft-owns-question', candidateCount: 0 };
+    }
+    const draftAnswers = canonicalDraftAnswerIds(draft);
+    if (!draftAnswers.size) {
+      return { record: null, basis: 'draft-without-answer-identity', candidateCount: 0 };
+    }
+    const owners = (Array.isArray(records) ? records : []).filter((record) => {
+      if (!record || canonicalQIdsConflict(record, draft)) return false;
+      const recordAnswers = canonicalRecordAnswerIds(record);
+      return Array.from(draftAnswers).some((value) => recordAnswers.has(value));
+    });
+    if (owners.length === 1) {
+      return { record: owners[0], basis: 'committed-answer-identity', candidateCount: 1 };
+    }
+    return {
+      record: null,
+      basis: owners.length ? 'ambiguous-answer-owner' : 'unclaimed-answer-identity',
+      candidateCount: owners.length,
+    };
+  }
+
+  /* applyLiveDraft() replaces record.live wholesale, which would drop the
+     question element the owner already bound from its own mounted shell. The
+     mounted answer evidence is merged in place instead, and no identity field
+     is touched: the owning turn keeps its qId, answer set and turn id. */
+  function bindLiveAnswerEvidenceToOwner(record, draft) {
+    if (!record || !draft) return record;
+    if (!record.live) record.live = { qEl: null, primaryAEl: null, answerEls: [], connected: false };
+    const live = record.live;
+    const primaryAEl = draft?.live?.primaryAEl || null;
+    if (primaryAEl && !live.primaryAEl) live.primaryAEl = primaryAEl;
+    const draftAnswerEls = Array.isArray(draft?.live?.answerEls)
+      ? draft.live.answerEls.filter(Boolean)
+      : [];
+    if (draftAnswerEls.length) {
+      const existing = Array.isArray(live.answerEls) ? live.answerEls.filter(Boolean) : [];
+      live.answerEls = Array.from(new Set([...existing, ...draftAnswerEls]));
+    }
+    if (draft?.live?.connected) live.connected = true;
+    return refreshLegacyTurnCompat(record);
+  }
+
   function syncDurableCurrentQuestionIdentity(previousQId, currentQId, draft) {
     const previous = normalizeTurnAlias(previousQId || '');
     const current = normalizeTurnAlias(currentQId || '');
@@ -2035,6 +2096,22 @@
       // re-enters through the validated branch index or a later clean commit.
       if (chatAtlasBranchTransitionSuppressesLiveAppend()) {
         noteBranchTransitionSuppressedLiveAppend();
+        continue;
+      }
+      // A mounted answer whose turn is already committed is evidence about that
+      // turn, not a turn of its own. Bind it to its owner instead of publishing
+      // a second turn for the same answer message.
+      const answerOwner = canonicalCommittedAnswerOwner(nextRecords, draft);
+      if (answerOwner.record) {
+        turnState.duplicateAnswerAppendSuppressedCount += 1;
+        bindLiveAnswerEvidenceToOwner(answerOwner.record, draft);
+        continue;
+      }
+      if (answerOwner.basis === 'ambiguous-answer-owner') {
+        // More than one committed turn already claims this answer. Choosing one
+        // would invent an owner and appending would add a third; leave the
+        // committed set alone and let the ambiguity surface in diagnostics.
+        turnState.ambiguousAnswerOwnerCount += 1;
         continue;
       }
       const record = createTurnRecord('', nextRecords.length + 1);
