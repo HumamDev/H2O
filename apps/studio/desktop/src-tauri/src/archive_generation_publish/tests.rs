@@ -588,6 +588,64 @@ fn no_shipped_configuration_disables_the_leading_dot_exclusion_or_names_staging(
     }
 }
 
+// ── G1 CAPABILITY CUTOVER ──────────────────────────────────────────────────
+
+#[test]
+fn the_renderer_holds_no_archive_mutation_authority_after_the_g1_cutover() {
+    // The publisher's immutability guarantee is only real if the renderer
+    // cannot write, truncate or pre-create archive paths behind its back.
+    // Before G1 the archive capability granted fs:allow-write-file (which also
+    // enables plugin:fs|open and |write) and fs:allow-mkdir over
+    // $APPLOCALDATA/archive/**; the cutover removes both.
+    let capability = include_str!("../../capabilities/archive-cas.json");
+    // Parse the GRANTS, not the prose: the description legitimately names the
+    // permissions the cutover removed, so a substring scan would be fooled by
+    // its own documentation.
+    let parsed: serde_json::Value =
+        serde_json::from_str(capability).expect("archive capability must be valid JSON");
+    let granted: Vec<String> = parsed["permissions"]
+        .as_array()
+        .expect("permissions array")
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .get("identifier")
+                .and_then(|id| id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| entry.as_str().map(|s| s.to_string()))
+        })
+        .collect();
+
+    for mutating in [
+        "fs:allow-write-file",
+        "fs:allow-mkdir",
+        "fs:allow-remove",
+        "fs:allow-rename",
+        "fs:allow-truncate",
+    ] {
+        assert!(
+            !granted.iter().any(|g| g == mutating),
+            "the archive capability must grant no mutation authority; found {mutating}"
+        );
+    }
+    // The read/metadata surface the live consumers genuinely need survives.
+    for retained in [
+        "fs:allow-exists",
+        "fs:allow-read-file",
+        "fs:allow-lstat",
+        "fs:allow-read-dir",
+    ] {
+        assert!(
+            granted.iter().any(|g| g == retained),
+            "missing required read scope {retained}"
+        );
+    }
+    // read-dir stays packages-scoped; blob reads need archive/** because the
+    // CAS lives under archive/assets.
+    assert!(capability.contains("$APPLOCALDATA/archive/packages"));
+    assert!(capability.contains("$APPLOCALDATA/archive/**"));
+}
+
 // ── RESERVED NAMESPACE (§R — reserved namespace) ───────────────────────────────────────────────
 
 #[test]
@@ -967,6 +1025,48 @@ fn a_fence_failure_on_the_occupied_path_never_downgrades_the_dedupe() {
         "the advisory rides alongside, never inside, blockers"
     );
     // The occupant is untouched and this attempt's staging is cleaned.
+    assert_eq!(packages_entries(&p), vec![published]);
+}
+
+#[test]
+fn an_occupant_with_an_inconsistent_snapshot_descriptor_is_corrupt_not_deduped() {
+    // G1 preflight: the occupant's BYTES and contentHash are correct, but its
+    // manifest.files.snapshot descriptor is not. The governed reader blocks
+    // that with snapshot-sha-mismatch, so trusted dedupe would launder an
+    // invalid package into a success — and dedupe deletes this attempt's
+    // correct copy.
+    let p = publisher("occupant-snapshot-descriptor");
+    let fx = v1_fixture("chat_snapdesc", "snap1", "body");
+    assert!(publish(&p, &fx).ok);
+    let published = packages_entries(&p)[0].clone();
+    let manifest_path = p
+        .root
+        .join(PACKAGES_DIR)
+        .join(&published)
+        .join("manifest.json");
+
+    // Corrupt ONLY the files.snapshot sha. contentHash and the bytes stay
+    // correct, so every other check still passes.
+    let text = std::fs::read_to_string(&manifest_path).expect("manifest");
+    let real = format!("sha256-{}", sha256_hex(&fx.snapshot));
+    let bogus = format!("sha256-{}", "0".repeat(64));
+    let tampered = text.replacen(
+        &format!("\"sha256\":\"{real}\""),
+        &format!("\"sha256\":\"{bogus}\""),
+        1,
+    );
+    assert_ne!(tampered, text, "the fixture must contain the descriptor");
+    std::fs::write(&manifest_path, &tampered).expect("write");
+
+    let result = publish(&p, &fx);
+    assert!(
+        !result.ok,
+        "an occupant the reader would block must not dedupe: {:?}",
+        result.outcome
+    );
+    assert_eq!(result.outcome, Outcome::GenerationDestinationCorrupt);
+    // Occupant untouched, this attempt's staging cleaned.
+    assert_eq!(std::fs::read_to_string(&manifest_path).unwrap(), tampered);
     assert_eq!(packages_entries(&p), vec![published]);
 }
 
@@ -2183,25 +2283,60 @@ fn source_tripwires_pin_the_load_bearing_guard_symbols() {
     );
     // Environmental family is distinct.
     assert!(source.contains("generation-staging-resource-"));
-    // Commands are not production-registered at this Stage.
-    assert!(source.contains("commands_pending_g1_cutover"));
+    // G1: the command surface exists and is exactly the four semantic
+    // operations (behavioural pin lives in
+    // exactly_the_four_semantic_commands_are_registered_in_both_handler_arms).
+    for name in [
+        "h2o_archive_generation_begin",
+        "h2o_archive_generation_write_member",
+        "h2o_archive_generation_commit",
+        "h2o_archive_generation_abort",
+    ] {
+        assert!(source.contains(name), "missing command {name}");
+    }
+    // No caller-named destination ever reaches the trusted side.
+    for forbidden in ["packagePath", "destination", "generationPath\":"] {
+        assert!(
+            !source.contains(&format!("pub {forbidden}")),
+            "the command surface must not accept {forbidden}"
+        );
+    }
 }
 
 #[test]
-fn the_commands_are_not_registered_in_the_production_handler() {
-    // Production-wiring boundary (§N): publication must not be renderer-
-    // invokable before the G1 capability cutover.
+fn exactly_the_four_semantic_commands_are_registered_in_both_handler_arms() {
+    // G1 cutover: publication is now renderer-invokable, but ONLY through the
+    // four purpose-bounded semantic operations. §O forbids exposing arbitrary
+    // archive write, arbitrary member paths, caller-selected destinations,
+    // generic rename/remove, a caller-authoritative contentHash, or a generic
+    // CAS path — so the registered surface is exactly these four.
     let lib = include_str!("../lib.rs");
-    assert!(
-        !lib.contains("archive_generation_publish::"),
-        "no generation publish symbol may be referenced by lib.rs before the G1 cutover"
-    );
-    assert!(lib.contains("pub mod archive_generation_publish;"));
-    // Stronger than a naming convention: the module declares NO Tauri command
-    // at all, so there is nothing a handler could register.
+    let expected = [
+        "h2o_archive_generation_begin",
+        "h2o_archive_generation_write_member",
+        "h2o_archive_generation_commit",
+        "h2o_archive_generation_abort",
+    ];
+    for name in expected {
+        // Registered in BOTH generate_handler! arms (debug and release).
+        assert_eq!(
+            lib.matches(&format!("archive_generation_publish::{name}"))
+                .count(),
+            2,
+            "{name} must be registered in both handler arms"
+        );
+    }
+    // The session registry must be managed, or sessions would not survive
+    // across invokes.
+    assert!(lib.contains("archive_generation_publish::PublisherState::default()"));
+
+    // And nothing BEYOND those four is exposed: every #[tauri::command] in the
+    // module is one of them.
     let source = include_str!("../archive_generation_publish.rs");
-    assert!(
-        !source.contains("#[tauri::command]") && !source.contains("#[command]"),
-        "publication must not be renderer-invokable before the G1 cutover"
+    let declared = source.matches("#[tauri::command]").count();
+    assert_eq!(
+        declared,
+        expected.len(),
+        "the module must declare exactly the four semantic commands"
     );
 }

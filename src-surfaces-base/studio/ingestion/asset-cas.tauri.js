@@ -207,10 +207,7 @@
       throw e;
     }
   }
-  async function fsMkdirRecursive(path) {
-    var invoke = invokeOrThrow();
-    return invoke('plugin:fs|mkdir', { path: path, options: fsOptions({ recursive: true }) });
-  }
+
   async function fsReadFile(path) {
     var invoke = invokeOrThrow();
     return decodeToBytes(await invoke('plugin:fs|read_file', { path: path, options: fsOptions() }));
@@ -310,7 +307,10 @@
         return await repairBlob(descriptor, path, hex, u8);
       }
 
-      await fsMkdirRecursive(shardDirForHex(hex));
+      /* G1: no renderer mkdir. The trusted durable-write command creates every
+       * ancestor and the shard itself, descriptor-relatively with O_NOFOLLOW,
+       * so this call was redundant — and after the G1 capability cutover the
+       * renderer holds no mkdir authority under archive/** at all. */
       var write = await durableWrite(path, u8);
       if (!write.ok && !write.committed) {
         var codes = blockerCodes(write);

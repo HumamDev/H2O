@@ -1665,6 +1665,43 @@ fn classify_occupant(
         );
     }
 
+    // The governed reader hard-blocks `snapshot-sha-mismatch` for v1/v2 when
+    // `manifest.files.snapshot.sha256` disagrees with the stored bytes, and it
+    // is a §S class-A blocker that must be unreachable for a committed
+    // generation. contentHash alone does NOT cover it: the descriptor is a
+    // separate field, so an occupant can carry correct bytes and a correct
+    // contentHash while its files.snapshot descriptor is wrong. Without this,
+    // such an occupant would be laundered into DEDUPED while the reader
+    // classifies it invalid.
+    //
+    // Scoped deliberately to `snapshot`: the reader does NOT hash chat.md or
+    // chat.html, so re-hashing those as blockers would newly refuse packages
+    // the reader accepts (they are handled as a non-blocking advisory below).
+    {
+        let key = Member::Snapshot
+            .descriptor_key()
+            .expect("non-manifest member");
+        match manifest.files.get(key) {
+            Some((declared_sha, declared_len)) => {
+                let actual = format!("sha256-{}", sha256_hex(&snapshot_bytes));
+                if *declared_len != snapshot_bytes.len() as u64 || *declared_sha != actual {
+                    return (
+                        Outcome::GenerationDestinationCorrupt,
+                        "generation-destination-corrupt",
+                        Vec::new(),
+                    );
+                }
+            }
+            None => {
+                return (
+                    Outcome::GenerationDestinationCorrupt,
+                    "generation-destination-corrupt",
+                    Vec::new(),
+                )
+            }
+        }
+    }
+
     let mut sorted: Vec<String> = manifest.assets.iter().map(|a| a.sha256.clone()).collect();
     sorted.sort();
     let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted);
@@ -1696,7 +1733,7 @@ fn classify_occupant(
     }
 
     // Batch repair R4: the occupant is identity-identical and structurally
-    // complete, so this IS a dedupe —
+    // complete (files.snapshot re-hashed above), so this IS a dedupe —
     // the reader never hashes chat.md/chat.html and §K makes them non-identity,
     // so a byte mismatch there does not make the package invalid, and refusing
     // would not repair the occupant: it would only convert a legitimate
@@ -1745,25 +1782,123 @@ pub fn archive_root_for(app: &tauri::AppHandle) -> Result<std::path::PathBuf, St
 /// mutation authority, i.e. before the G1 cutover. Registration lands
 /// atomically with capability narrowing and legacy-writer retirement.
 #[allow(dead_code)]
-pub mod commands_pending_g1_cutover {
-    use super::*;
+/// G1 production command surface.
+///
+/// Exposes ONLY the four purpose-bounded semantic operations. The renderer
+/// never names a final destination, a member path, a package path, a CAS
+/// source, or an authoritative contentHash — §O.
+///
+/// The publisher lives in Tauri state so sessions survive across invokes; its
+/// root is the app-owned archive directory, resolved on the trusted side.
+pub struct PublisherState(pub std::sync::Mutex<Option<std::sync::Arc<Publisher>>>);
 
-    #[allow(dead_code)]
-    pub fn begin_for(publisher: &Publisher, chat_id: &str) -> BeginResult {
-        begin(publisher, chat_id)
+impl Default for PublisherState {
+    fn default() -> Self {
+        PublisherState(std::sync::Mutex::new(None))
     }
-    #[allow(dead_code)]
-    pub fn write_for(p: &Publisher, token: u64, member: Member, chunk: &[u8]) -> AckResult {
-        write_member(p, token, member, chunk)
+}
+
+fn publisher_for(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, PublisherState>,
+) -> Result<std::sync::Arc<Publisher>, String> {
+    let mut slot = state.0.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = slot.as_ref() {
+        return Ok(std::sync::Arc::clone(existing));
     }
-    #[allow(dead_code)]
-    pub fn commit_for(p: &Publisher, token: u64, expected: Option<&str>) -> PublishResult {
-        commit(p, token, expected)
+    let root = crate::archive_durable_write::archive_root(app)?;
+    let publisher = std::sync::Arc::new(Publisher::new(root));
+    *slot = Some(std::sync::Arc::clone(&publisher));
+    Ok(publisher)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BeginOptions {
+    pub chat_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberOptions {
+    pub token: u64,
+    /// Enum only — never a path or filename.
+    pub member: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitOptions {
+    pub token: u64,
+    /// Assertion-only: it can refuse a publication, never steer one (§U).
+    pub expected_manifest_sha256: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AbortOptions {
+    pub token: u64,
+}
+
+fn member_from_name(name: &str) -> Option<Member> {
+    match name {
+        "snapshot" => Some(Member::Snapshot),
+        "markdown" => Some(Member::Markdown),
+        "html" => Some(Member::Html),
+        "manifest" => Some(Member::Manifest),
+        _ => None,
     }
-    #[allow(dead_code)]
-    pub fn abort_for(p: &Publisher, token: u64) -> AckResult {
-        abort(p, token)
-    }
+}
+
+#[tauri::command]
+pub async fn h2o_archive_generation_begin(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PublisherState>,
+    options: BeginOptions,
+) -> Result<BeginResult, String> {
+    let publisher = publisher_for(&app, &state)?;
+    Ok(begin(&publisher, &options.chat_id))
+}
+
+#[tauri::command]
+pub async fn h2o_archive_generation_write_member(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PublisherState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<AckResult, String> {
+    let options: MemberOptions = crate::archive_durable_write::required_options(&request)?;
+    let member = match member_from_name(&options.member) {
+        Some(member) => member,
+        // An unknown name is refused outright: the enum is the whole surface.
+        None => return Ok(AckResult::refused("generation-member-unknown")),
+    };
+    let chunk = crate::archive_durable_write::body_bytes(&request)?;
+    let publisher = publisher_for(&app, &state)?;
+    Ok(write_member(&publisher, options.token, member, &chunk))
+}
+
+#[tauri::command]
+pub async fn h2o_archive_generation_commit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PublisherState>,
+    options: CommitOptions,
+) -> Result<PublishResult, String> {
+    let publisher = publisher_for(&app, &state)?;
+    Ok(commit(
+        &publisher,
+        options.token,
+        options.expected_manifest_sha256.as_deref(),
+    ))
+}
+
+#[tauri::command]
+pub async fn h2o_archive_generation_abort(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PublisherState>,
+    options: AbortOptions,
+) -> Result<AckResult, String> {
+    let publisher = publisher_for(&app, &state)?;
+    Ok(abort(&publisher, options.token))
 }
 
 #[cfg(test)]

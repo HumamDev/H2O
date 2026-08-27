@@ -1221,7 +1221,7 @@ pub fn cas_repair_write_within_root(
 /// Resolves the app-owned archive root. This must agree with the renderer's
 /// `BaseDirectory::AppLocalData` (15) + `archive/...` convention, so it uses
 /// Tauri's own resolver rather than rebuilding a path from the product name.
-fn archive_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn archive_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     use tauri::Manager;
 
     let base = app
@@ -1244,7 +1244,7 @@ fn body_len(request: &tauri::ipc::Request<'_>) -> Result<usize, String> {
 /// Extracts the raw invoke body as bytes, mirroring `plugin:fs|write_file`'s
 /// marshaling so a multi-megabyte asset is not expanded into a JSON number
 /// array.
-fn body_bytes(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
+pub(crate) fn body_bytes(request: &tauri::ipc::Request<'_>) -> Result<Vec<u8>, String> {
     match request.body() {
         tauri::ipc::InvokeBody::Raw(data) => Ok(data.clone()),
         tauri::ipc::InvokeBody::Json(serde_json::Value::Array(data)) => data
@@ -1270,7 +1270,7 @@ fn parse_options_header<T: serde::de::DeserializeOwned>(raw: &[u8]) -> Result<T,
 }
 
 /// Required `options` header.
-fn required_options<T: serde::de::DeserializeOwned>(
+pub(crate) fn required_options<T: serde::de::DeserializeOwned>(
     request: &tauri::ipc::Request<'_>,
 ) -> Result<T, String> {
     let raw = request

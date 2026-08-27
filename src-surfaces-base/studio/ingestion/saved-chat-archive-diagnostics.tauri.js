@@ -69,6 +69,23 @@
     return parts.join('/');
   }
 
+  /* M05 §D classification. Exact basename equality against names derived from
+   * VERIFIED identity: the verified chatId and the RECOMPUTED contentHash.
+   * A filename is never identity authority.
+   *
+   * A legitimate legacy chatId ending in `.g<64hex>` classifies as LEGACY,
+   * because its basename equals legacyExpected and can never equal
+   * generationExpected (which appends a further `.g<hex>` suffix). */
+  function classifyPackageBasenameV1(basename, verifiedChatId, recomputedContentHash) {
+    var name = cleanString(basename);
+    var chatId = cleanString(verifiedChatId);
+    var hex = cleanString(recomputedContentHash).replace(/^sha256-/, '').toLowerCase();
+    if (!name || !chatId) return 'unclassified';
+    if (name === chatId + '.h2ochat') return 'legacy';
+    if (/^[0-9a-f]{64}$/.test(hex) && name === chatId + '.g' + hex + '.h2ochat') return 'generation';
+    return 'mismatch';
+  }
+
   function packageDirNameForPath(packagePath) {
     var path = cleanString(packagePath).replace(/[\/\\]+$/g, '');
     var idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
@@ -230,6 +247,10 @@
         packages: PACKAGE_ROOT,
         liveCas: LIVE_CAS_ROOT,
       },
+      /* M05 G1: true only when every archive entry was enumerated. A consumer
+       * must not infer absence from a result with complete:false. */
+      complete: true,
+      truncated: false,
       blockers: [],
       warnings: [],
       counts: {},
@@ -318,6 +339,7 @@
       status: status,
       packagePath: packagePath,
       packageDirName: dirName || packageDirNameForPath(packagePath),
+      nameClassification: 'unclassified',
       schemaVersion: manifest && isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : null,
       payloadVersion: manifest && isFiniteNumber(manifest.payloadVersion) ? manifest.payloadVersion : null,
       manifestPresent: manifestPresent,
@@ -433,7 +455,15 @@
 
   async function listSavedChatArchivePackagesV1(options) {
     var opts = safeObject(options);
-    var limit = isFiniteNumber(opts.limit) && opts.limit > 0 ? Math.floor(opts.limit) : 500;
+    /* M05 G1: discovery is COMPLETE by default. The pre-M05 silent 500-entry
+     * ceiling was harmless under one-package-per-chat, but accumulating
+     * generations make it reachable — and a truncated scan must never be
+     * usable as authority for fresh-generation ABSENCE, PRESERVED, COVERED,
+     * BEST-HISTORICAL, or a dedupe/refresh decision. A caller may still bound
+     * the work explicitly, and truncation is then reported as a BLOCKER plus
+     * `complete:false`, never as a warning that a consumer could overlook. */
+    var bounded = isFiniteNumber(opts.limit) && opts.limit > 0;
+    var limit = bounded ? Math.floor(opts.limit) : Infinity;
     var result = rootResult();
     try {
       var rootExists = await fsExists(PACKAGE_ROOT);
@@ -461,8 +491,11 @@
         if (packagePath.indexOf(PACKAGE_ROOT + '/') !== 0) packagePath = packagePathForDirName(name);
         result.packages.push(await shallowPackageEntry(packagePath, name));
       }
-      if (entries.length > limit) {
-        result.warnings.push(makeIssue('archive-package-limit-reached', 'archive package inventory reached the requested limit', { limit: limit, entries: entries.length }));
+      if (bounded && entries.length > limit) {
+        /* BLOCKER, not a warning: a bounded scan is not evidence of absence. */
+        result.complete = false;
+        result.truncated = true;
+        result.blockers.push(makeIssue('archive-package-inventory-truncated', 'archive package inventory was bounded and did not enumerate every entry; this result must not be used to conclude a package is absent', { limit: limit, entries: entries.length }));
       }
       state.lastRunAt = result.generatedAt;
       return setAggregateStatus(result, true);
@@ -481,6 +514,10 @@
       status: STATUS_BLOCKED,
       packagePath: path,
       packageDirName: dirName,
+      /* M05 §D: 'legacy' | 'generation' | 'mismatch' | 'unclassified'.
+       * Set only after verification, from the verified chatId and the
+       * RECOMPUTED contentHash. */
+      nameClassification: 'unclassified',
       chatId: '',
       snapshotId: '',
       schemaVersion: null,
@@ -1239,9 +1276,6 @@
         diag.chatId = firstString(diag.chatId, snapshot.chatId);
         diag.snapshotId = firstString(diag.snapshotId, snapshot.snapshotId);
       }
-      if (diag.chatId && diag.packageDirName !== diag.chatId + '.h2ochat') {
-        diag.blockers.push(makeIssue('package-dirname-chat-id-mismatch', 'package folder basename must match chatId'));
-      }
 
       if (manifest && snapshotBytes) {
         var fileSnapshotSha = firstString(manifest.files && manifest.files.snapshot && manifest.files.snapshot.sha256);
@@ -1280,6 +1314,19 @@
         diag.hashChecks.contentHashOk = !!expectedContentHash && expectedContentHash === diag.hashChecks.actualContentHash;
         if (!diag.hashChecks.contentHashOk) {
           diag.blockers.push(makeIssue('content-hash-mismatch', 'manifest.contentHash does not match expected package content hash', { expected: expectedContentHash, actual: diag.hashChecks.actualContentHash }));
+        }
+
+        /* M05 §D: the basename is DISCOVERY INPUT ONLY. Identity is the join of
+         * the verified chatId with the RECOMPUTED contentHash — never the raw
+         * manifest.contentHash string, and never a filename parse. This
+         * supersedes the pre-M05 `package-dirname-chat-id-mismatch` blocker,
+         * which required `<chatId>.h2ochat` and therefore blocked every
+         * generation name. */
+        if (diag.chatId && expectedContentHash) {
+          diag.nameClassification = classifyPackageBasenameV1(diag.packageDirName, diag.chatId, expectedContentHash);
+          if (diag.nameClassification === 'mismatch') {
+            diag.blockers.push(makeIssue('package-name-identity-mismatch', 'package basename matches neither the legacy nor the generation name for its verified identity', { basename: diag.packageDirName }));
+          }
         }
       }
 

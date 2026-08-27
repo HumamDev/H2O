@@ -2518,6 +2518,10 @@ macro_rules! h2o_studio_invoke_handler {
             apply_folder_metadata_color,
             archive_durable_write::h2o_archive_durable_write,
             archive_durable_write::h2o_archive_cas_repair_write,
+            archive_generation_publish::h2o_archive_generation_begin,
+            archive_generation_publish::h2o_archive_generation_write_member,
+            archive_generation_publish::h2o_archive_generation_commit,
+            archive_generation_publish::h2o_archive_generation_abort,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2548,7 +2552,11 @@ macro_rules! h2o_studio_invoke_handler {
             prove_folder_metadata_color_apply_rollback,
             apply_folder_metadata_color,
             archive_durable_write::h2o_archive_durable_write,
-            archive_durable_write::h2o_archive_cas_repair_write
+            archive_durable_write::h2o_archive_cas_repair_write,
+            archive_generation_publish::h2o_archive_generation_begin,
+            archive_generation_publish::h2o_archive_generation_write_member,
+            archive_generation_publish::h2o_archive_generation_commit,
+            archive_generation_publish::h2o_archive_generation_abort
         ]
     };
 }
@@ -2559,6 +2567,10 @@ pub fn run() {
         .expect("failed to install SQLite writer identity auto-extension");
 
     tauri::Builder::default()
+        // G1: the generation publisher's session registry. Sessions must
+        // survive across invokes, so the publisher is app state rather than
+        // per-command.
+        .manage(archive_generation_publish::PublisherState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

@@ -1,50 +1,53 @@
 {
   "$schema": "https://schema.tauri.app/capabilities/2",
   "identifier": "archive-cas",
-  "description": "Chat Saving Architecture Phase C archive capability gate. Grants the minimum filesystem access for the app-owned saved-chat archive / content-addressed store (CAS) under $APPLOCALDATA/archive. Scoped strictly to that app-owned archive root: mkdir + exists + lstat metadata + binary read-file + binary write-file for CAS/package materialization, plus read-dir only for C5 archive/package diagnostics under archive/packages. Intentionally grants NO remove/rename (CAS blobs are content-addressed and immutable; no GC in Phase C) and NO broad $HOME / $APPLOCALDATA access. This is the security boundary only; no UI, no sync, no import/recovery, and no package-export save dialog are added here. The live archive/CAS root is deliberately separate from the Sync lane's $HOME/H2O Studio Sync/ folder (ADR-0009, ADR-0010). DP-M03-D adds fs:allow-lstat at the existing $APPLOCALDATA/archive/** scope so the governed saved-chat package reader can establish its trusted pre-read physical size bound (DP-M03-C) before the whole-file read; lstat is metadata-only and adds no path scope, no open/seek, and no remove/rename. F.3 adds a dev-only remote-origin scope (http://127.0.0.1:1430 / http://localhost:1430) so this app-owned archive fs capability also applies to the Tauri WebView served by the local dev server under `tauri dev` (required for the materializer package write); the remote scope is inert in production builds, which load locally over tauri://.",
-  "windows": ["main"],
+  "description": "Chat Saving Architecture archive capability gate. Grants the renderer the minimum READ/METADATA access for the app-owned saved-chat archive / content-addressed store (CAS) under $APPLOCALDATA/archive, and NO mutation authority whatsoever. M05 G1 CUTOVER: fs:allow-write-file and fs:allow-mkdir were removed. Every write under $APPLOCALDATA/archive now happens in trusted Rust \u2014 CAS objects through h2o_archive_durable_write / h2o_archive_cas_repair_write (which create their own ancestors and shards descriptor-relatively), and saved-chat packages through the staged immutable generation publisher (h2o_archive_generation_begin / _write_member / _commit / _abort), which derives the final generation path from its own recomputed contentHash. The renderer therefore cannot create, overwrite, truncate or pre-create any package, staging or CAS path, which is what makes a published generation immutable in practice rather than only by convention. Retained scopes: exists/read-file/lstat over archive/** (CAS blob verification lives under archive/assets, package reads under archive/packages) and read-dir scoped to archive/packages for C5 archive/package diagnostics. Still NO remove/rename, and no broad $HOME/$APPLOCALDATA access. The live archive/CAS root remains deliberately separate from the Sync lane's $HOME/H2O Studio Sync/ folder (ADR-0009, ADR-0010). DP-M03-D's fs:allow-lstat remains at the existing $APPLOCALDATA/archive/** scope for the governed pre-read physical size bound (DP-M03-C). F.3's dev-only remote-origin scope (http://127.0.0.1:1430 / http://localhost:1430) remains so this capability also applies to the WebView served by the local dev server under `tauri dev`; it is inert in production builds, which load over tauri://.",
+  "windows": [
+    "main"
+  ],
   "remote": {
-    "urls": ["http://127.0.0.1:1430/*", "http://localhost:1430/*"]
+    "urls": [
+      "http://127.0.0.1:1430/*",
+      "http://localhost:1430/*"
+    ]
   },
   "permissions": [
     {
-      "identifier": "fs:allow-mkdir",
-      "allow": [
-        { "path": "$APPLOCALDATA/archive" },
-        { "path": "$APPLOCALDATA/archive/assets" },
-        { "path": "$APPLOCALDATA/archive/**" }
-      ]
-    },
-    {
       "identifier": "fs:allow-exists",
       "allow": [
-        { "path": "$APPLOCALDATA/archive" },
-        { "path": "$APPLOCALDATA/archive/**" }
+        {
+          "path": "$APPLOCALDATA/archive"
+        },
+        {
+          "path": "$APPLOCALDATA/archive/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-read-file",
       "allow": [
-        { "path": "$APPLOCALDATA/archive/**" }
+        {
+          "path": "$APPLOCALDATA/archive/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-lstat",
       "allow": [
-        { "path": "$APPLOCALDATA/archive/**" }
+        {
+          "path": "$APPLOCALDATA/archive/**"
+        }
       ]
     },
     {
       "identifier": "fs:allow-read-dir",
       "allow": [
-        { "path": "$APPLOCALDATA/archive/packages" },
-        { "path": "$APPLOCALDATA/archive/packages/**" }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [
-        { "path": "$APPLOCALDATA/archive/**" }
+        {
+          "path": "$APPLOCALDATA/archive/packages"
+        },
+        {
+          "path": "$APPLOCALDATA/archive/packages/**"
+        }
       ]
     }
   ]

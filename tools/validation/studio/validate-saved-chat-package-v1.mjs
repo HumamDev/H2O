@@ -456,43 +456,76 @@ async function main() {
     assert.equal(snap.savedAt, '', 'savedAt must be empty when not stored (no nowIso fallback)');
   });
 
-  await checkAsync('writeSavedChatPackageV1 writes app-owned archive package path only', async () => {
-    const written = await ingestion.writeSavedChatPackageV1({
-      snapshotId: 'snap_phase_b',
-    });
+  await checkAsync('writeSavedChatPackageV1 publishes through the TRUSTED generation publisher', async () => {
+    /* M05 G1: the renderer no longer creates the package directory or writes
+     * members. It builds the sanctioned package and hands it to trusted Rust,
+     * which derives the final immutable generation path from its own
+     * recomputed contentHash. These checks previously pinned the retired
+     * plugin-fs writer; they now pin the cutover. */
+    const staged = [];
+    let begun = 0;
+    ingestion.publishSavedChatGenerationV1 = async (built) => {
+      begun += 1;
+      for (const member of ['snapshot', 'markdown', 'html', 'manifest']) {
+        const src = { snapshot: 'snapshot.json', markdown: 'chat.md', html: 'chat.html', manifest: 'manifest.json' }[member];
+        assert.ok(built.files[src], `built package must carry ${src}`);
+        staged.push(member);
+      }
+      const hex = String(built.contentHash || '').replace(/^sha256-/, '');
+      return {
+        ok: true,
+        outcome: 'created',
+        committed: true,
+        deduped: false,
+        durabilityComplete: true,
+        generationPath: `archive/packages/${built.manifest.chatId}.g${hex}.h2ochat`,
+        contentHash: built.contentHash,
+        blockers: [],
+        advisories: [],
+      };
+    };
+
+    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b' });
+    assert.equal(begun, 1, 'exactly one trusted publication');
+    assert.deepEqual(staged, ['snapshot', 'markdown', 'html', 'manifest'],
+      'all four governed members are staged through the fixed enum');
     assert.equal(written.written, true);
-    assert.equal(written.packagePath, 'archive/packages/chat_phase_b.h2ochat');
-    assert.equal(mockFs.dirs.has('archive/packages/chat_phase_b.h2ochat'), true);
-    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/manifest.json'), true);
-    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/snapshot.json'), true);
-    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/chat.md'), true);
-    assert.equal(mockFs.files.has('archive/packages/chat_phase_b.h2ochat/chat.html'), true);
-    assert.equal(mockFs.dirs.has('archive/packages/chat_phase_b.h2ochat/assets'), false);
+    assert.equal(written.committed, true);
+    assert.equal(written.deduped, false);
+    /* The path is REPORTED by the trusted side, never supplied. */
+    assert.match(written.packagePath, /^archive\/packages\/chat_phase_b\.g[0-9a-f]{64}\.h2ochat$/);
+    /* And the renderer wrote nothing itself. */
+    assert.equal(mockFs.dirs.has('archive/packages/chat_phase_b.h2ochat'), false,
+      'the renderer must not create a package directory');
+    assert.equal(mockFs.files.size, 0, 'the renderer must not write package members');
   });
 
-  await checkAsync('written snapshot.json bytes re-hash to manifest contentHash', async () => {
-    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', overwrite: true });
-    const root = 'archive/packages/chat_phase_b.h2ochat';
-    const onDiskSnapshot = new TextDecoder().decode(mockFs.files.get(`${root}/snapshot.json`));
-    const onDiskManifest = JSON.parse(new TextDecoder().decode(mockFs.files.get(`${root}/manifest.json`)));
-    assert.equal(typeof onDiskSnapshot, 'string', 'snapshot.json must have been written to disk');
-    const rehash = sha256Prefixed(onDiskSnapshot);
-    assert.equal(rehash, onDiskManifest.contentHash, 'rehash of written snapshot.json must equal manifest.contentHash');
-    assert.equal(rehash, onDiskManifest.files.snapshot.sha256, 'rehash must equal manifest.files.snapshot.sha256');
-    assert.equal(onDiskSnapshot, written.files['snapshot.json'].text, 'written bytes must equal build-result bytes');
-    assert.equal(onDiskManifest.contentHash, onDiskManifest.files.snapshot.sha256, 'no assets ⇒ contentHash === files.snapshot.sha256');
-  });
-
-  await checkAsync('writer fails when package exists unless overwrite is explicit', async () => {
-    await assert.rejects(
-      () => ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b' }),
-      /already exists/
-    );
-    const overwritten = await ingestion.writeSavedChatPackageV1({
-      snapshotId: 'snap_phase_b',
-      overwrite: true,
+  await checkAsync('a trusted DEDUPED verdict is a successful publication', async () => {
+    ingestion.publishSavedChatGenerationV1 = async (built) => ({
+      ok: true,
+      outcome: 'deduped',
+      committed: false,
+      deduped: true,
+      durabilityComplete: true,
+      generationPath: `archive/packages/${built.manifest.chatId}.gdedupe.h2ochat`,
+      contentHash: built.contentHash,
+      blockers: [],
+      advisories: ['generation-occupant-presentation-mismatch'],
     });
-    assert.equal(overwritten.written, true);
+    const written = await ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b' });
+    assert.equal(written.written, true, 'dedupe is a successful publication');
+    assert.equal(written.deduped, true);
+    assert.equal(written.committed, false, 'dedupe deliberately writes nothing');
+    /* Advisories ride alongside and never gate. */
+    assert.deepEqual(written.advisories, ['generation-occupant-presentation-mismatch']);
+  });
+
+  await checkAsync('overwrite is forbidden outright (generations are create-only)', async () => {
+    await assert.rejects(
+      () => ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_phase_b', overwrite: true }),
+      /create-only|overwrite is forbidden/,
+      'the destructive overwrite path must be unreachable after G1',
+    );
   });
 
   check('Phase B build/write never calls store mutation methods', () => {

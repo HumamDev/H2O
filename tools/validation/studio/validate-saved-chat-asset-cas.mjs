@@ -315,9 +315,20 @@ async function main() {
     }
   });
 
-  check('only exists/mkdir/read_file plus the durable writer were invoked (no remove/rename/gc)', () => {
+  check('only exists/read_file plus the durable writer were invoked (G1: no renderer mkdir, no remove/rename/gc)', () => {
     const cmds = [...new Set(shim.calls.map((c) => c.cmd))].sort();
-    assert.deepEqual(cmds, ['h2o_archive_durable_write', 'plugin:fs|exists', 'plugin:fs|mkdir', 'plugin:fs|read_file']);
+    // G1 cutover: the renderer no longer issues plugin:fs|mkdir. The trusted
+    // durable-write command creates its own ancestors and shard
+    // descriptor-relatively, and after the capability narrowing the renderer
+    // holds no mkdir authority under archive/** at all.
+    assert.deepEqual(cmds, ['h2o_archive_durable_write', 'plugin:fs|exists', 'plugin:fs|read_file']);
+  });
+
+  check('G1: the CAS module issues no filesystem MUTATION command at all', () => {
+    const src = readRepo(MODULE_REL);
+    for (const forbidden of ['plugin:fs|mkdir', 'plugin:fs|write_file', 'plugin:fs|remove', 'plugin:fs|rename', 'plugin:fs|open']) {
+      assert.ok(!src.includes(forbidden), `CAS must not invoke ${forbidden} after the G1 cutover`);
+    }
   });
 
   // ── Integrity: a hash-addressed path is trusted only after its bytes prove
