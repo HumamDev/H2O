@@ -2161,7 +2161,43 @@
     try { el.remove(); } catch {}
   }
 
+  /* Materializer evidence reads the MountRegistry: the mounted set is the
+     hub's identity->element binding (single writer), so evidence iteration
+     scales with the mounted window instead of polling every record's cached
+     element for connectivity. The record.live path survives only as the
+     no-hub fallback. */
+  function MINI_completeIndexOrderById() {
+    const byId = new Map();
+    try {
+      for (const record of MINI_completeIndexRecords()) {
+        const order = Math.max(0, Number(record?.turnNo || record?.order) || 0);
+        if (!order) continue;
+        const qId = normalizeNavId(record?.qId);
+        if (qId) byId.set(qId, order);
+        const aId = normalizeNavId(record?.primaryAId);
+        if (aId) byId.set(aId, order);
+        for (const variant of Array.isArray(record?.answerVariants) ? record.answerVariants : []) {
+          const id = normalizeNavId(variant);
+          if (id && !byId.has(id)) byId.set(id, order);
+        }
+      }
+    } catch (e) { derr('farnav:order-map', e); }
+    return byId;
+  }
+
   function MINI_mountedOrderSet() {
+    const registry = MINI_mountRegistry();
+    if (registry) {
+      const orders = [];
+      try {
+        const byId = MINI_completeIndexOrderById();
+        for (const rec of registry.all()) {
+          const order = byId.get(String(rec?.id || '')) || 0;
+          if (order) orders.push(order);
+        }
+      } catch (e) { derr('farnav:orders', e); }
+      return orders;
+    }
     const orders = [];
     try {
       for (const record of MINI_completeIndexRecords()) {
@@ -2175,14 +2211,51 @@
   }
 
   function MINI_mountedElementForOrder(order) {
+    const registry = MINI_mountRegistry();
     try {
       for (const record of MINI_completeIndexRecords()) {
         if (Math.max(0, Number(record?.turnNo || record?.order) || 0) !== order) continue;
+        if (registry) {
+          const el = MINI_mountedElementById(record?.qId)
+            || MINI_mountedElementById(record?.primaryAId);
+          if (el) return el;
+        }
         const el = record?.live?.qEl || record?.live?.primaryAEl || null;
         return el && el.isConnected ? el : null;
       }
     } catch (e) { derr('farnav:anchor-el', e); }
     return null;
+  }
+
+  /* Event-driven wait on the registry's typed transitions: resolves on the
+     first batch the caller accepts, or on timeout. The timeout tick covers
+     the measured starved-hydration case, where nothing binds until the
+     viewport moves again. */
+  function MINI_awaitMountEvidence(timeoutMs, acceptBatch = null) {
+    return new Promise((resolve) => {
+      const registry = MINI_mountRegistry();
+      const budget = Math.max(60, Number(timeoutMs) || 0);
+      if (!registry || typeof registry.onTransitions !== 'function') {
+        setTimeout(() => resolve('timeout'), budget);
+        return;
+      }
+      let done = false;
+      let off = null;
+      let timer = 0;
+      const finish = (reason) => {
+        if (done) return;
+        done = true;
+        try { off?.(); } catch {}
+        try { clearTimeout(timer); } catch {}
+        resolve(reason);
+      };
+      off = registry.onTransitions('minimap-materializer', (payload) => {
+        try {
+          if (!acceptBatch || acceptBatch(payload) === true) finish('transitions');
+        } catch {}
+      });
+      timer = setTimeout(() => finish('timeout'), budget);
+    });
   }
 
   function MINI_ensureHistoryRequestObserver() {
@@ -2235,7 +2308,10 @@
      target is still resolved by canonical identity and still verified. */
   async function MINI_farFailureGrace(order, surface, descriptor, ctl) {
     if (ctl.isStale()) return null;
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    // Wake on the registry's next mount batch — the exact signal the late
+    // settle produces — instead of a fixed sleep; the timeout keeps the
+    // original bounded window.
+    await MINI_awaitMountEvidence(2000);
     if (ctl.isStale()) return null;
     const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface)
       || (() => {
@@ -2416,7 +2492,11 @@
             // host's request/ingest is never starved by an early break.
             const canBreakEarly = mode !== 'older' || requestedYet;
             if (canBreakEarly && progressedAtMs && (Date.now() - progressedAtMs) > 900) break;
-            await new Promise((resolve) => setTimeout(resolve, 350));
+            // Registry transitions are the wake signal: the loop reacts the
+            // moment the host mounts, replaces, or unmounts turn elements
+            // instead of polling on a hot timer; the timeout tick keeps the
+            // viewport-movement trigger alive through starved stretches.
+            await MINI_awaitMountEvidence(1100);
           }
         }
         cancelPageJumpGuard(guardToken);
