@@ -453,3 +453,167 @@ needs its own build requirement beyond those already listed; that
 caller); and that the legacy-writer retirement is mis-sequenced.
 
 No surviving finding constituted a Human Decision Point.
+
+---
+
+# Addendum B — Final authority correction C1–C7 (2026-08-27)
+
+Closes an independent Opus delta review ("PASS WITH REQUIRED CORRECTIONS")
+before T1.2.1. Docs and evidence only.
+
+## B1. Staging integrity — the real load-bearing mechanism (C1)
+
+**Accepted RED.** The prior text implied that commit-time re-open/re-read/hash
+made renderer interference with staging harmless. It does not. A staged file's
+inode can be verified, then mutated in place through a separately held writable
+handle, and then carried into the published generation by the directory rename;
+inode identity never changes, so no descriptor discipline detects it.
+
+Corrected: retained descriptors + commit-time re-hash close **substitution,
+unexpected entries and path re-resolution** only. What closes post-hash
+mutation, pre-cutover, is that the renderer holds no authority to open a
+staging member for writing: staging lives under a **literal dot-leading**
+reserved component, and the pinned glob matcher's `require_literal_leading_dot`
+means the broad `archive/**` grant does not reach through it. That exclusion is
+now a **required pre-cutover integrity invariant**, with four test obligations
+(dot-leading prefix; no config disabling the rule; renderer cannot
+`write_file` / open-for-write / `mkdir` / `read_file` into the namespace;
+name visibility via parent `read_dir` is explicitly not authority).
+
+Lifecycle recorded: after the C5 cutover removes renderer archive mutation
+entirely, that removal is the primary protection and the dot-leading rule
+becomes defense in depth plus namespace reservation. Neither is described as an
+eternal sole security boundary.
+
+## B2. Environmental resource refusal vs semantic ceiling (C2)
+
+**Accepted.** "No aggregate refusal threshold of any kind" was too absolute —
+it would have left the trusted publisher unable to fail safely on a full disk.
+Now split explicitly: package-semantic ceilings remain forbidden (complete
+member sizes, total package size, aggregate asset bytes, per-session and
+process-wide staged-byte ceilings an otherwise valid package can never exceed),
+while **environmental/retryable** refusals are required — free space, quota,
+`ENOSPC`, `EDQUOT`, overflow, safety-reserve, backpressure — in a distinct
+`generation-staging-resource-*` family that never marks a package structurally
+invalid and always triggers §X cleanup. Accounting requirements are `u64`/
+checked arithmetic, bounded sessions, bounded chunk buffering, and free-space
+checks where technically reliable. Escalation preserved: if a fixed *total*
+threshold ever proves unavoidable and could reject a valid package on a healthy
+machine, it has become semantic and requires a Human Decision Point first.
+
+## B3. Session concurrency made normative (C3)
+
+**Accepted RED.** Consume-before-I/O alone did not specify WRITE / ABORT /
+eviction. Now normative: synchronized session map plus a **per-session
+operation lease**, so multi-MiB member I/O never runs under the global map
+lock. Five-state model (OPEN / BUSY / COMMITTING / TERMINATING / CONSUMED) with
+eleven properties, including: lease acquired before staging I/O; in-flight work
+never idle; idle refreshed on operation *entry*; COMMITTING and CONSUMED never
+evictable; ABORT and eviction may not delete staging beneath an active WRITE;
+exactly one termination claimant owns cleanup; termination during active work
+defers cleanup until the last operation leaves; token never recycled beneath an
+in-flight operation. Acceptance invariant frozen: *an in-flight operation must
+never have its staging cleaned, nor its identity reused, beneath it.* No
+heartbeats, no cross-process leases, no timer system.
+
+## B4. Occupied-destination verification is trusted-side (C4)
+
+**Accepted RED — this was a trust inversion.** Previously the trusted side
+reported "occupied" and the renderer decided whether the occupant was valid and
+identical. Now COMMIT itself classifies the occupant before returning any
+success-equivalent result: open descriptor-relatively with `O_NOFOLLOW`, reject
+symlink/wrong shape/foreign entries, verify required members, re-hash bytes,
+re-derive contentHash, then classify as `DEDUPED`,
+`GENERATION_DESTINATION_CORRUPT`, `GENERATION_PARTIAL`,
+`GENERATION_DESTINATION_FOREIGN` or `GENERATION_OCCUPANT_UNREADABLE`. Only a
+valid occupant with the same verified identity may become `deduped`, and the
+renderer can neither issue nor infer that verdict. Cleanup ordering fixed:
+classify occupant → clean only this attempt's staging → return the trusted
+result. No overwrite, no replacement, no deletion of the occupant. §N, §P
+(cases B/C/D/E/I, plus new case J) and §X updated consistently.
+
+## B5. Archive mutation removed entirely at cutover (C5)
+
+**Accepted YELLOW after verifying the source grounding.** Confirmed at HEAD:
+`durable_write_impl` creates every ancestor directory itself, descriptor-
+relatively via `mkdir_child` with `O_NOFOLLOW` on each open, and the CAS repair
+path creates its own `assets/<shard>`; the renderer's `fsMkdirRecursive` runs
+immediately before that same trusted call and is therefore redundant. So the
+expected post-cutover renderer mutation set under `$APPLOCALDATA/archive/**` is
+**EMPTY**, and the cutover removes the redundant renderer CAS `mkdir` call and
+then both `fs:allow-write-file` **and** `fs:allow-mkdir`. Retained: exists,
+read-file, lstat, read-dir. Removing `mkdir` is load-bearing, not tidiness — a
+renderer keeping it over `archive/packages/**` could pre-create a generation
+name and permanently deny publication of that content, since promotion is
+exclusive and create-only. Cutover now carries explicit proof obligations. No
+capability or JS edited in this batch.
+
+## B6. Discovery clarification (C6)
+
+Complete or explicitly paginated discovery is mandatory before Phase 3 wires
+user-visible publication and before any consumer emits a freshness/coverage
+verdict; an incomplete scan may never conclude "no fresh generation exists".
+But scanning is **not** the create-only fence — exclusive publication is.
+Identical content derives an identical trusted name, so a truncated scan leads
+to an occupied promotion that §N.2 classifies as `DEDUPED` when valid and
+equal. Recorded explicitly so discovery is never mistaken for the atomic
+publication authority.
+
+## B7. Wrong-canonicalizer negative control (C7)
+
+T1.2.2 must include a negative control proving archive generation identity does
+not reuse unrelated Rust transport/sync canonicalization — `sorted_json_value`,
+generic `String::cmp` object key sorting, or a `sha256:` colon-prefixed
+identity form. Substituting any must fail a committed test. M05's rules remain:
+v1 hashes the exact staged `snapshot.json` bytes; v2 builds only the historical
+two-key descriptor; no generic Rust port of the JS projection canonicalizer.
+
+## B8. Durability-fence reporting made explicit (review question 8)
+
+The prior text covered a *crash* between promotion and the parent fence (§P
+case H) but never stated what happens when the fence itself **returns an
+error**. Now frozen in §N: promotion is the commit point and the fence cannot
+retract it — such a result reports `committed: true` with
+`durabilityComplete: false` plus the fence blocker, and a successful promotion
+transfers the tree out of §X cleanup scope, so a fence failure must never
+trigger cleanup of what is now a published generation. Reporting that state as
+uncommitted, or as durable, are both forbidden.
+
+## B9. Platform-arm precision (self-caught during C1-C7)
+
+The contract said "the non-macOS arm fails closed". Verified at HEAD, that is
+imprecise in a way that matters: the fail-closed arm is `cfg(not(unix))`
+(Windows). On non-macOS **Unix**, `promote_exclusive`'s fallback is a live
+`linkat` implementation — and `linkat` cannot hard-link a directory, so it
+cannot promote a staged generation. Corrected in §N: Phase 1 must either
+implement a directory-capable exclusive promotion for that arm (e.g.
+`renameat2(RENAME_NOREPLACE)`) or make it fail closed explicitly. Publication
+must never silently degrade where the primitive cannot express create-only
+directory promotion.
+
+## B10. Final C1–C7 review outcome
+
+Three adversarial lenses reviewed the corrected docs against the ten required
+questions; each non-green finding was independently verified by a skeptical
+pass, then judged. 25 non-green findings, 7 survivors, 0 rejections, no Human
+Decision Point. Verdict: **SOUND WITH REQUIRED CHANGES** — all applied:
+
+| Sev | Correction applied |
+| --- | --- |
+| YELLOW-1 | **Cleanup ownership did not compose.** C2 made environmental refusal required and pointed it at §X, whose rule is gated "once COMMIT has consumed the session"; §X hands pre-COMMIT cases to §Q, whose eviction can only claim sessions *present in the map*. Staging created by a BEGIN that then refuses has no map entry — a third residue class, and the only one never evictable in-process. Fixed by a creator-owns-cleanup rule (an operation that creates staging removes it on its own refusal path, only what it created), an exhaustive authority set (refusing BEGIN / §Q eviction / post-consumption COMMIT), a corrected residue enumeration, and a retargeted §R.2 pointer. |
+| YELLOW-2 | **Two contradictory frozen orderings for the occupied path** — §N fenced after classification, §N.2 fenced before it, while §X named §N.2 authoritative. Frozen as one tail, restated verbatim in both sections: **classify → clean own staging → parent fsync → report**. Cleaning precedes the fence deliberately (staging lives inside the promotion parent, so an unfsynced removal could resurrect after power loss). Added: a fence failure on this path returns the classified outcome *plus* the fence blocker and never suppresses the occupant verdict. |
+| YELLOW-3 | **The session cap bounded admission but not in-flight COMMITs.** Property 6 removes the session from the map before publication work, so the expensive phase — streamed CAS copies, member re-hash, staged byte tree — ran in no slot, making §R.2's *required* bounded-sessions rule vacuous and §R.1's "residue bounded by the session cap" an unspent bound. Fixed with an admission slot held until COMMIT returns, tracked separately from the map (explicitly **not** by leaving the session in the map, which would relax property 6). This bounds concurrent operations, not bytes — no package-size ceiling. |
+| YELLOW-4 | **Nobody was assigned creation of `archive/packages/`.** The only extant creator is the renderer's recursive `mkdir` on the legacy path, which G1 retires; the trusted CAS command cannot succeed it because its destination validation admits only canonical CAS blob paths. Now assigned to the trusted staged publisher (descriptor-relative, `mkdir` paired with `O_NOFOLLOW` open), with G1 step 7 extended to prove a first save on a profile where `archive/packages` never existed. |
+| GREEN A | `DEDUPED`'s field tuple stated: `outcome` is the sole success discriminator, `DEDUPED` carries `ok: true`, and `committed` reports whether *this attempt* promoted (false for dedupe). |
+| GREEN B | G1 step 5's retained scopes were readable distributively, which would have broken CAS reads; split so exists/read-file/lstat keep `archive/assets/**` coverage and only read-dir is packages-scoped. |
+| GREEN C | Capability removal takes away **scope**, not command availability (the default capability leaves an unscoped `mkdir` command enabled), so the cutover pin must be written over the resolved permission union for the `main` window rather than one capability file. |
+
+Ten required questions: no remaining post-hash mutation path; resource safety
+does not become a semantic ceiling (the defect found was *under*-bounding, the
+opposite failure); nothing cleans beneath an in-flight operation; the renderer
+can neither issue nor infer `deduped`; mutation authority is fully removed at
+cutover as scope; incomplete discovery is never publication authority; the
+wrong canonicalizer cannot be substituted without a test failing;
+`committed: true` / `durabilityComplete: false` is preserved; every
+pre-promotion refusal now has an owner; and no correction broadened M05 into
+GC, Sync, v3 or migration work.

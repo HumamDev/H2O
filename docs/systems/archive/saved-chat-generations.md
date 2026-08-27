@@ -92,6 +92,17 @@ truncation must be a first-class blocker on the affected chat's coverage
 verdict rather than a warning on the whole inventory. This is a correctness
 prerequisite for §E/§G, not a scaling nicety.
 
+**But scanning is not the create-only authority — exclusive publication is.**
+An incomplete scan must never be used to conclude "no fresh generation exists"
+for any coverage or user-facing decision. It cannot, however, cause duplicate
+content: identical logical content derives the identical trusted generation
+name, so a truncated pre-publication scan simply leads to a promotion that
+finds the destination occupied, and §N.2's trusted-side classification returns
+`DEDUPED` when the occupant is valid and equal. So complete/paginated discovery
+is mandatory before Phase 3 wires user-visible publication and before any
+consumer emits a freshness/coverage verdict — and it is *not* the atomic
+publication fence.
+
 Classification is explicitly a **join** between the filesystem discovery
 basename and the package's **verified identity** — not a manifest-only
 derivation, and not a filename parse. After package verification:
@@ -329,14 +340,37 @@ validate every asset descriptor and copy asset bytes from the canonical CAS
 with streaming re-verification (§W) → derive `contentHash` internally and
 require the manifest to agree (§T) → durability fences (F_FULLFSYNC members,
 staging dir fsync) → derive the final generation name internally → exclusive
-promotion → parent directory fsync (also on the occupied path, before
-reporting `generation-destination-occupied`) → honest report
-`{ok, committed, durabilityComplete, generationPath, contentHash, blockers[]}`.
+promotion → **if occupied, classify the occupant trusted-side (§N.2) → clean
+only this attempt's staging** → parent directory fsync (on both the promoted
+and the occupied path) → honest report `{ok, committed, durabilityComplete,
+generationPath, contentHash, outcome, blockers[]}`.
+
+That four-step tail — **classify → clean own staging → parent fsync →
+report** — is the single frozen ordering for the occupied path; §N.2 restates
+it verbatim and no other sequence is authoritative. Cleaning before the fence
+is deliberate: staging lives inside the promotion parent, so a staging removal
+left unfsynced could resurrect as residue after power loss.
 
 Every member read at COMMIT is read **from the retained staging descriptor**,
 opened once per member, and hashed from that single handle — never by
-re-resolving a path. This is what makes renderer interference in the staging
-namespace (§R) detectable rather than exploitable.
+re-resolving a path. That closes substitution, unexpected entries and path
+re-resolution. It does **not** close post-hash in-place mutation through a
+separately held writable handle; §R.1's dot-leading scope exclusion is what
+closes that, and it is a required pre-cutover invariant rather than a
+property of this ordering.
+
+**Promotion is the commit point, and the durability fence cannot retract it.**
+Once exclusive promotion succeeds, the generation exists in the final
+namespace, so the result reports `committed: true` — unconditionally, and
+including when the subsequent parent-directory fsync returns an error. That
+case reports `committed: true` with `durabilityComplete: false` plus the fence
+blocker: the generation is real but not yet proven durable, which is the honest
+description and the only one a consumer can act on correctly. A successful
+promotion also transfers the staged tree out of §X's cleanup scope — a fence
+failure must **never** trigger cleanup, because the tree is no longer staging,
+it is the published generation. Reporting such a promotion as uncommitted, or
+as durable, are both forbidden. (§P case H covers the adjacent *crash* timing;
+this rule covers the fence returning an error.)
 
 COMMIT re-hashes **every member required by the declared version (§J) and
 every member actually staged**; a required member that was never staged, or a
@@ -352,14 +386,77 @@ directory. Phase 1 must prove directory promotion on the supported platform
 and keep the non-macOS arm fail-closed; `promote_exclusive` must never be
 read as portable for directories. Refusals are returned as
 `ok:false` results with blocker codes (they resolve; they do not throw).
-Every caller must treat any result without `committed === true` as a
-**non-success requiring explicit resolution** — never as silent success. For
-`generation-destination-occupied` specifically, the §P case B/C/D/I occupant
-verification is that resolution (it may conclude idempotent `deduped`
-success); every other blocker resolves as failure.
+Every caller must treat any result without a trusted success `outcome` as
+failure. The caller never adjudicates an occupied destination: `deduped` is a
+**trusted-side verdict** returned by COMMIT itself (§N.2), never a conclusion
+the renderer reaches by inspecting the occupant.
 
-The non-macOS arm fails closed (`…-unsupported-platform`), consistent with the
-existing trusted module.
+**Platform arms, stated precisely** (the distinction is load-bearing for the
+proof obligation above): the existing trusted module fails closed on any
+**non-Unix** target (`…-unsupported-platform`) — that is the `cfg(not(unix))`
+arm, i.e. Windows. It does **not** fail closed on non-macOS **Unix**: there the
+exclusive-promotion fallback is a live `linkat` implementation, which cannot
+hard-link a directory and therefore cannot promote a staged generation at all.
+So Phase 1 must either implement a directory-capable exclusive promotion for
+that arm (e.g. `renameat2(RENAME_NOREPLACE)`) or make it fail closed
+explicitly. Publishing must never silently degrade on a platform where the
+promotion primitive cannot express create-only directory promotion.
+
+### N.2 Occupied-destination classification is trusted-side
+
+When exclusive promotion reports that the final generation path already exists,
+**the trusted COMMIT operation itself classifies the occupant before returning
+any success-equivalent result.** Delegating that judgement to the renderer
+would be a trust inversion: the renderer would decide "is this occupied package
+valid and identical to mine?", which is precisely the question the trusted side
+exists to answer.
+
+Trusted-side occupied flow:
+
+```text
+derive target from staged, verified identity
+→ exclusive promotion reports occupied
+→ open the occupant DESCRIPTOR-RELATIVELY (O_NOFOLLOW)
+→ reject symlink / wrong shape / foreign entries
+→ verify the required members are present
+→ re-hash member bytes
+→ re-derive contentHash
+→ classify
+→ clean only this attempt's staging
+→ parent-directory fsync
+→ report
+```
+
+The last three steps are §N's frozen tail, reproduced here so the two sections
+cannot drift: **classify → clean own staging → parent-directory fsync →
+report**. A fence failure on this path returns the classified occupant outcome
+**plus** the fence blocker; it never suppresses or downgrades the occupant
+verdict, and it never converts a `DEDUPED` into a failure.
+
+Trusted outcomes (names refinable during implementation):
+
+| Outcome | Meaning |
+| --- | --- |
+| `DEDUPED` | Occupant is valid **and** carries the same verified/recomputed content identity |
+| `GENERATION_DESTINATION_CORRUPT` | Occupant present, verification fails |
+| `GENERATION_PARTIAL` | Occupant incomplete (e.g. no manifest) |
+| `GENERATION_DESTINATION_FOREIGN` | Occupant valid but a different identity |
+| `GENERATION_OCCUPANT_UNREADABLE` | Occupant cannot be read/classified |
+
+`outcome` is the **sole success discriminator**: `DEDUPED` carries
+`ok: true`, and `committed` reports whether **this attempt** promoted — so
+`committed: false` for `DEDUPED`, which is a success that deliberately wrote
+nothing. (Do not infer "blockers empty on success": a fence failure can
+accompany a success outcome, per §X.)
+
+**Only** a valid occupant with the same verified identity may become
+`deduped`. Every other outcome is a failure result carrying its blocker.
+
+Cleanup ordering for the losing writer: **verify the occupant → clean only
+this attempt's staging → return the trusted result.** The occupant is never
+overwritten, never replaced, and never deleted — create-only is unconditional
+here, including when the occupant is corrupt (§P case C's operator escape
+hatch remains the only remedy).
 
 ### N.1 Package construction is not final-path authority
 
@@ -411,59 +508,99 @@ The renderer never supplies:
 | Case | Behavior |
 | --- | --- |
 | A. target absent | Stage, verify, promote; report `created`. |
-| B. exact VALID occupant, same derived contentHash | Fence parent, report occupied; caller verifies occupant and reports idempotent `deduped` success. |
-| C. corrupt occupant at target | Refuse (`generation-destination-occupied`); caller verification classifies occupant corrupt → surfaced diagnostic; never overwritten. Documented escape hatch: explicit manual operator removal, with diagnostics printing the exact path. |
-| D. partial (manifest-less) occupant at target | As C (`generation-partial`). Staged publication cannot create new partial final names. |
-| E. two writers race for the same generation | Exclusive promotion admits one; the loser takes the occupied path (parent fenced) and resolves via occupant verification to `deduped` or a corrupt-occupant refusal. |
+| B. exact VALID occupant, same derived contentHash | Trusted side classifies the occupant (§N.2) and returns `DEDUPED` — idempotent success decided in the trust domain, not by the caller. |
+| C. corrupt occupant at target | Trusted classification returns `GENERATION_DESTINATION_CORRUPT`; never overwritten. Documented escape hatch: explicit manual operator removal, with diagnostics printing the exact path. |
+| D. partial (manifest-less) occupant at target | Trusted classification returns `GENERATION_PARTIAL`. Staged publication cannot create new partial final names. |
+| E. two writers race for the same generation | Exclusive promotion admits one; the loser's own COMMIT classifies the occupant (§N.2) and returns `DEDUPED` or the appropriate failure outcome, after cleaning only its own staging. |
 | F. two writers create different generations for one chat | Both succeed under different names; freshness selects. |
 | G. crash before manifest / before promotion | Residue only under the reserved staging prefix; the final namespace is untouched. |
 | H. crash after promotion, before the parent fence | The generation may vanish wholly after power loss — never partially. Reported honestly: `durabilityComplete` is true only after the parent fence returns. |
-| I. target occupied by a VALID package with a **different** identity | Occupant verification classifies it as a foreign valid package (possible via the `X.g<64hex>`-literal-chatId legacy collision, or manual manipulation). Refused and surfaced as `generation-destination-foreign`; never overwritten; the operator escape hatch of case C applies. |
+| I. target occupied by a VALID package with a **different** identity | Trusted classification returns `GENERATION_DESTINATION_FOREIGN` (reachable via the `X.g<64hex>`-literal-chatId legacy collision, or manual manipulation); never overwritten; the operator escape hatch of case C applies. |
+| J. occupant cannot be read or classified | Trusted classification returns `GENERATION_OCCUPANT_UNREADABLE`; treated as failure, never as dedupe. |
 
 ## Q. Token / session concurrency semantics
 
-- Session state is in-process: token → {chatId, staging directory handle,
-  tracked member list}. **Every access happens under one lock**; Tauri async
-  commands execute concurrently and the map is shared mutable state.
+Session concurrency is **normative**, not an implementation detail. The
+consume-before-I/O rule alone is not sufficient: WRITE MEMBER, ABORT and idle
+eviction each need an explicit contract, and holding one global map lock across
+multi-MiB filesystem I/O is the wrong shape.
+
+**Structure.** A synchronized session map plus a **per-session operation
+guard** (an active lease / mutex). The map lock is held only for map
+operations; member I/O runs under the session's own guard, never under the
+global lock.
+
+**State model** (conceptual; exact spelling is implementation detail):
+
+```text
+OPEN → BUSY/ACTIVE → COMMITTING → CONSUMED
+  ↘ TERMINATING ↗
+```
+
+**Normative properties:**
+
+1. global session-map operations are synchronized;
+2. every session carries a per-session operation guard / active lease;
+3. WRITE obtains its lease **before** operating on staging;
+4. an in-flight operation is **never** considered idle;
+5. idle time is refreshed on operation **entry** (not exit), so a long write
+   cannot age into eviction while running;
+6. COMMIT obtains exclusive ownership and removes/consumes the session from the
+   map **before** any publication work;
+7. `COMMITTING` and `CONSUMED` sessions are unreachable by eviction (they are
+   not in the map) and release their **admission slot** only when COMMIT
+   returns;
+8. ABORT and eviction may **not** delete staging beneath an active WRITE;
+9. whoever successfully obtains the exclusive removal/termination claim **owns
+   the cleanup** — exactly one owner, never two;
+10. if termination is requested while active work exists, the session enters
+    `TERMINATING` and cleanup runs only **after the final active operation
+    leaves**;
+11. session identity/token is never recycled beneath an in-flight operation.
+
+**Acceptance invariant:** *an in-flight operation must never have its staging
+directory cleaned, nor its session identity reused, beneath it.*
+
 - Member writes are **append-only ordered sequences**: a member may be
   delivered in one call (the common, KB-scale case) or as multiple bounded
-  append calls (§S bounds). Rewrites and seeks are refused; append calls for
-  **different** members may interleave freely; the at-most-once invariant
-  applies to the member's append stream as a whole, with the open-check and
-  append performed under the same lock acquisition. There is no explicit
-  seal call: a member is sealed by COMMIT, whose verification re-hash of the
-  final staged bytes is the seal. Chunked delivery is the T1.2.3-resolved
+  append calls (§"Member bounds"). Rewrites and seeks are refused; append calls
+  for **different** members may interleave freely; the at-most-once invariant
+  applies to the member's append stream as a whole. There is no explicit seal
+  call: a member is sealed by COMMIT, whose verification re-hash of the final
+  staged bytes is the seal. Chunked delivery is the T1.2.3-resolved
   generalization that prevents the transport from defining package semantics
   (Amendment A2).
-- **COMMIT atomically consumes the session** — the token is removed from the
-  map under the lock **before** any hashing, validation, copying, or
-  promotion. A second COMMIT, a concurrent ABORT, or any post-commit call on
-  that token finds no session.
 - ABORT of an unknown or already-consumed token is a **benign no-op** (a
   `finally { abort }` caller shape must be harmless after a successful
-  commit).
+  commit); ABORT of a session with active work marks it `TERMINATING` and
+  defers cleanup to property 10.
 - Sessions are bounded in number; when the cap is reached, BEGIN **refuses
   with a blocker** (`generation-staging-sessions-exhausted`) — it never
-  implicitly evicts a live session.
-- Sessions carry an **idle timeout** measured from the last successful
-  command on that token (an implementation-level operational constant, not a
-  product value): an evicted session is aborted and its staging cleaned, so
-  the cap governs concurrency, not lifetime, and a webview reload — which
-  kills the JS without running any `finally { abort }` — cannot permanently
-  wedge publication. Eviction is **lazy**: it runs under the BEGIN lock
-  (drop sessions past the period, then refuse if still full). No timer
-  thread, no background task, no new concurrency surface.
-- **Eviction is integrity-neutral, and precisely because of the
-  consume-first rule above.** A committing session is *not in the map*, so no
-  sweep can reach it however slow the commit is; the only reachable session is
-  one idle between BEGIN and COMMIT, whose worst case is a refused later
-  append — an availability loss, never a corrupt or partial package.
-  **This is a stated precondition, not an incidental detail:** if COMMIT
-  ordering is ever relaxed so that it validates before consuming, this
-  decision reopens and the no-eviction variant becomes mandatory.
+  implicitly evicts a live session. A session removed from the map by COMMIT
+  (property 6) **continues to occupy an admission slot**, tracked by a counter
+  separate from the map, until COMMIT returns; BEGIN may be refused on that
+  count. Without this the cap would bound only sessions idling between BEGIN
+  and COMMIT, leaving the expensive phase — streamed CAS copies, member
+  re-hash, the staged byte tree — running in no slot at all and making §R.2's
+  required "bounded number of simultaneous sessions" vacuous. The slot must
+  **not** be implemented by leaving the session in the map: that would relax
+  property 6 and reopen the eviction-safety argument below. This bounds
+  concurrent operations, never bytes — a large valid package still publishes.
+- Sessions carry an **idle timeout** measured from the last operation entry (an
+  implementation-level operational constant, not a product value). Eviction is
+  **lazy**: it runs under the BEGIN path (claim terminable sessions, then
+  refuse if still full). No timer thread, no heartbeats, no cross-process
+  leases.
+- **Eviction is integrity-neutral** because of properties 4, 7 and 8 together:
+  a committing session is not in the map, and an actively writing session is
+  not idle and cannot have its staging removed beneath it. The only evictable
+  session is one idle between operations, whose worst case is a refused later
+  append — an availability loss, never a corrupt or partial package. **This is
+  a stated precondition:** if COMMIT ordering or the lease discipline is ever
+  relaxed, this decision reopens.
 - A session abandoned between BEGIN and COMMIT is cleaned by this eviction
   path (§X governs post-consumption refusals; §Q eviction governs
-  abandonment).
+  abandonment) — subject to the residue caveat in §X.
 
 ## R. Staging location, prefix, discovery filtering
 
@@ -476,6 +613,14 @@ archive/packages/.h2o-genstage-<token>/
 
 - Same directory as promotion targets → exclusive promotion needs no
   cross-directory primitive and stays atomic.
+- **The trusted staged publisher creates `archive/` and `archive/packages/`
+  itself**, descriptor-relatively, pairing each `mkdir` with an `O_NOFOLLOW`
+  open on that component, before creating the staging directory. This must be
+  stated because the only thing that creates `archive/packages/` today is the
+  renderer's recursive `mkdir` on the legacy write path, which G1 retires —
+  and the existing trusted CAS command cannot be the successor, since its
+  destination validation admits only canonical CAS blob paths. Post-cutover,
+  **nothing renderer-side creates any archive directory.**
 - **Build requirement, not an existing fact:** the trusted path-component
   validation today reserves only the PRE-M05 temp prefix. Phase 1 must extend
   it to a **shared reserved-prefix list** covering the staging prefix, kept
@@ -485,19 +630,104 @@ archive/packages/.h2o-genstage-<token>/
   inventory's `.h2ochat` suffix filter already skips such entries; its
   `archive-entry-not-package` warning is the residue signal.
 - **The token is not a security boundary.** It is an opaque, high-entropy,
-  single-use *session identifier* whose only job is confusion resistance. The
-  trusted Rust descriptor is the authority. Verified at HEAD: the renderer's
-  archive write grant is a literal path glob whose dot-component exclusion is
-  platform-conditional, and `read_dir` performs no dotfile filtering — so the
-  renderer may be able to **both observe and write into** the staging
-  namespace. Publication integrity therefore may **never** depend on: staged
-  bytes being unmodified between write and commit, token secrecy, or the
-  staging namespace being private. §N's commit-time re-read-and-hash from the
-  retained descriptor is what makes such interference detectable and
-  harmless, and it is why hashing happens **at commit**, not at write.
-- Crash residue is bounded per run by the session cap, is honestly unbounded
-  across repeated crash cycles, and is reclaimed only by a future explicitly
+  single-use *session identifier* whose only job is confusion resistance; it
+  may be observable, and observing it grants nothing. The trusted Rust
+  descriptor is the authority.
+
+### R.1 Staging-integrity invariant (required pre-cutover)
+
+**Commit-time hashing alone does not make renderer interference harmless, and
+this contract must not claim it does.** A staged file's inode can be verified,
+then mutated in place through a *separately held writable handle*, and then
+carried into the published generation by the directory rename — inode identity
+never changes, so no re-open, no re-hash and no descriptor discipline detects
+it. Retained descriptors plus commit-time re-read/re-hash close **substitution,
+unexpected entries and path re-resolution**; they do **not** close post-hash
+in-place mutation.
+
+What actually closes it, on the supported Unix/macOS configuration at current
+authority, is that the renderer has no authority to open a staging member for
+writing at all:
+
+- staging **MUST** live under a **literal dot-leading** reserved directory
+  component (`archive/packages/.h2o-genstage-<opaque>`);
+- the pinned glob matcher applies `require_literal_leading_dot`, so the broad
+  `archive/**` renderer grant does **not** confer `write_file`, `open`,
+  `mkdir` or `read_file` authority through that dot-leading component;
+- this scope exclusion is therefore a **REQUIRED pre-cutover integrity
+  invariant** — load-bearing, not token secrecy and not optional hardening;
+- staging directory *names* may still be visible through a parent `read_dir`.
+  Visibility is not authority.
+
+Implementation and test obligations (T1.2.2):
+
+1. the staging prefix begins with a literal `.`;
+2. no fs-plugin configuration may disable `require_literal_leading_dot` while
+   this pre-cutover assumption is load-bearing — a committed test pins that
+   the app ships no such override;
+3. a committed test proves the renderer cannot enter the dot-leading staging
+   namespace via `write_file`, open-for-write, `mkdir`, or `read_file`;
+4. a committed test may assert that parent `read_dir` *can* list staging names,
+   recording that visibility is deliberate and harmless.
+
+**Lifecycle of this dependency — it is not eternal.** The glob exclusion is the
+load-bearing protection only *until* the G1 capability cutover removes renderer
+`fs:allow-write-file` and `fs:allow-mkdir` over the archive root entirely. After
+that cutover the renderer holds **no** archive mutation authority at all, and
+that removal is the primary protection; the dot-leading rule remains as defense
+in depth and as namespace reservation. Neither mechanism is described here as
+the eternal sole security boundary, and the ordering matters: the dot-leading
+invariant must hold **before** the cutover, because until the cutover the broad
+grant exists.
+- Crash residue is bounded per run by the session cap (which, per §Q, counts
+  in-flight commits), is honestly unbounded across repeated crash cycles, and is reclaimed only by a future explicitly
   authorized janitor — never automatically in M05 (see "Carried risks").
+
+### R.2 Environmental resource refusal ≠ package size limit
+
+The trusted publisher must fail **safely** when the local machine runs out of
+room. That necessity must never be laundered into a package-size ceiling, so
+this contract freezes the distinction:
+
+**A — package semantic limits (forbidden here).** No fixed maximum complete
+snapshot, markdown, html or manifest size for v1/v2; no fixed maximum total
+package size; no fixed maximum aggregate asset bytes; no fixed per-session
+total staged-byte ceiling that an otherwise valid package can never exceed; no
+fixed process-wide staged-byte ceiling that makes one sufficiently large — but
+valid — package permanently impossible on an otherwise healthy machine. Each
+would be a semantic ceiling in practice, whatever it is called.
+
+**B — environmental / retryable resource refusals (required).** Machine-local
+conditions: insufficient filesystem free space, quota exhaustion, `ENOSPC`,
+`EDQUOT`, integer/offset overflow, inability to maintain a configured local
+safety reserve, and temporary concurrency/backpressure pressure. These:
+
+- are **machine-local and retryable** — the same package may publish
+  successfully on the same machine later, or on another machine, with no
+  change to its bytes;
+- **never** mark the package structurally invalid and **never** redefine v1/v2
+  validity;
+- use a distinct `generation-staging-resource-*` blocker family, kept separate
+  from every validity blocker so no consumer can confuse the two;
+- trigger cleanup by the owner defined in §X — the operation itself when the
+  refusal happens before consumption (BEGIN or WRITE), §X's post-consumption
+  rule after.
+
+Resource-accounting requirements: `u64` / checked arithmetic for all byte and
+offset accounting; a bounded number of simultaneous sessions **counting
+in-flight COMMITs** (§Q); bounded
+in-memory and current-chunk buffering; a filesystem free-space / reserve check
+before extending staged files where that is technically reliable; OS `ENOSPC`
+and `EDQUOT` mapped onto the environmental-resource outcome rather than a
+validity blocker; and backpressure permitted to refuse a *new* operation
+temporarily.
+
+Any concrete free-space reserve value is derived from engineering and resource
+evidence and recorded as **operational safety policy, not package validity**.
+If implementation later proves a fixed *total* staged threshold technically
+unavoidable, and that threshold could reject a valid v1/v2 package on a healthy
+machine, it stops being environmental and becomes semantic: raise a Human
+Decision Point **before** enforcing it.
 
 ## S. Commit gate ⊇ governed verifier
 
@@ -600,9 +830,11 @@ are deliberately narrow:
 **Permanent boundary tripwires (T1.2.2):** tests asserting (i) the
 integer-like-key divergence is understood and never relied upon, (ii)
 integer-like keys reachable in `message.metadata` do not affect archive
-publication, and (iii) archive publication does **not** reuse any unrelated
-Rust `sorted_json_value` / transport canonicalization helper that exists
-elsewhere in the crate. These are boundary tests; they do not require Rust to
+publication, and (iii) a **negative control** proving archive generation
+identity does not reuse any unrelated Rust transport/sync canonicalization —
+specifically `sorted_json_value`, generic `String::cmp` object key sorting, or
+a `sha256:` colon-prefixed identity form. Substituting any of them must fail a
+committed test rather than silently changing published identity. These are boundary tests; they do not require Rust to
 reproduce generic JS projection canonicalization.
 
 ## U. Caller assertions are assertion-only
@@ -653,16 +885,30 @@ Rule: once COMMIT has consumed the session, **every path that returns without
 a successful promotion cleans its own staging before returning** — tracked
 member files, the staged `assets/` contents it created, and the staging
 directory itself. Successful promotion is the only outcome that transfers the
-staged tree out of cleanup scope (it becomes the published generation). The
+staged tree out of cleanup scope (it becomes the published generation).
+
+**Symmetrically, any operation that creates staging owns its removal on its own
+refusal path** — including a BEGIN that creates
+`archive/packages/.h2o-genstage-<token>/` and then refuses (a staging-dir
+fsync error, descriptor exhaustion, a §R.2 resource refusal). It removes only
+the directory it created in that same call, never a foreign artifact — the
+same "no janitor, but every operation cleans what it created" discipline the
+existing trusted module already follows. The cleanup authority set is therefore
+**exhaustive, with no uncovered remainder**: refusing BEGIN cleans its own
+staging; §Q eviction covers abandonment between BEGIN and COMMIT;
+post-consumption COMMIT is governed by this rule. The
 rule therefore covers, without needing enumeration: invalid manifest, missing
 member, member hash mismatch, incoherent version triple, asset descriptor
 refusal, descriptor-uniqueness refusal, CAS
 mismatch/missing, contentHash mismatch, expectedManifestSha256 refusal,
 undeclared staging entries, name-length refusal, member/staging fsync
-failures, **and any promotion failure other than success** — including the
-occupied path: the losing writer cleans its own staging immediately upon the
-occupied refusal (occupant verification is the caller's subsequent step and
-never delays cleanup). ABORT cannot run on a consumed token, so this rule is
+failures, every `generation-staging-resource-*` environmental refusal (§R.2),
+**and any promotion outcome other than a successful promotion** — including
+the occupied path, whose ordering is fixed by §N.2: the trusted side
+classifies the occupant **first**, then cleans only this attempt's staging,
+then returns its verdict. Classification precedes cleanup because the verdict
+is trusted-side; cleanup is unconditional on every occupied outcome,
+`DEDUPED` included. ABORT cannot run on a consumed token, so this rule is
 the sole cleanup authority after consumption. Normal rejected commits do not
 accumulate residue. (Sessions abandoned before COMMIT are cleaned by §Q idle
 eviction, not by this rule.)
@@ -679,8 +925,10 @@ which runs solely under a subsequent BEGIN in the same process. If the process
 exits before another BEGIN occurs, the staging directory persists, and M05
 ships no reclamation (see "Carried risks"). So the honest statement is: an
 abandoned session and a crash are **both** legitimate sources of persistent
-staging residue; only a *completed* COMMIT — successful or refused — is
-guaranteed to leave none. Any future move to eager cleanup at process exit is
+staging residue. A **refused BEGIN is not** a residue source: it cleans the
+staging it created before returning, per the creator-owns-cleanup rule above.
+So a completed COMMIT (successful or refused) and a refused BEGIN both
+guarantee no residue; abandonment and crash do not. Any future move to eager cleanup at process exit is
 an explicit change, not an assumption this contract already makes.
 
 ## Y. Exclusions
@@ -710,7 +958,7 @@ Summary of the frozen policy:
 | `chat.md`, `chat.html` | **No semantic cap.** Streamed and hashed — never parsed as structured documents; commit additionally performs the bounded streaming residue/reference **scans** over `chat.html` that the §S superset invariant requires (memory O(scan window), not O(member)). | — |
 | `manifest.json` | **No semantic cap.** Staged as an ordinary member (§N); read back and parsed from the staging descriptor. The former 64 MiB one-shot COMMIT-body ceiling is **withdrawn** — it would have created a product boundary that does not exist at HEAD. Consequence stated openly: parsing the staged manifest at COMMIT is an O(staged-manifest-size) trusted-side allocation that the per-chunk transport constant does **not** bound. That is accepted deliberately — matching HEAD, where the verifier also reads and parses whole manifests unbounded — rather than reintroducing a ceiling by another name. | — |
 | WRITE MEMBER per-call chunk | 8 MiB per append call (members of any size arrive as N calls) | Transport/allocation constant — **not** product semantics; revisable without compatibility impact |
-| Aggregate / cumulative size | **No aggregate refusal threshold** of any kind — not per member, not per package, not across assets. Rust may track a running total for reporting and staging-disk observability, but no total may become a refusal. | Any aggregate threshold would be a new semantic package limit → `DP-M05-<MEMBER>-BOUND` first |
+| Aggregate / cumulative size | **No aggregate *semantic* ceiling** — not per member, not per package, not across assets, and no per-session or process-wide staged-byte ceiling that an otherwise valid package can never exceed. Environmental resource refusals are a separate, permitted category (§R.2). | A fixed aggregate ceiling would be a new semantic package limit → `DP-M05-<MEMBER>-BOUND` first |
 | Asset descriptor count | **No fixed count limit.** Bounded by per-descriptor validation, CAS existence verification, and the §S uniqueness rule (which is what actually caps copy amplification). | — |
 | Generation basename | The real filesystem component limit, read at the opened archive parent via descriptor-relative platform authority (`fpathconf(_PC_NAME_MAX)`); fail closed if unavailable. No hardcoded 240/255. **Honest headroom note**: the 74-byte generation suffix (`.g` + 64 hex + `.h2ochat`) versus legacy's 8 bytes means a chatId longer than `NAME_MAX − 74` bytes (181 on a 255-byte filesystem) cannot receive a generation even though the same chatId up to `NAME_MAX − 8` could receive a legacy name pre-M05 — see the T1.2.3 evidence §4.6 for why no real state approaches this and the standing escalation that fires before any real one is refused. | Filesystem fact + evidence-classified headroom consequence |
 | Snapshot commit-gate parse | Bounded **streaming** field extraction (memory ∝ extracted fields, not member size) | Implementation technique, no size cap |
@@ -757,27 +1005,46 @@ document's batch):
    pins asserting the legacy writer *is* the live path, pins asserting the
    destructive `overwrite: true` path succeeds, and the dormant-v3-writer
    validator;
-4. the renderer fs write capability is narrowed so published generation
-   members under `archive/packages/**` are no longer renderer-writable.
-   **Exact likely shape, from the verified call-site census: the required
-   post-migration renderer write set under `archive/` is the empty set**, so
-   the narrowing is *removal* of the `fs:allow-write-file` entry rather than
-   an "allow `archive/**` except `packages/**`" expression (a single glob
-   cannot express the exception; a `deny` list can, and a `deny` on a
-   command-bearing entry was verified to bind only that entry's commands —
-   but removal is strictly safer and needs neither). What must remain, each
-   with a live call site: `fs:allow-mkdir` — which **must be narrowed to
-   `archive/assets/**` in the same change**, not merely left at
-   `archive/**`: a renderer retaining `mkdir` over `archive/packages/**` could
-   pre-create a generation directory name and permanently deny publication of
-   that exact content, since promotion is exclusive and create-only —
-   `fs:allow-exists`, `fs:allow-read-file`,
-   `fs:allow-lstat`, and `fs:allow-read-dir` on `archive/packages` +
-   `archive/packages/**`;
-5. the canonical CAS path and every other legitimate archive writer keep
+4. the renderer's archive **mutation** capability is removed entirely.
+   Verified grounding: the trusted durable-write path already creates every
+   ancestor and CAS shard itself, descriptor-relatively with `O_NOFOLLOW`, and
+   the renderer's CAS `mkdir` runs immediately before that same trusted call —
+   it is redundant. The cutover therefore also removes that redundant renderer
+   CAS `mkdir` call, after which the expected **post-cutover renderer mutation
+   set under `$APPLOCALDATA/archive/**` is EMPTY**, and both
+   `fs:allow-write-file` **and** `fs:allow-mkdir` are removed from the archive
+   capability. Mechanism, stated precisely: removing these entries removes
+   **scope**, not command availability — the default capability's
+   app-specific-dirs grant leaves a `mkdir` command enabled with no scope of
+   its own, so post-cutover it is the *absence of a matching scope entry* that
+   separates the renderer from `archive/**`. Any pin proving the cutover must
+   therefore be written over the **resolved permission union for the `main`
+   window**, not over a single capability file.
+   Removal — not an "allow `archive/**` except `packages/**`" expression — is
+   the shape (a single glob cannot express the exception; a `deny` list can,
+   and a `deny` on a command-bearing entry was verified to bind only that
+   entry's own commands, but removal is strictly safer and needs neither).
+   Removing `mkdir` is not merely tidy: a renderer retaining it over
+   `archive/packages/**` could pre-create a generation directory name and
+   permanently deny publication of that exact content, since promotion is
+   exclusive and create-only;
+5. what remains is **read/metadata only**, and the retained scopes are
+   **not** uniform — reading the list distributively would break the CAS:
+   - `fs:allow-exists`, `fs:allow-read-file`, `fs:allow-lstat` keep scope
+     covering `archive/assets/**` **as well as** `archive/packages/**` (live
+     CAS read/verify call sites depend on the assets scope);
+   - `fs:allow-read-dir` remains scoped to `archive/packages` +
+     `archive/packages/**` only;
+6. the canonical CAS path and every other legitimate archive writer keep
    working — verified: the CAS no longer uses `plugin:fs|write_file` at all
    (it writes through the two trusted commands), and request receipts are
-   written under `$HOME`, not under `archive/`.
+   written under `$HOME`, not under `archive/`;
+7. the cutover is **proven, not assumed** — committed proof that CAS object
+   creation still works solely through trusted Rust, that generation
+   publication works solely through trusted Rust, and that the renderer can no
+   longer pre-create, truncate or overwrite any package, staging or CAS path —
+   **including a first save on a profile where `archive/packages` has never
+   existed**, proving the trusted side creates its own archive ancestors.
 
 Capability **narrowing** is in scope for the phase that performs it;
 capability **widening** remains forbidden.
