@@ -1778,7 +1778,14 @@
       applyAxisOffsetFromDisk(refs.root);
       applyBootCenterFix(refs.root);
       const sig = prelayoutLoadSig();
-      if (state.prelayoutDone && state.prelayoutSig === sig) return false;
+      if (state.prelayoutDone && state.prelayoutSig === sig) {
+        // Callers on the rebuild path veil the fresh shell directly before
+        // delegating here; a completed same-signature prelayout must lift
+        // that veil rather than refuse and strand the shell at opacity 0
+        // (observed live after host-driven shell rebuilds).
+        setPrelayoutClass(refs, false);
+        return false;
+      }
 
       state.prelayoutSig = sig;
       state.prelayoutDone = false;
@@ -1803,6 +1810,18 @@
         state.prelayoutDone = true;
       };
       state.prelayoutFailsafeTimer = setTimeout(runFailsafe, fallbackWaitMs);
+      // Uncancellable watchdog: arm/re-arm races (a late route re-arm clears
+      // its predecessor's failsafe; unmount/remount interleavings reset state
+      // between them) could strand the prelayout veil with no pending
+      // completion path — observed live as a MiniMap stuck at opacity 0 with
+      // zero further class writes. This timer is deliberately NOT stored in
+      // any clearable slot and no-ops once prelayout has completed.
+      setTimeout(() => {
+        try {
+          if (state.prelayoutDone) return;
+          runFailsafe();
+        } catch {}
+      }, fallbackWaitMs + 2500);
 
       state.prelayoutRaf1 = requestAnimationFrame(() => {
         state.prelayoutRaf1 = 0;

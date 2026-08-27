@@ -322,17 +322,14 @@
       if (resolvedAnswerId) answerEl = resolveAnswerEl(resolvedAnswerId) || null;
     }
     if (!answerEl?.isConnected) {
-      // ChatGPT virtualizes message content out of far-away sections, but the
-      // turn <section> itself stays in the document with a stable
-      // data-turn-id. Anchor on the section so page membership and dividers
-      // keep working for turns whose content is not currently hydrated.
+      // Sections do NOT persist for unmounted turns (measured: the host
+      // renders a sparse window and replaces elements on rematerialization).
+      // Resolve by identity through the MountRegistry; a miss means the turn
+      // is simply not mounted right now, and page membership stays logical.
       const sectionId = String(answerId || turnId.replace(/^turn:a:/, '') || '').trim();
       if (sectionId) {
-        try {
-          const esc = (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(sectionId) : sectionId.replace(/"/g, '\\"');
-          const section = document.querySelector(`[data-testid^="conversation-turn-"][data-turn-id="${esc}"], [data-testid="conversation-turn"][data-turn-id="${esc}"]`);
-          if (section?.isConnected) return section;
-        } catch {}
+        const section = sectionByStableId(sectionId);
+        if (section?.isConnected) return section;
       }
       return null;
     }
@@ -1493,16 +1490,41 @@
     return !!(num && readCollapsedChatPages(id)?.has?.(num));
   }
 
-  // First pair of Page N in the authoritative canonical map → its live turn
-  // section (persists in the DOM even unhydrated) → the pair's question host.
+  // First pair of Page N in the authoritative canonical map → its mounted
+  // turn section, when the host currently renders one → the pair's question
+  // host. Sections do NOT persist for unmounted turns (measured: sparse
+  // window, elements replaced on rematerialization) — an unmounted page
+  // start simply parks its divider until the registry mounts it again.
   // Resolution is IDENTITY-based: the section is looked up by its stable
   // data-turn-id, never through cached element references — ChatGPT's
   // virtualized rendering can recycle hydrated content nodes, so an element
   // ref may silently belong to a different turn and would anchor the divider
   // after the wrong pair.
+  function pageMountRegistry() {
+    try {
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      return (mounts && typeof mounts.get === 'function') ? mounts : null;
+    } catch { return null; }
+  }
+
   function sectionByStableId(anyId) {
     const raw = String(anyId || '').replace(/^turn:[aq]:/, '').trim();
     if (!raw) return null;
+    // The Observer Hub's MountRegistry is the single writer of the
+    // identity->element binding; a miss means "not mounted right now", never
+    // "does not exist". The document query survives only as the degraded
+    // fallback for a runtime booted without the hub.
+    const mounts = pageMountRegistry();
+    if (mounts) {
+      try {
+        const rec = mounts.get(raw);
+        const section = rec?.shell?.isConnected ? rec.shell
+          : (rec?.el?.isConnected
+            ? (rec.el.closest?.('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]') || rec.el)
+            : null);
+        return section || null;
+      } catch { return null; }
+    }
     try {
       const esc = (typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(raw) : raw.replace(/"/g, '\\"');
       return document.querySelector(
@@ -1511,77 +1533,6 @@
     } catch { return null; }
   }
 
-  // Deterministic page-start QUESTION section, independent of turn records,
-  // cached element refs, or hosts[0]. ChatGPT keeps every turn in the DOM as
-  // section[data-testid="conversation-turn-N"], N being the 1-based turn
-  // position (odd = user question, even = assistant answer). The first pair of
-  // Page P is pair ((P-1)*25 + 1); its question is turn (((pair-1)*2)+1):
-  //   Page 1 → conversation-turn-1, Page 2 → conversation-turn-51.
-  // Returns { host, mode } so the divider can record how it was anchored.
-  function getPageStartQuestionSection(pageNum = 0) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const pairStartIdx0 = (num - 1) * 25;          // 0-based page-start pair
-    const turnNumber = (pairStartIdx0 * 2) + 1;    // 1-based turn testid number
-
-    // Primary: exact testid.
-    try {
-      const bySel = document.querySelector(`section[data-testid="conversation-turn-${turnNumber}"]`);
-      if (bySel && getChatPageTurnRole(bySel) === 'user') {
-        return { host: bySel, mode: 'testid' };
-      }
-    } catch {}
-
-    // Fallback: nth user section in DOM order (handles a non-contiguous or
-    // renamed testid scheme). Index = (P-1)*25 among user turns.
-    try {
-      const userSections = Array.from(
-        document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]')
-      ).sort((a, b) => {
-        const na = Number(String(a.getAttribute('data-testid') || '').replace('conversation-turn-', '')) || 0;
-        const nb = Number(String(b.getAttribute('data-testid') || '').replace('conversation-turn-', '')) || 0;
-        return na - nb;
-      });
-      const pick = userSections[pairStartIdx0] || null;
-      if (pick) return { host: pick, mode: 'user-nth' };
-    } catch {}
-
-    return null;
-  }
-
-  function getAuthoritativePageAnchorHost(pageNum = 0) {
-    // Deterministic resolver first — always succeeds when the page-start
-    // section is in the DOM (ChatGPT keeps all sections), so the divider can
-    // always be repaired rather than left stuck at a prior drifted position.
-    const direct = getPageStartQuestionSection(pageNum);
-    if (direct?.host) {
-      getAuthoritativePageAnchorHost._lastMode = direct.mode;
-      return direct.host;
-    }
-
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const turn = Array.isArray(S.turnList) ? (S.turnList[(num - 1) * 25] || null) : null;
-    if (!turn) return null;
-    try {
-      const questionId = String(turn.questionId || turn.qId || '').trim();
-      const qHost = questionId ? sectionByStableId(questionId) : null;
-      if (qHost) { getAuthoritativePageAnchorHost._lastMode = 'question-id'; return qHost; }
-
-      const answerId = String(turn.answerId || '').trim()
-        || String(turn.turnId || '').replace(/^turn:a:/, '').trim();
-      let host = answerId ? sectionByStableId(answerId) : null;
-      if (!host) {
-        const resolved = getChatPageTurnHost(turn);
-        const resolvedId = String(resolved?.getAttribute?.('data-turn-id') || '').trim();
-        if (resolved && (!answerId || !resolvedId || resolvedId === answerId)) host = resolved;
-      }
-      if (!host) return null;
-      const paired = getPairedQuestionHostForAssistantHost(host);
-      getAuthoritativePageAnchorHost._lastMode = 'answer-paired';
-      return paired || host;
-    } catch {
-      return null;
-    }
-  }
 
   // ChatGPT recycles/reparents turn sections on scroll, which can strand a
   // page divider below its page-start pair. renderChatPageDividers re-anchors
@@ -1784,47 +1735,36 @@
   }
 
   function getPageStartTurnWrapper(pageNum) {
+    // Logical page-start pair from the authoritative unit list, resolved to
+    // a native section purely by identity through the MountRegistry. Host
+    // testid numbers are window-relative and reassign on rematerialization
+    // (measured: conversation-turn-4 was logical turn 29, numbering
+    // non-monotone) — ordinal testid arithmetic can silently anchor the
+    // divider on the wrong turn, so none survives here. An unmounted page
+    // start returns null: the divider is parked, and the registry's mount
+    // transition re-runs placement the moment the pair materializes.
     const pairStartIdx0 = (Number(pageNum) - 1) * 25;
-    const turnNumber = pairStartIdx0 * 2 + 1;
-    const testid = `conversation-turn-${turnNumber}`;
-    let section = null;
-    try { section = document.querySelector(`section[data-testid="${testid}"]`); } catch {}
+    const turn = Array.isArray(S.turnList) ? (S.turnList[pairStartIdx0] || null) : null;
+    if (!turn) return null;
+    const qId = String(turn.questionId || turn.qId || '').trim()
+      || String(turn.turnId || '').replace(/^turn:q:/, '').replace(/^turn:/, '').trim();
+    const section = qId ? sectionByStableId(qId) : null;
+    if (!section) return null;
     // A page-start turn that is inline-opened INSIDE the page's title-bar
     // stack is not a divider anchor: the divider's correct position is above
     // the stack container itself (already maintained by the unit rule).
     // Anchoring on it would drag the divider into the stack.
-    if (section?.closest?.('[data-cgxui="chat-page-title-list-synth"]')) return null;
-    if (section) return { wrapper: section.parentElement || section, section, testid, mode: 'testid-wrapper' };
-
-    let users = [];
-    try {
-      users = Array.from(document.querySelectorAll('section[data-testid^="conversation-turn"][data-turn="user"]'))
-        .sort((a, b) => {
-          const an = Number(String(a.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-          const bn = Number(String(b.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-          return an - bn;
-        });
-    } catch {}
-    const fallback = users[pairStartIdx0] || null;
-    if (fallback) {
-      // Partial-DOM guard: with numeric testids the primary selector would
-      // have matched if the true page-start section were present, so a
-      // different number here means the flow holds only a subset (e.g.
-      // pagination windowing detached earlier turns). Indexing the nth user
-      // section of a subset would anchor the divider at the wrong pair —
-      // refuse instead of guessing; placement retries when the full flow is
-      // back. The nth pick stays valid only for a renamed (non-numeric)
-      // testid scheme.
-      const fbNum = Number(String(fallback.getAttribute('data-testid') || '').match(/conversation-turn-(\d+)/)?.[1] || 0);
-      if (fbNum && fbNum !== turnNumber) return null;
-      return {
-        wrapper: fallback.parentElement || fallback,
-        section: fallback,
-        testid: fallback.getAttribute('data-testid'),
-        mode: 'user-nth-wrapper',
-      };
-    }
-    return null;
+    if (section.closest?.('[data-cgxui="chat-page-title-list-synth"]')) return null;
+    const role = (typeof getChatPageTurnRole === 'function')
+      ? getChatPageTurnRole(section)
+      : String(section.getAttribute?.('data-turn') || '');
+    if (role !== 'user') return null;
+    return {
+      wrapper: section.parentElement || section,
+      section,
+      testid: String(section.getAttribute?.('data-testid') || ''),
+      mode: 'registry-wrapper',
+    };
   }
 
   const CHAT_PAGE_BOUNDARY_ATTR = 'data-h2o-chat-page-boundary';
@@ -2233,40 +2173,16 @@
       if (titleList?.parentNode) {
         return { ok: true, parent: titleList.parentNode, before: titleList, mode: 'exact-title-list', evidence: titleList };
       }
-      if (page.earliest?.wrapper?.parentNode) {
-        return {
-          ok: true,
-          parent: page.earliest.wrapper.parentNode,
-          before: page.earliest.wrapper,
-          mode: 'earliest-exact-page-artifact',
-          evidence: page.earliest.wrapper,
-        };
-      }
-      const previous = model.pages[page.pageNum - 2] || null;
-      if (previous) {
-        const previousEnd = getChatPageUnitState().sentinels.get(`${String(previous.pageNum)}:end`) || null;
-        if (previousEnd?.isConnected && previousEnd.parentNode) {
-          return {
-            ok: true,
-            parent: previousEnd.parentNode,
-            before: previousEnd.nextSibling || null,
-            mode: 'previous-page-end-sentinel',
-            evidence: previousEnd,
-          };
-        }
-        const previousTail = previous.titleListRoot?.parentNode
-          ? previous.titleListRoot
-          : (previous.latest?.wrapper?.parentNode ? previous.latest.wrapper : null);
-        if (previousTail?.parentNode) {
-          return {
-            ok: true,
-            parent: previousTail.parentNode,
-            before: previousTail.nextSibling || null,
-            mode: previous.titleListRoot ? 'previous-title-list-unit' : 'previous-latest-exact-artifact',
-            evidence: previousTail,
-          };
-        }
-      }
+      // No approximate placement below this line. Under the measured sparse
+      // host window, "earliest mounted artifact of the page" and
+      // "after the previous page's tail" are ordinal guesses: they stamped
+      // "Page N" above whatever turn of that page happened to be mounted
+      // (observed live: the Page 1 divider drifting with the window at turns
+      // 23/25/18 while turn 1 was never mounted). A page whose exact start
+      // pair is not mounted parks instead — the deferral path retains any
+      // connected divider, requests the bounded page-window hydration, and
+      // the MountRegistry's mount transition re-enters reconciliation the
+      // moment the true start pair materializes.
       const startSentinel = getChatPageUnitState().sentinels.get(`${String(page.pageNum)}:start`) || null;
       if (startSentinel?.isConnected && startSentinel.parentNode) {
         return {
@@ -2509,7 +2425,6 @@
       if (!stale?.parentNode) continue;
       if (removeH2OChatPageUnitNode(stale)) stats.removed += 1;
     }
-    let previousPlaced = true;
     for (const page of Array.isArray(model?.pages) ? model.pages : []) {
       const pageNum = page.pageNum;
       const candidates = Array.isArray(candidatesByPage.get(pageNum))
@@ -2528,9 +2443,12 @@
         if (duplicate === divider) continue;
         if (removeH2OChatPageUnitNode(duplicate)) stats.removed += 1;
       }
-      let anchor = previousPlaced
-        ? resolveChatPageBoundaryAnchor(model, page, 'start')
-        : { ok: false, reason: 'previous-page-unit-unresolved' };
+      // Pages resolve independently: under the sparse mounted window a
+      // parked earlier page is NORMAL and must not starve later pages whose
+      // exact start pairs are mounted. Ordering safety stays owned by the
+      // previous-page-end-sentinel clamp below and the ascending
+      // verification after placement.
+      let anchor = resolveChatPageBoundaryAnchor(model, page, 'start');
       if (anchor.ok && pageNum > 1 && anchor.mode !== 'rendered-boundary-authority') {
         const previousEnd = state.sentinels.get(`${String(pageNum - 1)}:end`) || null;
         if (previousEnd?.isConnected && previousEnd.parentNode) {
@@ -2552,16 +2470,39 @@
       }
       if (!anchor.ok || !anchor.parent) {
         // Authority still owns this page. A transiently unavailable native
-        // anchor must not delete or detach its sole divider. Keep a connected
-        // divider exactly where the last proven reconciliation left it; the
-        // existing non-scrolling page-window request may gather ordinary
-        // remount evidence, but final movement remains deferred until exact.
+        // anchor must not delete its sole divider — but retention in the
+        // flow requires PROOF: the divider still sits exactly at its own
+        // start sentinel from the last proven reconciliation. A connected
+        // divider without that proof (seeded wrong, or stranded by a host
+        // rebuild) is a lying page label under the sparse mounted window —
+        // park it out of the flow; pendingDividers keeps the node for exact
+        // re-placement. The existing non-scrolling page-window request may
+        // gather ordinary remount evidence, but final movement remains
+        // deferred until exact.
+        const startSentinelProof = state.sentinels.get(`${String(pageNum)}:start`) || null;
+        const provenRetention = (() => {
+          if (!divider?.isConnected || !startSentinelProof?.isConnected) return false;
+          const parent = divider.parentNode || null;
+          if (!parent || startSentinelProof.parentNode !== parent) return false;
+          // Sibling-pointer-free adjacency (portable across host DOM and
+          // validator shims): the divider's nearest preceding element child
+          // must be its own start sentinel.
+          const kids = Array.from(parent.children || parent.childNodes || []);
+          for (let at = kids.indexOf(divider) - 1; at >= 0; at -= 1) {
+            const cand = kids[at];
+            if (cand?.nodeType === 3) continue;
+            return cand === startSentinelProof;
+          }
+          return false;
+        })();
+        if (divider?.isConnected && !provenRetention) {
+          if (removeH2OChatPageUnitNode(divider)) stats.removed += 1;
+        }
         stats.deferred += 1;
         if (anchor.allowHydration !== false
           && requestChatPageUnitHydration(page, anchor.reason || 'page-unit-anchor-unavailable')) {
           stats.hydrationRequests += 1;
         }
-        previousPlaced = false;
         stats.pages.push({
           pageNum,
           status: 'deferred',
@@ -2609,7 +2550,6 @@
           divider.setAttribute('data-h2o-divider-order-repaired', '1');
         } catch {}
       }
-      previousPlaced = true;
       stats.pages.push({ pageNum, status: 'placed', mode: anchor.mode || '' });
     }
     for (const [pageNum, dividers] of candidatesByPage.entries()) {
@@ -3098,11 +3038,34 @@
     }, 250);
   }
 
+  let dividerMountTransitionsOff = null;
+
+  function bindDividerMountTransitionsOnce() {
+    // The MountRegistry's typed transitions are the precise signal that turn
+    // sections mounted, were replaced, or unmounted — including the moment a
+    // parked page-start pair materializes. They replace the module-local
+    // flow observer whenever the hub is present; the observer survives only
+    // as the degraded fallback for a runtime booted without it.
+    if (dividerMountTransitionsOff) return true;
+    try {
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      if (mounts && typeof mounts.onTransitions === 'function') {
+        dividerMountTransitionsOff = mounts.onTransitions('chat-page-structure', () => {
+          scheduleDividerOrderRepair();
+        });
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+
   function bindDividerOrderObserverOnce() {
     if (typeof MutationObserver !== 'function') return;
     let parent = null;
     try {
-      const sec1 = document.querySelector('section[data-testid="conversation-turn-1"]');
+      // Any mounted turn section shares the flow parent; testid numbers are
+      // window-relative, so no specific number can be required here.
+      const sec1 = document.querySelector('section[data-testid^="conversation-turn"]');
       parent = sec1?.parentElement?.parentElement || sec1?.parentElement || null;
     } catch {}
     if (!parent || parent === dividerOrderObserverParent) return;
@@ -3116,7 +3079,11 @@
 
   function renderChatPageDividers(chatId = '') {
     bindDividerScrollRepairOnce();
-    bindDividerOrderObserverOnce();
+    // typeof-guarded: validator sandboxes evaluate extracted function slices
+    // that may not carry the transition binder.
+    if (!(typeof bindDividerMountTransitionsOnce === 'function' && bindDividerMountTransitionsOnce())) {
+      bindDividerOrderObserverOnce();
+    }
     dividerRenderInFlight = true;
     const perfOwned = enterPerfOwner('divider');
     const perfT0 = perfNow();
@@ -3157,9 +3124,12 @@
 
       // Divider placement is anchored from the authoritative pair map, not
       // from whatever subset the section builder resolved this tick: the
-      // first pair of Page N is canonical turn (N-1)*25, and its section
-      // persists in the DOM even when content is unhydrated or the page is
-      // collapsed. Sections remain the fallback and supply band/host state.
+      // first pair of Page N is canonical turn (N-1)*25, resolved by
+      // identity through the MountRegistry. The host renders only a sparse
+      // mounted window, so an unmounted page start parks its divider (no
+      // guessed placement); the registry's mount transition re-runs
+      // placement when the pair materializes. Sections remain the fallback
+      // and supply band/host state.
       const authPairCount = Array.isArray(S.turnList) ? S.turnList.length : 0;
       const authPageCount = authPairCount > 0 ? Math.ceil(authPairCount / 25) : 0;
       const renderPageNums = new Set();
