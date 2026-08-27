@@ -238,9 +238,90 @@ check('[F.2] operator action is Desktop/Tauri capability-gated', () => {
   assert.match(actionCode, /isDesktopCapable/);
 });
 
+/* Phase 5 lock-step update. The blanket textual ban on SCANNER_API was a proxy
+ * for the real G.0 invariant: the scanner must never run BY ITSELF. It was
+ * accurate while nothing invoked the inbox at all — but that also left a
+ * producer-delivered request unable to reach the queue through any operator
+ * action, which blocked the assembled-system proof. The action may now call the
+ * scanner from an explicit click handler; what stays forbidden is automatic
+ * invocation, and that is now asserted directly rather than by absence. */
 check('[F.2] operator action does NOT auto-call the scanner; selection is restricted to validated rows', () => {
-  assert.ok(!actionCode.includes(SCANNER_API), 'operator action must not call the scanner');
   assert.match(actionCode, /status:\s*['"]validated['"]/);
+  // Any scanner call must be reached only from the explicit operator handler.
+  const autoTriggers = [
+    /addEventListener\(\s*['"]load['"]/,
+    /DOMContentLoaded/,
+    /setInterval\s*\(/,
+    /setTimeout\s*\([^)]*scan/i,
+  ];
+  for (const re of autoTriggers) {
+    assert.doesNotMatch(actionCode, re, `operator action must not auto-trigger: ${re}`);
+  }
+});
+
+/* ── Phase 5 — explicit operator request-inbox intake ────────────────────── */
+
+check('[P5.1] New UI action is wired to the governed inbox authority', () => {
+  assert.ok(actionCode.includes(SCANNER_API), 'action must invoke the governed inbox scanner');
+  assert.match(actionCode, /scanRequestInbox\s*:\s*scanRequestInbox/, 'intake must be exported');
+  assert.match(actionCode, /data-archive-materializer-intake-run/, 'no New UI control renders the intake');
+  assert.ok(hasStr(actionCode, 'Scan request inbox'), 'intake control has no operator-facing label');
+});
+
+check('[P5.2] intake is explicit: reached only from a click handler', () => {
+  assert.match(actionCode, /intakeBtn[^;]*addEventListener\(\s*['"]click['"]\s*,\s*doScanInbox/,
+    'intake must be bound to an explicit click');
+  // doScanInbox is the ONLY caller of the intake seam.
+  const callers = (actionCode.match(/runIntake\s*\(/g) || []).length;
+  assert.equal(callers, 1, `intake seam must have exactly one call site, found ${callers}`);
+});
+
+check('[P5.3] no watcher/polling introduced by the intake', () => {
+  for (const banned of ['setInterval', 'MutationObserver', 'requestIdleCallback', 'FileSystemObserver']) {
+    assert.ok(!actionCode.includes(banned), `intake must not use ${banned}`);
+  }
+});
+
+check('[P5.4] intake reimplements no admission logic — it delegates entirely', () => {
+  // The governed inbox owns parsing, validation, dedupe and enqueue.
+  for (const banned of ['enqueueSavedChatArchiveRequestV1', 'INSERT INTO', 'dedupeKey', 'normalizeEnvelope', 'savedChatArchiveRequest.v1']) {
+    assert.ok(!actionCode.includes(banned), `intake must not reimplement: ${banned}`);
+  }
+});
+
+check('[P5.5] intake is bounded and cannot widen the governed scan', () => {
+  assert.match(actionCode, /DEFAULT_INTAKE_LIMIT\s*=\s*50/);
+  assert.match(actionCode, /MAX_INTAKE_LIMIT\s*=\s*200/);
+  assert.match(actionCode, /limit\s*>\s*MAX_INTAKE_LIMIT/, 'intake limit must be clamped');
+});
+
+check('[P5.6] intake reports the inbox result vocabulary, not a second state model', () => {
+  for (const k of ['scanned', 'processed', 'validated', 'duplicates', 'rejected', 'needsDesktopSnapshot', 'dbUnavailable']) {
+    assert.ok(hasStr(actionCode, k), `intake result presentation missing counter: ${k}`);
+  }
+});
+
+check('[P5.7] intake fails honestly and never manufactures validated state', () => {
+  assert.match(actionCode, /inbox-unavailable/, 'must report an unavailable inbox');
+  assert.doesNotMatch(actionCode, /validated\s*[:=]\s*true/, 'must never assert validated itself');
+  assert.doesNotMatch(actionCode, /status\s*=\s*['"]validated['"]/, 'must never set validated status itself');
+});
+
+check('[P5.8] Materialize validated remains a SEPARATE explicit action', () => {
+  assert.ok(hasStr(actionCode, 'Materialize validated'), 'batch action must remain');
+  assert.match(actionCode, /data-archive-materializer-batch-run/, 'batch control must remain');
+  // The intake handler must not materialize.
+  const intakeFn = actionCode.slice(actionCode.indexOf('function doScanInbox'));
+  const body = intakeFn.slice(0, intakeFn.indexOf('function doLoadValidated'));
+  assert.ok(!/materiali/i.test(body), 'intake handler must not materialize');
+});
+
+check('[P5.9] intake requires no Legacy UI route', () => {
+  // The control lives in the Studio New UI operator card, not a legacy surface.
+  assert.ok(actionCode.includes('data-archive-materializer-action-card'), 'control must live on the New UI action card');
+  for (const legacy of ['chrome.runtime', 'chrome.storage', 'browser.runtime']) {
+    assert.ok(!actionCode.includes(legacy), `intake must not depend on ${legacy}`);
+  }
 });
 
 check('[F.2] operator action has no watcher/poller/daemon (no automatic materialization)', () => {

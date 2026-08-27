@@ -46,6 +46,12 @@
   /* G.2 bounded "Materialize validated" batch limits (G.1 contract: default 10,
    * hard cap 50). The operator may raise the per-run count up to the cap; there
    * is no "materialize all" / unbounded run. */
+  /* Inbox intake bounds mirror the shipped inbox module's own contract
+   * (DEFAULT_SCAN_LIMIT 50 / MAX_SCAN_LIMIT 200) so this control cannot widen
+   * the governed scan; the inbox re-clamps whatever it is handed. */
+  var DEFAULT_INTAKE_LIMIT = 50;
+  var MAX_INTAKE_LIMIT = 200;
+
   var DEFAULT_BATCH_LIMIT = 10;
   var MAX_BATCH_LIMIT = 50;
 
@@ -106,6 +112,11 @@
     batchLimitLabel: 'Batch limit',
     batchHint: 'Materializes up to the batch limit of validated requests sequentially (default ' + DEFAULT_BATCH_LIMIT + ', max ' + MAX_BATCH_LIMIT + '). Explicit operator action; no scanner, no automatic trigger.',
     batchEmpty: 'No validated requests to materialize.',
+    intakeButton: 'Scan request inbox',
+    intakeBusy: 'Scanning request inbox…',
+    intakeHint: 'Reads producer-delivered archive requests from the request inbox and admits them through the governed inbox authority (default ' + DEFAULT_INTAKE_LIMIT + ', max ' + MAX_INTAKE_LIMIT + '). Explicit operator action; no watcher, no polling, and it never materializes.',
+    intakeUnavailable: 'The request inbox module is not loaded.',
+    intakeEmpty: 'No request files were found to process.',
   };
 
   /* Pure presentation map for every materializer result status this action can
@@ -248,6 +259,28 @@
       .catch(function () { return []; });
   }
 
+  /* ---- Phase 5: explicit operator request-inbox intake --------------------
+   * The producer (Chrome MV3) delivers h2o.savedChatArchiveRequest.v1 files
+   * into the request inbox, but nothing in the product ever asked the inbox to
+   * read them, so a delivered request could never become a validated queue row.
+   * This is that missing operator trigger and NOTHING else: every rule about
+   * what a request file is, whether it is admissible, how it dedupes and how it
+   * is enqueued already lives in the inbox module, and is reused verbatim here.
+   * No parsing, no validation, no dedupe key, no enqueue is reimplemented. */
+  async function scanRequestInbox(options) {
+    var opts = safeObject(options);
+    var ingestion = (global.H2O && global.H2O.Studio && global.H2O.Studio.ingestion) || {};
+    var scan = ingestion.scanSavedChatArchiveRequestInboxV1;
+    if (typeof scan !== 'function') {
+      return { ok: false, status: 'inbox-unavailable', unavailable: true, scanned: 0, processed: 0 };
+    }
+    var limit = Number(opts.limit);
+    if (!isFinite(limit) || limit < 1) limit = DEFAULT_INTAKE_LIMIT;
+    if (limit > MAX_INTAKE_LIMIT) limit = MAX_INTAKE_LIMIT;
+    /* Bounded and explicit. The inbox owns every admission decision from here. */
+    return scan({ limit: Math.floor(limit) });
+  }
+
   /* ---- G.2: bounded "Materialize validated" batch ------------------------- */
   /* Clamps the per-run limit to [1, MAX_BATCH_LIMIT] (default DEFAULT_BATCH_LIMIT),
    * lists VALIDATED rows (read-only), and materializes them SEQUENTIALLY by
@@ -343,6 +376,7 @@
     var listValidated = (typeof opts.listValidatedRequests === 'function') ? opts.listValidatedRequests : loadValidatedRequests;
     var desktop = (typeof opts.isDesktop === 'boolean') ? opts.isDesktop : isDesktopCapable();
     var batchMaterialize = (typeof opts.materializeBatch === 'function') ? opts.materializeBatch : materializeValidatedBatch;
+    var runIntake = (typeof opts.scanInbox === 'function') ? opts.scanInbox : scanRequestInbox;
 
     var card = {
       desktop: desktop,
@@ -354,6 +388,8 @@
       lastResult: null,
       batchBusy: false,
       batchLimit: DEFAULT_BATCH_LIMIT,
+      intakeBusy: false,
+      lastIntake: null,
       lastBatch: null,
     };
 
@@ -440,6 +476,45 @@
         + '</div>';
     }
 
+    /* Presents the inbox scan result using the inbox's OWN counters and status
+     * vocabulary (scanned/processed/validated/duplicates/rejected/
+     * needsDesktopSnapshot/dbUnavailable, completed / nothing-to-process) rather
+     * than inventing a second state model over the same facts. */
+    function intakeResultHtml() {
+      if (!card.lastIntake) return '';
+      var r = card.lastIntake;
+      if (r.unavailable) {
+        return '<div data-archive-materializer-intake-result="1" data-archive-materializer-intake-status="inbox-unavailable" style="margin-top:10px;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+          + '<div style="font-size:12px">' + escapeHtml(TEXT.intakeUnavailable) + '</div></div>';
+      }
+      var status = cleanString(r.status) || 'unknown';
+      var num = function (v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; };
+      var rows = [
+        ['scanned', num(r.scanned)],
+        ['processed', num(r.processed)],
+        ['validated', num(r.validated)],
+        ['duplicates', num(r.duplicates)],
+        ['rejected', num(r.rejected)],
+        ['needsDesktopSnapshot', num(r.needsDesktopSnapshot)],
+        ['dbUnavailable', num(r.dbUnavailable)],
+      ];
+      var body = '';
+      for (var i = 0; i < rows.length; i += 1) {
+        body += '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px">'
+          + '<span style="opacity:.65">' + escapeHtml(rows[i][0]) + '</span>'
+          + '<span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">' + escapeHtml(rows[i][1]) + '</span></div>';
+      }
+      var blockers = Array.isArray(r.blockers) ? r.blockers.length : 0;
+      var warnings = Array.isArray(r.warnings) ? r.warnings.length : 0;
+      if (blockers) body += '<div style="font-size:12px;margin-top:4px">blockers: ' + escapeHtml(blockers) + '</div>';
+      if (warnings) body += '<div style="font-size:12px;opacity:.75">warnings: ' + escapeHtml(warnings) + '</div>';
+      if (num(r.processed) === 0) body += '<div style="opacity:.6;font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeEmpty) + '</div>';
+      return '<div data-archive-materializer-intake-result="1" data-archive-materializer-intake-status="' + escapeHtml(status) + '" style="margin-top:10px;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+        + '<div style="font-weight:600;font-size:12px;margin-bottom:6px">' + escapeHtml(status) + '</div>'
+        + body
+        + '</div>';
+    }
+
     function render() {
       var disabledAction = (!card.desktop || card.busy) ? ' disabled' : '';
       var disabledLoad = (!card.desktop || card.listBusy || card.busy) ? ' disabled' : '';
@@ -448,6 +523,9 @@
         + ((!card.desktop || card.busy) ? 'opacity:.5;cursor:default;' : '');
       var loadStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
         + ((!card.desktop || card.listBusy || card.busy) ? 'opacity:.5;cursor:default;' : '');
+      var disabledIntake = (!card.desktop || card.intakeBusy || card.busy || card.batchBusy) ? ' disabled' : '';
+      var intakeStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
+        + ((!card.desktop || card.intakeBusy || card.busy || card.batchBusy) ? 'opacity:.5;cursor:default;' : '');
       var batchStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(46,160,67,.16);border:1px solid rgba(46,160,67,.4);color:inherit;font:inherit;'
         + ((!card.desktop || card.busy || card.batchBusy) ? 'opacity:.5;cursor:default;' : '');
       var bodyHtml;
@@ -462,6 +540,11 @@
           + '<button type="button" data-archive-materializer-run="1" style="' + actionStyle + '"' + disabledAction + '>' + escapeHtml(card.busy ? TEXT.busy : TEXT.materializeButton) + '</button>'
           + '<button type="button" data-archive-materializer-load="1" style="' + loadStyle + '"' + disabledLoad + '>' + escapeHtml(TEXT.loadButton) + '</button>'
           + '</div>'
+          + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">'
+          + '<button type="button" data-archive-materializer-intake-run="1" style="' + intakeStyle + '"' + disabledIntake + '>' + escapeHtml(card.intakeBusy ? TEXT.intakeBusy : TEXT.intakeButton) + '</button>'
+          + '</div>'
+          + '<div style="opacity:.55;font-size:11px;margin-top:4px">' + escapeHtml(TEXT.intakeHint) + '</div>'
+          + intakeResultHtml()
           + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">'
           + '<label style="font-size:12px;opacity:.7">' + escapeHtml(TEXT.batchLimitLabel) + '</label>'
           + '<input type="number" min="1" max="' + MAX_BATCH_LIMIT + '" value="' + escapeHtml(card.batchLimit) + '" data-archive-materializer-batch-limit="1" style="width:64px;padding:7px;border-radius:6px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);color:inherit;font:inherit" />'
@@ -487,6 +570,8 @@
       if (select) select.addEventListener('change', onSelectChange);
       var batchBtn = container.querySelector('[data-archive-materializer-batch-run="1"]');
       if (batchBtn && card.desktop && !card.batchBusy && !card.busy) batchBtn.addEventListener('click', doMaterializeBatch, { once: true });
+      var intakeBtn = container.querySelector('[data-archive-materializer-intake-run="1"]');
+      if (intakeBtn && card.desktop && !card.intakeBusy && !card.busy && !card.batchBusy) intakeBtn.addEventListener('click', doScanInbox, { once: true });
     }
 
     function doMaterialize() {
@@ -505,6 +590,24 @@
         var out = localResult('failed', card.requestId);
         out.error = String((err && err.message) || err || 'materializer threw');
         card.lastResult = out;
+        render();
+      });
+    }
+
+    /* Explicit operator intake. It admits requests and STOPS: materializing
+     * remains the separate "Materialize validated" action, per G.0. */
+    function doScanInbox() {
+      if (card.intakeBusy || card.busy || card.batchBusy || !card.desktop) return;
+      card.intakeBusy = true;
+      card.lastIntake = null;
+      render();
+      Promise.resolve(runIntake({ limit: DEFAULT_INTAKE_LIMIT })).then(function (res) {
+        card.intakeBusy = false;
+        card.lastIntake = (res && typeof res === 'object') ? res : { ok: false, status: 'failed', scanned: 0, processed: 0 };
+        render();
+      }, function (err) {
+        card.intakeBusy = false;
+        card.lastIntake = { ok: false, status: 'failed', scanned: 0, processed: 0, error: String((err && err.message) || err || 'inbox scan threw') };
         render();
       });
     }
@@ -599,6 +702,7 @@
     materializeRequest: materializeRequest,
     loadValidatedRequests: loadValidatedRequests,
     materializeValidatedBatch: materializeValidatedBatch,
+    scanRequestInbox: scanRequestInbox,
     formatMaterializeResult: formatMaterializeResult,
     renderArchiveMaterializerActionCard: renderArchiveMaterializerActionCard,
     mountArchiveMaterializerActionCard: mountArchiveMaterializerActionCard,
