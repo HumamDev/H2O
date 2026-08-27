@@ -683,6 +683,11 @@
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
        no import/recovery, no sync, no UI. -->
   <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
+  <!-- Desktop-only: M05 Phase 2.2 per-chat coverage/freshness engine. Stateless;
+       composes archive discovery + governed package validation + the current
+       projection probe. No index, no current pointer, no second validator.
+       Loads after diagnostics and the probe it composes. -->
+  <script src="./ingestion/saved-chat-coverage.tauri.js"></script>
   <!-- Chrome/MV3: saved-chat archive request builder (Phase D.3A).
        Builds metadata-only h2o.savedChatArchiveRequest.v1 envelopes from
        intent. No transport, Desktop queue call, package writer, CAS, Sync,

@@ -170,10 +170,13 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   "ingestion/saved-chat-generation-publisher.tauri.js",
   // Desktop-only: M05 Phase 2.1 mutation-free current-projection probe.
   "ingestion/saved-chat-projection-probe.tauri.js",
+  // Desktop-only: M05 Phase 2.2 per-chat coverage/freshness engine. Composes
+  // discovery + governed validation + projection; adds no new authority.
   // Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2). Read-only
   // package inventory + manifest/snapshot/hash validation under archive/packages.
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  "ingestion/saved-chat-coverage.tauri.js",
   // Chrome/MV3: saved-chat archive request builder (Phase D.3A). Builds
   // metadata-only h2o.savedChatArchiveRequest.v1 envelopes from intent. No
   // transport, Desktop queue call, package writer, CAS, Sync, file drop,
@@ -1363,6 +1366,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-package-assets.tauri.js",
   "ingestion/saved-chat-generation-publisher.tauri.js",
   "ingestion/saved-chat-projection-probe.tauri.js",
+  "ingestion/saved-chat-coverage.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-request-delivery.mv3.js",

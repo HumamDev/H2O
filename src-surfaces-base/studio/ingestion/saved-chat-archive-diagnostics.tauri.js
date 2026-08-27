@@ -518,6 +518,8 @@
        * Set only after verification, from the verified chatId and the
        * RECOMPUTED contentHash. */
       nameClassification: 'unclassified',
+      /* Verified snapshot.savedAt; presentation ordering only (M05 §G). */
+      savedAt: '',
       chatId: '',
       snapshotId: '',
       schemaVersion: null,
@@ -1275,6 +1277,12 @@
         }
         diag.chatId = firstString(diag.chatId, snapshot.chatId);
         diag.snapshotId = firstString(diag.snapshotId, snapshot.snapshotId);
+        /* Verified snapshot metadata, surfaced for M05 §G BEST-HISTORICAL
+         * ordering. `savedAt` lives INSIDE the hashed snapshot, so it is
+         * content the package's own identity covers — unlike a filesystem
+         * mtime or manifest.generatedAt, neither of which may order anything.
+         * It is presentation metadata only and is never freshness authority. */
+        diag.savedAt = firstString(snapshot.savedAt);
       }
 
       if (manifest && snapshotBytes) {
