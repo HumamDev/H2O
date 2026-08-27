@@ -233,6 +233,10 @@
       packageFiles: 'archive-package-payload-forbidden',
       archivePath: 'archive-package-path-payload-forbidden',
       contentHash: 'content-hash-payload-forbidden',
+      /* M05 Phase 3: the projection half of the effective dedupe identity is
+       * derived on the Desktop side by the governed probe. A caller-supplied
+       * value would let the browser forge refresh identity. */
+      projectionContentHash: 'content-hash-payload-forbidden',
     };
     var hits = [];
     function walk(value, path) {
@@ -613,6 +617,67 @@
     };
   }
 
+  /* M05 Phase 3: Desktop-derived effective dedupe identity.
+   *
+   * The governed request identity the browser supplies covers source, target
+   * snapshotId and the folder/category/project/label/tag intent — but NOT the
+   * package projection. A metadata-only change that alters the projection
+   * (title, savedAt, isSaved/isLinked, linkSourceHref, bindings) leaves both
+   * the snapshotId and that key unchanged, so a legitimate refresh deduped
+   * against the original request and could never be materialized.
+   *
+   * The fix keeps authority on the Desktop side: the browser's key remains
+   * the request-identity half, and the projection half is the contentHash the
+   * governed PURE probe computes here. Chrome never supplies hash material and
+   * cannot forge this — a caller-provided projectionContentHash is ignored
+   * outright.
+   *
+   * If the projection is not authoritative (indeterminate, or no current
+   * snapshot), NO projection component is added: the base key is used
+   * unchanged. Fabricating an identity from partial state would admit a
+   * duplicate request on every probe hiccup. */
+  async function effectiveDedupeKeyV1(baseKey, resolved) {
+    var base = cleanString(baseKey);
+    if (!base) return base;
+    var ing = (H2O.Studio && H2O.Studio.ingestion) || {};
+    var probe = ing.probeCurrentSavedChatProjectionV1;
+    var codec = ing.savedChatPackageCodec;
+    var projector = ing.savedChatPackageV1Internals || ing;
+    if (typeof probe !== 'function' || !codec || typeof codec.sha256PrefixedBytes !== 'function') {
+      return base;
+    }
+    var resolution = safeObject(resolved.resolution);
+    var normalizedDesktop = safeObject(safeObject(resolved.normalizedRequest).desktopResolution);
+    var chatId = cleanString(resolution.chatId) || cleanString(normalizedDesktop.studioChatId);
+    if (!chatId) return base;
+
+    var projection;
+    try {
+      projection = safeObject(await probe({ chatId: chatId }));
+    } catch (err) {
+      return base;
+    }
+    /* Only an authoritative projection may participate. Two independent
+     * guards, deliberately: the status check states the rule, and the
+     * empty-hash check enforces it even if a future probe status were added
+     * that carried no hash. Removing either alone still refuses; removing both
+     * is what a test kills. */
+    if (cleanString(projection.status) !== 'ok') return base;
+    var projectionContentHash = cleanString(projection.contentHash);
+    if (!projectionContentHash) return base;
+
+    var material = JSON.stringify({
+      projectionContentHash: projectionContentHash,
+      request: base,
+    });
+    try {
+      var bytes = new TextEncoder().encode(material);
+      return await codec.sha256PrefixedBytes(bytes);
+    } catch (err) {
+      return base;
+    }
+  }
+
   async function enqueueSavedChatArchiveRequestV1(envelope, options) {
     void options;
     state.lastEnqueuedAt = Date.now();
@@ -635,6 +700,15 @@
     }
 
     try {
+      /* Same effective projection still dedupes; a changed authoritative
+       * projection yields a different key and therefore admits a refresh. */
+      if (cleanString(resolved.status) === STATUS_VALIDATED) {
+        var effective = await effectiveDedupeKeyV1(dedupeKey, resolved);
+        if (effective && effective !== dedupeKey) {
+          dedupeKey = effective;
+          resolved.dedupeKey = effective;
+        }
+      }
       var existing = await findQueueRowByDedupeKey(dedupeKey);
       if (existing) {
         var duplicate = enqueueResultFromRow(existing, STATUS_DUPLICATE, existing.request_id || null);

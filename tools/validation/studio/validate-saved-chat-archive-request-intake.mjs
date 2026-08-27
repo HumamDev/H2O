@@ -6,6 +6,7 @@
 // SQLite, package writer, CAS, Sync, import/recovery, capabilities, or UI.
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -116,7 +117,7 @@ function merge(base, overrides) {
   return out;
 }
 
-function loadModule({ missingStore = false, missingChat = false, missingSnapshot = false, throwStore = false } = {}) {
+function loadModule({ missingStore = false, missingChat = false, missingSnapshot = false, throwStore = false, projection = null } = {}) {
   const queueRows = [];
   const chats = {
     get: async (chatId) => {
@@ -184,8 +185,26 @@ function loadModule({ missingStore = false, missingChat = false, missingSnapshot
   };
   context.globalThis = context;
   context.window = context;
+  // M05 Phase 3: the governed probe + codec supply the Desktop-derived
+  // projection half of the effective dedupe identity. Injected here so the
+  // intake suite can vary the projection without touching the real archive.
+  const probeCalls = [];
+  if (projection) {
+    context.H2O.Studio = context.H2O.Studio || {};
+    context.H2O.Studio.ingestion = Object.assign({}, context.H2O.Studio.ingestion, {
+      probeCurrentSavedChatProjectionV1: async (opts) => {
+        probeCalls.push(opts);
+        return typeof projection === 'function' ? projection(probeCalls.length) : projection;
+      },
+      savedChatPackageCodec: {
+        sha256PrefixedBytes: async (bytes) => 'sha256-' + crypto.createHash('sha256').update(Buffer.from(bytes)).digest('hex'),
+      },
+    });
+  }
+  context.TextEncoder = TextEncoder;
   const sandbox = vm.createContext(context);
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
+  sandbox.H2O.Studio.ingestion.__probeCalls = probeCalls;
   sandbox.H2O.Studio.ingestion.__queueRows = queueRows;
   return sandbox.H2O.Studio.ingestion;
 }
@@ -503,6 +522,69 @@ await checkAsync('list returns persisted requests and diagnose queue returns cou
   assert.equal(diag.boundaries.archivePackageMutation, false);
   assert.equal(diag.boundaries.chromeRuntime, false);
   assert.equal(diag.boundaries.syncTransport, false);
+});
+
+
+
+
+
+// ── M05 Phase 3: projection-aware refresh identity ──────────────────────────
+
+const okProjection = (contentHash) => ({
+  status: 'ok', reason: '', contentHash, snapshotId: 'snap_d2a', schemaVersion: 2, payloadVersion: 2, assetShas: [],
+});
+const PROJ_A = 'sha256-' + 'a'.repeat(64);
+const PROJ_B = 'sha256-' + 'b'.repeat(64);
+
+await checkAsync('P3F-1/2 unchanged projection dedupes; CHANGED projection admits a refresh', async () => {
+  // One module instance, one queue: the ONLY thing that varies between calls
+  // is the authoritative projection, which is exactly the metadata-only
+  // refresh case the browser-side dedupe key cannot see.
+  const ingestion = loadModule({ projection: (n) => okProjection(n <= 2 ? PROJ_A : PROJ_B) });
+  const key = 'sha256-' + '3'.repeat(64);
+
+  const first = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_a', dedupeKey: key }));
+  assert.equal(first.persisted, true, 'the first request is admitted');
+  assert.notEqual(first.dedupeKey, key, 'the persisted key carries the projection half');
+
+  const same = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_b', dedupeKey: key }));
+  assert.equal(same.status, 'duplicate', 'an unchanged projection must still dedupe');
+  assert.equal(same.persisted, false);
+
+  // Same browser request identity, same snapshotId — only the projection moved.
+  const refreshed = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_c', dedupeKey: key }));
+  assert.notEqual(refreshed.status, 'duplicate', 'a changed projection must be refreshable');
+  assert.equal(refreshed.persisted, true);
+  assert.notEqual(refreshed.dedupeKey, first.dedupeKey, 'a different projection yields a different identity');
+});
+
+await checkAsync('P3F-3 an INDETERMINATE projection never fabricates a refresh identity', async () => {
+  const ingestion = loadModule({ projection: { status: 'indeterminate', reason: 'store-not-ready', contentHash: '' } });
+  const key = 'sha256-' + '5'.repeat(64);
+  const first = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_3a', dedupeKey: key }));
+  assert.equal(first.persisted, true);
+  assert.equal(first.dedupeKey, key,
+    'the base key is used UNCHANGED: a partial current state must never manufacture an identity');
+  const second = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_3b', dedupeKey: key }));
+  assert.equal(second.status, 'duplicate', 'and behaviour is unchanged from before');
+});
+
+await checkAsync('P3F-4 the projection half is Desktop-derived, never caller-supplied', async () => {
+  // A caller trying to supply projection hash material must be refused
+  // outright by the forbidden-payload guard.
+  const ingestion = loadModule({ projection: okProjection(PROJ_A) });
+  const forged = validEnvelope({ requestId: 'req_p3f_4', dedupeKey: 'sha256-' + '6'.repeat(64) });
+  forged.projectionContentHash = PROJ_B;
+  const r = await ingestion.resolveSavedChatArchiveRequestV1(forged);
+  const codes = (r.blockers || []).map((b) => b.code || b);
+  assert.ok(codes.includes('content-hash-payload-forbidden'), `caller-supplied projection hash must be refused: ${JSON.stringify(codes)}`);
+});
+
+await checkAsync('P3F-5 the probe is consulted with the resolved chatId', async () => {
+  const ingestion = loadModule({ projection: okProjection(PROJ_A) });
+  await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_5', dedupeKey: 'sha256-' + '7'.repeat(64) }));
+  assert.equal(ingestion.__probeCalls.length, 1, 'the governed probe is the projection authority');
+  assert.equal(ingestion.__probeCalls[0].chatId, 'chat_d2a');
 });
 
 if (FAIL.length) {

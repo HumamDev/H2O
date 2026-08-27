@@ -188,8 +188,10 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage,
   const sandbox = vm.createContext(context);
   vm.runInContext(src, sandbox, { filename: MODULE_REL });
   const api = sandbox.H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1;
+  const rearm = sandbox.H2O.Studio.ingestion.rearmFailedSavedChatArchiveRequestV1;
+  const reconcile = sandbox.H2O.Studio.ingestion.reconcileStrandedSavedChatArchiveWritingV1;
   if (typeof api !== 'function') throw new Error('materialize API did not register');
-  return { api, queue, sqlCalls, writerCalls, coverageCalls, context };
+  return { api, rearm, reconcile, queue, sqlCalls, writerCalls, coverageCalls, context };
 }
 
 function validatedRow() {
@@ -584,6 +586,193 @@ await checkAsync('P3-12 a coverage authority that throws degrades to the existin
   const r = await fx.api({ requestId: 'req_1' });
   assert.equal(r.status, 'written', 'coverage is an optimization; its failure must not break materialization');
   assert.equal(fx.writerCalls.length, 1);
+});
+
+// ── M05 Phase 3: recovery, re-arm & recorded intent ─────────────────────────
+
+const INTENDED = 'sha256-' + 'd'.repeat(64);
+
+function rowIn(status, matOverrides = {}) {
+  const r = validatedRow();
+  r.status = status;
+  r.meta_json = JSON.stringify({ materialization: Object.assign({ processingStartedAt: '2026-08-27T00:00:00.000Z' }, matOverrides) });
+  return r;
+}
+
+function coverageWith(entries, overrides = {}) {
+  return Object.assign({
+    chatId: 'chat_1',
+    projection: { status: 'ok', reason: '', contentHash: FRESH_HASH, snapshotId: 'snap_1', schemaVersion: 2 },
+    legacy: [], generations: entries, unusable: [], fresh: [], stale: [],
+    preserved: entries.length > 0, covered: false, selected: null,
+    bestHistorical: null, bestHistoricalTies: [], complete: true, reason: '',
+  }, overrides);
+}
+
+await checkAsync('P3R-1 the writing claim durably records the intended projection identity', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  await fx.api({ requestId: 'req_1' });
+  // Inspect the CLAIM update (the first execute), not the terminal one: the
+  // intent must be durable BEFORE publication, or a crash loses it.
+  const executes = fx.sqlCalls.filter((c) => c.cmd === 'plugin:sql|execute');
+  const claimMeta = JSON.parse(executes[0].values[2]).materialization;
+  assert.equal(claimMeta.intendedContentHash, FRESH_HASH, 'intent must be persisted with the claim');
+  assert.equal(executes[0].values[0], 'writing');
+});
+
+await checkAsync('P3R-2 re-arm is CAS-guarded from failed only, and preserves evidence', async () => {
+  const fx = loadFixture({ row: rowIn('failed', { errorCode: 'package-writer-threw', errorMessage: 'boom' }) });
+  const r = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(r.ok, true);
+  assert.equal(r.status, 'validated');
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.attempts.length, 1, 'prior failure evidence is preserved');
+  assert.equal(mat.attempts[0].errorCode, 'package-writer-threw');
+  assert.equal(mat.rearmCount, 1);
+  assert.equal(mat.errorCode, null, 'the retry starts from a clean slate');
+});
+
+await checkAsync('P3R-3 a non-failed row cannot be re-armed', async () => {
+  for (const status of ['validated', 'writing', 'written', 'needs-desktop-snapshot']) {
+    const fx = loadFixture({ row: rowIn(status) });
+    const r = await fx.rearm({ requestId: 'req_1' });
+    assert.equal(r.ok, false, `${status} must not be re-armable`);
+    assert.equal(r.status, 'not-eligible');
+    assert.equal(fx.queue.get('req_1').status, status, 'no row may jump to validated');
+  }
+});
+
+await checkAsync('P3R-4 re-arm losing the CAS race reports conflict, never success', async () => {
+  const fx = loadFixture({ row: rowIn('failed'), raceAfterRead: 'validated' });
+  const r = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 'transition-conflict');
+  assert.ok(r.transitionConflict);
+});
+
+await checkAsync('P3R-5 stranded writing + verified matching generation ⇒ written (no republish)', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.ok, true);
+  assert.equal(r.status, 'written');
+  assert.equal(r.package.outcome, 'recovered-package-present');
+  assert.equal(r.package.contentHash, INTENDED);
+  assert.equal(fx.writerCalls.length, 0, 'never republish merely to prove existence');
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3R-6 reconciliation is idempotent', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  const first = await fx.reconcile({ requestId: 'req_1' });
+  const second = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(first.status, 'written');
+  assert.equal(second.ok, true);
+  assert.equal(second.status, 'already-written', 'repeating must be a safe no-op');
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3R-7 complete scan with NO matching package ⇒ sanctioned failed, evidence kept', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gzzz.h2ochat', contentHash: 'sha256-' + 'e'.repeat(64), schemaVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'failed', 'routes through the sanctioned writing -> failed edge');
+  assert.equal(r.recovered.rearmRequired, true, 'reset is explicit, never automatic');
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.errorCode, 'stranded-writing-recovered');
+  assert.equal(mat.intendedContentHash, INTENDED, 'evidence preserved for the re-arm');
+  // And it is then re-armable, completing the recovery route.
+  const armed = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(armed.status, 'validated');
+});
+
+await checkAsync('P3R-8 incomplete verification never asserts absence or failure', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([], { complete: false, covered: null }),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'discovery-incomplete');
+  assert.equal(fx.queue.get('req_1').status, 'writing', 'no destructive mutation on unproven evidence');
+});
+
+await checkAsync('P3R-9 a row with no recorded intent is surfaced, never guessed', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing'),
+    // Today's projection matches a package — which must NOT be used as a
+    // substitute for what the stranded worker actually intended.
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'recovery-intent-unknown');
+  assert.equal(fx.queue.get('req_1').status, 'writing', 'no mutation without recorded intent');
+  assert.equal(r.ok, false);
+});
+
+await checkAsync('P3R-10 age alone never resets a writing row', async () => {
+  // No age/timeout input exists in the decision at all: an ancient row with a
+  // verifiable package still reconciles to written, and one without evidence
+  // still refuses to guess.
+  const src = readRepo(MODULE_REL);
+  const fnStart = src.indexOf('async function reconcileStrandedSavedChatArchiveWritingV1');
+  const fnBody = src.slice(fnStart, src.indexOf('materializeSavedChatArchiveRequestV1.__installed', fnStart));
+  for (const forbidden of ['Date.now()', 'setTimeout', 'elapsed', 'ageMs', 'timeoutMs']) {
+    assert.ok(!fnBody.includes(forbidden), `reconciliation must not consult ${forbidden}`);
+  }
+});
+
+await checkAsync('P3R-11 RESTART proof: intent persisted, process restarted, then reconciled', async () => {
+  // 1. A worker claims and records intent, then is interrupted.
+  const first = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ projection: { status: 'ok', contentHash: INTENDED, snapshotId: 'snap_1', schemaVersion: 2 } }),
+    writerThrows: 'simulated interruption before completion',
+  });
+  await first.api({ requestId: 'req_1' });
+  // The writer threw, so this worker moved the row to failed; simulate instead
+  // a HARD interruption by restoring the durable state as it was mid-write.
+  const durable = { ...first.queue.get('req_1') };
+  durable.status = 'writing';
+  durable.meta_json = JSON.stringify({ materialization: { intendedContentHash: INTENDED, processingStartedAt: '2026-08-27T00:00:00.000Z' } });
+
+  // 2. A NEW process (fresh sandbox, fresh module instance) sees only the
+  //    persisted row — nothing in memory survives.
+  const after = loadFixture({
+    row: durable,
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  assert.equal(after.queue.get('req_1').status, 'writing', 'pre-state: stranded');
+  const r = after.reconcile ? await after.reconcile({ requestId: 'req_1' }) : null;
+  assert.ok(r, 'the recovery API must exist in the restarted process');
+  assert.equal(r.status, 'written', 'recovered purely from persisted intent + verified package');
+  assert.equal(after.writerCalls.length, 0);
+});
+
+await checkAsync('P3R-12 a stale worker cannot overwrite a newer owner during recovery', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, classification: 'generation' }]),
+    raceAfterRead: 'written',
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 'transition-conflict');
+  assert.equal(fx.queue.get('req_1').status, 'written', 'the newer owner state is intact');
 });
 
 console.log('');
