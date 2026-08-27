@@ -1109,7 +1109,16 @@
   // merge machinery. The canary switch itself is deliberately memory-only.
   const COMPLETE_TURN_INDEX_CANARY = 'complete-turn-index-projection';
 
-  const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = false;
+  /* The host renders only a sparse window of the conversation (measured: ~5 of
+     37 turns, history never initially rendered, elements replaced on revisit),
+     so DOM-derived membership tiers structurally under- and mis-count. The
+     complete-index authority is the only membership model consistent with that
+     lifecycle and has soaked on the working-internal profile via persisted
+     preference. Default it on: an unset preference now resolves enabled, a
+     stored '0' still disables, and every activation still requires the full
+     authority proof (route match, complete status, host-payload-full-graph) —
+     otherwise the legacy tiers keep serving as the automatic fallback. */
+  const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = true;
 
   const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
 
