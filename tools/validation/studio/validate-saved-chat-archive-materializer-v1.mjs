@@ -121,7 +121,7 @@ check('module is loaded in studio.html and packed', () => {
 console.log('[archive-materializer] behavioral checks');
 
 // In-memory queue + mock ingestion, loaded into a VM that satisfies the Tauri gate.
-function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
+function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage, coverageThrows, raceAfterRead } = {}) {
   const queue = new Map();
   if (row) queue.set(row.request_id, { ...row });
   const sqlCalls = [];
@@ -132,7 +132,11 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
     if (cmd === 'plugin:sql|select') {
       const m = q.match(/WHERE request_id = \?/);
       const r = m ? queue.get(v[0]) : null;
-      return r ? [{ ...r }] : [];
+      const snapshotOfRow = r ? [{ ...r }] : [];
+      // Simulates a concurrent worker moving the row AFTER this one read it as
+      // `validated` — the exact window the compare-and-swap claim exists for.
+      if (raceAfterRead && r) { r.status = raceAfterRead; raceAfterRead = null; }
+      return snapshotOfRow;
     }
     if (cmd === 'plugin:sql|execute') {
       assert.match(q, /UPDATE saved_chat_archive_requests/, 'only the queue table may be written');
@@ -172,12 +176,20 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
       },
     },
   };
+  const coverageCalls = [];
+  if (coverage || coverageThrows) {
+    context.H2O.Studio.ingestion.describeSavedChatCoverageV1 = async (opts) => {
+      coverageCalls.push(opts);
+      if (coverageThrows) throw new Error(coverageThrows);
+      return coverage;
+    };
+  }
   context.globalThis = context;
   const sandbox = vm.createContext(context);
   vm.runInContext(src, sandbox, { filename: MODULE_REL });
   const api = sandbox.H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1;
   if (typeof api !== 'function') throw new Error('materialize API did not register');
-  return { api, queue, sqlCalls, writerCalls, context };
+  return { api, queue, sqlCalls, writerCalls, coverageCalls, context };
 }
 
 function validatedRow() {
@@ -266,17 +278,33 @@ await checkAsync('writer throw -> failed, error metadata persisted, no overwrite
   const fx = loadFixture({
     row: validatedRow(),
     resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
-    writerThrows: 'saved chat package already exists: archive/packages/chat_1.h2ochat',
+    writerThrows: 'trusted publication refused: generation-manifest-invalid',
   });
   const r = await fx.api({ requestId: 'req_1' });
   assert.equal(r.status, 'failed');
   assert.equal(r.ok, false);
-  assert.equal(r.error, 'package-already-exists');
+  // M05 Phase 3: the legacy `already exists -> package-already-exists` mapping
+  // is RETIRED. An occupied exact generation is verified by the trusted
+  // publisher and returned as DEDUPED (a success), never adjudicated here, so
+  // only a genuine throw reaches this branch.
+  assert.equal(r.error, 'package-writer-threw');
   assert.equal(fx.writerCalls.length, 1);
   const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
-  assert.equal(mat.errorCode, 'package-already-exists');
-  assert.ok(mat.errorMessage.includes('already exists'));
+  assert.equal(mat.errorCode, 'package-writer-threw');
   assert.equal(fx.queue.get('req_1').status, 'failed');
+});
+
+await checkAsync('M05 P3: the retired package-already-exists failure mapping is gone', async () => {
+  // Even a throw whose text says "already exists" must not resurrect the old
+  // code path: dedupe is a trusted verdict, not a renderer inference.
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    writerThrows: 'saved chat package already exists: archive/packages/chat_1.h2ochat',
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.error, 'package-writer-threw');
+  assert.notEqual(r.error, 'package-already-exists');
 });
 
 await checkAsync('missing request -> not-found, no writer call', async () => {
@@ -351,6 +379,211 @@ await checkAsync('losing writing -> written reports the conflict and still surfa
   assert.equal(r.package.packagePath, 'archive/packages/chat_1.h2ochat', 'the written package must still be surfaced');
   assert.equal(r.transitionConflict.expectedStatus, 'writing');
   assert.equal(r.transitionConflict.nextStatus, 'written');
+});
+
+// ── M05 Phase 3: coverage-aware lifecycle ────────────────────────────────────
+
+const FRESH_HASH = 'sha256-' + 'a'.repeat(64);
+
+function coverageFresh(overrides = {}) {
+  return Object.assign({
+    chatId: 'chat_1',
+    projection: { status: 'ok', reason: '', contentHash: FRESH_HASH, snapshotId: 'snap_1', schemaVersion: 2 },
+    legacy: [], generations: [], unusable: [], stale: [],
+    fresh: [{ packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }],
+    selected: { packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, payloadVersion: 2, classification: 'generation' },
+    preserved: true, covered: true, bestHistorical: null, bestHistoricalTies: [], complete: true, reason: '',
+  }, overrides);
+}
+
+function coverageStale(overrides = {}) {
+  return Object.assign({}, coverageFresh(), {
+    fresh: [], selected: null, covered: false,
+    stale: [{ packagePath: 'archive/packages/chat_1.gbbb.h2ochat', contentHash: 'sha256-' + 'b'.repeat(64), staleKind: 'content-stale' }],
+  }, overrides);
+}
+
+const okWriterResult = {
+  packagePath: 'archive/packages/chat_1.gccc.h2ochat',
+  schemaVersion: 2, payloadVersion: 2,
+  contentHash: 'sha256-' + 'c'.repeat(64),
+  snapshotId: 'snap_1', writtenAt: '2026-08-27T00:00:00.000Z',
+  outcome: 'created', committed: true, deduped: false, durabilityComplete: true, advisories: [],
+};
+
+await checkAsync('P3-1 re-resolution runs BEFORE coverage and before the writing claim', async () => {
+  const order = [];
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  // The queue's first UPDATE is the claim; coverage must already have run.
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written');
+  assert.equal(fx.coverageCalls.length, 1, 'coverage consulted exactly once');
+  const firstUpdate = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|execute');
+  const firstSelect = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|select');
+  assert.ok(firstSelect >= 0 && firstSelect < firstUpdate, 'the row is read before any transition');
+});
+
+await checkAsync('P3-2 a FRESH package short-circuits: no publish, sanctioned success', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh(),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'completes through the sanctioned terminal state');
+  assert.equal(r.ok, true);
+  assert.equal(fx.writerCalls.length, 0, 'NO publication may occur when already fresh');
+  assert.equal(r.package.outcome, 'already-fresh');
+  assert.equal(r.package.contentHash, FRESH_HASH);
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3-3 PRESERVED-but-stale does NOT short-circuit: publication occurs', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'a stale archive must still publish');
+  assert.equal(r.status, 'written');
+  assert.equal(r.package.outcome, 'created');
+});
+
+await checkAsync('P3-3b BEST-HISTORICAL and PRESERVED never satisfy the fresh path', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({
+      preserved: true,
+      bestHistorical: { packagePath: 'archive/packages/chat_1.gbbb.h2ochat', contentHash: 'sha256-' + 'b'.repeat(64) },
+    }),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'a historical candidate is not freshness');
+  assert.equal(r.package.outcome, 'created');
+});
+
+await checkAsync('P3-4 no valid package at all ⇒ publication occurs', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ stale: [], preserved: false, covered: false }),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1);
+  assert.equal(r.status, 'written');
+});
+
+await checkAsync('P3-6 trusted DEDUPED is a SUCCESSFUL materialization', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: Object.assign({}, okWriterResult, { outcome: 'deduped', deduped: true, committed: false }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'DEDUPED must not be a failure');
+  assert.equal(r.ok, true);
+  assert.equal(r.package.outcome, 'deduped');
+  assert.equal(r.package.deduped, true);
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3-7 indeterminate projection: no publish, no fresh/stale assertion, row stays retryable', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({
+      projection: { status: 'indeterminate', reason: 'store-not-ready', contentHash: '' },
+      covered: null, fresh: [], stale: [],
+    }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 0, 'must not publish on an unproven current state');
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'projection-indeterminate');
+  // Row remains immediately eligible; no durable status was invented.
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+});
+
+await checkAsync('P3-9 incomplete discovery cannot justify publication', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ covered: null, complete: false, fresh: [], reason: 'discovery-incomplete' }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 0, 'a truncated scan is not evidence that no fresh package exists');
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'discovery-incomplete');
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+});
+
+await checkAsync('P3-9b a truncated scan that already found a FRESH package may still short-circuit', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh({ complete: false }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'a verified positive is safe under a partial scan');
+  assert.equal(fx.writerCalls.length, 0);
+});
+
+await checkAsync('P3-10 a lost fresh-path claim reports conflict, never false success', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh(),
+    // The row is read as `validated`, then a concurrent worker claims it. Our
+    // claim must lose, and losing must never become a success.
+    raceAfterRead: 'writing',
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.notEqual(r.status, 'written');
+  assert.equal(r.ok, false, 'a lost claim must never report success');
+  assert.ok(r.transitionConflict, 'the conflict must be reported');
+  assert.equal(fx.writerCalls.length, 0);
+  // The concurrent owner's state is untouched.
+  assert.equal(fx.queue.get('req_1').status, 'writing');
+});
+
+await checkAsync('P3-11 queue metadata is never consulted as freshness authority', async () => {
+  // The row already claims a written package with the CURRENT hash in
+  // meta_json. That must not short-circuit anything: only the coverage
+  // authority decides, and here it says stale.
+  const row = validatedRow();
+  row.meta_json = JSON.stringify({ materialization: { contentHash: FRESH_HASH, packagePath: 'archive/packages/chat_1.gaaa.h2ochat', outcome: 'created' } });
+  const fx = loadFixture({
+    row,
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'recorded-at-write-time metadata is history, not present truth');
+  assert.equal(r.status, 'written');
+});
+
+await checkAsync('P3-12 a coverage authority that throws degrades to the existing publish path', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverageThrows: 'coverage exploded',
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'coverage is an optimization; its failure must not break materialization');
+  assert.equal(fx.writerCalls.length, 1);
 });
 
 console.log('');

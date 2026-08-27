@@ -289,6 +289,102 @@
       return result;
     }
 
+    /* ── M05 Phase 3: coverage decision ──────────────────────────────────
+     *
+     * Runs AFTER re-resolution and BEFORE the writing claim, deliberately:
+     * freshness must be judged against the exact snapshot re-resolution just
+     * selected, and a row should not enter `writing` when no write is needed.
+     *
+     * Freshness comes only from the Phase 2 authorities — the recomputed
+     * package contentHash versus the current projection contentHash. Queue
+     * metadata is NEVER consulted for it: `meta_json.materialization` records
+     * what happened at write time, which is history, not present truth. */
+    var coverage = null;
+    if (typeof ingestion.describeSavedChatCoverageV1 === 'function') {
+      var coverageChatId = cleanString(reresolve.resolution && reresolve.resolution.studioChatId)
+        || cleanString(row.studio_chat_id);
+      if (coverageChatId) {
+        try {
+          coverage = await ingestion.describeSavedChatCoverageV1({ chatId: coverageChatId });
+        } catch (err) {
+          coverage = null;
+        }
+      }
+    }
+
+    if (coverage) {
+      var projectionStatus = cleanString(safeObject(coverage.projection).status);
+
+      if (projectionStatus === 'indeterminate') {
+        /* Neither fresh nor stale may be asserted, so publishing would be
+         * acting on an unproven negative. DEFER by leaving the row in
+         * `validated`: it stays immediately eligible for a later attempt,
+         * whereas any transition out of `validated` would strand it until the
+         * re-arm work of the next increment exists. No new durable status is
+         * introduced. */
+        result.status = 'deferred';
+        result.deferred = { reason: 'projection-indeterminate', projectionReason: cleanString(coverage.projection.reason) };
+        return result;
+      }
+
+      if (coverage.covered === true && asArray(coverage.fresh).length > 0) {
+        /* ALREADY FRESH — a freshness short-circuit, not filesystem dedupe.
+         * A valid package already represents this exact projection, so there
+         * is nothing to publish. BEST-HISTORICAL and PRESERVED deliberately do
+         * NOT reach here: only `fresh` does.
+         *
+         * The row still claims `writing` first. That is not a write — it is
+         * the existing single-owner mechanism, and `validated -> written` is
+         * not a sanctioned edge, so claim-then-complete keeps the edge set
+         * unchanged. No publication, CAS or package mutation occurs. */
+        var freshEntry = safeObject(asArray(coverage.fresh)[0]);
+        var freshSelected = safeObject(coverage.selected);
+        var freshPick = cleanString(freshSelected.contentHash) ? freshSelected : freshEntry;
+        var freshStartedAt = nowIso();
+        var freshClaim = await transitionRequestStatus({
+          requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_WRITING,
+          patch: { processingStartedAt: freshStartedAt, snapshotId: snapshotId, overwrite: false },
+          currentMeta: currentMeta, snapshotId: snapshotId,
+        });
+        if (!freshClaim.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_WRITING);
+
+        var freshPkg = {
+          packagePath: cleanString(freshPick.packagePath),
+          schemaVersion: (typeof freshPick.schemaVersion === 'number') ? freshPick.schemaVersion : null,
+          payloadVersion: (typeof freshPick.payloadVersion === 'number') ? freshPick.payloadVersion : null,
+          contentHash: cleanString(freshPick.contentHash) || null,
+          snapshotId: snapshotId,
+          writtenAt: freshStartedAt,
+          outcome: 'already-fresh',
+        };
+        var freshDone = await transitionRequestStatus({
+          requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
+          patch: Object.assign({}, freshPkg, { processingStartedAt: freshStartedAt, processingFinishedAt: nowIso(), overwrite: false }),
+          currentMeta: currentMeta, snapshotId: snapshotId,
+        });
+        if (!freshDone.ok) {
+          conflictResult(result, STATUS_WRITING, STATUS_WRITTEN);
+          result.package = freshPkg;
+          return result;
+        }
+        result.status = STATUS_WRITTEN;
+        result.ok = true;
+        result.package = freshPkg;
+        return result;
+      }
+
+      /* Reaching a publication decision from here needs the NEGATIVE
+       * conclusion "no fresh package represents this projection". Only a
+       * complete scan can support that; a truncated one cannot, so defer
+       * rather than publish on an unproven absence. Phase 2 reports `covered`
+       * as null (not false) in exactly that case. */
+      if (coverage.covered === null && coverage.complete !== true) {
+        result.status = 'deferred';
+        result.deferred = { reason: 'discovery-incomplete' };
+        return result;
+      }
+    }
+
     /* validated -> writing. This is the claim: only the caller that actually
      * moves the row out of `validated` may call the package writer. */
     var processingStartedAt = nowIso();
@@ -309,7 +405,12 @@
       written = await ingestion.writeSavedChatPackageV1({ snapshotId: snapshotId, overwrite: false });
     } catch (err) {
       var errorMessage = String((err && err.message) || err || 'package writer failed');
-      var errorCode = /already exists/i.test(errorMessage) ? 'package-already-exists' : 'package-writer-threw';
+      /* The legacy `package already exists -> failure` mapping is RETIRED.
+       * An occupied exact generation is no longer a renderer-adjudicated
+       * error: the trusted publisher verifies the occupant itself and returns
+       * DEDUPED, which is a successful publication handled below. Only a real
+       * throw reaches here. */
+      var errorCode = 'package-writer-threw';
       var failMove = await transitionRequestStatus({
         requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED,
         patch: { errorCode: errorCode, errorMessage: errorMessage, snapshotId: snapshotId, processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false },
@@ -326,6 +427,12 @@
     }
 
     var w = safeObject(written);
+    /* Trusted-side truth, recorded verbatim. Both Created and DEDUPED are
+     * successful materializations: DEDUPED means the trusted publisher found
+     * the exact generation already present AND verified it, so there was
+     * nothing to write. The renderer never adjudicates that — it consumes the
+     * verdict. This metadata is recorded-at-write-time history, never future
+     * freshness authority. */
     var pkg = {
       packagePath: cleanString(w.packagePath),
       schemaVersion: (typeof w.schemaVersion === 'number') ? w.schemaVersion : null,
@@ -333,6 +440,10 @@
       contentHash: cleanString(w.contentHash) || null,
       snapshotId: cleanString(w.snapshotId) || snapshotId,
       writtenAt: cleanString(w.writtenAt) || nowIso(),
+      outcome: cleanString(w.outcome) || (w.deduped === true ? 'deduped' : 'created'),
+      deduped: w.deduped === true,
+      durabilityComplete: w.durabilityComplete === true,
+      advisories: asArray(w.advisories).map(cleanString).filter(Boolean),
     };
     /* writing -> written */
     var doneMove = await transitionRequestStatus({
