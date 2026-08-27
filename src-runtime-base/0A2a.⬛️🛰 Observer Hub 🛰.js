@@ -115,6 +115,7 @@
 
   S.flushRAF = Number(S.flushRAF || 0);
   S.flushTimer = Number(S.flushTimer || 0);
+  S.flushFallbackTimer = Number(S.flushFallbackTimer || 0);
 
   S.suppressMap = (S.suppressMap instanceof Map) ? S.suppressMap : new Map();
   S.suppressSeq = Number(S.suppressSeq || 0);
@@ -541,6 +542,20 @@
   }
 
   function scheduleFlush(reason = 'mo') {
+    // rAF starves in occluded windows while DOM mutations keep arriving
+    // (measured live: replaced turns after a route return stayed
+    // undelivered, so no consumer — registry included — ever heard about
+    // them until frames resumed). The fallback timer delivers pending
+    // mutations when the compositor grants no frame; a normal rAF flush
+    // clears the dirty flag first, which makes the fallback a no-op.
+    if (!S.flushFallbackTimer) {
+      S.flushFallbackTimer = Number(W.setTimeout(() => {
+        S.flushFallbackTimer = 0;
+        try {
+          if (S.pendingDirty) API_OH_flush(`${String(reason || 'mo')}:raf-starved`);
+        } catch (err) { DIAG_err('flush:fallback', err); }
+      }, 350)) || 0;
+    }
     const schedule = H2O.runtime?.schedule;
     if (schedule && typeof schedule.rafOnce === 'function') {
       schedule.rafOnce('obs:flush', () => API_OH_flush(reason));
@@ -1027,10 +1042,19 @@
 
   function scheduleMountReconcile(reason = 'schedule') {
     if (S.mountRAF) return;
-    S.mountRAF = SAFE_raf(() => {
+    S.mountRAF = 1;
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
       S.mountRAF = 0;
       try { CORE_OH_reconcileMounts(reason); } catch (err) { DIAG_err('mounts:reconcile', err); }
-    });
+    };
+    SAFE_raf(run);
+    // rAF starves in occluded windows; the registry is the foundation's
+    // identity->element authority and must keep reconciling on DOM events
+    // even when the compositor grants no frames.
+    try { W.setTimeout(run, 350); } catch (_) { run(); }
   }
 
   /* Route transitions are the one host lifecycle change the root-scoped

@@ -905,10 +905,19 @@ ${SEL.USER_MSG}.${UI.HOST_FB_CLASS} ${SEL.BUBBLE}{
     const st = MOD.state;
     if (st.rafPending) return;
     st.rafPending = true;
-    requestAnimationFrame(() => {
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
       st.rafPending = false;
       try { flush(); } catch (err) { DIAG.lastErr = String(err); }
-    });
+    };
+    requestAnimationFrame(run);
+    // rAF starves in occluded windows (measured live: turns replaced on a
+    // route return came back with no numbers until frames resumed).
+    // Decoration is event-driven, not paint-driven — the timeout fallback
+    // flushes when the compositor never grants a frame.
+    setTimeout(run, 350);
   }
 
   function scheduleFullScan() {
