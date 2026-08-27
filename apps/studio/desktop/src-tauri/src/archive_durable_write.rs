@@ -98,7 +98,7 @@ pub(crate) const GENERATION_STAGING_PREFIX: &str = ".h2o-genstage-";
 /// temp-name *generator* (`temp_name`), which stays on `TEMP_PREFIX` alone:
 /// reserving a name and minting one are different jobs, and §R requires the
 /// reservation to be a shared list rather than a side effect of the generator.
-const RESERVED_COMPONENT_PREFIXES: &[&str] = &[TEMP_PREFIX, GENERATION_STAGING_PREFIX];
+pub(crate) const RESERVED_COMPONENT_PREFIXES: &[&str] = &[TEMP_PREFIX, GENERATION_STAGING_PREFIX];
 const TEMP_SUFFIX: &str = ".tmp";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);

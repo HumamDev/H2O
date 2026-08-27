@@ -88,6 +88,26 @@ const STAGING_NAME_ATTEMPTS: u32 = 8;
 /// or package ceiling.
 const STREAM_WINDOW_BYTES: usize = 256 * 1024;
 
+/// Test-only seam forcing the post-promotion parent fence to report failure,
+/// so the frozen "promotion is the commit point" rule is provable. Production
+/// builds do not compile this: `parent_fence` is then exactly `dir.sync()`.
+// THREAD-LOCAL, not process-global: cargo runs tests in parallel threads, so a
+// global override would leak into unrelated tests.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FORCE_FENCE_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// The parent-directory durability fence.
+fn parent_fence(dir: &confined::Dir) -> bool {
+    #[cfg(test)]
+    if FORCE_FENCE_FAILURE.with(|f| f.get()) {
+        return false;
+    }
+    dir.sync().is_ok()
+}
+
 /// Seeds the per-process token counter from OS entropy.
 ///
 /// §R freezes the token as "opaque, high-entropy". It is NOT an authorization
@@ -203,6 +223,11 @@ pub struct PublishResult {
     pub generation_path: String,
     pub content_hash: String,
     pub blockers: Vec<Blocker>,
+    /// NON-BLOCKING observations (batch repair R4). Never affects `ok`, `committed` or
+    /// `durability_complete`, and never enters `blockers`. Present so a
+    /// degraded-but-valid occupant is observable to Archive Health / M06
+    /// repair UX instead of being silently accepted.
+    pub advisories: Vec<Blocker>,
 }
 
 impl PublishResult {
@@ -216,6 +241,7 @@ impl PublishResult {
             generation_path: String::new(),
             content_hash: String::new(),
             blockers: vec![Blocker::new(code)],
+            advisories: Vec::new(),
         }
     }
 
@@ -233,6 +259,7 @@ impl PublishResult {
             } else {
                 vec![Blocker::new(code)]
             },
+            advisories: Vec::new(),
         }
     }
 }
@@ -293,6 +320,45 @@ fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
     }
     if chat_id == "." || chat_id == ".." {
         return Err("generation-chat-id-reserved");
+    }
+    // A generation basename BEGINS with the chatId, so a dot-leading chatId
+    // derives a dot-leading final name — which the frozen architecture has
+    // already made unusable, in two independent ways:
+    //
+    //   1. §R.1's load-bearing matcher rule. The renderer's read scopes are
+    //      `$APPLOCALDATA/archive/**`, and the pinned glob applies
+    //      require_literal_leading_dot, so a wildcard does not match through a
+    //      dot-leading component. That is exactly what protects staging — and
+    //      it equally blocks READS. Every JS consumer (verifier, inspector,
+    //      exporter, importer, restore, relink) reads through those scopes, so
+    //      a dot-leading generation could never be verified, exported or
+    //      restored by anything.
+    //   2. §R's discovery reservation. A name under a reserved prefix is
+    //      excluded from package inventory outright, so it would never be
+    //      PRESERVED, COVERED or selectable.
+    //
+    // Publishing one would therefore create a write-only artifact that no
+    // consumer can read and, for reserved prefixes, that nothing can even
+    // enumerate — and create-only means the name could never be reclaimed.
+    // Refusing is architecture-conformant, NOT a new chatId product boundary —
+    // and the reason is stronger than grandfathering: the SAME scope rule also
+    // governs `mkdir` and `write_file`, so a legacy `<chatId>.h2ochat` for a
+    // dot-leading id was never writable or readable either. There is no
+    // working predecessor capability to withdraw. Canonical product creation
+    // does not mint dot-leading ids (they come from platform conversation
+    // ids), and no committed fixture or evidence artifact contains one.
+    if chat_id.starts_with('.') {
+        return Err("generation-chat-id-reserved-namespace");
+    }
+    // Belt and braces, ASCII-case-insensitively: no chatId may carry a
+    // reserved component prefix in any casing, even if a future prefix is
+    // added without a leading dot.
+    let lowered = chat_id.to_ascii_lowercase();
+    if crate::archive_durable_write::RESERVED_COMPONENT_PREFIXES
+        .iter()
+        .any(|prefix| lowered.starts_with(&prefix.to_ascii_lowercase()))
+    {
+        return Err("generation-chat-id-reserved-namespace");
     }
     if !chat_id
         .bytes()
@@ -420,16 +486,64 @@ impl Publisher {
 
 // ── Free-space (§R.2 environmental, NOT package validity) ───────────────────
 
-/// Available bytes on the filesystem holding `dir`. `None` when unanswerable —
-/// the caller then proceeds rather than inventing a refusal, because this is
-/// operational policy, not a validity rule.
+/// Test-only free-space override. `REAL` defers to the filesystem;
+/// `UNANSWERABLE` simulates a failed `fstatfs`; any other value is reported as
+/// the available byte count. Production builds do not compile this.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FORCE_FREE_SPACE: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(FREE_SPACE_REAL) };
+}
+#[cfg(test)]
+pub(crate) const FREE_SPACE_REAL: u64 = u64::MAX;
+#[cfg(test)]
+pub(crate) const FREE_SPACE_UNANSWERABLE: u64 = u64::MAX - 1;
+
+/// Available bytes on the filesystem holding `dir`. `None` when unanswerable.
 fn available_bytes(dir: &confined::Dir) -> Option<u64> {
+    #[cfg(test)]
+    {
+        let forced = FORCE_FREE_SPACE.with(|f| f.get());
+        if forced == FREE_SPACE_UNANSWERABLE {
+            return None;
+        }
+        if forced != FREE_SPACE_REAL {
+            return Some(forced);
+        }
+    }
     let mut st: libc::statfs = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::fstatfs(dir.as_raw_fd(), &mut st) };
     if rc < 0 {
         return None;
     }
     (st.f_bavail as u64).checked_mul(st.f_bsize as u64)
+}
+
+/// Admits one append against the operational free-space reserve, on the ACTUAL
+/// staging filesystem, immediately before extending a staged member.
+///
+/// Checking only at BEGIN cannot preserve a reserve across a long multi-chunk
+/// member: a member arrives as N appends, and the disk can fill between the
+/// first and the last. This runs per append.
+///
+/// FAIL CLOSED: if free-space authority is unanswerable we refuse rather than
+/// proceed, because an unanswerable reserve is exactly the condition the
+/// reserve exists to protect against. The refusal is environmental and
+/// retryable — never a package-validity blocker — and imposes NO ceiling on
+/// member or package size: an arbitrarily large member publishes fine on a
+/// filesystem that actually has the room.
+fn admit_append(dir: &confined::Dir, incoming: u64) -> Result<(), String> {
+    let free = match available_bytes(dir) {
+        Some(free) => free,
+        None => return Err("generation-staging-resource-unavailable".to_string()),
+    };
+    let needed = incoming
+        .checked_add(FREE_SPACE_RESERVE_BYTES)
+        .ok_or_else(|| "generation-staging-resource-overflow".to_string())?;
+    if free < needed {
+        return Err("generation-staging-resource-reserve".to_string());
+    }
+    Ok(())
 }
 
 /// Environmental refusals are retryable and machine-local. They NEVER mark a
@@ -495,11 +609,9 @@ pub fn begin(publisher: &Publisher, chat_id: &str) -> BeginResult {
 
     // Creator-owns-cleanup (§X): from here on, every refusal path removes what
     // it created before returning. A refused BEGIN is not a residue source.
-    if let Some(free) = available_bytes(&packages) {
-        if free < FREE_SPACE_RESERVE_BYTES {
-            publisher.registry.release_slot();
-            return BeginResult::refused("generation-staging-resource-reserve");
-        }
+    if let Err(code) = admit_append(&packages, 0) {
+        publisher.registry.release_slot();
+        return BeginResult::refused(&code);
     }
 
     let mut created: Option<(Vec<u8>, confined::Dir)> = None;
@@ -668,6 +780,12 @@ pub fn write_member(publisher: &Publisher, token: u64, member: Member, chunk: &[
         Some(dir) => dir,
         None => return AckResult::refused("generation-session-consumed"),
     };
+
+    // §R.2: preserve the operational reserve for THIS append, on the actual
+    // staging filesystem, before creating or extending the member.
+    if let Err(code) = admit_append(dir, chunk.len() as u64) {
+        return AckResult::refused(&code);
+    }
 
     if !inner.members.contains_key(&member) {
         match dir.create_new_child(member.file_name().as_bytes()) {
@@ -1089,6 +1207,11 @@ fn stream_cas_object_into(
             break;
         }
         hasher.update(&buf[..read]);
+        // §R.2: an asset copy extends a staged member exactly like an append,
+        // so it is admitted against the operational reserve per window rather
+        // than being allowed to consume it wholesale. ENOSPC/EDQUOT below stay
+        // as the backstop for a disk that fills underneath us.
+        admit_append(staged_assets, read as u64)?;
         out.write_all(&buf[..read]).map_err(|err| {
             if is_resource_errno(&err) {
                 resource_code(&err)
@@ -1370,12 +1493,14 @@ fn commit_consumed(
     if !promoted {
         // Occupied: classify TRUSTED-SIDE → clean own staging → parent fence →
         // report (§N.2 frozen tail).
-        let (outcome, code) =
+        let (outcome, code, advisories) =
             classify_occupant(&packages, final_name.as_bytes(), &derived, &session.chat_id);
         inner.dir = held.take();
         let clean = cleanup_staging(publisher, &mut inner);
-        let fenced = packages.sync().is_ok();
+        let fenced = parent_fence(&packages);
         let mut out = PublishResult::occupied(outcome, code, generation_path, derived.clone());
+        // Non-blocking: advisories never gate success (batch repair R4).
+        out.advisories = advisories;
         if !clean {
             out.blockers
                 .push(Blocker::new("generation-staging-cleanup-incomplete"));
@@ -1392,7 +1517,7 @@ fn commit_consumed(
     // retract the commit (§N).
     drop(held.take());
     inner.members.clear();
-    let durability_complete = packages.sync().is_ok();
+    let durability_complete = parent_fence(&packages);
     let mut blockers = Vec::new();
     if !durability_complete {
         blockers.push(Blocker::new("generation-parent-fsync-failed"));
@@ -1406,6 +1531,7 @@ fn commit_consumed(
         generation_path,
         content_hash: derived,
         blockers,
+        advisories: Vec::new(),
     }
 }
 
@@ -1417,13 +1543,14 @@ fn classify_occupant(
     name: &[u8],
     expected_content_hash: &str,
     session_chat_id: &str,
-) -> (Outcome, &'static str) {
+) -> (Outcome, &'static str, Vec<Blocker>) {
     let st = match packages.stat_child_nofollow(name) {
         Ok(Some(st)) => st,
         _ => {
             return (
                 Outcome::GenerationOccupantUnreadable,
                 "generation-occupant-unreadable",
+                Vec::new(),
             )
         }
     };
@@ -1433,6 +1560,7 @@ fn classify_occupant(
         return (
             Outcome::GenerationOccupantUnreadable,
             "generation-occupant-unreadable",
+            Vec::new(),
         );
     }
     let dir = match packages.open_child_nofollow(name) {
@@ -1441,21 +1569,22 @@ fn classify_occupant(
             return (
                 Outcome::GenerationOccupantUnreadable,
                 "generation-occupant-unreadable",
+                Vec::new(),
             )
         }
     };
     let manifest_bytes = match read_staged_member(&dir, Member::Manifest) {
         Ok(bytes) => bytes,
-        Err(_) => return (Outcome::GenerationPartial, "generation-partial"),
+        Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
     };
     let snapshot_bytes = match read_staged_member(&dir, Member::Snapshot) {
         Ok(bytes) => bytes,
-        Err(_) => return (Outcome::GenerationPartial, "generation-partial"),
+        Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
     };
     if read_staged_member(&dir, Member::Markdown).is_err()
         || read_staged_member(&dir, Member::Html).is_err()
     {
-        return (Outcome::GenerationPartial, "generation-partial");
+        return (Outcome::GenerationPartial, "generation-partial", Vec::new());
     }
     let manifest = match validate_manifest(&manifest_bytes) {
         Ok(manifest) => manifest,
@@ -1463,6 +1592,7 @@ fn classify_occupant(
             return (
                 Outcome::GenerationDestinationCorrupt,
                 "generation-destination-corrupt",
+                Vec::new(),
             )
         }
     };
@@ -1481,17 +1611,18 @@ fn classify_occupant(
     if !manifest.assets.is_empty() {
         let assets = match dir.open_child_nofollow(b"assets") {
             Ok(dir) => dir,
-            Err(_) => return (Outcome::GenerationPartial, "generation-partial"),
+            Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
         };
         for asset in &manifest.assets {
             let member_name = format!("{}.{}", asset.sha256, asset.ext);
             let st = match assets.stat_child_nofollow(member_name.as_bytes()) {
                 Ok(Some(st)) => st,
-                Ok(None) => return (Outcome::GenerationPartial, "generation-partial"),
+                Ok(None) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
                 Err(_) => {
                     return (
                         Outcome::GenerationDestinationCorrupt,
                         "generation-destination-corrupt",
+                        Vec::new(),
                     )
                 }
             };
@@ -1499,6 +1630,7 @@ fn classify_occupant(
                 return (
                     Outcome::GenerationDestinationCorrupt,
                     "generation-destination-corrupt",
+                    Vec::new(),
                 );
             }
             match hash_child(&assets, member_name.as_bytes()) {
@@ -1507,6 +1639,7 @@ fn classify_occupant(
                         return (
                             Outcome::GenerationDestinationCorrupt,
                             "generation-destination-corrupt",
+                            Vec::new(),
                         );
                     }
                 }
@@ -1514,6 +1647,7 @@ fn classify_occupant(
                     return (
                         Outcome::GenerationDestinationCorrupt,
                         "generation-destination-corrupt",
+                        Vec::new(),
                     )
                 }
             }
@@ -1527,6 +1661,7 @@ fn classify_occupant(
         return (
             Outcome::GenerationDestinationCorrupt,
             "generation-destination-corrupt",
+            Vec::new(),
         );
     }
 
@@ -1537,6 +1672,7 @@ fn classify_occupant(
         return (
             Outcome::GenerationDestinationCorrupt,
             "generation-destination-corrupt",
+            Vec::new(),
         );
     }
     // §D's join, reduced to its only free variable here. UNREACHABLE in
@@ -1548,15 +1684,46 @@ fn classify_occupant(
         return (
             Outcome::GenerationDestinationForeign,
             "generation-destination-foreign",
+            Vec::new(),
         );
     }
     if derived != expected_content_hash {
         return (
             Outcome::GenerationDestinationForeign,
             "generation-destination-foreign",
+            Vec::new(),
         );
     }
-    (Outcome::Deduped, "")
+
+    // Batch repair R4: the occupant is identity-identical and structurally
+    // complete, so this IS a dedupe —
+    // the reader never hashes chat.md/chat.html and §K makes them non-identity,
+    // so a byte mismatch there does not make the package invalid, and refusing
+    // would not repair the occupant: it would only convert a legitimate
+    // create-only dedupe into a permanently failing save.
+    //
+    // But a damaged presentation member is exporter-relevant, so surface it as
+    // a NON-BLOCKING advisory rather than accepting it silently. This never
+    // enters `blockers` and never changes ok/committed/durability.
+    let mut advisories = Vec::new();
+    for member in [Member::Markdown, Member::Html] {
+        let key = member.descriptor_key().expect("non-manifest member");
+        if let Some((declared_sha, declared_len)) = manifest.files.get(key) {
+            match hash_child(&dir, member.file_name().as_bytes()) {
+                Ok((hex, len)) => {
+                    if len != *declared_len || &format!("sha256-{hex}") != declared_sha {
+                        advisories.push(Blocker::new("generation-occupant-presentation-mismatch"));
+                        break;
+                    }
+                }
+                Err(_) => {
+                    advisories.push(Blocker::new("generation-occupant-presentation-mismatch"));
+                    break;
+                }
+            }
+        }
+    }
+    (Outcome::Deduped, "", advisories)
 }
 
 /// Archive root for the running app.

@@ -1,10 +1,24 @@
 //! T1.2.2 — load-bearing proof for the trusted generation publisher.
 //!
-//! Every test here is written to FAIL if the property it names is removed. The
-//! mutation controls at the end of the file record which guard each test kills.
+//! Evidence in this file comes in three DISTINCT strengths, and they must not
+//! be conflated when reporting (batch repair R6):
+//!
+//!   1. BEHAVIOURAL NEGATIVE CONTROL — drives the real code path with input
+//!      that must be refused (or accepted), and fails if the guard stops
+//!      working. Most tests here are these.
+//!   2. SOURCE TRIPWIRE — `include_str!` assertions that a guard symbol or
+//!      refusal code is still present in the source. Catches silent deletion
+//!      during refactoring; proves NOTHING about behaviour.
+//!      See `source_tripwires_pin_the_load_bearing_guard_symbols`.
+//!   3. ACTUAL MUTATION KILL — established by editing production code, running
+//!      the suite, observing red, and restoring. Not encoded in this file;
+//!      recorded in the batch report.
+//!
+//! A string-presence assertion is never evidence that behaviour is correct.
 
 use super::*;
 use std::path::PathBuf;
+use std::sync::Barrier;
 
 // ── Harness ────────────────────────────────────────────────────────────────
 
@@ -144,6 +158,10 @@ fn packages_entries(p: &Publisher) -> Vec<String> {
         .unwrap_or_default();
     out.sort();
     out
+}
+
+fn blocker_codes_of(list: &[Blocker]) -> Vec<String> {
+    list.iter().map(|b| b.code.clone()).collect()
 }
 
 fn blocker_codes(result: &PublishResult) -> Vec<String> {
@@ -473,6 +491,485 @@ fn concurrent_writers_never_clean_beneath_an_in_flight_operation() {
     assert_eq!(p.registry.admitted_count(), 0);
 }
 
+// ── STAGING MATCHER / CONFIG TRIPWIRE (§R.1) ───────────────────────────────
+
+/// Executes the PINNED matcher semantics rather than asserting on source text.
+/// `require_literal_leading_dot` is what makes the renderer's `archive/**`
+/// scope unable to reach the private dot-leading staging namespace, and that
+/// exclusion is a REQUIRED pre-cutover integrity invariant — commit-time
+/// hashing alone cannot close post-hash in-place mutation through a separately
+/// held writable handle.
+#[test]
+fn the_pinned_glob_matcher_denies_every_renderer_reach_into_staging() {
+    use glob::{MatchOptions, Pattern};
+
+    // The options tauri's fs scope actually uses (tauri 2.11.1
+    // src/scope/fs.rs: require_literal_leading_dot defaults true on unix, and
+    // require_literal_separator is set true).
+    let opts = MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: true,
+    };
+
+    let staging = format!("/AppLocalData/archive/packages/{STAGING_PREFIX}0011/manifest.json");
+    let staging_dir = format!("/AppLocalData/archive/packages/{STAGING_PREFIX}0011");
+
+    // The real archive scopes granted to the renderer today.
+    for scope in [
+        "/AppLocalData/archive/**",          // write-file, read-file, lstat, mkdir
+        "/AppLocalData/archive/packages/**", // read-dir
+    ] {
+        let pattern = Pattern::new(scope).expect("valid scope pattern");
+        for probe in [staging.as_str(), staging_dir.as_str()] {
+            assert!(
+                !pattern.matches_with(probe, opts),
+                "scope {scope} must NOT reach staging path {probe} — the \
+                 dot-leading exclusion is load-bearing pre-cutover"
+            );
+        }
+    }
+
+    // Control: the SAME scope does reach an ordinary published generation, so
+    // the test is proving the leading dot specifically, not a broken pattern.
+    let ordinary = "/AppLocalData/archive/packages/chat_x.g0123.h2ochat/manifest.json";
+    assert!(
+        Pattern::new("/AppLocalData/archive/**")
+            .unwrap()
+            .matches_with(ordinary, opts),
+        "the control path must match, or this test proves nothing"
+    );
+
+    // And the exclusion is genuinely the OPTION, not the pattern: with the
+    // option disabled the same probe matches. This is what would break if a
+    // future fs configuration turned it off.
+    let permissive = MatchOptions {
+        require_literal_leading_dot: false,
+        ..opts
+    };
+    assert!(
+        Pattern::new("/AppLocalData/archive/**")
+            .unwrap()
+            .matches_with(&staging, permissive),
+        "with the option off the staging path WOULD be reachable — which is \
+         precisely why no fs config may disable it"
+    );
+}
+
+#[test]
+fn no_shipped_configuration_disables_the_leading_dot_exclusion_or_names_staging() {
+    // (a) No fs configuration may turn the matcher option off.
+    let conf = include_str!("../../tauri.conf.json");
+    for forbidden in ["requireLiteralLeadingDot", "require_literal_leading_dot"] {
+        assert!(
+            !conf.contains(forbidden),
+            "tauri.conf.json must not configure {forbidden}: the default \
+             (enabled) is load-bearing for §R.1"
+        );
+    }
+
+    // (b) No archive capability may grant a scope that explicitly reaches the
+    // private dot-leading staging namespace.
+    for capability in [
+        include_str!("../../capabilities/archive-cas.json"),
+        include_str!("../../capabilities/default.json"),
+        include_str!("../../capabilities/archive-export.json"),
+    ] {
+        assert!(
+            !capability.contains(STAGING_PREFIX),
+            "no capability may name the reserved staging prefix {STAGING_PREFIX}"
+        );
+        // A literal dot-leading component anywhere under the archive root
+        // would defeat the exclusion for that path.
+        assert!(
+            !capability.contains("archive/packages/."),
+            "no capability may grant an explicit dot-leading archive scope"
+        );
+    }
+}
+
+// ── RESERVED NAMESPACE (§R — reserved namespace) ───────────────────────────────────────────────
+
+#[test]
+fn a_chat_id_that_would_derive_a_reserved_or_dot_leading_name_is_refused() {
+    // A generation basename BEGINS with the chatId, so a dot-leading chatId
+    // derives a dot-leading final name. The frozen architecture already makes
+    // such a name unusable: the renderer's read scopes are `archive/**` and the
+    // pinned matcher does not match through a dot-leading component (§R.1), so
+    // NO consumer could ever read it; and a reserved prefix is excluded from
+    // discovery outright (§R). Publishing one would be write-only garbage that
+    // create-only could never reclaim.
+    for chat_id in [
+        ".chat",
+        ".h2o-genstage-x",
+        ".H2O-GENSTAGE-X",
+        ".h2o-durable-x",
+        ".H2O-DURABLE-X",
+        ".hidden",
+    ] {
+        assert_eq!(
+            validated_chat_id(chat_id).unwrap_err(),
+            "generation-chat-id-reserved-namespace",
+            "chatId {chat_id:?} must not derive a reserved/dot-leading name"
+        );
+    }
+    // Every shared reserved prefix, in mixed case. All reserved prefixes are
+    // dot-leading by construction, so the leading-dot rule already covers them
+    // and these cases are refused by that rule.
+    for prefix in crate::archive_durable_write::RESERVED_COMPONENT_PREFIXES {
+        for variant in [
+            format!("{prefix}x"),
+            format!("{}x", prefix.to_ascii_uppercase()),
+        ] {
+            assert_eq!(
+                validated_chat_id(&variant).unwrap_err(),
+                "generation-chat-id-reserved-namespace",
+                "reserved prefix variant {variant:?} must be refused"
+            );
+        }
+        // NOTE: every reserved prefix is dot-leading, so the leading-dot rule
+        // returns first and the case-insensitive arm is forward-defensive
+        // rather than behaviourally covered here.
+        // DELIBERATELY ACCEPTED: a dot-LESS lookalike is not in the reserved
+        // namespace. It derives an ordinary basename that the renderer can
+        // read and discovery can enumerate, so refusing it would be a real new
+        // chatId product boundary with no architectural justification. The
+        // restriction is scoped to names the architecture has already made
+        // unusable — nothing wider.
+        let dotless = format!("{}x", prefix.trim_start_matches('.'));
+        assert!(
+            validated_chat_id(&dotless).is_ok(),
+            "dot-less lookalike {dotless:?} must stay accepted"
+        );
+    }
+    // NOT a general chatId restriction: ordinary ids, including ones with
+    // interior dots, remain accepted exactly as before.
+    for ok_id in [
+        "69c874a8-62e4-838b-99f3-f1931039c402",
+        "chat-a2a4c",
+        "d2c_request_materializer_chat_1782334630557",
+        "i-harness-source",
+        "chat.with.interior.dots",
+    ] {
+        assert!(
+            validated_chat_id(ok_id).is_ok(),
+            "{ok_id} must stay accepted"
+        );
+    }
+}
+
+#[test]
+fn a_reserved_namespace_chat_id_is_refused_at_begin_with_no_residue() {
+    let p = publisher("reserved-namespace-begin");
+    let result = begin(&p, ".h2o-genstage-evil");
+    assert!(!result.ok);
+    assert_eq!(
+        blocker_codes_of(&result.blockers),
+        vec!["generation-chat-id-reserved-namespace".to_string()]
+    );
+    // Refused before anything was created.
+    assert!(packages_entries(&p).is_empty());
+    assert_eq!(p.registry.admitted_count(), 0, "no admission slot leaked");
+}
+
+// ── PRESENTATION ADVISORY (batch repair R4) ────────────────────────────────────────────
+
+#[test]
+fn a_pristine_occupant_dedupes_with_no_advisory() {
+    let p = publisher("advisory-none");
+    let fx = v1_fixture("chat_adv_none", "snap1", "body");
+    assert!(publish(&p, &fx).ok);
+    let again = publish(&p, &fx);
+    assert!(again.ok);
+    assert_eq!(again.outcome, Outcome::Deduped);
+    assert!(
+        again.advisories.is_empty(),
+        "a pristine occupant carries no advisory: {:?}",
+        blocker_codes_of(&again.advisories)
+    );
+}
+
+#[test]
+fn a_truncated_markdown_occupant_still_dedupes_but_advises() {
+    let p = publisher("advisory-markdown");
+    let fx = v1_fixture("chat_adv_md", "snap1", "body");
+    assert!(publish(&p, &fx).ok);
+    let published = packages_entries(&p)[0].clone();
+    std::fs::write(
+        p.root.join(PACKAGES_DIR).join(&published).join("chat.md"),
+        b"",
+    )
+    .expect("truncate");
+
+    let again = publish(&p, &fx);
+    // Still a dedupe: the reader never hashes chat.md and §K makes it
+    // non-identity, so refusing would only break a legitimate save.
+    assert!(again.ok);
+    assert_eq!(again.outcome, Outcome::Deduped);
+    assert!(!again.committed);
+    // Non-blocking, but observable.
+    assert!(
+        again.blockers.is_empty(),
+        "an advisory must never enter blockers"
+    );
+    assert_eq!(
+        blocker_codes_of(&again.advisories),
+        vec!["generation-occupant-presentation-mismatch".to_string()]
+    );
+}
+
+#[test]
+fn a_tampered_html_occupant_still_dedupes_but_advises() {
+    let p = publisher("advisory-html");
+    let fx = v1_fixture("chat_adv_html", "snap1", "body");
+    assert!(publish(&p, &fx).ok);
+    let published = packages_entries(&p)[0].clone();
+    std::fs::write(
+        p.root.join(PACKAGES_DIR).join(&published).join("chat.html"),
+        b"<html>tampered</html>",
+    )
+    .expect("tamper");
+
+    let again = publish(&p, &fx);
+    assert!(again.ok);
+    assert_eq!(again.outcome, Outcome::Deduped);
+    assert!(again.blockers.is_empty());
+    assert_eq!(
+        blocker_codes_of(&again.advisories),
+        vec!["generation-occupant-presentation-mismatch".to_string()]
+    );
+}
+
+// ── ENVIRONMENTAL RESOURCE ADMISSION (§R.2) ─────────────────────────────────
+
+/// Sets the thread-local free-space seam. libtest gives each test its own
+/// thread, so no serialization is needed — but a SPAWNED thread does not
+/// inherit the value.
+fn set_space(v: u64) {
+    FORCE_FREE_SPACE.with(|f| f.set(v));
+}
+
+#[test]
+fn the_reserve_is_enforced_on_every_append_not_only_at_begin() {
+    // A member arrives as N appends and the disk can fill between the first and
+    // the last, so a BEGIN-only check cannot preserve the reserve.
+    let p = publisher("reserve-per-append");
+
+    // Ample space at BEGIN, and for the first append.
+    set_space(FREE_SPACE_RESERVE_BYTES + 10 * 1024 * 1024);
+    let begun = begin(&p, "chat_reserve");
+    assert!(begun.ok, "BEGIN must succeed with ample space");
+    let first = write_member(&p, begun.token, Member::Snapshot, b"first-chunk");
+    assert!(first.ok, "the first append must succeed");
+
+    // Space now drops so this append would eat into the reserve.
+    set_space(FREE_SPACE_RESERVE_BYTES + 4);
+    let refused = write_member(&p, begun.token, Member::Snapshot, &vec![0u8; 64]);
+    assert!(
+        !refused.ok,
+        "an append that would consume the reserve must be refused"
+    );
+    assert_eq!(
+        blocker_codes_of(&refused.blockers),
+        vec!["generation-staging-resource-reserve".to_string()]
+    );
+
+    // ENVIRONMENTAL AND RETRYABLE: restore space and the SAME append succeeds,
+    // with no change to the bytes. It never marked the package invalid.
+    set_space(FREE_SPACE_RESERVE_BYTES + 10 * 1024 * 1024);
+    let retried = write_member(&p, begun.token, Member::Snapshot, &vec![0u8; 64]);
+    assert!(retried.ok, "the refusal must be retryable, not terminal");
+
+    set_space(FREE_SPACE_REAL);
+    assert!(abort(&p, begun.token).ok);
+}
+
+#[test]
+fn unanswerable_free_space_authority_fails_closed_and_stays_environmental() {
+    let p = publisher("reserve-unanswerable");
+    set_space(FREE_SPACE_RESERVE_BYTES + 10 * 1024 * 1024);
+    let begun = begin(&p, "chat_unanswerable");
+    assert!(begun.ok);
+
+    // fstatfs cannot answer: refuse rather than proceed, because an
+    // unanswerable reserve is the very condition the reserve guards against.
+    set_space(FREE_SPACE_UNANSWERABLE);
+    let refused = write_member(&p, begun.token, Member::Snapshot, b"x");
+    assert!(!refused.ok, "unanswerable free space must fail CLOSED");
+    assert_eq!(
+        blocker_codes_of(&refused.blockers),
+        vec!["generation-staging-resource-unavailable".to_string()]
+    );
+    // Still the retryable environmental family, never a validity blocker.
+    assert!(blocker_codes_of(&refused.blockers)[0].starts_with("generation-staging-resource-"));
+
+    set_space(FREE_SPACE_REAL);
+    assert!(abort(&p, begun.token).ok);
+}
+
+#[test]
+fn begin_also_fails_closed_when_free_space_is_unanswerable() {
+    let p = publisher("reserve-begin-closed");
+    set_space(FREE_SPACE_UNANSWERABLE);
+    let begun = begin(&p, "chat_begin_closed");
+    set_space(FREE_SPACE_REAL);
+    assert!(!begun.ok);
+    assert_eq!(
+        blocker_codes_of(&begun.blockers),
+        vec!["generation-staging-resource-unavailable".to_string()]
+    );
+    // Creator-owns-cleanup: a refused BEGIN leaves no residue and no slot.
+    assert!(packages_entries(&p).is_empty());
+    assert_eq!(p.registry.admitted_count(), 0);
+}
+
+#[test]
+fn the_reserve_imposes_no_member_or_package_size_ceiling() {
+    // §R.2-A: environmental admission must never become a semantic ceiling. On
+    // a filesystem that genuinely has room, a member many times the per-chunk
+    // transport bound publishes normally.
+    set_space(FREE_SPACE_REAL);
+    let p = publisher("reserve-no-ceiling");
+    let fx = v1_fixture("chat_big_reserve", "snap1", &"z".repeat(300_000));
+    let result = publish(&p, &fx);
+    assert!(
+        result.ok,
+        "a large member must publish when space allows: {:?}",
+        blocker_codes(&result)
+    );
+    assert!(result.committed);
+}
+
+#[test]
+fn the_reserve_also_governs_the_commit_time_asset_copy() {
+    // An asset copy extends a staged member just as an append does, so it must
+    // be admitted against the reserve too — otherwise a large multi-asset
+    // commit could consume the very headroom the reserve exists to preserve.
+    let root = scratch_root("reserve-asset-copy");
+    let p = Publisher::new(root.clone());
+    let fx = v2_fixture(&root, "chat_reserve_asset", &[("png", b"asset-bytes-here")]);
+
+    // Stage with ample space so the members land, then constrain ONLY the
+    // commit-time copy.
+    let begun = begin(&p, &fx.chat_id);
+    assert!(begun.ok);
+    stage_all(&p, begun.token, &fx);
+    set_space(FREE_SPACE_RESERVE_BYTES + 4);
+    let result = commit(&p, begun.token, None);
+    set_space(FREE_SPACE_REAL);
+
+    assert!(
+        !result.ok,
+        "the copy must be refused when it would eat the reserve"
+    );
+    assert!(
+        blocker_codes(&result)
+            .iter()
+            .any(|c| c.starts_with("generation-staging-resource-")),
+        "must be an environmental refusal, not a validity blocker: {:?}",
+        blocker_codes(&result)
+    );
+    // Environmental and retryable: nothing was published, staging was cleaned,
+    // and the same package publishes once space is available again.
+    assert!(
+        packages_entries(&p).is_empty(),
+        "refusal cleans its own staging"
+    );
+    let retried = publish(&p, &fx);
+    assert!(retried.ok, "{:?}", blocker_codes(&retried));
+    assert!(retried.committed);
+}
+
+// ── DURABILITY (§N) ────────────────────────────────────────────────────────
+
+#[test]
+fn a_parent_fence_failure_after_promotion_keeps_the_generation_committed() {
+    // §N: "Promotion IS the commit point, and the durability fence cannot
+    // retract it." A fence failure must report committed:true with
+    // durabilityComplete:false, and must NEVER clean the published tree —
+    // it is no longer staging.
+    let p = publisher("fence-failure");
+    let fx = v1_fixture("chat_fence", "snap1", "body");
+
+    FORCE_FENCE_FAILURE.with(|f| f.set(true));
+    let result = publish(&p, &fx);
+    FORCE_FENCE_FAILURE.with(|f| f.set(false));
+
+    assert!(result.ok, "promotion succeeded, so the publish succeeded");
+    assert!(result.committed, "promotion is the commit point");
+    assert!(
+        !result.durability_complete,
+        "the fence failed, so durability is not proven"
+    );
+    assert!(
+        blocker_codes(&result).contains(&"generation-parent-fsync-failed".to_string()),
+        "the fence failure must be reported honestly: {:?}",
+        blocker_codes(&result)
+    );
+
+    // The generation is present, complete and verifiable — cleanup ownership
+    // must NOT have been restored after promotion.
+    let entries = packages_entries(&p);
+    assert_eq!(entries.len(), 1, "the generation must survive: {entries:?}");
+    let dir = p.root.join(PACKAGES_DIR).join(&entries[0]);
+    for member in ["manifest.json", "snapshot.json", "chat.md", "chat.html"] {
+        assert!(
+            dir.join(member).exists(),
+            "{member} must survive the fence failure"
+        );
+    }
+    assert_eq!(
+        std::fs::read(dir.join("snapshot.json")).unwrap(),
+        fx.snapshot
+    );
+}
+
+#[test]
+fn a_fence_failure_on_the_occupied_path_never_downgrades_the_dedupe() {
+    // §N.2 states this rule in the negative — "a fence failure on this path
+    // returns the classified occupant outcome PLUS the fence blocker; it never
+    // suppresses or downgrades the occupant verdict, and it never converts a
+    // DEDUPED into a failure" — so it needs a test that fails if the occupied
+    // path starts treating a fence error as a refusal.
+    let p = publisher("occupied-fence-failure");
+    let fx = v1_fixture("chat_occ_fence", "snap1", "body");
+    assert!(publish(&p, &fx).ok, "first publish must commit");
+
+    // Damage a presentation member too, so this ALSO pins that an advisory and
+    // a fence blocker coexist without the advisory entering blockers.
+    let published = packages_entries(&p)[0].clone();
+    std::fs::write(
+        p.root.join(PACKAGES_DIR).join(&published).join("chat.md"),
+        b"",
+    )
+    .expect("truncate");
+
+    FORCE_FENCE_FAILURE.with(|f| f.set(true));
+    let out = publish(&p, &fx);
+    FORCE_FENCE_FAILURE.with(|f| f.set(false));
+
+    assert!(
+        out.ok,
+        "a fence failure must never convert a DEDUPED into a failure: {:?}",
+        blocker_codes(&out)
+    );
+    assert_eq!(out.outcome, Outcome::Deduped);
+    assert!(!out.committed, "dedupe writes nothing");
+    assert!(!out.durability_complete, "the fence failed");
+    assert_eq!(
+        blocker_codes(&out),
+        vec!["generation-parent-fsync-failed".to_string()],
+        "the fence blocker is reported, and nothing else"
+    );
+    assert_eq!(
+        blocker_codes_of(&out.advisories),
+        vec!["generation-occupant-presentation-mismatch".to_string()],
+        "the advisory rides alongside, never inside, blockers"
+    );
+    // The occupant is untouched and this attempt's staging is cleaned.
+    assert_eq!(packages_entries(&p), vec![published]);
+}
+
 // ── SESSION EVICTION (§Q) ──────────────────────────────────────────────────
 
 /// Back-dates a session's last activity so lazy eviction can reach it. Uses the
@@ -602,6 +1099,86 @@ fn an_idle_session_holding_its_lease_is_not_evicted_beneath_active_work() {
     drop(guard);
     assert!(abort(&p, begun.token).ok);
     assert!(abort(&p, other.token).ok);
+}
+
+#[test]
+fn a_threaded_write_is_never_cleaned_beneath_by_the_reaper() {
+    // §Q acceptance invariant, proven with real threads and deterministic
+    // barriers (no sleeps): while a WRITE genuinely holds its lease, a
+    // concurrent BEGIN runs the reaper over an idle-looking session and must
+    // neither clean its staging nor recycle its identity.
+    use std::sync::mpsc;
+
+    let p = Arc::new(publisher("threaded-write-vs-reap"));
+    let begun = begin(&p, "chat_threaded");
+    assert!(begun.ok);
+    let token = begun.token;
+    // Make it LOOK idle so the reaper genuinely considers it.
+    back_date(&p, token);
+
+    let staging_before = packages_entries(&p);
+    assert_eq!(staging_before.len(), 1);
+
+    // Barriers: the writer signals it holds the lease, then waits for the
+    // reaper to finish before releasing it.
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let (tx, rx) = mpsc::channel();
+
+    let writer = {
+        let p = Arc::clone(&p);
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        std::thread::spawn(move || {
+            // Take the lease directly — this is exactly the state write_member
+            // is in between acquiring `inner` and returning.
+            let session = p
+                .registry
+                .lock_map()
+                .get(&token)
+                .map(Arc::clone)
+                .expect("session");
+            let mut inner = session.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.last_activity = Instant::now();
+            entered.wait(); // lease is held
+            release.wait(); // hold it across the reaper
+                            // Still usable afterwards: append through the held lease.
+            let dir = inner.dir.as_ref().expect("staging still present");
+            let file = dir.create_new_child(b"chat.md");
+            tx.send(file.is_ok()).ok();
+            drop(inner);
+        })
+    };
+
+    entered.wait();
+    // With the lease held, drive a BEGIN — which runs the reaper.
+    let other = begin(&p, "chat_other");
+    assert!(other.ok);
+    // The leased session must still exist and still own its staging.
+    assert!(
+        p.registry.lock_map().get(&token).is_some(),
+        "a leased session must not be evicted, however idle it looks"
+    );
+    let during = packages_entries(&p);
+    for entry in &staging_before {
+        assert!(
+            during.contains(entry),
+            "staging {entry} was removed beneath an active lease"
+        );
+    }
+    release.wait();
+    writer.join().expect("writer thread");
+    assert_eq!(
+        rx.recv().expect("writer result"),
+        true,
+        "the staging directory must still be usable by the in-flight operation"
+    );
+
+    // No identity recycling: the new session got a different token.
+    assert_ne!(other.token, token);
+    assert!(abort(&p, token).ok);
+    assert!(abort(&p, other.token).ok);
+    assert!(packages_entries(&p).is_empty());
 }
 
 // ── MEMBERS ────────────────────────────────────────────────────────────────
@@ -1564,7 +2141,14 @@ fn no_total_member_or_package_ceiling_exists() {
 // if the behavioural test is also weakened.
 
 #[test]
-fn mutation_controls_pin_the_load_bearing_guards() {
+fn source_tripwires_pin_the_load_bearing_guard_symbols() {
+    // CLASSIFICATION (batch repair R6): this is a SOURCE TRIPWIRE, not a behavioural
+    // negative control and not a mutation kill. It asserts that guard symbols
+    // and refusal codes are still PRESENT in the source, so a silent deletion
+    // during refactoring is caught. It proves nothing about behaviour on its
+    // own — behaviour is proven by the named behavioural tests elsewhere in
+    // this file, and by the out-of-band mutation runs recorded in the batch
+    // report. Do not cite this test as evidence that a guard works.
     let source = include_str!("../archive_generation_publish.rs");
 
     // Caller-supplied hashes are never authority.
