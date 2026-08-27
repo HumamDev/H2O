@@ -891,7 +891,34 @@
   }
 
   /* Resolve the C4 asset stack (all injected via globals, never required). */
-  function getAssetStack() {
+  /* Resolves the inline-asset stack used during projection.
+   *
+   * `override` exists so a caller can drive this EXACT build path with a
+   * different stack — specifically the mutation-free projection probe, which
+   * needs the same identity math without writing CAS blobs or registry rows.
+   * It is accepted only as a COMPLETE stack: a partial override would silently
+   * mix probe and production dependencies, which is precisely the confusion
+   * this seam must not create.
+   *
+   * With no override the production stack resolves exactly as before, so
+   * production behaviour is unchanged. The override is passed per call and is
+   * never installed globally. */
+  function isCompleteAssetStack(candidate) {
+    var c = safeObject(candidate);
+    return !!(c.materializer && typeof c.materializer.materializeInlineImageAssetsV2 === 'function'
+      && c.assetCas && typeof c.assetCas.putAssetBytes === 'function'
+      && c.assetStore && typeof c.assetStore.upsert === 'function'
+      && typeof c.assetStore.linkToTurn === 'function');
+  }
+
+  function getAssetStack(override) {
+    if (override != null) {
+      if (!isCompleteAssetStack(override)) {
+        throw new Error('assetStack override must supply materializer + assetCas + assetStore');
+      }
+      var o = safeObject(override);
+      return { materializer: o.materializer, assetCas: o.assetCas, assetStore: o.assetStore };
+    }
     var ing = (H2O.Studio && H2O.Studio.ingestion) || {};
     var store = (H2O.Studio && H2O.Studio.store) || {};
     return { materializer: ing.savedChatPackageAssets, assetCas: ing.assetCas, assetStore: store.assets };
@@ -908,12 +935,8 @@
     if (o.skipAssetMaterialization === true) {
       return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-opt-out' };
     }
-    var stack = getAssetStack();
-    var ok = stack.materializer && typeof stack.materializer.materializeInlineImageAssetsV2 === 'function'
-      && stack.assetCas && typeof stack.assetCas.putAssetBytes === 'function'
-      && stack.assetStore && typeof stack.assetStore.upsert === 'function'
-      && typeof stack.assetStore.linkToTurn === 'function';
-    if (!ok) {
+    var stack = getAssetStack(o.assetStack);
+    if (!isCompleteAssetStack(stack)) {
       return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-no-deps' };
     }
     var out = await stack.materializer.materializeInlineImageAssetsV2({

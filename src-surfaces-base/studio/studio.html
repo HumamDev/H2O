@@ -667,6 +667,17 @@
        transform; no file writes, no projector wiring (C4.2), no contentHash v2.
        Loads after asset-cas + store/assets so C4.2 can wire it. -->
   <script src="./ingestion/saved-chat-package-assets.tauri.js"></script>
+  <!-- Desktop-only: M05 G1 trusted generation publication bridge. Drives the
+       trusted Rust publisher (begin/write-member/commit/abort); the renderer
+       never names the final generation path. Must load before any package
+       write, which now publishes through it. -->
+  <script src="./ingestion/saved-chat-generation-publisher.tauri.js"></script>
+  <!-- Desktop-only: M05 Phase 2.1 current-projection probe. Mutation-free:
+       drives the SAME package projector through the asset-stack seam with a
+       hash-only CAS and a no-op registry, so it derives the identity the
+       writer would submit without writing anything. Loads after the codec,
+       asset-cas and materializer it borrows. -->
+  <script src="./ingestion/saved-chat-projection-probe.tauri.js"></script>
   <!-- Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2).
        Read-only package inventory + manifest/snapshot/hash validation under
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,

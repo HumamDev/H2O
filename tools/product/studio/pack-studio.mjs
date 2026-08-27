@@ -165,6 +165,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // inline data:image/*, orchestrates CAS + registry (injected), rewrites refs.
   // Pure transform; no file writes, no projector wiring yet, no contentHash v2.
   "ingestion/saved-chat-package-assets.tauri.js",
+  // Desktop-only: M05 G1 trusted generation publication bridge. Package writes
+  // publish through it, so it must load with the writer.
+  "ingestion/saved-chat-generation-publisher.tauri.js",
+  // Desktop-only: M05 Phase 2.1 mutation-free current-projection probe.
+  "ingestion/saved-chat-projection-probe.tauri.js",
   // Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2). Read-only
   // package inventory + manifest/snapshot/hash validation under archive/packages.
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
@@ -1356,6 +1361,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-package-v1.tauri.js",
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",
+  "ingestion/saved-chat-generation-publisher.tauri.js",
+  "ingestion/saved-chat-projection-probe.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
