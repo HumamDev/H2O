@@ -3205,7 +3205,13 @@
 
   function syncActive(reason = 'scroll') {
     if (!S.running) return;
-    try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
+    // Anchor binding rebuilds the complete-index projection status once per
+    // record and probes the document for every unmounted one, so it is far too
+    // expensive to repeat on each frame of our own programmatic navigation —
+    // and pointless there, because the coordinator resolves its target itself.
+    // User scrolling still reconciles exactly as before, and the first settled
+    // frame after navigation releases mmProgram and rebinds.
+    if (!S.mmProgram) { try { MINI_bindCompleteIndexMountedAnchors(); } catch {} }
     if (S.scrollSyncDisabled) return;
     if (S.mmUser || S.mmProgram) return;
     const scanTick0 = Number(S.perfFullScanTick || 0);
