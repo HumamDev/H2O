@@ -179,6 +179,7 @@
     offShellNoButtons: null,
     offCoreTurnUpdated: null,
     offCompleteTurnIndexState: null,
+    offMountTransitions: null,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -1745,13 +1746,46 @@
     return value?.isConnected ? value : null;
   }
 
+  /* Identity->element resolution goes through the Observer Hub's
+     MountRegistry: element references are ephemeral (the host replaces them
+     on rematerialization), so the registry is the single writer of the
+     binding and a lookup here is an O(1) Map get keyed by the one stable
+     host identity, data-message-id. A registry miss means "not mounted right
+     now" — never "does not exist" — and costs no DOM probe. The legacy
+     document-wide selector probes survive only as the degraded fallback for
+     a runtime booted without the hub. */
+  function MINI_mountRegistry() {
+    try {
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      return (mounts && typeof mounts.get === 'function') ? mounts : null;
+    } catch { return null; }
+  }
+
+  function MINI_mountedElementById(anyId) {
+    const mounts = MINI_mountRegistry();
+    if (!mounts) return null;
+    for (const variant of buildIdVariants(anyId)) {
+      // Registry keys are raw data-message-id values; prefixed variants
+      // (turn:, turn:a:) can never match and are skipped outright.
+      if (!variant || variant.includes(':')) continue;
+      try {
+        const el = MINI_connectedElement(mounts.get(variant)?.el || null);
+        if (el) return el;
+      } catch {}
+    }
+    return null;
+  }
+
   function MINI_resolveCompleteIndexMounted(descriptor, surface = 'answer') {
     if (!descriptor?.qId || COMPLETE_INDEX_INTERNAL_QIDS.has(descriptor.qId)) return null;
     const record = descriptor.record || null;
+    const registry = MINI_mountRegistry();
     const liveQuestion = MINI_connectedElement(record?.live?.qEl || record?.qEl || null);
     const exactQuestion = liveQuestion
-      || normalizeQuestionEl(findTurnHostById(descriptor.qId))
-      || normalizeQuestionEl(findTurnHostById(descriptor.turnId));
+      || (registry
+        ? normalizeQuestionEl(MINI_mountedElementById(descriptor.qId) || MINI_mountedElementById(descriptor.turnId))
+        : (normalizeQuestionEl(findTurnHostById(descriptor.qId))
+          || normalizeQuestionEl(findTurnHostById(descriptor.turnId))));
     if (exactQuestion) {
       const handle = MINI_hiddenPageHandleForElement(exactQuestion);
       completeIndexMountedAnchors.set(descriptor.qId, exactQuestion);
@@ -1763,7 +1797,9 @@
       .map((value) => normalizeNavId(value))
       .filter(Boolean);
     for (const alias of Array.from(new Set(aliases))) {
-      const answer = MINI_connectedElement(findAnswerById(alias));
+      const answer = registry
+        ? normalizeAssistantEl(MINI_mountedElementById(alias))
+        : MINI_connectedElement(findAnswerById(alias));
       if (!answer) continue;
       const handle = MINI_hiddenPageHandleForElement(answer);
       completeIndexMountedAnchors.set(descriptor.qId, answer);
@@ -1795,7 +1831,14 @@
   }
 
   function MINI_completeIndexScrollRoot() {
-    const anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    // Seed the ancestor walk from a registry element when available — the
+    // registry already knows a mounted turn without a document-wide probe.
+    let anyTurn = null;
+    try {
+      const rec = MINI_mountRegistry()?.all?.()[0] || null;
+      anyTurn = MINI_connectedElement(rec?.shell || rec?.el || null);
+    } catch {}
+    if (!anyTurn) anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
     let cur = anyTurn?.parentElement || convContainer()?.parentElement || null;
     while (cur && cur !== document.body && cur !== document.documentElement) {
       try {
@@ -4078,7 +4121,18 @@
     let hydratedAnswerTotal = 0;
     let firstVisibleIdentityMatches = true;
     try {
-      const hydratedAnswers = Array.from(document.querySelectorAll(answersSelector()));
+      // The registry already holds the mounted assistant set — read it there
+      // (document-ordered) instead of sweeping the host document again.
+      const registry = MINI_mountRegistry();
+      let hydratedAnswers = null;
+      if (registry) {
+        hydratedAnswers = registry.all()
+          .filter((rec) => rec?.role === 'assistant' && rec?.el?.isConnected)
+          .map((rec) => rec.el)
+          .sort((a, b) => ((a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1));
+      } else {
+        hydratedAnswers = Array.from(document.querySelectorAll(answersSelector()));
+      }
       hydratedAnswerTotal = hydratedAnswers.length;
       const firstId = String(
         hydratedAnswers[0]?.getAttribute?.('data-message-id')
@@ -4681,6 +4735,7 @@
     try { S.offShellNoButtons?.(); } catch {}
     try { S.offCoreTurnUpdated?.(); } catch {}
     try { S.offCompleteTurnIndexState?.(); } catch {}
+    try { S.offMountTransitions?.(); } catch {}
     S.offScroll = null;
     S.activeScrollRoot = null;
     S.offResize = null;
@@ -4696,6 +4751,7 @@
     S.offShellNoButtons = null;
     S.offCoreTurnUpdated = null;
     S.offCompleteTurnIndexState = null;
+    S.offMountTransitions = null;
 
     S.running = false;
     S.scrollSyncDisabled = false;
@@ -5002,6 +5058,20 @@
         try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
         scheduleSyncActive('complete-index-state');
       }, { passive: true });
+    }
+    if (!S.offMountTransitions) {
+      /* Registry transitions replace rescanning: when the host mounts,
+         replaces, or unmounts turn elements, the hub tells us — anchor
+         rebinding and active-row sync become event-driven instead of a
+         per-frame document sweep. The scheduleSyncActive path keeps the
+         mmProgram/mmUser guards, so programmatic navigation stays exempt. */
+      const mounts = MINI_mountRegistry();
+      if (mounts && typeof mounts.onTransitions === 'function') {
+        S.offMountTransitions = mounts.onTransitions('minimap-engine', () => {
+          if (!S.running) return;
+          scheduleSyncActive('mount-transition');
+        });
+      }
     }
     bindMiniMapScrollGuards();
 
