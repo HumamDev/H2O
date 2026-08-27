@@ -466,19 +466,9 @@
   function goToAnswerGid(gid) { return delegate('goToAnswerGid', [gid], false); }
   function goToPage(pageIndex, reason = 'api:goToPage') { return delegate('goToPage', [pageIndex, reason], false); }
   function goToPageStart(pageIndex, reason = 'api:goToPageStart', opts = {}) { return delegate('goToPageStart', [pageIndex, reason, opts], false); }
-  function focusPage(pageOrIndex, opts = {}) {
-    const raw = Number(pageOrIndex);
-    if (!Number.isFinite(raw)) return false;
-    const usePageNumber = opts?.pageNumber !== false;
-    const pageIndex = Math.max(0, Math.trunc(usePageNumber ? (raw - 1) : raw));
-    const reason = String(opts?.reason || opts?.source || 'api:focusPage');
-    return goToPageStart(pageIndex, reason, {
-      smooth: opts?.smooth !== false,
-      commitWindowing: String(opts?.source || '') === 'chat-pages-controller:divider-dblclick',
-      nextCollapsed: opts?.nextCollapsed,
-      chatId: opts?.chatId,
-    });
-  }
+  // focusPage (the divider-dblclick commitWindowing route) is retired: it had
+  // zero callers - the router explicitly forbids routing into windowing, and
+  // the dblclick gesture belongs to the identity-keyed page collapse.
   function goOlder(reason = 'api:goOlder') { return delegate('goOlder', [reason], false); }
   function goNewer(reason = 'api:goNewer') { return delegate('goNewer', [reason], false); }
   function goFirst(reason = 'api:goFirst') { return delegate('goFirst', [reason], false); }
@@ -531,7 +521,6 @@
     ensureVisibleById: API_PG_ensureVisibleById,
     goToPage,
     goToPageStart,
-    focusPage,
     getDividerPaginationState,
     goOlder,
     goNewer,

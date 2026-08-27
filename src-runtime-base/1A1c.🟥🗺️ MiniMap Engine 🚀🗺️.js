@@ -180,6 +180,7 @@
     offCoreTurnUpdated: null,
     offCompleteTurnIndexState: null,
     offMountTransitions: null,
+    offStaleWatchdog: null,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -4816,6 +4817,8 @@
     try { S.offCoreTurnUpdated?.(); } catch {}
     try { S.offCompleteTurnIndexState?.(); } catch {}
     try { S.offMountTransitions?.(); } catch {}
+    try { S.offStaleWatchdog?.(); } catch {}
+    S.offStaleWatchdog = null;
     S.offScroll = null;
     S.activeScrollRoot = null;
     S.offResize = null;
@@ -5010,33 +5013,40 @@
   }
 
   function startStaleStateWatchdog(tag = 'watchdog') {
+    // Retired 300ms interval poller. The MountRegistry's typed transitions
+    // (occlusion-proof since the hub's fallback delivery) are the signal
+    // that conversation structure changed; three bounded settle checks
+    // cover boots where nothing transitions at all. The stale predicate and
+    // rebuild action are unchanged.
     try { clearInterval(S.routeRebuildPoller); } catch {}
+    S.routeRebuildPoller = null;
+    try { S.offStaleWatchdog?.(); } catch {}
+    S.offStaleWatchdog = null;
     const startedAt = Date.now();
-    const POLL_MS = 300;
     const MAX_MS = 30000;
-    let stableTicks = 0;
-    let lastDomCount = -1;
-    const countDomAnswers = () => {
-      try { return document.querySelectorAll(answersSelector()).length; } catch { return 0; }
+    const stop = () => {
+      try { S.offStaleWatchdog?.(); } catch {}
+      S.offStaleWatchdog = null;
     };
-    const tick = () => {
-      if (!S.running) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
-      const elapsed = Date.now() - startedAt;
-      if (elapsed > MAX_MS) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
-      const domCount = countDomAnswers();
-      if (domCount === 0) { stableTicks = 0; lastDomCount = -1; return; }
-      if (domCount === lastDomCount) stableTicks += 1; else { stableTicks = 0; lastDomCount = domCount; }
+    const check = (why) => {
+      if (!S.running) { stop(); return; }
+      if (Date.now() - startedAt > MAX_MS) { stop(); return; }
       let stale = false;
       try {
-        stale = buildMissing() || paginationCoverageNeedsRebuild(`${tag}:poll`);
+        stale = buildMissing() || paginationCoverageNeedsRebuild(`${tag}:${why}`);
       } catch {}
       if (!stale) return;
-      if (stableTicks < 1) return;
       S.moRebuildCooldownUntil = 0;
-      try { rebuildNow(`${tag}:poll`); } catch { scheduleRebuild(`${tag}:poll`); }
+      try { rebuildNow(`${tag}:${why}`); } catch { scheduleRebuild(`${tag}:${why}`); }
     };
-    tick();
-    S.routeRebuildPoller = setInterval(tick, POLL_MS);
+    const registry = MINI_mountRegistry();
+    if (registry && typeof registry.onTransitions === 'function') {
+      S.offStaleWatchdog = registry.onTransitions('minimap-stale-watchdog', () => check('transition'));
+    }
+    for (const delay of [500, 2000, 8000]) {
+      setTimeout(() => check(`settle-${delay}`), delay);
+    }
+    check('immediate');
   }
 
   function bindObservers() {
