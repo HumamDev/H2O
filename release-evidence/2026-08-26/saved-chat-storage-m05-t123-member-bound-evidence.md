@@ -146,32 +146,37 @@ Non-breaking by construction.
    allocation-safety bound; parse strategy is streaming over the assets array
    (memory ∝ sha list, ~⅓ of body size), with the body itself the dominant
    allocation.
-8. Enforcement: **64 MiB allocation-safety parse bound** at COMMIT.
+8. Enforcement: **none — no semantic and no allocation ceiling.** SUPERSEDED
+   by Reconciliation R1: `manifest.json` is now a **staged member** like every
+   other member, delivered through the same bounded per-chunk append path and
+   read back from the staging descriptor at COMMIT. The previously proposed
+   64 MiB one-shot COMMIT-body parse bound is **WITHDRAWN**, for three
+   independently sufficient reasons recorded in §7 below.
 
-Non-breaking demonstration for 64 MiB:
+### 4.4.1 Why the 64 MiB manifest ceiling was withdrawn (R1)
 
-- ≥ 22,000× the largest tracked manifest (2,873 B) and ≥ 4 orders of
-  magnitude above every committed and runtime-recorded manifest;
-- at ~250 B/descriptor it admits ≈ 260,000 asset descriptors in one package —
-  against evidence of ≤ 2 per package. (Note: the reader does **not** require
-  descriptor distinctness — duplicates are only a warning,
-  `manifest-asset-duplicate`, diagnostics:996. Distinctness at *publication*
-  comes from the commit gate's uniqueness rule, §4.5, which is
-  writer-conformant: the sanctioned writer builds its descriptor set as
-  `Object.keys(manifestBySha)` — unique by construction —
-  `saved-chat-package-assets.tauri.js:391`.);
-- scale-calibrated to the accepted DP-PRE-M05 allocation precedent (2× the
-  32 MiB single-body authority; same ~3-copy transient model ⇒ ~192 MB
-  worst-case commit peak, still desktop-acceptable, reached only by a
-  pathological input no real state approaches);
-- classified as an **implementation allocation bound, not a product ceiling**:
-  it is recorded here with the standing escalation rule — if any real package
-  state is ever measured or reported within an order of magnitude of it, or
-  any change would convert it into a semantic package limit,
-  `DP-M05-MANIFEST-BOUND` is raised before any refusal ships. In-principle
-  caveat stated openly: a hypothetical quarter-million-asset chat would be
-  refused; no such state exists in any committed fixture, runtime evidence,
-  or historical record, and nothing in the product generates one.
+1. **It would have created a product boundary that does not exist at HEAD.**
+   v1/v2 has no semantic manifest ceiling anywhere — not in the writer, not in
+   the verifier. Any fixed refusal value, however generous, converts "no limit"
+   into "a limit", which is exactly what the Compatibility Rule and the
+   standing escalation rule forbid doing inside an implementation constant.
+   The prior justification leaned on the bound being ~4 orders of magnitude
+   above observed evidence; distance from evidence is a *risk* argument, not a
+   *compatibility* argument, and it does not license inventing the boundary.
+2. **It did not deliver the protection it appeared to.** Verified against the
+   pinned framework source: an invoke body is fully materialized before any
+   command body executes (WebKit `NSData` → `wry` scheme handler →
+   `tauri::ipc::protocol`). A command-side length check therefore cannot
+   refuse admission of a large body; the existing `body_len()` check prevents
+   exactly one subsequent clone, which is what its own doc comment claims.
+3. **It gave `manifest.json` a different verification path from every other
+   governed member.** As a staged member it is read back through the same
+   descriptor-relative, `O_NOFOLLOW`, opened-fd discipline as snapshot,
+   markdown and html — one verification path, not two.
+
+Consequence for allocation safety: peak memory is governed by the per-chunk
+transport constant plus staging, not by a manifest ceiling. See §5 for what
+that constant does and does not do.
 
 ### 4.5 Asset descriptor count and copy amplification
 
@@ -180,8 +185,11 @@ WAS found for one uniqueness rule, adopted instead of a count:
 
 Adversarial review demonstrated that without it, one 32 MiB CAS object could
 be referenced by ~260,000 distinct descriptor paths (same sha, varying `ext`)
-inside a single 64 MiB manifest, and the trusted copier would attempt ~8 TB
-of staging writes from one COMMIT — a ~130,000× amplification that the
+inside one manifest, and the trusted copier would attempt to write one full
+copy per descriptor — unbounded, since R1 withdrew the manifest ceiling that
+the original arithmetic assumed. The amplification factor is simply the
+descriptor count: each duplicate reference costs a full object copy while
+costing the caller a few hundred manifest bytes. This is an amplification the
 "renderer can already fill the disk" equivalence does not cover (there, the
 renderer supplies every byte it writes; here, one byte in the manifest
 demands ~32 MiB of trusted-side work). Aggravated by COMMIT consuming the
@@ -228,10 +236,14 @@ could not receive its first package at all. Compatibility classification:
   committed fixture, runtime-evidence and release-evidence chatId is ≤ ~40
   bytes (UUID/`imported-`/`m03t06-…` class); nothing within 4× of 181 bytes
   exists in any recorded state;
-- therefore classified **non-breaking on evidence**, with the standing
-  escalation rule: if a real chatId within an order of magnitude of the
-  limit is ever observed, `DP-M05-BASENAME-BOUND` (e.g. hashed-chatId
-  fallback naming) is raised before any refusal ships. The refusal itself is
+- therefore classified **non-breaking on evidence**: every chatId in every
+  committed fixture, runtime proof and release-evidence artifact is ≤ ~40
+  bytes, against a reduced limit of 181 — a margin of more than 4×. The
+  standing escalation trigger is stated to match that evidence: if a real
+  chatId is ever observed **at or above one quarter of the reduced limit**
+  (~45 bytes), `DP-M05-BASENAME-BOUND` (e.g. hashed-chatId fallback naming)
+  is raised before any refusal ships. No observed value reaches that trigger
+  today, which is why this derivation requires no Decision Point now. The refusal itself is
   a first-class blocker (`generation-name-exceeds-filesystem-limit`) plus the
   coverage state "legacy preserved, cannot refresh" / "not coverable" — never
   a silent failure.
@@ -253,11 +265,23 @@ The staged protocol separates the two cleanly:
   existing governed member authority in the lane, and comfortably inside the
   accepted ~3-copy allocation precedent). A member of any size crosses IPC as
   N calls; per-call allocation stays O(8 MiB); hashes are computed
-  incrementally; no one-shot body ever defines a member ceiling. The COMMIT
-  manifest body remains one-shot under §4.4's allocation bound (evidence
-  places every real manifest 4+ orders of magnitude below it); if that margin
-  ever narrows, the same chunked mechanism extends to the manifest before any
-  product limit appears.
+  incrementally; no one-shot body ever defines a member ceiling. **All four
+  members, `manifest.json` included, use this path** (R1) — COMMIT carries no
+  large body at all, so there is no remaining one-shot admission point and no
+  member has a ceiling of any kind.
+
+  What the constant actually does, stated honestly: the framework materializes
+  an invoke body *before* the command runs, so a command-side check cannot
+  refuse admission. The per-chunk constant bounds the peak of a **cooperative**
+  writer and prevents one further copy. It is not admission control against a
+  hostile caller, and no WebKit-layer body ceiling was establishable from
+  source (carried as an open question).
+
+  Cumulative/session accounting is permitted for **reporting and staging-disk
+  observability only**. It must never become a refusal threshold: an aggregate
+  cap on members, package or assets would be precisely a new semantic package
+  limit hidden inside an implementation constant, requiring
+  `DP-M05-<MEMBER>-BOUND` first.
 - **Semantic (A-class)** — package acceptance rules: the version triples,
   required members, descriptor equality, CAS verification, derived
   contentHash. **M05 adds no new semantic size limit to any v1/v2 member.**
@@ -275,8 +299,9 @@ generalization recorded in contract §Q.
 | snapshot.json (v1/v2) | none (semantic); streaming parse technique | **No** — nothing publishable today becomes unpublishable |
 | chat.md | none | **No** |
 | chat.html | none | **No** |
-| manifest.json | 64 MiB allocation-safety parse bound | **No** — implementation-safety classification demonstrated (§4.4), escalation rule standing |
-| per-call member body | 8 MiB transport constant | **No** — transport only; members of any size supported via N calls |
+| manifest.json | **none** — staged member; ceiling withdrawn (§4.4.1) | **No** |
+| per-call member chunk | 8 MiB transport constant | **No** — transport only; members of any size supported via N calls |
+| aggregate / cumulative | **none** — tracking permitted, refusal thresholds forbidden | **No** — any aggregate threshold would be a new semantic limit → DP first |
 | asset count | none (descriptor `path`/`sha256` uniqueness rule instead — §4.5) | **No** — writer-conformant; refuses nothing the sanctioned writer can produce; reader untouched |
 | basename | filesystem fact via `fpathconf`; 74-byte generation-suffix headroom consequence recorded (§4.6) | **No on evidence** — no recorded chatId within 4× of the reduced limit; escalation rule stands |
 
@@ -285,3 +310,146 @@ is either absent (no new limit), a transport constant that cannot restrict
 package states, a filesystem fact, or an allocation-safety constant with
 recorded evidence, an open in-principle caveat, and a standing escalation
 rule that converts any future real approach to it into a DP before refusal.
+
+---
+
+# Addendum — M05 P1 Authority Reconciliation (2026-08-27)
+
+Incorporates a parallel fixed-SHA reconnaissance against `28f1cc53`, verified
+independently against source before adoption. Recorded here because several
+findings changed frozen contract text; the contract carries the rules, this
+addendum carries the evidence and the classifications.
+
+## A1. Verifier-blocker classification (R11)
+
+Every proposed publication invariant was classified before adoption. Nothing
+was imported wholesale.
+
+| Proposed invariant | Class | Disposition |
+| --- | --- | --- |
+| All enumerated v1/v2 verifier blockers (`package-path-*`, `manifest-*`, `snapshot-*`, `chat-id-mismatch`, `content-hash-mismatch`, the eight `manifest-asset-*`, the five `package-asset-*`, …) | **A** | Gate makes each unreachable; complete enumerated list is the T1.2.2 test input |
+| Descriptor `path` + `sha256` uniqueness within one manifest | **B** | Adopted, commit-gate only. Writer builds descriptors keyed by sha (unique by construction); path is a pure function of that key. Reader unchanged — duplicates stay a **warning**, so historical/imported duplicate-bearing packages remain valid |
+| `sanitized: true` marker requirement | **B**, value-free | **Not adopted.** No verifier requirement exists; the writer stamps the flag unconditionally, so requiring it proves nothing |
+| No `data:image` residue in **chat.md** | **C** | **Rejected.** The verifier never reads chat.md at all, and the renderer emits raw `contentText` — a chat merely *discussing* data URIs would be newly refused |
+| Prohibit `https:` / `file:` / `data:` image sources in chat.html | **C** | **Rejected.** Contradicts the writer's own emitted CSP (`img-src data: file: https:`) and the materializer's deliberate leave-remote-inline behavior |
+| New total-package byte limit | **C** | **Rejected.** No total-size check exists anywhere |
+| New asset-count limit | **C** | **Rejected.** The verifier counts but never compares a threshold |
+| New aggregate-asset-byte limit | **C** | **Rejected.** Only per-asset equality is checked |
+| Extend the v3 8 MiB snapshot bound to v1/v2 | **C** | **Rejected.** v1/v2 read path is explicitly unbounded and the v1/v2 writer has no snapshot check; an existing >8 MiB package would be newly refused |
+
+### A1.1 The RESIDUAL class — why the superset invariant is scoped
+
+`data-image-residue-v2` and the three `renderer-asset-ref-*` codes are class A
+blockers, but they are **not** writer invariants. Two verified
+counterexamples, both producible by the sanctioned writer today:
+
+1. the materializer supports only `png|jpe?g|gif|webp` and by design leaves any
+   other `data:image/…` URI inline; one such image alongside one PNG (which
+   forces v2) yields a package the verifier blocks;
+2. a chat **title** containing the literal text `data:image/` reaches
+   `chat.html` intact, because entity escaping does not touch it.
+
+Such packages publish successfully today and merely verify as blocked.
+Enforcing these at COMMIT would convert an existing reader finding into a
+**failed user save on real content** — a class-C change in effect. They are
+therefore excluded from the commit gate as the `RESIDUAL` class (contract §S).
+M05 neither creates nor repairs this pre-existing condition. Promoting any of
+them to a publication refusal requires `DP-M05-RESIDUE-REFUSAL` with
+reachability evidence from real captures.
+
+## A2. Renderer write authority over published generations (R3)
+
+Verified: the archive capability grants `fs:allow-write-file` over
+`$APPLOCALDATA/archive/**`, and that single entry is the app's **only** grant
+of `plugin:fs|write_file`, `|open` and `|write`. A renderer can therefore
+rewrite or truncate members of an already-published generation. Immutability is
+not achieved by publishing correctly; it requires the capability cutover frozen
+as the G1 prerequisites in the contract.
+
+Census result: after migrating package writes to the trusted protocol, the
+**required renderer write set under `archive/` is the empty set** — the CAS
+already writes through the two trusted commands, and request receipts are
+written under `$HOME`. So the narrowing is *removal* of the entry, not a glob
+exception. (A single glob cannot express "`archive/**` except
+`packages/**`"; a `deny` list can, and a `deny` on a command-bearing entry was
+verified to bind only that entry's own commands — but removal needs neither.)
+Must remain, each with a live call site: `mkdir` (CAS shards, narrowable to
+`archive/assets/**`), `exists`, `read-file`, `lstat`, and `read-dir` on
+`archive/packages` + `archive/packages/**`.
+
+## A3. Republication semantics at HEAD (R9 framing correction)
+
+A prior framing described a library-only re-save as overwriting in place. That
+is **false at HEAD**: the writer refuses an existing package and the only
+production caller passes `overwrite: false`, so a second publication fails with
+`package-already-exists`. Generations therefore change the behavior from
+**refuse** to **accumulate** — repeat publication becomes possible at all. The
+amplification is the price of a new capability, not a regression from a
+previously efficient path.
+
+Also recorded (neither reopened nor fixed): a **pin toggle** bumps the
+snapshot's `updated_at`, which feeds `savedAt` inside the hashed bytes, so
+pinning can mint a generation; and **label ordering** is projected in
+binding-recency order without sorting, so rebinding the same label set in a
+different order changes `contentHash`. Normalizing either changes existing
+hashes and is a separate product decision.
+
+## A4. Canonicalization boundary (R7)
+
+The JS canonicalizer is not generically portable: JavaScript emits
+integer-index-like property names in ascending numeric order first, regardless
+of insertion order, and arbitrary keys are reachable in projected snapshot
+metadata. M05 therefore ports nothing. v1 hashes the exact staged snapshot
+bytes; v2 builds only the two-key ASCII descriptor whose emission order
+provably coincides across JS and serde. Boundary tripwires are a T1.2.2
+requirement, including an assertion that archive publication does not reuse an
+unrelated Rust sorted-JSON transport helper that exists elsewhere in the crate.
+
+## A5. Facts recorded as UNVERIFIED / carried
+
+- Whether unsupported-mime `data:image` residue (or a `data:image`-bearing
+  title) occurs in real captures — decides whether any RESIDUAL refusal could
+  ever be safe. Blocking for any future `DP-M05-RESIDUE-REFUSAL`.
+- Directory promotion via the exclusive-rename primitive: every existing call
+  site promotes a regular file and no test covers a directory; the non-macOS
+  fallback cannot hard-link a directory at all. T1.2.2 proof obligation.
+- Any WebKit-layer ceiling on a single invoke body: not establishable from
+  source.
+- Multi-instance execution against one archive root is not prevented, which is
+  why crash-orphan reclamation stays out of M05 and why enforced
+  single-instance is a hard precondition for any future reclamation.
+
+## A6. Reconciliation review outcome
+
+The corrected documents were re-reviewed across four independent adversarial
+lenses (new-rules/compatibility, protocol/lifecycle, identity/canonicalization,
+capability/sequencing), with every non-green finding then adversarially
+verified against source by a separate skeptical pass. 30 findings were raised;
+21 were non-green; 12 completed verification (9 refuted, 4 survived) and 9
+could not complete. The author adjudicated the unverified remainder directly
+against source. Every surviving finding was applied:
+
+| # | Sev | Correction applied |
+| --- | --- | --- |
+| 1 | RED | §X's "crash/power-loss is the only source of persistent residue" was false: an abandoned session plus an ordinary app quit leaves residue permanently, because eviction is lazy and runs only under a later BEGIN. Now stated plainly, with only a *completed* COMMIT guaranteed residue-free. |
+| 2 | RED | The G1 "only grant of `write_file`/`open`/`write`" claim was over-broad — the export capability grants the same permission under `$HOME`. Scoped to "reaching `$APPLOCALDATA/archive`". |
+| 3 | RED | Discovery truncates at a default 500 entries with only a warning. Harmless under one-package-per-chat; **first made reachable by accumulating generations**, and silent truncation would corrupt PRESERVED / COVERED / BEST-HISTORICAL and the create-only dedupe check. Phase 2 must make discovery complete or explicitly paginated, with residual truncation a first-class per-chat blocker. |
+| 4 | RED | Withdrawing the manifest ceiling leaves an O(staged-manifest-size) trusted-side parse allocation that the per-chunk constant does not bound. Now stated openly and accepted deliberately (it matches HEAD, where the verifier parses whole manifests unbounded) rather than reintroducing a ceiling by another name. |
+| 5 | YELLOW | §L asserted `canonicalJson` sorts keys lexicographically, which §T refutes in general. Rewritten as a claim about the two-key v2 descriptor only, with an explicit prohibition on generalizing from it. |
+| 6 | YELLOW | §N claimed the manifest "is the last member the caller stages" — unenforceable and undetectable, since §Q permits free interleaving and no per-member seal exists. Recast as a property of the promotion boundary. |
+| 7 | YELLOW | §V's `assets` empty/non-empty conditions were commit-gate rules with no verifier blocker behind them and were never classified. Now classified **class B** with the writer proof, reader explicitly untouched. |
+| 8 | YELLOW | §D's "unclassifiable without `manifest.chatId`" removed a live reader fallback, stripping PRESERVED/COVERED from packages that classify today. Classification now uses exactly the verifier's own chatId resolution; only the recomputed `contentHash` half admits no fallback. |
+| 9 | YELLOW | §E's VALID row could be read as importing the commit gate's re-hash into the reader. Restated: M05 adds no reader-side check. |
+| 10 | YELLOW | `fs:allow-mkdir` narrowing was parenthetical; a renderer keeping `mkdir` over `archive/packages/**` could pre-create a generation name and permanently deny publication of that content. Now a normative step-4 requirement. |
+| 11 | YELLOW | Validator-pin debt was scoped to live-path pins only; broadened to three classes (live-path, `overwrite: true`, dormant-v3 validator). |
+| 12 | YELLOW | Amplification arithmetic still derived from the withdrawn 64 MiB ceiling; restated as descriptor-count amplification. Basename escalation trigger restated to match its own evidence (~45 bytes against a 181-byte reduced limit). |
+
+Refuted and deliberately **not** applied (recorded so they are not re-raised
+without new evidence): that §J's admission wording conflicts with §V; that the
+non-macOS arm is not fail-closed; that commit-time hashing fails to discharge
+the staging threat model; that the missing directory-enumeration primitive
+needs its own build requirement beyond those already listed; that
+`writeSavedChatPackageV3` is an unmigrated live writer (it has no production
+caller); and that the legacy-writer retirement is mis-sequenced.
+
+No surviving finding constituted a Human Decision Point.

@@ -28,10 +28,14 @@ implementation phases; it does not itself implement anything.
 
 Standing constraints it operates under, none of which it modifies:
 
-- D9: this source owns SQLite migrations v1–v17; production carries v18–v21
-  owned elsewhere. M05 performs **no migration**, allocates **no v22**, and
-  integrates **no v18–v21**. All new queue metadata lives in the existing
-  `meta_json` column.
+- D9, stated precisely: **this cockpit-pro source owns migrations through
+  v17**, and the **production database legitimately contains externally owned
+  migrations v18–v21**. Because those two authorities have diverged, this Lane
+  allocates **no** new migration — not v18, v19, v20, v21, and not v22 — and
+  integrates none of the external ones. The shorthand "the highest migration
+  is v17, so the next one is v18" is misleading and must not be used without
+  that production-authority divergence stated alongside it. All new queue
+  metadata lives in the existing `meta_json` column.
 - Live v3 remains OFF. `SERIALIZATION PARTIAL` remains carried.
 - PRE-M05 remains authoritative: the CAS-scoped trusted durable write, the CAS
   repair write, and DP-PRE-M05-ASSET-BOUND (32 MiB per newly ingested asset —
@@ -76,13 +80,34 @@ A filename is **discovery input only** — never identity authority. Discovery
 enumerates `archive/packages/` directories whose basename ends `.h2ochat`,
 excluding the reserved staging prefix (§R).
 
-After package verification, identity is derived from the **verified manifest**:
+**Discovery must be complete, and today it is not.** The existing inventory
+truncates at a default 500 entries and merely emits a warning when it does.
+Under the pre-M05 one-package-per-chat model that ceiling was effectively
+unreachable; under accumulating generations it is the *first* thing M05 makes
+reachable — and silent truncation would corrupt every derived judgement built
+on it: PRESERVED, COVERED, BEST-HISTORICAL and the create-only dedupe check
+would all be computed from a partial view. Phase 2 must therefore make
+generation discovery **complete or explicitly paginated**, and any residual
+truncation must be a first-class blocker on the affected chat's coverage
+verdict rather than a warning on the whole inventory. This is a correctness
+prerequisite for §E/§G, not a scaling nicety.
+
+Classification is explicitly a **join** between the filesystem discovery
+basename and the package's **verified identity** — not a manifest-only
+derivation, and not a filename parse. After package verification:
 
 ```text
-legacyExpected     = manifest.chatId + ".h2ochat"
-generationExpected = manifest.chatId + ".g"
-                     + lowercase64hex(manifest.contentHash) + ".h2ochat"
+legacyExpected     = verifiedManifest.chatId + ".h2ochat"
+generationExpected = verifiedManifest.chatId + ".g"
+                     + lowercase64hex(recomputedContentHash) + ".h2ochat"
 ```
+
+`recomputedContentHash` is the value the verifier **recomputes** from the
+package's own bytes under §L, never the raw `manifest.contentHash` string as
+written. (For a package that passes verification the two agree by definition —
+`content-hash-mismatch` is a blocker — so this tightening changes no outcome
+for valid packages; it removes any path where an unverified claimed hash could
+steer classification.)
 
 Classification is exact basename equality:
 
@@ -107,9 +132,17 @@ Classification is exact basename equality:
   Phase 2 diagnostics convergence, and it is a sequencing prerequisite: until
   it lands, the pre-M05 verifier cannot classify any generation as VALID, so
   publication wiring (Phase 3) must not precede it.
-- An empty or absent `manifest.chatId` makes the package **unclassifiable**
-  (never classified via snapshot fallbacks; existing verification blockers
-  apply).
+- Identity resolution for classification uses **exactly the chatId the
+  governed verifier already resolves** — `manifest.chatId`, falling back to
+  the verified `snapshot.chatId` when the manifest omits it, as the reader
+  does at HEAD. This deliberately preserves an existing behavior: a package
+  whose manifest lacks `chatId` but whose verified snapshot supplies it
+  classifies today and must keep classifying, or M05 would silently strip it
+  of PRESERVED/COVERED status — a reader-side compatibility reduction. Only
+  when **neither** source yields a chatId is the package unclassifiable, and
+  such a package is already blocked by existing verification. The
+  `contentHash` half of the join is never subject to any fallback: it is
+  always the recomputed value.
 - The shallow inventory tier (which already parses each manifest) may emit the
   same classification **provisionally** for display; selection, freshness and
   coverage require the fully verified classification.
@@ -119,7 +152,7 @@ Classification is exact basename equality:
 | Term | Definition |
 | --- | --- |
 | GENERATION | One immutable package at a generation-classified path. |
-| VALID | The **M05** governed verification pass fully passes for that package (members, descriptor hashes, contentHash, and the §D manifest-derived name classification — which supersedes the pre-M05 dirname blocker). |
+| VALID | The governed verification pass fully passes for that package — the **existing** reader contract, amended by §D's name classification and by nothing else. M05 adds no reader-side check: §S's commit-gate obligations govern what may be newly *published*, never what counts as valid on read. |
 | CURRENT DESKTOP PROJECTION | `{contentHash, snapshotId, assetShas}` computed from the canonical current Desktop snapshot by a pure probe that shares the writer's own projection/identity math and mutates nothing. Requires the SQLite backend to be ready; otherwise INDETERMINATE. |
 | FRESH | A VALID package (generation or legacy) whose `contentHash` equals the current projection's `contentHash`. |
 | STALE | A VALID package that is not FRESH (see §F for the two kinds). |
@@ -184,7 +217,9 @@ chat.md
 chat.html
 ```
 
-plus governed `assets/` member copies when the manifest declares assets.
+plus governed `assets/` member copies when the manifest declares assets. All
+four are staged members under §N (`manifest` included), and all four are
+verified through the same descriptor-relative path.
 Live v3 remains OFF; M05 publication does not use the v3 two-member durable
 form. The staged publication commit gate (§S) admits payload versions 1 and 2
 only.
@@ -211,8 +246,13 @@ v2: contentHash = sha256(canonicalJson({
 Byte-exactness requirements frozen for the trusted derivation (each is pinned
 by a cross-language test vector in T1.2.2):
 
-- `canonicalJson` sorts object keys lexicographically and emits compact JSON —
-  the v2 pre-image is exactly `{"assets":[…],"snapshot":"sha256-…"}`;
+- `canonicalJson` sorts keys before insertion and emits compact JSON. For the
+  v2 pre-image specifically — whose only two property names, `assets` and
+  `snapshot`, are non-integer ASCII — that yields exactly
+  `{"assets":[…],"snapshot":"sha256-…"}`. This is a claim about **this
+  descriptor**, not a general property of the function: §T records why
+  key-sorted insertion does *not* imply lexicographic emission in general, and
+  nothing in M05 may generalize from this bullet;
 - the hash construction does **not** deduplicate asset sha strings (it hashes
   the list it is given; historical duplicate-bearing manifests verify by this
   same math on read — the commit gate separately refuses to *newly publish*
@@ -247,33 +287,70 @@ command names are implementation detail; the semantic protocol is:
 
 ```text
 BEGIN {chatId}                    → {token}     (plain-argument command)
-WRITE MEMBER {token, member}      + bounded raw body        (repeatable: §Q)
-  member ∈ { snapshot, markdown, html }  — enum only, fixed filenames
-COMMIT {token, expectedContentHash?} + bounded manifest body
+WRITE MEMBER {token, member}      + bounded raw chunk       (repeatable: §Q)
+  member ∈ { snapshot, markdown, html, manifest }  — enum only, fixed filenames
+COMMIT {token, expectedManifestSha256?}         (plain-argument command)
 ABORT {token}                                   (plain-argument command)
 ```
 
-COMMIT, in order: consume the session (§Q) → validate the manifest and
-version triple (§V) → cross-check the staged snapshot (§S) → re-hash every
-staged member against its `manifest.files` descriptor → validate every asset
-descriptor and copy asset bytes from the canonical CAS with streaming
-re-verification (§W) → derive `contentHash` internally and require the
-manifest to agree (§T) → write `manifest.json` last into staging → durability
-fences (F_FULLFSYNC members, staging dir fsync) → derive the final generation
-name internally → exclusive promotion (`renameatx_np(RENAME_EXCL)`) → parent
-directory fsync (also on the occupied path, before reporting
-`generation-destination-occupied`) → honest report
+**`manifest` is a staged member like every other member** (Reconciliation R1).
+COMMIT carries **no large body**. This is load-bearing for three reasons:
+
+- v1/v2 has no semantic manifest size ceiling today, so a one-shot COMMIT body
+  with an allocation cap would have created a **new product boundary** — the
+  exact thing §"Member bounds" forbids;
+- the framework materializes an invoke body *before* the command runs
+  (verified: `wry` `url_scheme_handler` → `tauri::ipc::protocol`), so a
+  command-side length check could not have provided the pre-allocation
+  admission it appeared to promise;
+- an out-of-band manifest body would have given `manifest.json` a **different
+  verification path** from every other governed member. Staging it means it is
+  read back through the same descriptor-relative, `O_NOFOLLOW`, opened-fd
+  path as the rest.
+
+`expectedManifestSha256`, if retained, is assertion-only (§U).
+
+Manifest remains the **final logically completed member before promotion** —
+but that is a property of the *promotion boundary*, not an ordering rule on
+the caller. §Q permits appends to different members to interleave freely and
+provides no per-member seal before COMMIT, so the trusted side cannot observe
+staging order and this contract does not pretend to constrain it. What is
+actually enforced: COMMIT refuses if the manifest member is absent, and no
+final generation exists until the exclusive promotion — so no observer can
+ever see a published package whose manifest is missing or unverified. The
+manifest-last completeness invariant is carried by the atomic promotion, not
+by staging sequence.
+
+COMMIT, in order: consume the session (§Q) → **enumerate the staging directory
+and refuse any entry the session did not create** → read and validate the
+staged manifest and version triple (§V) → cross-check the staged snapshot (§S)
+→ re-hash every staged member against its `manifest.files` descriptor →
+validate every asset descriptor and copy asset bytes from the canonical CAS
+with streaming re-verification (§W) → derive `contentHash` internally and
+require the manifest to agree (§T) → durability fences (F_FULLFSYNC members,
+staging dir fsync) → derive the final generation name internally → exclusive
+promotion → parent directory fsync (also on the occupied path, before
+reporting `generation-destination-occupied`) → honest report
 `{ok, committed, durabilityComplete, generationPath, contentHash, blockers[]}`.
+
+Every member read at COMMIT is read **from the retained staging descriptor**,
+opened once per member, and hashed from that single handle — never by
+re-resolving a path. This is what makes renderer interference in the staging
+namespace (§R) detectable rather than exploitable.
 
 COMMIT re-hashes **every member required by the declared version (§J) and
 every member actually staged**; a required member that was never staged, or a
 staged entry the session did not create, is a refusal — the quantifier is the
 version's required set, not merely "what was written".
 
-Within staging, `manifest.json` is still written last, preserving the
-manifest-last doctrine; the load-bearing crash-safety mechanism for staged
-publication is the atomic exclusive promotion — a final-name directory never
-exists without its complete verified manifest. Refusals are returned as
+The load-bearing crash-safety mechanism for staged publication is the atomic
+exclusive promotion — a final-name directory never exists without its complete
+verified manifest. **Proof obligation (T1.2.2):** the existing trusted module
+promotes only *regular files*; no test covers promoting a populated
+*directory*, and the non-macOS `linkat` fallback **cannot** hard-link a
+directory. Phase 1 must prove directory promotion on the supported platform
+and keep the non-macOS arm fail-closed; `promote_exclusive` must never be
+read as portable for directories. Refusals are returned as
 `ok:false` results with blocker codes (they resolve; they do not throw).
 Every caller must treat any result without `committed === true` as a
 **non-success requiring explicit resolution** — never as silent success. For
@@ -283,6 +360,36 @@ success); every other blocker resolves as failure.
 
 The non-macOS arm fails closed (`…-unsupported-platform`), consistent with the
 existing trusted module.
+
+### N.1 Package construction is not final-path authority
+
+Verified at HEAD: the JS builder hard-codes `packageDirName = chatId +
+".h2ochat"` and throws if a caller supplies any other value; the live writer
+writes `manifest.json` **first**, before snapshot and renderers.
+
+Neither fact contradicts immutable generations, because M05 draws the boundary
+differently:
+
+> **PACKAGE CONSTRUCTION ≠ FINAL PUBLICATION PATH AUTHORITY.**
+
+The JS builder may continue constructing logical package bytes and the
+manifest. What ceases is its `packageDirName` / `packagePath` outputs being
+*publication authority* — the trusted publisher derives the final generation
+path from its own digest (§T), and the renderer supplies only `chatId` (§O).
+Phase 1 must remove or isolate every assumption that a built package's
+`packageDirName` names the final archive destination, and must sequence the
+retirement or isolation of the **manifest-first legacy publication path** so
+it cannot remain the live path after cutover (a G1 prerequisite). Existing
+grandfathered packages are never rewritten (§C).
+
+Two verified implementation notes for that refactor: the builder is **not**
+side-effect-free — it materializes assets into the CAS (writing CAS blobs and
+DB rows) *before* any package bytes exist, and its `packageDirName` check
+fires after that, so clean build/publish separation requires hoisting or
+opting out of materialization; and the materializer consumes only a small
+result contract (`packagePath`, `schemaVersion`, `payloadVersion`,
+`contentHash`, `snapshotId`, `writtenAt`), which the staged publisher can
+satisfy directly.
 
 ## O. Renderer authority exclusions
 
@@ -341,11 +448,22 @@ The renderer never supplies:
 - Sessions carry an **idle timeout** measured from the last successful
   command on that token (an implementation-level operational constant, not a
   product value): an evicted session is aborted and its staging cleaned, so
-  the cap governs concurrency, not lifetime, and a webview reload cannot
-  permanently wedge publication. Eviction takes the same lock as every other
-  session access, so it cannot race an in-flight append or commit. A session
-  abandoned between BEGIN and COMMIT is cleaned by this eviction path (§X
-  governs post-consumption refusals; §Q eviction governs abandonment).
+  the cap governs concurrency, not lifetime, and a webview reload — which
+  kills the JS without running any `finally { abort }` — cannot permanently
+  wedge publication. Eviction is **lazy**: it runs under the BEGIN lock
+  (drop sessions past the period, then refuse if still full). No timer
+  thread, no background task, no new concurrency surface.
+- **Eviction is integrity-neutral, and precisely because of the
+  consume-first rule above.** A committing session is *not in the map*, so no
+  sweep can reach it however slow the commit is; the only reachable session is
+  one idle between BEGIN and COMMIT, whose worst case is a refused later
+  append — an availability loss, never a corrupt or partial package.
+  **This is a stated precondition, not an incidental detail:** if COMMIT
+  ordering is ever relaxed so that it validates before consuming, this
+  decision reopens and the no-eviction variant becomes mandatory.
+- A session abandoned between BEGIN and COMMIT is cleaned by this eviction
+  path (§X governs post-consumption refusals; §Q eviction governs
+  abandonment).
 
 ## R. Staging location, prefix, discovery filtering
 
@@ -358,22 +476,60 @@ archive/packages/.h2o-genstage-<token>/
 
 - Same directory as promotion targets → exclusive promotion needs no
   cross-directory primitive and stays atomic.
-- The prefix is a single shared constant: reserved (refused) by the trusted
-  path-component validation, and excluded by JS discovery/inventory filtering.
-  The existing inventory's `.h2ochat` suffix filter already skips such
-  entries; its `archive-entry-not-package` warning is the residue signal.
+- **Build requirement, not an existing fact:** the trusted path-component
+  validation today reserves only the PRE-M05 temp prefix. Phase 1 must extend
+  it to a **shared reserved-prefix list** covering the staging prefix, kept
+  separate from the temp-name *generator*. Until that lands, the reservation
+  does not exist.
+- JS discovery/inventory filtering excludes the prefix. The existing
+  inventory's `.h2ochat` suffix filter already skips such entries; its
+  `archive-entry-not-package` warning is the residue signal.
+- **The token is not a security boundary.** It is an opaque, high-entropy,
+  single-use *session identifier* whose only job is confusion resistance. The
+  trusted Rust descriptor is the authority. Verified at HEAD: the renderer's
+  archive write grant is a literal path glob whose dot-component exclusion is
+  platform-conditional, and `read_dir` performs no dotfile filtering — so the
+  renderer may be able to **both observe and write into** the staging
+  namespace. Publication integrity therefore may **never** depend on: staged
+  bytes being unmodified between write and commit, token secrecy, or the
+  staging namespace being private. §N's commit-time re-read-and-hash from the
+  retained descriptor is what makes such interference detectable and
+  harmless, and it is why hashing happens **at commit**, not at write.
 - Crash residue is bounded per run by the session cap, is honestly unbounded
   across repeated crash cycles, and is reclaimed only by a future explicitly
-  authorized janitor — never automatically in M05.
+  authorized janitor — never automatically in M05 (see "Carried risks").
 
 ## S. Commit gate ⊇ governed verifier
 
-Standing invariant: **the commit gate's refusal set is a superset of the
-governed v1/v2 verifier's blocker set for published packages, as that
-verifier stands after the §D reader supersession** (the pre-M05 dirname
-blocker is replaced by the §D classification; every other blocker remains
-and must be unreachable). Nothing the trusted writer publishes may fail the
-governed reader. This includes, at minimum:
+Standing invariant, **scoped honestly**: the commit gate's refusal set is a
+superset of the governed v1/v2 verifier's blocker set for published packages,
+as that verifier stands after the §D reader supersession, **except for the
+`RESIDUAL` class defined below**.
+
+The exception exists because of a fact verified at HEAD: a **sanctioned-writer
+package can already trip some verifier blockers today**. The materializer
+supports only `png|jpe?g|gif|webp` and deliberately leaves any other
+`data:image/…` URI inline; and a chat *title* containing the literal text
+`data:image/` passes through `escapeHtml` into `chat.html`. Either case makes
+the substring test behind `data-image-residue-v2` match. Such a package
+publishes successfully today and merely *verifies as blocked*.
+
+Turning those blockers into publication refusals would therefore **newly fail
+a user's save on real content** — a class-C new package-validity rule, which
+R11 forbids adopting silently. So:
+
+- **`RESIDUAL` blockers** — `data-image-residue-v2`,
+  `renderer-asset-ref-not-in-manifest`, `renderer-asset-ref-missing-file`,
+  `renderer-asset-ref-exists-check-failed` — are **NOT** enforced by the
+  commit gate. M05 neither creates nor repairs this pre-existing condition:
+  the package publishes, and the verifier reports what it reports, exactly as
+  today. No `chat.md` scan, no image-source policy, and no sanitized-marker
+  requirement is added (each verified class C or value-free class B).
+- Making any RESIDUAL blocker a publication refusal requires
+  `DP-M05-RESIDUE-REFUSAL` with reachability evidence from real captures.
+
+Every **non-RESIDUAL** v1/v2 blocker must be unreachable for a committed
+generation. That includes, at minimum:
 
 - manifest envelope validity: parseable JSON, `schema ==
   "h2o.savedChatPackage"`, coherent version triple (§V), required-member
@@ -396,38 +552,66 @@ governed reader. This includes, at minimum:
   duplicate-bearing packages (its duplicate check stays a warning). This
   rule is also the technical bound that caps trusted-side copy amplification
   (see the T1.2.3 evidence §4.5);
-- **renderer-output scans** (v2): bounded streaming scans — not structured
-  parsing — of the staged `chat.html` and of the snapshot's html content
-  fields for (i) `data:image` residue and (ii) `assets/sha256-…` references
-  not present in the manifest's declared path set. These make the governed
-  verifier's `data-image-residue-v2`, `renderer-asset-ref-not-in-manifest`
-  and `renderer-asset-ref-missing-file` blockers unreachable (declared
-  assets are always staged by §W; undeclared references and residue are
-  refused here);
 - internally derived contentHash equality (§T);
 - the staging directory containing **no entry the session did not create**
   (checked at commit via directory enumeration of the staging handle).
 
-A test enumerates the governed verifier's v1/v2 blocker codes and proves each
-is unreachable for a committed generation.
+T1.2.2 carries the **complete enumerated v1/v2 blocker list** as its test
+input — not a paraphrase. Beyond the codes named above it must include, at
+least: `package-path-required`, `package-path-out-of-scope`,
+`manifest-json-invalid`, `snapshot-json-invalid`, `manifest-schema-invalid`,
+`manifest-schema-version-invalid`, `manifest-payload-version-invalid`,
+`manifest-missing`, `snapshot-missing`, `markdown-missing`, `html-missing`,
+`chat-html-unreadable`, `chat-id-mismatch`, `snapshot-id-mismatch`,
+`snapshot-sha-mismatch`, `content-hash-mismatch`, `package-validation-failed`,
+the eight `manifest-asset-*` descriptor codes, the five
+`package-asset-*` codes, `snapshot-asset-ref-invalid`, and
+`snapshot-asset-ref-missing-manifest`. Each is proven unreachable for a
+committed generation, or explicitly listed as RESIDUAL with its justification.
 
 ## T. Trusted derivation of contentHash and destination
 
 Rust derives the package `contentHash` itself from the staged bytes and the
-manifest's asset list, using the frozen §L constructions. The v2 pre-image
-consumes the **raw cleaned descriptor `sha256` strings exactly as written in
-the manifest** (per §L) — never a normalized form; normalization exists only
-to locate CAS objects, and by §S's grammar validation the raw and normalized
-forms coincide for every publishable manifest. The final generation name
-derives from Rust's **own** digest. The manifest's `contentHash` must equal
-the derived value or commit refuses. The caller can never name a destination,
-directly or through a hash parameter.
+manifest's asset list, using the frozen §L constructions, and the final
+generation name derives from Rust's **own** digest. The manifest's
+`contentHash` must equal the derived value or commit refuses. The caller can
+never name a destination, directly or through a hash parameter.
 
-## U. expectedContentHash is assertion-only
+**M05 owns no general-purpose JSON canonicalizer, and must never acquire one.**
+The JS `canonicalJson` is *not* generically portable: it sorts keys, inserts
+into an ordinary object, and calls `JSON.stringify` — but JavaScript emits
+integer-index-like property names in ascending numeric order *first*,
+regardless of insertion order, so the result is not lexicographic for objects
+with keys like `"2"` / `"10"`. Arbitrary keys are reachable in projected
+snapshot metadata, so a generic port would be a live hazard. The frozen rules
+are deliberately narrow:
 
-`expectedContentHash`, when supplied at COMMIT, is compared to the derived
-value and can only cause a refusal (`generation-expected-hash-mismatch`). It
-never selects, overrides, or names anything.
+- **v1** — Rust derives identity as SHA-256 over the **exact staged
+  `snapshot.json` bytes**. There is no Rust-side snapshot recanonicalization
+  of any kind.
+- **v2** — Rust builds only the historical two-key descriptor
+  `{"assets":[…],"snapshot":"…"}`. Both property names are non-integer ASCII,
+  so JS and serde emission order provably coincide. The `assets` values are
+  the **raw cleaned descriptor `sha256` strings exactly as written in the
+  manifest** (per §L) — never a normalized form; normalization exists only to
+  locate CAS objects, and §S's grammar validation makes raw and normalized
+  coincide for every publishable manifest.
+
+**Permanent boundary tripwires (T1.2.2):** tests asserting (i) the
+integer-like-key divergence is understood and never relied upon, (ii)
+integer-like keys reachable in `message.metadata` do not affect archive
+publication, and (iii) archive publication does **not** reuse any unrelated
+Rust `sorted_json_value` / transport canonicalization helper that exists
+elsewhere in the crate. These are boundary tests; they do not require Rust to
+reproduce generic JS projection canonicalization.
+
+## U. Caller assertions are assertion-only
+
+`expectedManifestSha256`, when supplied at COMMIT, is compared to the digest
+of the staged manifest member and can only cause a refusal
+(`generation-expected-hash-mismatch`). It never selects, overrides, or names
+anything. The same rule governs any future assertion parameter: an assertion
+may refuse a publication, never steer one.
 
 ## V. Coherent version triples
 
@@ -438,7 +622,19 @@ never selects, overrides, or names anything.
 
 Anything else — including hybrids such as `schemaVersion: 1` with
 `payloadVersion: 2`, and any `schemaVersion: 3` manifest — is refused at
-commit. v3 publication is not admitted by M05; admitting it later is a live-v3
+commit.
+
+**Classification of the `assets` cardinality conditions** (they are commit-gate
+rules with no verifier blocker behind them, so they need the same A/B/C
+treatment as every other invariant): both are **class B —
+writer-conformance**, enforced on new publications only. Proof: the writer
+computes its manifest asset list as `isV2 ? materializedAssets : []`, and the
+v2 branch is selected precisely when the materializer reports it extracted at
+least one asset — so a sanctioned v1 manifest always has an empty list and a
+sanctioned v2 manifest always has a non-empty one. Neither condition can
+refuse writer-producible output. The **reader is untouched**: an existing v1
+package with non-empty assets remains valid (it is a warning at HEAD, and
+stays one), so no historical or imported package is invalidated. v3 publication is not admitted by M05; admitting it later is a live-v3
 activation decision, not a gate relaxation.
 
 ## W. Assets copied from canonical CAS by trusted code
@@ -460,8 +656,8 @@ directory itself. Successful promotion is the only outcome that transfers the
 staged tree out of cleanup scope (it becomes the published generation). The
 rule therefore covers, without needing enumeration: invalid manifest, missing
 member, member hash mismatch, incoherent version triple, asset descriptor
-refusal, descriptor-uniqueness refusal, renderer-scan refusal, CAS
-mismatch/missing, contentHash mismatch, expectedContentHash refusal,
+refusal, descriptor-uniqueness refusal, CAS
+mismatch/missing, contentHash mismatch, expectedManifestSha256 refusal,
 undeclared staging entries, name-length refusal, member/staging fsync
 failures, **and any promotion failure other than success** — including the
 occupied path: the losing writer cleans its own staging immediately upon the
@@ -474,8 +670,18 @@ eviction, not by this rule.)
 If cleanup itself fails, the result reports the original refusal **and** the
 cleanup failure honestly (`blockers` carries both; `committed`/`durabilityComplete`
 truth is never altered by cleanup outcomes), and the residue is surfaced by
-diagnostics. Crash/power-loss remains the only legitimate source of persistent
-staging residue.
+diagnostics.
+
+**Persistent residue is reachable without any crash, and the contract says so
+plainly.** A session abandoned between BEGIN and COMMIT — a webview reload, a
+navigation, or an ordinary app quit — is cleaned only by §Q's *lazy* eviction,
+which runs solely under a subsequent BEGIN in the same process. If the process
+exits before another BEGIN occurs, the staging directory persists, and M05
+ships no reclamation (see "Carried risks"). So the honest statement is: an
+abandoned session and a crash are **both** legitimate sources of persistent
+staging residue; only a *completed* COMMIT — successful or refused — is
+guaranteed to leave none. Any future move to eager cleanup at process exit is
+an explicit change, not an assumption this contract already makes.
 
 ## Y. Exclusions
 
@@ -502,9 +708,10 @@ Summary of the frozen policy:
 | --- | --- | --- |
 | `snapshot.json` (v1/v2 publication) | **No new semantic cap.** Existing governed caps continue to govern exactly where they already apply (the 8 MiB logical cap is v3 write authority and is *not* extended to v1/v2). | — |
 | `chat.md`, `chat.html` | **No semantic cap.** Streamed and hashed — never parsed as structured documents; commit additionally performs the bounded streaming residue/reference **scans** over `chat.html` that the §S superset invariant requires (memory O(scan window), not O(member)). | — |
-| WRITE MEMBER per-call body | 8 MiB per append call (members of any size arrive as N calls) | Transport/allocation constant — not product semantics; revisable without compatibility impact |
-| COMMIT manifest body | 64 MiB allocation-safety parse bound | Implementation safety, ≥ 4 orders of magnitude above all committed/runtime evidence; escalation rule below |
-| Asset descriptor count | **No fixed count limit.** Bounded by the manifest allocation bound, per-descriptor validation, and CAS existence verification. | — |
+| `manifest.json` | **No semantic cap.** Staged as an ordinary member (§N); read back and parsed from the staging descriptor. The former 64 MiB one-shot COMMIT-body ceiling is **withdrawn** — it would have created a product boundary that does not exist at HEAD. Consequence stated openly: parsing the staged manifest at COMMIT is an O(staged-manifest-size) trusted-side allocation that the per-chunk transport constant does **not** bound. That is accepted deliberately — matching HEAD, where the verifier also reads and parses whole manifests unbounded — rather than reintroducing a ceiling by another name. | — |
+| WRITE MEMBER per-call chunk | 8 MiB per append call (members of any size arrive as N calls) | Transport/allocation constant — **not** product semantics; revisable without compatibility impact |
+| Aggregate / cumulative size | **No aggregate refusal threshold** of any kind — not per member, not per package, not across assets. Rust may track a running total for reporting and staging-disk observability, but no total may become a refusal. | Any aggregate threshold would be a new semantic package limit → `DP-M05-<MEMBER>-BOUND` first |
+| Asset descriptor count | **No fixed count limit.** Bounded by per-descriptor validation, CAS existence verification, and the §S uniqueness rule (which is what actually caps copy amplification). | — |
 | Generation basename | The real filesystem component limit, read at the opened archive parent via descriptor-relative platform authority (`fpathconf(_PC_NAME_MAX)`); fail closed if unavailable. No hardcoded 240/255. **Honest headroom note**: the 74-byte generation suffix (`.g` + 64 hex + `.h2ochat`) versus legacy's 8 bytes means a chatId longer than `NAME_MAX − 74` bytes (181 on a 255-byte filesystem) cannot receive a generation even though the same chatId up to `NAME_MAX − 8` could receive a legacy name pre-M05 — see the T1.2.3 evidence §4.6 for why no real state approaches this and the standing escalation that fires before any real one is refused. | Filesystem fact + evidence-classified headroom consequence |
 | Snapshot commit-gate parse | Bounded **streaming** field extraction (memory ∝ extracted fields, not member size) | Implementation technique, no size cap |
 
@@ -513,3 +720,112 @@ approaches a transport/allocation constant, or a proposed change would turn
 one into a semantic package limit, a Human Decision Point
 (`DP-M05-<MEMBER>-BOUND`) is raised **before** any refusal ships. No new
 product-size boundary is ever hidden inside an implementation constant.
+
+**What the per-chunk bound does and does not do.** Verified at HEAD: an invoke
+body is fully materialized by the framework *before* any command body runs
+(WebKit `NSData` → `wry` → `tauri::ipc::protocol`), and the existing
+`body_len()` check prevents exactly **one** subsequent clone. So the 8 MiB
+chunk constant constrains the peak of a **cooperative** writer; it is not
+admission control against a hostile caller, and this contract never claims
+otherwise. No WebKit-layer ceiling on a single invoke body could be
+established from source — carried as an open question, not as a guarantee.
+
+## G1 prerequisites — immutable publication is not COMPLETE until all hold
+
+Verified at HEAD: `capabilities/archive-cas.json` grants `fs:allow-write-file`
+over `$APPLOCALDATA/archive/**`. That permission maps to three commands —
+`write_file`, `open`, `write` — and this entry is the **only** grant of any of
+them reaching `$APPLOCALDATA/archive`. (The export capability grants the same
+permission, but scoped to `$HOME/H2O Studio Exports/**`, a different root that
+this narrowing neither touches nor needs.) A renderer can therefore rewrite or
+truncate the members of an already-published generation — a perfect trusted
+publication is not yet an immutable one. Closing that is a genuine M05
+prerequisite, sequenced as follows (no capability edit happens in this
+document's batch):
+
+1. every live package-write consumer migrates off renderer plugin-fs package
+   writes onto the trusted staged protocol (the live path is
+   `writeSavedChatPackageV1`, reached from exactly one production caller in
+   the materializer);
+2. the legacy destructive overwrite path is retired in code — it holds the
+   only recursive-delete call on any publication path, behind a guard that
+   tolerates an unreadable manifest, and it is currently inert only because
+   the capability withholds `fs:allow-remove` (§Z assigns remove authority to
+   M06, which is precisely the milestone that would grant it);
+3. dormant and current writer dependencies are explicitly inventoried —
+   including three pin classes that must be amended in the same change:
+   pins asserting the legacy writer *is* the live path, pins asserting the
+   destructive `overwrite: true` path succeeds, and the dormant-v3-writer
+   validator;
+4. the renderer fs write capability is narrowed so published generation
+   members under `archive/packages/**` are no longer renderer-writable.
+   **Exact likely shape, from the verified call-site census: the required
+   post-migration renderer write set under `archive/` is the empty set**, so
+   the narrowing is *removal* of the `fs:allow-write-file` entry rather than
+   an "allow `archive/**` except `packages/**`" expression (a single glob
+   cannot express the exception; a `deny` list can, and a `deny` on a
+   command-bearing entry was verified to bind only that entry's commands —
+   but removal is strictly safer and needs neither). What must remain, each
+   with a live call site: `fs:allow-mkdir` — which **must be narrowed to
+   `archive/assets/**` in the same change**, not merely left at
+   `archive/**`: a renderer retaining `mkdir` over `archive/packages/**` could
+   pre-create a generation directory name and permanently deny publication of
+   that exact content, since promotion is exclusive and create-only —
+   `fs:allow-exists`, `fs:allow-read-file`,
+   `fs:allow-lstat`, and `fs:allow-read-dir` on `archive/packages` +
+   `archive/packages/**`;
+5. the canonical CAS path and every other legitimate archive writer keep
+   working — verified: the CAS no longer uses `plugin:fs|write_file` at all
+   (it writes through the two trusted commands), and request receipts are
+   written under `$HOME`, not under `archive/`.
+
+Capability **narrowing** is in scope for the phase that performs it;
+capability **widening** remains forbidden.
+
+## Carried risks (M05 does not resolve these)
+
+- **Storage amplification is a new capability, not a regression.** At HEAD a
+  second publication for the same chat does **not** overwrite — it fails with
+  `package-already-exists`, because the only production caller passes
+  `overwrite: false`. Generations are what make repeat publication possible at
+  all. The cost is that every accepted refresh writes a full package including
+  fresh copies of every asset. §S's descriptor-uniqueness rule is the only
+  sanctioned cap on per-commit copy amplification; cross-generation dedupe and
+  pruning belong to M06 (§Z). Quantified sizing lives in the T1.2.3 evidence,
+  deliberately not as a normative cost model.
+- **Library-only edits mint generations** (§E/§F): folder, category, label,
+  tag and similar bindings are read live at projection time and are inside the
+  hashed snapshot bytes, so a binding change alters `contentHash` with no new
+  `snapshotId`. This is the accepted whole-projection freshness authority, not
+  a reopened decision — M05 introduces no second content-only identity. Two
+  specific consequences are recorded rather than fixed: a **pin toggle** bumps
+  the snapshot's `updated_at`, which feeds `savedAt` inside the hashed bytes,
+  so pinning can mint a generation; and **label ordering** is projected in
+  binding-recency order without sorting, so unbinding and rebinding the same
+  label set in a different order yields a different `contentHash` for
+  semantically identical state. Normalizing either would change existing
+  hashes and is its own product decision.
+- **Staging residue** is unbounded across repeated crash cycles and M05 ships
+  **no** reclamation. This is deliberate: "any staging directory at startup is
+  orphaned" is unsound while multiple instances can run against the same
+  archive root, and a recursive sweep against a live peer could unlink a
+  member between commit-time verification and promotion — publishing a
+  generation with a verified manifest and a missing member, the exact failure
+  M05 exists to prevent. Reclamation would also carry no capability diff
+  (the trusted module bypasses plugin-fs by design), so it would ship the
+  mission's broadest new delete authority through its least-reviewed channel.
+  Phase-1 position: **diagnostics report residue count and exact paths; no
+  delete authority.** Any future reclamation requires enforced single-instance
+  as a hard precondition.
+- **Accepted product consequence:** residue entries make the archive inventory
+  report a non-OK (warning) status that cannot return to OK without manual
+  cleanup, since the inventory warns on every non-`.h2ochat` entry. This is
+  accepted knowingly as the visibility mechanism.
+- **`RESIDUAL` verifier blockers** (§S) remain reachable for sanctioned-writer
+  packages exactly as today. M05 neither creates nor repairs them.
+- **Latent nondeterminism**, recorded not expanded: message ordering and
+  snapshot-header ordering use `localeCompare` tie-breaks. Both are gated
+  today — turn ordering by a database primary key, snapshot selection by the
+  caller passing an explicit `snapshotId` — so neither is live. Phase 1 must
+  confirm snapshot selection stays renderer-side and explicit, since §O has
+  the renderer supply only `chatId` at BEGIN.
