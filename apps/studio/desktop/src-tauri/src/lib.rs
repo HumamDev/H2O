@@ -70,6 +70,16 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+// M05 T1.2.1: trusted staged publication of immutable saved-chat archive
+// generations. Purpose-bounded and SEPARATE from the CAS-scoped durable write
+// above — the renderer names only a semantic chatId, a member enum and bytes,
+// while the final generation path, the content hash and the CAS source are all
+// derived on the trusted side. Its Tauri command wrappers are deliberately NOT
+// registered in generate_handler! yet: registration lands atomically with the
+// G1 capability cutover, because publishing must not become renderer-invokable
+// while the renderer still holds broad archive mutation authority.
+pub mod archive_generation_publish;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
     TombstoneInsert,

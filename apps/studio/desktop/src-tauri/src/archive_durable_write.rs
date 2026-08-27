@@ -88,6 +88,17 @@ pub const ARCHIVE_ROOT: &str = "archive";
 /// archive member. A CAS blob is `sha256-<hex>` and a package member is a
 /// plain name, so neither can collide with this prefix.
 const TEMP_PREFIX: &str = ".h2o-durable-";
+
+/// M05 §R: the generation publisher's private staging component. Declared here
+/// so the reserved-prefix authority below owns exactly one list; the publisher
+/// re-exports this constant rather than declaring a second literal.
+pub(crate) const GENERATION_STAGING_PREFIX: &str = ".h2o-genstage-";
+
+/// Every reserved path component prefix. Deliberately SEPARATE from the
+/// temp-name *generator* (`temp_name`), which stays on `TEMP_PREFIX` alone:
+/// reserving a name and minting one are different jobs, and §R requires the
+/// reservation to be a shared list rather than a side effect of the generator.
+const RESERVED_COMPONENT_PREFIXES: &[&str] = &[TEMP_PREFIX, GENERATION_STAGING_PREFIX];
 const TEMP_SUFFIX: &str = ".tmp";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -278,9 +289,13 @@ fn validated_components(relative: &str) -> Result<Vec<Vec<u8>>, &'static str> {
         match component {
             Component::Normal(part) => {
                 let text = part.to_str().ok_or("durable-write-path-invalid")?;
-                // Reject our own staging prefix so a caller can never target
-                // another operation's private temp artifact.
-                if text.starts_with(TEMP_PREFIX) {
+                // Reject every reserved staging prefix so a caller can never
+                // target another operation's private artifact — this
+                // operation's temp, or the M05 generation publisher's staging.
+                if RESERVED_COMPONENT_PREFIXES
+                    .iter()
+                    .any(|prefix| text.starts_with(prefix))
+                {
                     return Err("durable-write-path-reserved");
                 }
                 out.push(text.as_bytes().to_vec());
@@ -300,7 +315,7 @@ fn validated_components(relative: &str) -> Result<Vec<Vec<u8>>, &'static str> {
 }
 
 #[cfg(unix)]
-mod confined {
+pub(crate) mod confined {
     //! Descriptor-relative filesystem primitives. Every operation is performed
     //! against an already-admitted directory descriptor, so a concurrent
     //! rename/symlink swap of a path component cannot redirect it.
@@ -313,6 +328,24 @@ mod confined {
 
     fn cstr(name: &[u8]) -> io::Result<CString> {
         CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    /// Portable pointer to `errno`. `readdir`/`fpathconf` report
+    /// end-of-stream and error identically, so errno must be cleared before
+    /// the call and inspected after.
+    fn errno_location() -> *mut libc::c_int {
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        unsafe {
+            libc::__error()
+        }
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::__errno_location()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "linux")))]
+        unsafe {
+            libc::__error()
+        }
     }
 
     /// An open directory descriptor. Dropping it closes the descriptor.
@@ -547,6 +580,135 @@ mod confined {
             Ok(())
         }
 
+        /// M05: raw descriptor, for `fstatfs`-style metadata queries only.
+        pub fn as_raw_fd(&self) -> i32 {
+            self.0.as_raw_fd()
+        }
+
+        /// M05: creates a child directory **exclusively**. Unlike `mkdir_child`
+        /// this does NOT tolerate `EEXIST` — a staging directory must never
+        /// silently adopt another operation's tree.
+        pub fn mkdir_child_exclusive(&self, name: &[u8]) -> io::Result<()> {
+            let c = cstr(name)?;
+            let rc = unsafe { libc::mkdirat(self.0.as_raw_fd(), c.as_ptr(), 0o700) };
+            if rc < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// M05: removes an EMPTY child directory (`AT_REMOVEDIR`). Only ever
+        /// called on a staging directory this operation created.
+        pub fn unlink_child_dir(&self, name: &[u8]) -> io::Result<()> {
+            let c = cstr(name)?;
+            let rc = unsafe { libc::unlinkat(self.0.as_raw_fd(), c.as_ptr(), libc::AT_REMOVEDIR) };
+            if rc < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// M05: enumerates entry names from THIS descriptor.
+        ///
+        /// `fdopendir` takes ownership of the descriptor it is handed, so a
+        /// duplicate is passed and the original `Dir` stays usable.
+        pub fn read_entry_names(&self) -> io::Result<Vec<Vec<u8>>> {
+            let dup = unsafe { libc::dup(self.0.as_raw_fd()) };
+            if dup < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let dirp = unsafe { libc::fdopendir(dup) };
+            if dirp.is_null() {
+                let err = io::Error::last_os_error();
+                unsafe { libc::close(dup) };
+                return Err(err);
+            }
+            let mut names = Vec::new();
+            loop {
+                // `readdir` reports end-of-stream and error identically (NULL),
+                // so errno is cleared first and checked after.
+                unsafe { *errno_location() = 0 };
+                let ent = unsafe { libc::readdir(dirp) };
+                if ent.is_null() {
+                    let errno = unsafe { *errno_location() };
+                    if errno != 0 {
+                        let err = io::Error::from_raw_os_error(errno);
+                        unsafe { libc::closedir(dirp) };
+                        return Err(err);
+                    }
+                    break;
+                }
+                let name_ptr = unsafe { (*ent).d_name.as_ptr() };
+                let name = unsafe { std::ffi::CStr::from_ptr(name_ptr) }
+                    .to_bytes()
+                    .to_vec();
+                if name == b"." || name == b".." {
+                    continue;
+                }
+                names.push(name);
+            }
+            unsafe { libc::closedir(dirp) };
+            Ok(names)
+        }
+
+        /// M05: the filesystem's maximum component length for THIS directory,
+        /// via `fpathconf(_PC_NAME_MAX)`. Fails closed when unanswerable.
+        pub fn name_max(&self) -> io::Result<u64> {
+            unsafe { *errno_location() = 0 };
+            let value = unsafe { libc::fpathconf(self.0.as_raw_fd(), libc::_PC_NAME_MAX) };
+            if value < 0 {
+                let errno = unsafe { *errno_location() };
+                return Err(if errno != 0 {
+                    io::Error::from_raw_os_error(errno)
+                } else {
+                    // Indeterminate with errno unset: fail closed rather than
+                    // inventing a limit.
+                    io::Error::from(io::ErrorKind::Unsupported)
+                });
+            }
+            Ok(value as u64)
+        }
+
+        /// M05: create-only promotion of a **directory**.
+        ///
+        /// `linkat` cannot hard-link a directory, so the file-oriented
+        /// `promote_exclusive` fallback is NOT usable here. Only an exclusive
+        /// rename expresses create-only directory publication, so every arm
+        /// without one fails closed rather than degrading to a replacing
+        /// rename.
+        #[cfg(target_os = "macos")]
+        pub fn promote_dir_exclusive(&self, from: &[u8], to: &[u8]) -> io::Result<bool> {
+            let from_c = cstr(from)?;
+            let to_c = cstr(to)?;
+            let rc = unsafe {
+                libc::renameatx_np(
+                    self.0.as_raw_fd(),
+                    from_c.as_ptr(),
+                    self.0.as_raw_fd(),
+                    to_c.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST)
+                    || err.raw_os_error() == Some(libc::ENOTEMPTY)
+                {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+            Ok(true)
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        pub fn promote_dir_exclusive(&self, _from: &[u8], _to: &[u8]) -> io::Result<bool> {
+            // Deliberately unimplemented: see the doc comment above. A plain
+            // `renameat` would silently REPLACE an existing generation, which
+            // create-only publication forbids.
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+
         /// Syncs this directory so the promoted entry is durable.
         pub fn sync(&self) -> io::Result<()> {
             let rc = unsafe { libc::fsync(self.0.as_raw_fd()) };
@@ -573,7 +735,7 @@ mod confined {
 /// and `sync_all` is the documented fallback for filesystems that reject it.
 /// Returns whether the strong `F_FULLFSYNC` guarantee was established.
 #[cfg(target_os = "macos")]
-fn sync_file_contents(file: &std::fs::File) -> std::io::Result<bool> {
+pub(crate) fn sync_file_contents(file: &std::fs::File) -> std::io::Result<bool> {
     use std::os::unix::io::AsRawFd;
 
     let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) };
@@ -585,7 +747,7 @@ fn sync_file_contents(file: &std::fs::File) -> std::io::Result<bool> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn sync_file_contents(file: &std::fs::File) -> std::io::Result<bool> {
+pub(crate) fn sync_file_contents(file: &std::fs::File) -> std::io::Result<bool> {
     file.sync_all()?;
     Ok(false)
 }
@@ -889,7 +1051,7 @@ pub fn durable_write_within_root(
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
