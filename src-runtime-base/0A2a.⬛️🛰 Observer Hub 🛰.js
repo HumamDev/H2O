@@ -733,6 +733,7 @@
       try { H2O.events?.emitReady?.(EV_OBS_READY, detail); } catch (_) {}
       SAFE_emit(EV_OBS_READY, detail);
       deliver('ready', detail);
+      scheduleMountReconcile('root-changed');
       DIAG_log('root:changed', { strategy: S.rootStrategy, rootVersion: S.rootVersion });
     }
 
@@ -910,9 +911,189 @@
     SAFE_emit(EV_OBS_MUTATIONS, detail);
     SAFE_emit(EV_OBS_FLUSH, detail);
     deliver('mut', detail);
+    scheduleMountReconcile('mut-flush');
 
     resetPending();
     return true;
+  }
+
+  /* ───────────────────────────── ⬜️ 7b) MOUNT REGISTRY ─────────────────────────────
+   *
+   * The host renders a sparse projection of the conversation: history is never
+   * initially rendered, mounted regions can be disjoint, shells can exist with
+   * unhydrated bodies, and revisiting a region REPLACES its elements while the
+   * message identity survives (measured: 12 of 17 elements replaced on return,
+   * data-message-id stable 16/17; testid ordinals reassigned globally).
+   *
+   * This registry is the single writer for "which native elements currently
+   * carry which stable message identity". Element references here are
+   * ephemeral bindings, never durable identity. Absence is a lifecycle state:
+   * an unmount transition says nothing about logical membership, which is
+   * owned by the Chat Atlas complete-index authority. Consumers subscribe to
+   * typed transitions (mounted / replaced / unmounted / route-reset) instead
+   * of scanning the conversation, so their DOM work scales with the mounted
+   * set while logical work scales with the logical model.
+   */
+  const MOUNT_TURN_SEL = '[data-testid^="conversation-turn"]';
+  const MOUNT_MSG_SEL = '[data-message-id]';
+
+  S.mounts = (S.mounts instanceof Map) ? S.mounts : new Map();
+  S.mountRev = Number(S.mountRev || 0);
+  S.mountRouteKey = String(S.mountRouteKey || '');
+  S.mountPendingShells = Number(S.mountPendingShells || 0);
+  S.mountRAF = 0;
+
+  function CORE_OH_mountRouteKey() {
+    try { return String(W.location?.pathname || ''); } catch { return ''; }
+  }
+
+  function CORE_OH_reconcileMounts(reason = 'manual') {
+    const routeKey = CORE_OH_mountRouteKey();
+    const transitions = [];
+
+    // A route change invalidates every binding: the elements belong to another
+    // conversation's projection. Logical state owners hear one typed reset.
+    if (S.mountRouteKey && routeKey !== S.mountRouteKey && S.mounts.size) {
+      for (const rec of S.mounts.values()) {
+        transitions.push({ type: 'route-reset', id: rec.id, role: rec.role });
+      }
+      S.mounts.clear();
+    }
+    S.mountRouteKey = routeKey;
+
+    const root = API_OH_getRoot();
+    const seen = new Set();
+    let pendingShells = 0;
+    if (root && root.isConnected) {
+      // Scales with the mounted set only — this is the one sanctioned scan.
+      const shells = root.querySelectorAll(MOUNT_TURN_SEL);
+      for (const shell of shells) {
+        const nodes = shell.querySelectorAll(MOUNT_MSG_SEL);
+        if (!nodes.length) {
+          // Persistent shell whose body has not hydrated yet (measured state:
+          // h=0, no message id). Pending, not bindable — never minted an id.
+          pendingShells += 1;
+          continue;
+        }
+        for (const el of nodes) {
+          const id = String(el.getAttribute('data-message-id') || '').trim();
+          if (!id) continue;
+          seen.add(id);
+          const role = String(el.getAttribute('data-message-author-role') || '') || null;
+          const prev = S.mounts.get(id);
+          if (!prev) {
+            S.mountRev += 1;
+            S.mounts.set(id, { id, role, el, shell, rev: S.mountRev, mountedAt: SAFE_now() });
+            transitions.push({ type: 'mounted', id, role, el, shell });
+          } else if (prev.el !== el) {
+            // Same identity, fresh element: the normal rematerialization case.
+            S.mountRev += 1;
+            prev.el = el;
+            prev.shell = shell;
+            if (role) prev.role = role;
+            prev.rev = S.mountRev;
+            transitions.push({ type: 'replaced', id, role: prev.role, el, shell });
+          } else if (prev.shell !== shell) {
+            prev.shell = shell;
+          }
+        }
+      }
+    }
+
+    for (const [id, rec] of S.mounts.entries()) {
+      if (seen.has(id)) continue;
+      // Old references must not be retained: release the binding. This is a
+      // mount transition only — logical deletion is never inferred here.
+      S.mounts.delete(id);
+      S.mountRev += 1;
+      transitions.push({ type: 'unmounted', id, role: rec.role });
+    }
+    S.mountPendingShells = pendingShells;
+
+    if (transitions.length) {
+      deliver('mount', {
+        source: 'observer-hub',
+        reason: String(reason || ''),
+        ts: SAFE_now(),
+        routeKey,
+        rev: S.mountRev,
+        transitions,
+        mountedCount: S.mounts.size,
+        pendingShells,
+      });
+    }
+    return transitions.length;
+  }
+
+  function scheduleMountReconcile(reason = 'schedule') {
+    if (S.mountRAF) return;
+    S.mountRAF = SAFE_raf(() => {
+      S.mountRAF = 0;
+      try { CORE_OH_reconcileMounts(reason); } catch (err) { DIAG_err('mounts:reconcile', err); }
+    });
+  }
+
+  /* Route transitions are the one host lifecycle change the root-scoped
+     observer cannot see: SPA navigation detaches the old conversation root
+     (its MutationObserver starves on a disconnected subtree) and mounts the
+     new one outside any observed node. Measured consequence without this
+     signal: the registry froze with detached-element bindings for the whole
+     away period. All SPA route changes pass through history — hook it once,
+     then run a short bounded settle (the host commits the swap within a
+     frame or two). ensureRoot's own recovery path (startMO + root-changed)
+     owns everything after the settle window; no standing poll exists. */
+  function CORE_OH_onRouteSignal(source) {
+    const step = (label) => {
+      try { API_OH_ensureRoot(`route:${source}:${label}`); } catch (_) {}
+      try { CORE_OH_reconcileMounts(`route:${source}:${label}`); } catch (err) { DIAG_err('mounts:route', err); }
+    };
+    // rAF can starve in occluded tabs; the timeout steps still fire there.
+    SAFE_raf(() => step('raf'));
+    try { W.setTimeout(() => step('settle-1'), 400); } catch (_) {}
+    try { W.setTimeout(() => step('settle-2'), 1400); } catch (_) {}
+  }
+
+  function CORE_OH_installRouteSignals() {
+    if (S.mountRouteSignals) return;
+    S.mountRouteSignals = true;
+    try {
+      W.addEventListener('popstate', () => CORE_OH_onRouteSignal('popstate'), { passive: true });
+    } catch (_) {}
+    for (const method of ['pushState', 'replaceState']) {
+      try {
+        const original = W.history?.[method];
+        if (typeof original !== 'function' || original.__h2oMountRouteHooked) continue;
+        const wrapped = function (...args) {
+          const out = original.apply(this, args);
+          try { CORE_OH_onRouteSignal(method); } catch (_) {}
+          return out;
+        };
+        wrapped.__h2oMountRouteHooked = true;
+        W.history[method] = wrapped;
+      } catch (_) {}
+    }
+  }
+  CORE_OH_installRouteSignals();
+
+  /* Host capability contract: the single place that answers "does the host
+     still behave the way Internal Chat assumes". A future ChatGPT change
+     surfaces here as a degraded capability instead of scattering new failures
+     across every module. */
+  function CORE_OH_mountCapabilities() {
+    const root = API_OH_getRoot();
+    const caps = {
+      conversationRoot: !!(root && root.isConnected),
+      stableMessageIdentity: S.mounts.size > 0,
+      mountedRangeDiscovery: !!(root && root.isConnected),
+      hydrationEvidence: true,
+      routeIdentity: !!CORE_OH_mountRouteKey(),
+      mountedCount: S.mounts.size,
+      pendingShells: S.mountPendingShells,
+      rev: S.mountRev,
+      routeKey: S.mountRouteKey,
+    };
+    caps.degraded = !caps.conversationRoot;
+    return Object.freeze(caps);
   }
 
   function API_OH_stats() {
@@ -1000,6 +1181,16 @@
     markDirty: API_OH_markDirty,
     flush: API_OH_flush,
     stats: API_OH_stats,
+    mounts: Object.freeze({
+      get: (id) => S.mounts.get(String(id || '').trim()) || null,
+      has: (id) => S.mounts.has(String(id || '').trim()),
+      size: () => S.mounts.size,
+      rev: () => S.mountRev,
+      all: () => Array.from(S.mounts.values()),
+      onTransitions: (owner, fn, opts = {}) => addSub('mount', owner, fn, opts),
+      reconcile: (reason) => CORE_OH_reconcileMounts(reason || 'manual'),
+      capabilities: CORE_OH_mountCapabilities,
+    }),
     classifyMutations: API_OH_classifyMutations,
     isOwnedUiNode,
     dispose: CORE_OH_dispose,
