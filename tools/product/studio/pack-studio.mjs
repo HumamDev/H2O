@@ -177,6 +177,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-coverage.tauri.js",
+  // M05 Phase 4 shared presentation adapter. Pure mapping from the coverage and
+  // materializer authorities to operator-facing labels. No freshness recompute,
+  // no generation ranking, no BEST-HISTORICAL promotion.
+  "ingestion/saved-chat-archive-presentation.studio.js",
   // Chrome/MV3: saved-chat archive request builder (Phase D.3A). Builds
   // metadata-only h2o.savedChatArchiveRequest.v1 envelopes from intent. No
   // transport, Desktop queue call, package writer, CAS, Sync, file drop,
@@ -1368,6 +1372,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-projection-probe.tauri.js",
   "ingestion/saved-chat-coverage.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",
+  "ingestion/saved-chat-archive-presentation.studio.js",
   "ingestion/saved-chat-archive-request-builder.mv3.js",
   "ingestion/saved-chat-archive-request-delivery.mv3.js",
   "ingestion/saved-chat-archive-on-save.mv3.js",

@@ -224,6 +224,15 @@
       snapshotId: cleanString(id.snapshotId) || cleanString(snap.snapshotId),
       title: cleanString(snap.title) || cleanString(id.title) || 'Restored chat',
       contentHash: contentHash,
+      /* M05 §D — the EXACT generation this operation is bound to. `contentHash`
+       * is the inspector's RECOMPUTED hash, so for a `generation` package it is
+       * also the generation identifier in the basename. This flow is driven by
+       * an explicitly selected packagePath and must never substitute a newer
+       * sibling generation, a "latest", or a BEST-HISTORICAL pick for it. */
+      packageKind: cleanString(id.packageKind) || 'unusable',
+      nameClassification: cleanString(id.nameClassification) || 'unclassified',
+      contentHashVerified: id.contentHashVerified === true,
+      manifestClaimedContentHash: cleanString(id.manifestClaimedContentHash),
       digest: contentDigestFromSnapshot(snap, contentHash),
       capturedAt: snap.capturedAt == null ? '' : snap.capturedAt,
       messageCount: messages.length || (isFiniteNumber(id.messageCount) ? id.messageCount : 0),
@@ -276,6 +285,7 @@
         chatExists: false,
         snapshotExists: false,
         chatTombstoned: false,
+        digestComparable: false,
         digestMatches: false,
       },
       reason: reason || '',
@@ -345,6 +355,7 @@
             chatExists: chatExists,
             snapshotExists: snapshotExists,
             chatTombstoned: tombstoned,
+            digestComparable: false,
             digestMatches: false,
           };
           if (tombstoned) {
@@ -353,12 +364,24 @@
           if (snapshotExists) {
             var existingDigest = existingSnapshotDigest(existingCombined);
             var expectedDigest = cleanString(identity.digest);
-            var digestMatches = !!expectedDigest && !!existingDigest && expectedDigest === existingDigest;
+            /* Two materially different situations both refuse to overwrite, and
+             * the refusal is right in both. But only one of them is a finding:
+             * "the store genuinely differs from this package" is an
+             * authoritative comparison, while "one side had no digest to
+             * compare" concluded nothing at all. Reporting the second as the
+             * first would tell an operator their archive diverged when it may
+             * be identical, so the indeterminate case stays indeterminate. */
+            var digestComparable = !!expectedDigest && !!existingDigest;
+            var digestMatches = digestComparable && expectedDigest === existingDigest;
+            store.digestComparable = digestComparable;
             store.digestMatches = digestMatches;
             if (digestMatches) {
               return dryRunResult(packagePath, 'already-present', identity, store, 'original snapshotId already exists with matching digest', inspectStatus);
             }
-            return dryRunResult(packagePath, 'conflict-snapshot-id', identity, store, 'original snapshotId exists with different or unverifiable digest; refusing overwrite', inspectStatus);
+            if (!digestComparable) {
+              return dryRunResult(packagePath, 'conflict-snapshot-id', identity, store, 'original snapshotId exists but the digests could not be compared (one side is missing a digest); refusing overwrite without an authoritative comparison', inspectStatus);
+            }
+            return dryRunResult(packagePath, 'conflict-snapshot-id', identity, store, 'original snapshotId exists with a different digest; refusing overwrite', inspectStatus);
           }
           if (chatExists) {
             return dryRunResult(packagePath, 'conflict-chat-id', identity, store, 'original chatId exists; relink/restore-into-existing-chat is deferred', inspectStatus);

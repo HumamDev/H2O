@@ -112,6 +112,12 @@
    * surface, plus the two local pre-call states (desktop-only / invalid-state). */
   var RESULT_PRESENTATION = {
     'written': { tone: 'ok', label: 'Package written', note: 'A new saved chat package was written to the Desktop archive store.' },
+    /* M05: a request can succeed in several materially different ways, and
+     * flattening them into "written" would tell an operator a generation was
+     * created when nothing was written at all. */
+    'deferred': { tone: 'warn', label: 'Deferred', note: 'Nothing was written and nothing was concluded: the current Desktop state or the archive scan was not authoritative enough to decide. The request stays eligible and can be retried.' },
+    'recovery-intent-unknown': { tone: 'warn', label: 'Recovery intent unknown', note: 'This interrupted request predates recorded publication intent, so what it was publishing cannot be established. It was left untouched rather than guessed at.' },
+    'transition-conflict': { tone: 'warn', label: 'Claimed by another worker', note: 'Another worker moved this row first. Nothing was written by this attempt and the other owner’s state was left intact.' },
     'already-written': { tone: 'ok', label: 'Already written', note: 'This request was already materialized; the existing package was returned (idempotent — nothing re-written).' },
     'failed': { tone: 'block', label: 'Materialization failed', note: 'The Desktop package writer reported a failure. See the error code below.' },
     'needs-desktop-snapshot': { tone: 'warn', label: 'Needs Desktop snapshot', note: 'The request no longer resolves to a Desktop snapshot. Re-snapshot on Desktop and re-validate; nothing was written.' },
@@ -151,11 +157,33 @@
     var pkg = (r.package && typeof r.package === 'object') ? r.package : null;
     var details = [];
     if (pkg) {
-      if (cleanString(pkg.packagePath)) details.push({ key: 'packagePath', value: cleanString(pkg.packagePath) });
-      if (cleanString(pkg.contentHash)) details.push({ key: 'contentHash', value: cleanString(pkg.contentHash) });
+      /* M05 publication outcome. `created` is the only one that wrote a
+       * package: `deduped` found the exact generation already present and
+       * verified, and `already-fresh` short-circuited before any publication.
+       * Presenting all three as "written" would be inaccurate. */
+      var OUTCOME_TEXT = {
+        'created': 'created — a new immutable generation was written',
+        'deduped': 'deduped — the identical generation was already present and verified',
+        'already-fresh': 'already fresh — the archive already matched the current chat; nothing was written',
+        'recovered-package-present': 'recovered — the interrupted publication had in fact completed',
+      };
+      var outcome = cleanString(pkg.outcome);
+      if (outcome) details.push({ key: 'outcome', value: OUTCOME_TEXT[outcome] || outcome });
+      /* Everything below is RECORDED OPERATION HISTORY — what was true when
+       * the operation ran. It is never present-tense proof: if the recorded
+       * path no longer verifies, Archive Health and the Inspector control. */
+      if (cleanString(pkg.packagePath)) details.push({ key: 'packagePath (recorded)', value: cleanString(pkg.packagePath) });
+      if (cleanString(pkg.contentHash)) details.push({ key: 'contentHash (recorded)', value: cleanString(pkg.contentHash) });
       if (cleanString(pkg.snapshotId)) details.push({ key: 'snapshotId', value: cleanString(pkg.snapshotId) });
       if (pkg.schemaVersion != null && pkg.schemaVersion !== '') details.push({ key: 'schemaVersion', value: cleanString(pkg.schemaVersion) });
-      if (cleanString(pkg.writtenAt)) details.push({ key: 'writtenAt', value: cleanString(pkg.writtenAt) });
+      if (cleanString(pkg.writtenAt)) details.push({ key: 'writtenAt (recorded)', value: cleanString(pkg.writtenAt) });
+      if (pkg.durabilityComplete === false) details.push({ key: 'durability', value: 'committed, but the durability fence did not confirm' });
+      var advisories = Array.isArray(pkg.advisories) ? pkg.advisories : [];
+      if (advisories.length) details.push({ key: 'advisories', value: advisories.join(', ') + ' (non-blocking)' });
+    }
+    if (cleanString(r.status) === 'deferred') {
+      var deferred = (r.deferred && typeof r.deferred === 'object') ? r.deferred : {};
+      if (cleanString(deferred.reason)) details.push({ key: 'deferredReason', value: cleanString(deferred.reason) });
     }
     if (cleanString(r.previousStatus)) details.push({ key: 'previousStatus', value: cleanString(r.previousStatus) });
     if (cleanString(r.error)) details.push({ key: 'error', value: cleanString(r.error) });

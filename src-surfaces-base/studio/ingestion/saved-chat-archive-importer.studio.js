@@ -283,6 +283,15 @@
       snapshotId: cleanString(id.snapshotId) || cleanString(snap.snapshotId),
       title: cleanString(snap.title) || cleanString(id.title),
       contentHash: cleanString(id.contentHash),
+      /* M05 §D — the EXACT generation this operation is bound to. `contentHash`
+       * is the inspector's RECOMPUTED hash, so for a `generation` package it is
+       * also the generation identifier in the basename. This flow is driven by
+       * an explicitly selected packagePath and must never substitute a newer
+       * sibling generation, a "latest", or a BEST-HISTORICAL pick for it. */
+      packageKind: cleanString(id.packageKind) || 'unusable',
+      nameClassification: cleanString(id.nameClassification) || 'unclassified',
+      contentHashVerified: id.contentHashVerified === true,
+      manifestClaimedContentHash: cleanString(id.manifestClaimedContentHash),
       digest: cleanString(safeObject(snap.metadata).digest),
       capturedAt: cleanString(snap.capturedAt),
       messageCount: asArray(snap.messages).length || (isFiniteNumber(id.messageCount) ? id.messageCount : 0),

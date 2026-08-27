@@ -688,6 +688,12 @@
        projection probe. No index, no current pointer, no second validator.
        Loads after diagnostics and the probe it composes. -->
   <script src="./ingestion/saved-chat-coverage.tauri.js"></script>
+  <!-- Desktop-only: M05 Phase 4 shared presentation adapter. PURE mapping from
+       established coverage/materializer authorities to operator-facing labels.
+       Holds no policy of its own: it never recomputes freshness, never ranks
+       generations, and never turns BEST-HISTORICAL into current authority.
+       Loads after the coverage engine whose output it maps. -->
+  <script src="./ingestion/saved-chat-archive-presentation.studio.js"></script>
   <!-- Chrome/MV3: saved-chat archive request builder (Phase D.3A).
        Builds metadata-only h2o.savedChatArchiveRequest.v1 envelopes from
        intent. No transport, Desktop queue call, package writer, CAS, Sync,
