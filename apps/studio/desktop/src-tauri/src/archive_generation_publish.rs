@@ -484,6 +484,14 @@ impl Default for Registry {
 }
 
 impl Registry {
+    /// Number of admitted sessions, INCLUDING in-flight commits. M06 T1.1
+    /// exposes this so a future reclamation preflight can require an empty
+    /// registry (contract §D). Read-only: it admits, evicts and mutates
+    /// nothing.
+    pub fn admitted_len(&self) -> usize {
+        self.admitted.lock().map(|n| *n).unwrap_or(usize::MAX)
+    }
+
     pub fn new() -> Self {
         Registry::default()
     }
@@ -522,6 +530,12 @@ impl Publisher {
             root: root.into(),
             registry: Registry::new(),
         }
+    }
+
+    /// True when no session is admitted and no commit is in flight. Reserved
+    /// for the future reclamation preflight; nothing in T1.1 reclaims.
+    pub fn sessions_empty(&self) -> bool {
+        self.registry.admitted_len() == 0
     }
 
     fn packages_dir(&self) -> Result<confined::Dir, String> {
@@ -1913,8 +1927,13 @@ fn member_from_name(name: &str) -> Option<Member> {
 pub async fn h2o_archive_generation_begin(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: BeginOptions,
 ) -> Result<BeginResult, String> {
+    // M06 T1.1: entered for THIS invoke only. A generation session spans
+    // BEGIN -> WRITE MEMBER -> COMMIT as separate invokes, so the guard must
+    // never straddle them; session lifetime stays owned by the registry.
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(begin(&publisher, &options.chat_id))
 }
@@ -1923,8 +1942,10 @@ pub async fn h2o_archive_generation_begin(
 pub async fn h2o_archive_generation_write_member(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<AckResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let options: MemberOptions = crate::archive_durable_write::required_options(&request)?;
     let member = match member_from_name(&options.member) {
         Some(member) => member,
@@ -1940,8 +1961,10 @@ pub async fn h2o_archive_generation_write_member(
 pub async fn h2o_archive_generation_commit(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: CommitOptions,
 ) -> Result<PublishResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(commit(
         &publisher,
@@ -1954,8 +1977,10 @@ pub async fn h2o_archive_generation_commit(
 pub async fn h2o_archive_generation_abort(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: AbortOptions,
 ) -> Result<AckResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(abort(&publisher, options.token))
 }

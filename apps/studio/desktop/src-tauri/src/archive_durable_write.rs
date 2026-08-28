@@ -1297,8 +1297,12 @@ fn optional_options<T: serde::de::DeserializeOwned + Default>(
 #[tauri::command]
 pub async fn h2o_archive_durable_write(
     app: tauri::AppHandle,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<DurableWriteResult, String> {
+    // M06 T1.1: every trusted archive mutation participates in the in-process
+    // gate for the duration of THIS invoke only. Held here, released on return.
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let options: DurableWriteOptions = required_options(&request)?;
     if body_len(&request)? as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
         return Ok(DurableWriteResult::blocked("durable-write-asset-too-large"));
@@ -1317,8 +1321,10 @@ pub async fn h2o_archive_durable_write(
 #[tauri::command]
 pub async fn h2o_archive_cas_repair_write(
     app: tauri::AppHandle,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<CasRepairResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let options: CasRepairOptions = optional_options(&request)?;
     if body_len(&request)? as u64 > GOVERNED_ASSET_BLOB_CAP_BYTES {
         return Ok(CasRepairResult::blocked("cas-repair-asset-too-large"));

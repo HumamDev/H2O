@@ -70,6 +70,10 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T1.1 — archive instance-presence lock and in-process mutation gate.
+/// Non-destructive: it registers no command and can delete nothing.
+pub mod archive_instance_lock;
+
 // M05 T1.2.1: trusted staged publication of immutable saved-chat archive
 // generations. Purpose-bounded and SEPARATE from the CAS-scoped durable write
 // above — the renderer names only a semantic chatId, a member enum and bytes,
@@ -2571,6 +2575,24 @@ pub fn run() {
         // survive across invokes, so the publisher is app state rather than
         // per-command.
         .manage(archive_generation_publish::PublisherState::default())
+        .manage(archive_instance_lock::ArchiveInstanceState::default())
+        // M06 T1.1: instance-lifetime participation in the archive presence
+        // protocol. Established here, at startup, rather than lazily on the
+        // first archive mutation: the contract requires every M06-aware
+        // instance to participate for its lifetime, which is strictly stronger
+        // than "every instance that eventually mutates". A failure is NOT fatal
+        // to startup -- reads stay available -- but it leaves presence
+        // unproven, so trusted archive mutation refuses with the retryable
+        // environmental code until shared participation is established.
+        .setup(|app| {
+            use tauri::Manager;
+            let handle = app.handle().clone();
+            let state = app.state::<archive_instance_lock::ArchiveInstanceState>();
+            if let Err(code) = archive_instance_lock::establish_startup_presence(&handle, &state) {
+                eprintln!("[h2o] archive instance presence unavailable at startup: {code}");
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
