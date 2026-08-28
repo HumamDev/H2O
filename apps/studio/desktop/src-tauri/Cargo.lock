@@ -1501,6 +1501,7 @@ dependencies = [
  "tauri-plugin-fs",
  "tauri-plugin-shell",
  "tauri-plugin-sql",
+ "time",
 ]
 
 [[package]]

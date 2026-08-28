@@ -70,6 +70,10 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T1.5 — trusted ordering foundation for verified generations. Pure:
+/// no filesystem, no database, no renderer input, and no command.
+pub mod archive_generation_order;
+
 /// M06 T1.4 — trusted READ-ONLY SQLite protection probe. Supplies protection
 /// facts to future reclamation machinery; registers no command and decides
 /// nothing.
