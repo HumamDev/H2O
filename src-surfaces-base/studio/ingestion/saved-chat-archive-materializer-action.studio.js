@@ -117,6 +117,7 @@
     intakeHint: 'Reads producer-delivered archive requests from the request inbox and admits them through the governed inbox authority (default ' + DEFAULT_INTAKE_LIMIT + ', max ' + MAX_INTAKE_LIMIT + '). Explicit operator action; no watcher, no polling, and it never materializes.',
     intakeUnavailable: 'The request inbox module is not loaded.',
     intakeEmpty: 'No request files were found to process.',
+    intakeFailed: 'The inbox scan did not run. The inbox was not read, so this is not an empty-inbox result.',
   };
 
   /* Pure presentation map for every materializer result status this action can
@@ -268,7 +269,11 @@
    * is enqueued already lives in the inbox module, and is reused verbatim here.
    * No parsing, no validation, no dedupe key, no enqueue is reimplemented. */
   async function scanRequestInbox(options) {
-    var opts = safeObject(options);
+    /* This module's own idiom: it defines cleanString/escapeHtml and no
+     * safeObject. The earlier call to safeObject() was carried over from the
+     * sibling ingestion modules and threw a ReferenceError on every click,
+     * before the governed scanner was ever reached. */
+    var opts = (options && typeof options === 'object') ? options : {};
     var ingestion = (global.H2O && global.H2O.Studio && global.H2O.Studio.ingestion) || {};
     var scan = ingestion.scanSavedChatArchiveRequestInboxV1;
     if (typeof scan !== 'function') {
@@ -508,7 +513,17 @@
       var warnings = Array.isArray(r.warnings) ? r.warnings.length : 0;
       if (blockers) body += '<div style="font-size:12px;margin-top:4px">blockers: ' + escapeHtml(blockers) + '</div>';
       if (warnings) body += '<div style="font-size:12px;opacity:.75">warnings: ' + escapeHtml(warnings) + '</div>';
-      if (num(r.processed) === 0) body += '<div style="opacity:.6;font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeEmpty) + '</div>';
+      /* A scan that THREW never read the inbox, so it must never be presented
+       * as "nothing to process" — that reads as an authoritative empty inbox
+       * and hides the real fault. Only a scanner that returned normally can
+       * report emptiness. */
+      var threwError = cleanString(r.error);
+      if (threwError) {
+        body += '<div style="font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeFailed) + '</div>'
+          + '<div style="font-size:12px;opacity:.8;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;word-break:break-word">' + escapeHtml(threwError) + '</div>';
+      } else if (num(r.processed) === 0) {
+        body += '<div style="opacity:.6;font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeEmpty) + '</div>';
+      }
       return '<div data-archive-materializer-intake-result="1" data-archive-materializer-intake-status="' + escapeHtml(status) + '" style="margin-top:10px;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
         + '<div style="font-weight:600;font-size:12px;margin-bottom:6px">' + escapeHtml(status) + '</div>'
         + body

@@ -18,6 +18,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,6 +64,11 @@ function check(label, fn) {
   try { fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
   catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
 }
+async function checkAsync(label, fn) {
+  try { await fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
+  catch (e) { const m = e?.message ?? String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
+}
+
 function readRepo(rel) { return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'); }
 function exists(rel) { return fs.existsSync(path.join(REPO_ROOT, rel)); }
 function stripComments(srcText) {
@@ -367,6 +373,112 @@ check('[INVARIANT] library action mega-files (S0F0j / S0F1j) do not wire the mat
   assert.ok(!s0f0j.includes(MATERIALIZE_API), 'S0F0j must not wire the materializer');
   assert.ok(!s0f1j.includes(MATERIALIZE_API), 'S0F1j must not wire the materializer');
 });
+
+/* ── Phase 5 repair — BEHAVIORAL proof of the intake wrapper ───────────────
+ * The original P5 regressions asserted the wiring by scanning source text and
+ * exercised the governed scanner separately, so nothing ever EXECUTED
+ * scanRequestInbox. A ReferenceError on its first line (an undefined
+ * safeObject carried over from sibling modules) therefore shipped: the button
+ * threw on every click while every check stayed green. These run the wrapper. */
+function loadActionCard({ scanImpl }) {
+  const ctx = {
+    console, JSON, Date, Math, Promise, Object, Array, String, Number, Boolean,
+    Error, isFinite, parseInt, setTimeout,
+    H2O: { Studio: { ingestion: { scanSavedChatArchiveRequestInboxV1: scanImpl } } },
+    __TAURI_INTERNALS__: { invoke: async () => { throw new Error('no invoke in this harness'); } },
+  };
+  ctx.globalThis = ctx; ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync(path.join(REPO_ROOT, ACTION_REL), 'utf8'), ctx, { filename: ACTION_REL });
+  return ctx.H2O.Studio.archiveMaterializerAction;
+}
+
+await checkAsync('[P5.R1] wrapper executes, delegates exactly once, and preserves the governed result', async () => {
+  const calls = [];
+  const governed = {
+    ok: true, status: 'completed', scanned: 1, processed: 1, validated: 1,
+    duplicates: 0, rejected: 0, needsDesktopSnapshot: 0, dbUnavailable: 0,
+    receiptsWritten: 1, materializeTriggered: false, packageWriteDeferred: true,
+    blockers: [], warnings: [],
+  };
+  const api = loadActionCard({ scanImpl: async (opts) => { calls.push(opts); return governed; } });
+  assert.equal(typeof api.scanRequestInbox, 'function', 'wrapper not exported');
+
+  const res = await api.scanRequestInbox({ limit: 50 });   // must not throw
+
+  assert.equal(calls.length, 1, `expected exactly one delegation, got ${calls.length}`);
+  assert.equal(calls[0].limit, 50, 'bounded limit not passed through');
+  assert.equal(res.status, 'completed', 'governed result not preserved');
+  assert.equal(res.validated, 1);
+  assert.equal(res.materializeTriggered, false, 'intake must never materialize');
+  assert.equal(res.packageWriteDeferred, true);
+});
+
+await checkAsync('[P5.R2] wrapper clamps the bound and survives absent/garbage options', async () => {
+  const calls = [];
+  const api = loadActionCard({ scanImpl: async (opts) => { calls.push(opts); return { ok: true, status: 'completed', scanned: 0, processed: 0 }; } });
+  await api.scanRequestInbox();                 // no argument at all
+  await api.scanRequestInbox(null);
+  await api.scanRequestInbox('nonsense');
+  await api.scanRequestInbox({ limit: 9999 });  // above MAX
+  await api.scanRequestInbox({ limit: 0 });     // below MIN
+  assert.equal(calls.length, 5, 'every call must reach the governed scanner');
+  assert.deepEqual(calls.map((c) => c.limit), [50, 50, 50, 200, 50], 'limit defaulting/clamping is wrong');
+});
+
+await checkAsync('[P5.R3] an absent governed scanner is reported, not thrown', async () => {
+  const api = loadActionCard({ scanImpl: undefined });
+  const res = await api.scanRequestInbox({ limit: 50 });
+  assert.equal(res.status, 'inbox-unavailable');
+  assert.equal(res.unavailable, true);
+});
+
+await checkAsync('[P5.R4] a scanner throw surfaces the REAL error and never claims an empty inbox', async () => {
+  const api = loadActionCard({ scanImpl: async () => { throw new Error('capability denied: read_dir'); } });
+  let threw = false, res = null;
+  try { res = await api.scanRequestInbox({ limit: 50 }); } catch (_) { threw = true; }
+  // The wrapper itself propagates; the card's handler is what converts it to a
+  // failed result. Either way the error text must survive to presentation.
+  const src = actionCode;
+  assert.match(src, /error:\s*String\(\(err && err\.message\)/, 'handler must capture the error message');
+  assert.match(src, /var threwError = cleanString\(r\.error\)/, 'presentation must read the captured error');
+  assert.match(src, /if \(threwError\) \{[\s\S]{0,400}?escapeHtml\(threwError\)/, 'presentation must render the real error');
+  // And the empty-inbox text must be the ELSE branch, never shown on a throw.
+  assert.match(src, /\} else if \(num\(r\.processed\) === 0\) \{/, 'empty-inbox text must be mutually exclusive with the error branch');
+  assert.ok(threw || (res && res.status), 'wrapper must either propagate or return a status');
+});
+
+await checkAsync('[P5.R5] NEGATIVE CONTROL — an undefined identifier in the wrapper fails this suite', async () => {
+  /* Reproduces the exact shipped defect class: the wrapper body referencing a
+   * helper this module does not define. If the behavioural tests above could
+   * not see that, they would not have caught the original bug either. */
+  /* Anchor the mutation INSIDE scanRequestInbox. The module uses this same
+   * options idiom in several functions, so an unanchored replace silently
+   * mutates a different one and the control proves nothing. */
+  const src = fs.readFileSync(path.join(REPO_ROOT, ACTION_REL), 'utf8');
+  const fnStart = src.indexOf('async function scanRequestInbox');
+  assert.ok(fnStart > 0, 'wrapper not found');
+  const optsLine = "var opts = (options && typeof options === 'object') ? options : {};";
+  const optsAt = src.indexOf(optsLine, fnStart);
+  assert.ok(optsAt > fnStart && optsAt < fnStart + 800, 'options line not found inside the wrapper');
+  const broken = src.slice(0, optsAt) + 'var opts = safeObject(options);' + src.slice(optsAt + optsLine.length);
+  assert.ok(broken.slice(fnStart, fnStart + 800).includes('safeObject(options)'),
+    'mutation did not land inside the wrapper');
+  const ctx = {
+    console, JSON, Date, Math, Promise, Object, Array, String, Number, Boolean, Error, isFinite, parseInt, setTimeout,
+    H2O: { Studio: { ingestion: { scanSavedChatArchiveRequestInboxV1: async () => ({ ok: true, status: 'completed', scanned: 1, processed: 1 }) } } },
+    __TAURI_INTERNALS__: { invoke: async () => { throw new Error('no invoke'); } },
+  };
+  ctx.globalThis = ctx; ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(broken, ctx, { filename: 'MUTANT-' + ACTION_REL });
+  let caught = null;
+  try { await ctx.H2O.Studio.archiveMaterializerAction.scanRequestInbox({ limit: 50 }); }
+  catch (e) { caught = e; }
+  assert.ok(caught, 'the broken wrapper MUST throw — otherwise this suite cannot catch the shipped defect class');
+  assert.match(String(caught.message), /safeObject is not defined/, `expected ReferenceError, got: ${caught && caught.message}`);
+});
+
 
 console.log('');
 if (FAIL.length) {
