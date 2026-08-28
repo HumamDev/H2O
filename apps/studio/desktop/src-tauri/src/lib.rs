@@ -70,6 +70,10 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T1.3 — trusted READ-ONLY durable-temp residue probe. Registers one
+/// diagnostics command that creates, removes, renames and writes nothing.
+pub mod archive_residue_probe;
+
 /// M06 T1.1 — archive instance-presence lock and in-process mutation gate.
 /// Non-destructive: it registers no command and can delete nothing.
 pub mod archive_instance_lock;
@@ -2526,6 +2530,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            archive_residue_probe::h2o_archive_durable_temp_residue,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2560,7 +2565,8 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_begin,
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
-            archive_generation_publish::h2o_archive_generation_abort
+            archive_generation_publish::h2o_archive_generation_abort,
+            archive_residue_probe::h2o_archive_durable_temp_residue
         ]
     };
 }

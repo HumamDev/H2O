@@ -87,7 +87,7 @@ pub const ARCHIVE_ROOT: &str = "archive";
 /// Distinguishes this module's private staging artifacts from any real
 /// archive member. A CAS blob is `sha256-<hex>` and a package member is a
 /// plain name, so neither can collide with this prefix.
-const TEMP_PREFIX: &str = ".h2o-durable-";
+pub(crate) const TEMP_PREFIX: &str = ".h2o-durable-";
 
 /// M05 §R: the generation publisher's private staging component. Declared here
 /// so the reserved-prefix authority below owns exactly one list; the publisher
@@ -138,12 +138,12 @@ pub(crate) fn is_reserved_component(text: &str) -> bool {
         .any(|prefix| text.starts_with(prefix))
         || RESERVED_EXACT_COMPONENTS.iter().any(|exact| *exact == text)
 }
-const TEMP_SUFFIX: &str = ".tmp";
+pub(crate) const TEMP_SUFFIX: &str = ".tmp";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The content-addressed store lives at `<ARCHIVE_ROOT>/<CAS_DIR>`.
-const CAS_DIR: &str = "assets";
+pub(crate) const CAS_DIR: &str = "assets";
 
 /// How many distinct private temp names to try before giving up.
 const TEMP_ATTEMPTS: u32 = 8;
@@ -409,6 +409,26 @@ pub(crate) mod confined {
             let name = name.as_bytes();
             parent_dir.mkdir_child(name)?;
             parent_dir.open_child_nofollow(name)
+        }
+
+        /// M06 T1.3: opens an EXISTING directory for a read-only probe.
+        ///
+        /// Deliberately NOT `open_root`: that one `create_dir_all`s the parent
+        /// and `mkdir`s the final component, so using it from diagnostics would
+        /// let a read-only scan CREATE archive structure. This creates nothing
+        /// and still refuses to follow a symlink at the final component, so a
+        /// missing archive reports `NotFound` rather than being materialized.
+        pub fn open_existing_nofollow(path: &Path) -> io::Result<Dir> {
+            use std::os::unix::ffi::OsStrExt;
+
+            let parent = path
+                .parent()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            let parent_dir = Dir::open_trusted_dir(parent)?;
+            parent_dir.open_child_nofollow(name.as_bytes())
         }
 
         /// Opens a trusted directory path with `O_DIRECTORY`. Only used for the

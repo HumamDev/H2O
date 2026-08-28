@@ -300,11 +300,12 @@ function buildDiagStore(config = {}) {
   return store;
 }
 
-function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOptions = {} } = {}) {
+function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOptions = {}, extraEntries = [], readDirThrows = false, durableTemp = { complete: true, entries: [] }, durableTempThrows = false } = {}) {
   const dirs = new Set();
   const files = new Map();
   const readCalls = [];
   const mutationCalls = [];
+  const probeCalls = [];
   /* Per-path lstat metadata overrides for governed-reader negative cases. */
   const metaOverrides = new Map();
   const v1 = makePackage({ chatId: 'chat_diag_v1', snapshotId: 'snap_diag_v1', schemaVersion: 1 });
@@ -354,9 +355,24 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
        excludes them even if they somehow appear here. */
     { name: '.h2o-archive.lock', isFile: true },
     { name: '.h2o-reclaim', isDirectory: true },
+    ...extraEntries,
   ];
 
   async function invoke(cmd, args) {
+    /* M06 T1.3 trusted read-only probe: no path, no baseDir, so it is answered
+       before the fs-shaped assertions below. */
+    if (cmd === 'h2o_archive_durable_temp_residue') {
+      probeCalls.push({ cmd, args });
+      if (durableTempThrows) throw new Error('simulated residue probe failure');
+      return {
+        complete: durableTemp.complete,
+        root: 'archive/assets',
+        kind: 'durable-temp',
+        count: (durableTemp.entries || []).length,
+        entries: durableTemp.entries || [],
+        blockers: durableTemp.blockers || [],
+      };
+    }
     const p = args && args.path;
     const options = args && args.options ? args.options : {};
     if (cmd === 'plugin:fs|write_file' || cmd === 'plugin:fs|write_text_file' || cmd === 'plugin:fs|mkdir' || cmd === 'plugin:fs|remove' || cmd === 'plugin:fs|rename') {
@@ -368,6 +384,7 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     readCalls.push({ cmd, path: p, baseDir: options.baseDir });
     if (cmd === 'plugin:fs|exists') return dirs.has(p) || files.has(p);
     if (cmd === 'plugin:fs|read_dir') {
+      if (readDirThrows) throw new Error('simulated read_dir failure');
       if (!dirs.has(p)) throw new Error(`not found: ${p}`);
       if (p.endsWith('/assets')) {
         const prefix = `${p}/`;
@@ -398,6 +415,7 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     invoke,
     readCalls,
     mutationCalls,
+    probeCalls,
     metaOverrides,
     setMeta(path, patch) { metaOverrides.set(path, patch); },
     dirs,
@@ -739,6 +757,235 @@ await checkAsync('missing archive root returns empty warning without blocker', a
   assert.equal(result.blockers.length, 0);
   assert.ok(result.warnings.some((issue) => issue.code === 'archive-packages-root-missing'));
   assert.equal(result.packages.length, 0);
+});
+
+/* ---- M06 T1.3 residue diagnostics ---------------------------------- */
+
+const RESIDUE_ENTRIES = [
+  { name: '.h2o-genstage-00ff01', isDirectory: true },
+  { name: '.h2o-genstage-00aa02', isDirectory: true },
+  { name: '.h2o-durable-4711-0.tmp', isFile: true },
+];
+
+await checkAsync('T1.3 A/B/C residue count, exact paths and deterministic order', async () => {
+  const fixture = createFixtureFs({ extraEntries: RESIDUE_ENTRIES });
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.listSavedChatArchivePackagesV1();
+  const residue = result.residue;
+
+  /* (A) total count matches the complete residue list */
+  assert.equal(residue.count, RESIDUE_ENTRIES.length);
+  assert.equal(residue.count, residue.entries.length, 'count must equal the list it represents');
+  assert.equal(result.counts.residueTotal, residue.count);
+
+  /* (B) every residue item appears exactly once, by exact archive-relative path */
+  /* Array.from re-homes vm-realm arrays into this realm; deepStrictEqual
+     compares prototypes, so a vm array never deep-equals a host literal. */
+  const paths = Array.from(residue.entries, (entry) => entry.path);
+  assert.deepEqual([...new Set(paths)], paths, 'no residue path may repeat');
+  assert.deepEqual(paths.slice().sort(), [
+    `${PACKAGE_ROOT}/.h2o-durable-4711-0.tmp`,
+    `${PACKAGE_ROOT}/.h2o-genstage-00aa02`,
+    `${PACKAGE_ROOT}/.h2o-genstage-00ff01`,
+  ]);
+  assert.deepEqual(
+    Array.from(residue.entries, (entry) => entry.kind).sort(),
+    ['durable-temp', 'generation-staging', 'generation-staging'],
+  );
+
+  /* (C) ordering is deterministic regardless of directory order */
+  assert.deepEqual(paths, paths.slice().sort(), 'residue must be emitted in sorted path order');
+  const reversed = createFixtureFs({ extraEntries: RESIDUE_ENTRIES.slice().reverse() });
+  const again = await loadModule(reversed).listSavedChatArchivePackagesV1();
+  assert.deepEqual(Array.from(again.residue.entries, (e) => e.path), paths, 'order must not depend on readDir order');
+
+  /* the scan really was complete, and (I) nothing was mutated */
+  assert.equal(residue.complete, true);
+  assert.equal(fixture.mutationCalls.length, 0);
+});
+
+await checkAsync('T1.3 D zero residue on a complete scan reports count 0 and an empty list', async () => {
+  const fixture = createFixtureFs();
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.listSavedChatArchivePackagesV1();
+  assert.equal(result.complete, true);
+  assert.equal(result.residue.complete, true);
+  assert.equal(result.residue.count, 0);
+  assert.equal(result.residue.entries.length, 0);
+  /* BOTH families were enumerated, so the zero covers both */
+  assert.deepEqual(Array.from(result.residue.scanned).sort(), ['archive/assets', PACKAGE_ROOT].sort());
+  assert.equal(result.residue.unscanned.length, 0, 'nothing may be left unenumerated on a complete run');
+  assert.deepEqual(
+    Array.from(result.residue.sources, (source) => source.root).sort(),
+    ['archive/assets', PACKAGE_ROOT].sort(),
+  );
+  assert.ok(fixture.probeCalls.length > 0, 'the trusted durable-temp probe must actually run');
+  assert.equal(fixture.mutationCalls.length, 0);
+});
+
+await checkAsync('T1.3 E/K a partial or failed scan can never claim authoritative zero residue', async () => {
+  /* (i) bounded enumeration: stops early, so absence proves nothing */
+  const bounded = createFixtureFs({ extraEntries: RESIDUE_ENTRIES });
+  const truncated = await loadModule(bounded).listSavedChatArchivePackagesV1({ limit: 1 });
+  assert.equal(truncated.complete, false);
+  assert.equal(truncated.truncated, true);
+  assert.equal(truncated.residue.complete, false, 'a bounded walk must not carry residue authority');
+  assert.ok(
+    truncated.blockers.some((issue) => issue.code === 'archive-package-inventory-truncated'),
+    'truncation stays a blocker',
+  );
+
+  /* (ii) a bounded scan that happens to observe NO residue still must not
+     report an authoritative zero */
+  const boundedClean = createFixtureFs();
+  const cleanTruncated = await loadModule(boundedClean).listSavedChatArchivePackagesV1({ limit: 1 });
+  assert.equal(cleanTruncated.residue.count, 0);
+  assert.equal(cleanTruncated.residue.complete, false, 'count 0 from a partial walk is not authority');
+
+  /* (iii) enumeration failure: same rule */
+  const broken = createFixtureFs({ readDirThrows: true });
+  const failed = await loadModule(broken).listSavedChatArchivePackagesV1();
+  assert.equal(failed.residue.count, 0);
+  assert.equal(failed.residue.complete, false, 'a failed walk is not authority for zero residue');
+  assert.ok(failed.blockers.some((issue) => issue.code === 'archive-package-list-failed'));
+});
+
+await checkAsync('T1.3 F/G/H packages and reserved infrastructure are never residue', async () => {
+  const fixture = createFixtureFs({ extraEntries: RESIDUE_ENTRIES });
+  const result = await loadModule(fixture).listSavedChatArchivePackagesV1();
+  const names = Array.from(result.residue.entries, (entry) => entry.name);
+
+  /* (F) valid generations/packages are not residue */
+  for (const pkg of result.packages) {
+    assert.ok(!names.includes(pkg.packageDirName), `${pkg.packageDirName} must not be residue`);
+  }
+  /* foreign, non-reserved entries are reported by the existing warnings, not
+     counted as trusted-writer residue */
+  for (const foreign of ['not_a_package', 'loose.txt']) {
+    assert.ok(!names.includes(foreign), `${foreign} must not be counted as residue`);
+  }
+  /* (G) the instance lock and (H) the quarantine namespace are infrastructure */
+  assert.ok(!names.includes('.h2o-archive.lock'), 'the instance lock is not residue');
+  assert.ok(!names.includes('.h2o-reclaim'), 'the quarantine namespace is not residue');
+  assert.equal(result.residue.count, RESIDUE_ENTRIES.length);
+});
+
+await checkAsync('T1.3 residue evidence carries into the aggregate diagnostic', async () => {
+  const fixture = createFixtureFs({ extraEntries: RESIDUE_ENTRIES });
+  const aggregate = await loadModule(fixture).diagnoseSavedChatArchiveV1({ includeDbChecks: false });
+  assert.equal(aggregate.residue.count, RESIDUE_ENTRIES.length, 'aggregate must not publish a fresh empty residue block');
+  assert.equal(aggregate.residue.complete, true);
+  assert.equal(aggregate.counts.residueTotal, RESIDUE_ENTRIES.length);
+  assert.equal(fixture.mutationCalls.length, 0);
+});
+
+await checkAsync('T1.3 I residue reporting introduces no mutation or delete behavior', async () => {
+  const fixture = createFixtureFs({ extraEntries: RESIDUE_ENTRIES });
+  const ingestion = loadModule(fixture);
+  await ingestion.listSavedChatArchivePackagesV1();
+  await ingestion.diagnoseSavedChatArchiveV1({ includeDbChecks: false });
+  assert.equal(fixture.mutationCalls.length, 0, 'diagnostics must never issue a mutation command');
+  /* and no reclamation-shaped API appeared on the surface */
+  for (const forbidden of ['reclaimSavedChatArchiveResidueV1', 'deleteSavedChatArchiveResidueV1', 'purgeSavedChatArchiveV1', 'quarantineSavedChatArchiveV1']) {
+    assert.equal(typeof ingestion[forbidden], 'undefined', `${forbidden} must not exist`);
+  }
+  const source = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js');
+  for (const token of ['plugin:fs|remove', 'plugin:fs|rename', 'plugin:fs|write_file', 'plugin:fs|mkdir']) {
+    assert.ok(!source.includes(token), `${token} must not appear in read-only diagnostics`);
+  }
+});
+
+const DURABLE_TEMP_FIXTURE = {
+  complete: true,
+  entries: [
+    { name: '.h2o-durable-9-1.tmp', path: 'archive/assets/ab/.h2o-durable-9-1.tmp', shard: 'ab', kind: 'durable-temp' },
+    { name: '.h2o-durable-7-0.tmp', path: 'archive/assets/cd/.h2o-durable-7-0.tmp', shard: 'cd', kind: 'durable-temp' },
+  ],
+};
+
+await checkAsync('T1.3 K/L both residue families compose into one counted, ordered list', async () => {
+  const fixture = createFixtureFs({ extraEntries: RESIDUE_ENTRIES, durableTemp: DURABLE_TEMP_FIXTURE });
+  const result = await loadModule(fixture).listSavedChatArchivePackagesV1();
+  const residue = result.residue;
+
+  /* (L) aggregate count equals the combined unique entry list */
+  const expectedTotal = RESIDUE_ENTRIES.length + DURABLE_TEMP_FIXTURE.entries.length;
+  assert.equal(residue.count, expectedTotal);
+  assert.equal(residue.count, residue.entries.length);
+  assert.equal(result.counts.residueTotal, expectedTotal);
+
+  const paths = Array.from(residue.entries, (entry) => entry.path);
+  assert.deepEqual([...new Set(paths)], paths, 'no residue path may appear twice');
+  assert.deepEqual(paths, paths.slice().sort(), 'the combined list stays deterministically ordered');
+
+  /* (K) both families are present and distinguishable */
+  const kinds = Array.from(residue.entries, (entry) => entry.kind);
+  /* 2 staging under packages, plus 3 durable-temp: one defensively placed
+     under packages by the fixture and two from the trusted CAS probe. */
+  assert.equal(kinds.filter((k) => k === 'generation-staging').length, 2);
+  assert.equal(kinds.filter((k) => k === 'durable-temp').length, 3);
+  assert.equal(kinds.filter((k) => k === 'durable-temp').length + kinds.filter((k) => k === 'generation-staging').length, expectedTotal);
+  assert.ok(paths.includes('archive/assets/ab/.h2o-durable-9-1.tmp'));
+  assert.ok(paths.includes(`${PACKAGE_ROOT}/.h2o-genstage-00ff01`));
+
+  assert.equal(residue.complete, true);
+  assert.equal(fixture.mutationCalls.length, 0);
+});
+
+await checkAsync('T1.3 M an incomplete source in EITHER family forbids a complete result', async () => {
+  /* (i) durable probe reports incomplete */
+  const partialProbe = createFixtureFs({ durableTemp: { complete: false, entries: [] } });
+  const a = await loadModule(partialProbe).listSavedChatArchivePackagesV1();
+  assert.equal(a.residue.complete, false, 'an incomplete probe forbids completeness');
+  assert.equal(a.residue.count, 0);
+  assert.ok(a.residue.unscanned.some((s) => s.root === 'archive/assets'), 'the incomplete source must be named');
+
+  /* (ii) durable probe throws entirely */
+  const brokenProbe = createFixtureFs({ durableTempThrows: true });
+  const b = await loadModule(brokenProbe).listSavedChatArchivePackagesV1();
+  assert.equal(b.residue.complete, false, 'a failed probe forbids completeness');
+  assert.equal(b.residue.count, 0);
+  assert.ok(b.residue.unscanned.some((s) => s.root === 'archive/assets' && s.reason === 'probe-failed'));
+
+  /* (iii) staging side incomplete, durable side fine */
+  const boundedStaging = createFixtureFs({ extraEntries: RESIDUE_ENTRIES, durableTemp: DURABLE_TEMP_FIXTURE });
+  const c = await loadModule(boundedStaging).listSavedChatArchivePackagesV1({ limit: 1 });
+  assert.equal(c.residue.complete, false);
+  assert.ok(c.residue.unscanned.some((s) => s.root === PACKAGE_ROOT), 'the incomplete staging source must be named');
+
+  /* (iv) the packages root is missing: staging absence is proven, but a failed
+     probe still forbids an authoritative zero -- the exact false-zero shape */
+  const missing = createFixtureFs({ missingRoot: true, durableTempThrows: true });
+  const d = await loadModule(missing).listSavedChatArchivePackagesV1();
+  assert.equal(d.residue.count, 0);
+  assert.equal(d.residue.complete, false, 'missing packages root + failed probe must NOT be an authoritative zero');
+});
+
+await checkAsync('T1.3 N/O/P the probe is read-only, path-less, and grants nothing', async () => {
+  /* (N) renderer capability is untouched by T1.3 */
+  const granted = capability.permissions.map((entry) => entry.identifier).sort();
+  assert.deepEqual(granted, ['fs:allow-exists', 'fs:allow-lstat', 'fs:allow-read-dir', 'fs:allow-read-file']);
+  const readDir = capability.permissions.find((entry) => entry.identifier === 'fs:allow-read-dir');
+  assert.deepEqual(readDir.allow.map((entry) => entry.path).sort(), [
+    '$APPLOCALDATA/archive/packages',
+    '$APPLOCALDATA/archive/packages/**',
+  ], 'archive/assets read-dir must NOT have been granted to the renderer');
+
+  /* (O) the command is invoked with no arguments at all */
+  const fixture = createFixtureFs({ durableTemp: DURABLE_TEMP_FIXTURE });
+  await loadModule(fixture).listSavedChatArchivePackagesV1();
+  assert.ok(fixture.probeCalls.length > 0);
+  for (const call of fixture.probeCalls) {
+    const args = call.args === undefined || call.args === null ? {} : call.args;
+    assert.deepEqual(Object.keys(args), [], 'the probe must be called with no caller-supplied input');
+  }
+
+  /* (P) no destructive authority anywhere in the trusted probe or its wiring */
+  const probeSource = readRepo('apps/studio/desktop/src-tauri/src/archive_residue_probe.rs');
+  for (const forbidden of ['unlinkat', 'remove_file', 'remove_dir', 'renameat', 'O_CREAT', 'O_TRUNC', 'mkdirat']) {
+    assert.ok(!probeSource.includes(forbidden), `probe must not reference ${forbidden}`);
+  }
+  assert.equal(fixture.mutationCalls.length, 0);
 });
 
 await checkAsync('M06 T1.2 reserved identities are never classified as saved-chat packages', async () => {
