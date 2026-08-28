@@ -175,8 +175,8 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2). Read-only
   // package inventory + manifest/snapshot/hash validation under archive/packages.
   // No DB/CAS reconciliation, sync, import/recovery, repair, or UI.
-  "ingestion/saved-chat-archive-diagnostics.tauri.js",
   "ingestion/saved-chat-coverage.tauri.js",
+  "ingestion/saved-chat-archive-diagnostics.tauri.js",
   // M05 Phase 4 shared presentation adapter. Pure mapping from the coverage and
   // materializer authorities to operator-facing labels. No freshness recompute,
   // no generation ranking, no BEST-HISTORICAL promotion.

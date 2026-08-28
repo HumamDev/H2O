@@ -12,6 +12,7 @@ import {
   studioHtmlRefsMissingFrom,
   studioHtmlMissingFromAllowlist,
   ARCHIVE_WORKBENCH_SOURCE_FILES,
+  ARCHIVE_WORKBENCH_OUT_FILES,
   archiveWorkbenchSourceDir,
 } from '../pack-studio.mjs';
 
@@ -83,6 +84,37 @@ assert(
   studioHtmlRefsMissingFrom(realHtml, reduced).includes(probe),
   '6. negative control catches missing overlay/overlay-serializer.studio.js',
   studioHtmlRefsMissingFrom(realHtml, reduced),
+);
+
+// 7-9 — index-paired Saved-Chat modules must retain semantic identity.
+const savedChatModules = [
+  'ingestion/saved-chat-coverage.tauri.js',
+  'ingestion/saved-chat-archive-diagnostics.tauri.js',
+];
+const hasSameNameMapping = (sourceFiles, outFiles, name) => {
+  const sourceIndex = sourceFiles.indexOf(name);
+  return sourceIndex >= 0 && outFiles[sourceIndex] === name;
+};
+
+for (const name of savedChatModules) {
+  assert(
+    hasSameNameMapping(ARCHIVE_WORKBENCH_SOURCE_FILES, ARCHIVE_WORKBENCH_OUT_FILES, name),
+    `7-8. Saved-Chat source maps to same-named output: ${name}`,
+  );
+}
+
+const swappedSavedChatOutFiles = ARCHIVE_WORKBENCH_OUT_FILES.slice();
+const coverageOutIndex = swappedSavedChatOutFiles.indexOf(savedChatModules[0]);
+const diagnosticsOutIndex = swappedSavedChatOutFiles.indexOf(savedChatModules[1]);
+[swappedSavedChatOutFiles[coverageOutIndex], swappedSavedChatOutFiles[diagnosticsOutIndex]] =
+  [swappedSavedChatOutFiles[diagnosticsOutIndex], swappedSavedChatOutFiles[coverageOutIndex]];
+assert(
+  savedChatModules.some((name) => !hasSameNameMapping(
+    ARCHIVE_WORKBENCH_SOURCE_FILES,
+    swappedSavedChatOutFiles,
+    name,
+  )),
+  '9. negative control rejects a deliberate Saved-Chat output swap',
 );
 
 console.log(fail ? `\nFAILED (${fail})` : '\nALL PASS');
