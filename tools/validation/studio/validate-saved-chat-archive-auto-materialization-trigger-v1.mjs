@@ -69,6 +69,9 @@ const matCode = stripComments(readRepo(MATERIALIZER_REL));
 const scannerCode = stripComments(readRepo(SCANNER_REL));
 const actionSrc = readRepo(ACTION_REL);
 const actionCode = stripComments(actionSrc);
+/* The governed inbox scanner. G.0 forbids the BATCH from reaching it, not the
+ * file from naming it: the explicit operator intake control calls it by design. */
+const SCANNER_API = 'scanSavedChatArchiveRequestInboxV1';
 const s0f0j = readRepo(S0F0J_REL);
 const s0f1j = readRepo(S0F1J_REL);
 
@@ -228,9 +231,80 @@ check('[G.2] batch is sequential (reduce-chain, no parallel fan-out)', () => {
   assert.ok(!actionCode.includes('Promise.all'), 'batch must not fan out with Promise.all');
 });
 
+/* Extracts one function body by brace balance, so an assertion can be made
+ * about the BATCH path specifically instead of the whole file. */
+function functionBody(source, header) {
+  const start = source.indexOf(header);
+  if (start < 0) return null;
+  const open = source.indexOf('{', start);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
+/* Phase 5 lock-step update, mirroring the sibling trigger validator.
+ *
+ * The whole-file ban on the scanner symbol was a proxy for the real G.0 rule:
+ * materialization must never be scanner-COUPLED, and the scanner must never run
+ * by itself. That proxy was accurate only while nothing in the product invoked
+ * the inbox at all -- which was also why a producer-delivered request could not
+ * reach the queue through any operator action. The action card now carries a
+ * separate, explicit "Scan request inbox" control, so the file legitimately
+ * mentions the scanner. What stays forbidden is the batch calling it, and any
+ * automatic invocation. Both are now asserted directly. */
 check('[G.2] batch does not call the scanner and never passes overwrite:true', () => {
-  assert.ok(!actionCode.includes('scanSavedChatArchiveRequestInboxV1'), 'batch must not call the scanner');
   assert.doesNotMatch(actionCode, /overwrite\s*:\s*true/, 'batch must not force overwrite');
+
+  // (2)(3) The batch paths themselves must contain no scanner invocation.
+  for (const header of ['function doMaterializeBatch', 'function materializeValidatedBatch']) {
+    const body = functionBody(actionCode, header);
+    assert.ok(body, `could not locate ${header}`);
+    for (const token of [SCANNER_API, 'runIntake', 'scanRequestInbox', 'doScanInbox']) {
+      assert.ok(!body.includes(token),
+        `${header} must not reach the scanner (found ${token}) -- G.0 forbids scanner-coupled materialization`);
+    }
+  }
+
+  // (6) And the explicit intake handler must not chain into materialization.
+  const intake = functionBody(actionCode, 'function doScanInbox');
+  assert.ok(intake, 'could not locate doScanInbox');
+  assert.ok(!/materiali/i.test(intake), 'the intake action must never chain into materialization');
+});
+
+check('[G.2] the scanner is reachable ONLY from the explicit operator control', () => {
+  // (1) The explicit intake action is allowed to reference the governed scanner.
+  assert.ok(actionCode.includes(SCANNER_API), 'the explicit intake action must call the governed scanner');
+  assert.match(actionCode, /data-archive-materializer-intake-run/, 'no explicit intake control is rendered');
+  assert.match(actionCode, /intakeBtn[^;]*addEventListener\(\s*['"]click['"]\s*,\s*doScanInbox/,
+    'intake must be bound to an explicit click');
+
+  // The seam has exactly one call site, so no other path can reach it.
+  const callSites = (actionCode.match(/runIntake\s*\(/g) || []).length;
+  assert.equal(callSites, 1, `intake seam must have exactly one call site, found ${callSites}`);
+
+  // (4)(5) No startup, load, watcher or polling path may invoke anything.
+  for (const re of [
+    /addEventListener\(\s*['"]load['"]/,
+    /DOMContentLoaded/,
+    /setInterval\s*\(/,
+    /MutationObserver/,
+    /requestIdleCallback/,
+    /setTimeout\s*\([^)]*scan/i,
+  ]) {
+    assert.doesNotMatch(actionCode, re, `no automatic trigger may exist: ${re}`);
+  }
+
+  // (7) Materialize validated remains its own explicit operator action.
+  assert.ok(actionCode.includes('Materialize validated'), 'the batch action must remain');
+  assert.match(actionCode, /data-archive-materializer-batch-run/, 'the batch control must remain');
 });
 
 check('[G.2] batch exposes a result-count summary (written/already-written/failed/not-eligible/needs-desktop-snapshot/db-unavailable)', () => {
