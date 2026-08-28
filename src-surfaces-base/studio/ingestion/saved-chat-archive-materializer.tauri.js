@@ -412,6 +412,14 @@
      * over whichever caller actually owns the row. */
     if (!claim.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_WRITING);
 
+    /* From here on the claim's metadata is the base, not the pre-claim row.
+     * `currentMeta` was read BEFORE the claim, so merging a later patch onto it
+     * silently drops what the claim persisted -- including intendedContentHash,
+     * the recorded publication intent that stranded-`writing` reconciliation
+     * depends on. A real failed run lost exactly that. `transitionRequestStatus`
+     * already returns what it wrote, so use it. */
+    var claimedMeta = safeObject(claim.meta) || currentMeta;
+
     /* Call the existing Desktop writer with ONLY the resolved snapshotId.
      * Never pass request/Chrome content as package source; overwrite stays false. */
     var written;
@@ -428,7 +436,7 @@
       var failMove = await transitionRequestStatus({
         requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED,
         patch: { errorCode: errorCode, errorMessage: errorMessage, snapshotId: snapshotId, processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false },
-        currentMeta: currentMeta, snapshotId: snapshotId,
+        currentMeta: claimedMeta, snapshotId: snapshotId,
       });
       if (!failMove.ok) {
         conflictResult(result, STATUS_WRITING, STATUS_FAILED);
@@ -463,7 +471,7 @@
     var doneMove = await transitionRequestStatus({
       requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
       patch: Object.assign({}, pkg, { processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false }),
-      currentMeta: currentMeta, snapshotId: pkg.snapshotId,
+      currentMeta: claimedMeta, snapshotId: pkg.snapshotId,
     });
     if (!doneMove.ok) {
       /* The package exists on disk but this caller no longer owns the row.

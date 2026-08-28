@@ -776,6 +776,71 @@ await checkAsync('P3R-12 a stale worker cannot overwrite a newer owner during re
 });
 
 console.log('');
+/* ── Phase 5 repair — the failure path must not erase claim metadata ───────
+ *
+ * A real assembled run failed at publication and the persisted row came back
+ * WITHOUT intendedContentHash: the writing->failed transition merged its patch
+ * onto `currentMeta`, which was read BEFORE the claim, so it stamped the
+ * pre-claim row over what the claim had durably written. That is precisely the
+ * recovery evidence stranded-`writing` reconciliation reads. */
+await checkAsync('P5.F1 a package-writer failure PRESERVES the claim intent it was supposed to record', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerThrows: new Error('generation member write refused: generation-session-unknown'),
+  });
+  const res = await fx.api({ requestId: 'req_1' });
+  assert.equal(res.status, 'failed', `expected failed, got ${res.status}`);
+
+  const row = fx.queue.get('req_1');
+  assert.equal(row.status, 'failed');
+  const mat = JSON.parse(row.meta_json).materialization;
+
+  // The claim's recovery intent survives the failure record.
+  assert.equal(mat.intendedContentHash, FRESH_HASH,
+    'intendedContentHash from the writing claim was erased by the failure record');
+  assert.ok(mat.processingStartedAt, 'processingStartedAt must survive');
+  // Layered over it: the failure evidence itself.
+  assert.equal(mat.errorCode, 'package-writer-threw');
+  assert.match(String(mat.errorMessage), /generation-session-unknown/);
+  assert.ok(mat.processingFinishedAt, 'processingFinishedAt must be recorded');
+});
+
+await checkAsync('P5.F2 the transition stays CAS-guarded writing -> failed (no shortcut)', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerThrows: new Error('boom'),
+  });
+  await fx.api({ requestId: 'req_1' });
+  const executes = fx.sqlCalls.filter((c) => c.cmd === 'plugin:sql|execute');
+  // Claim, then failure — each guarded on its expected prior status.
+  assert.equal(executes[0].values[0], 'writing', 'first transition must claim writing');
+  assert.equal(executes[0].values[executes[0].values.length - 1], 'validated', 'claim guarded on validated');
+  const fail = executes[executes.length - 1];
+  assert.equal(fail.values[0], 'failed', 'terminal transition must be failed');
+  assert.equal(fail.values[fail.values.length - 1], 'writing', 'failure must be guarded on writing');
+  // And no writing -> validated shortcut was introduced.
+  assert.ok(!executes.some((e) => e.values[0] === 'validated' && e.values[e.values.length - 1] === 'writing'),
+    'no writing -> validated shortcut may exist in the failure path');
+});
+
+await checkAsync('P5.F3 a successful publication also preserves the claim intent', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  await fx.api({ requestId: 'req_1' });
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.intendedContentHash, FRESH_HASH,
+    'the written record must not stamp the pre-claim row either');
+});
+
+
 if (FAIL.length) {
   console.error(`[archive-materializer] ${FAIL.length} failed, ${PASS.length} passed`);
   process.exitCode = 1;

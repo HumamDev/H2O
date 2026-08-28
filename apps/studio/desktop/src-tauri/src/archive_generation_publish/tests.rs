@@ -2340,3 +2340,146 @@ fn exactly_the_four_semantic_commands_are_registered_in_both_handler_arms() {
         "the module must declare exactly the four semantic commands"
     );
 }
+
+/* ── IPC token transport: the JSON boundary the earlier tests never crossed ──
+ *
+ * Every existing publisher test calls begin/write_member in-process with real
+ * u64s, and the JS validators mock `invoke` and hand the token straight back.
+ * Neither exercises serialization, so a full-range u64 travelling as a JSON
+ * NUMBER survived every suite while failing deterministically in the assembled
+ * app: the WebView parsed it as a double and returned a different integer,
+ * which matched no session. These tests cross the actual representation.
+ *
+ * 12308876026142924039 is the real token observed in that failed run. */
+const OBSERVED_TOKEN: u64 = 12_308_876_026_142_924_039;
+
+#[test]
+fn the_begin_token_crosses_json_as_a_string_never_as_a_number() {
+    assert!(
+        OBSERVED_TOKEN > (1u64 << 53),
+        "fixture must exceed Number.MAX_SAFE_INTEGER to be meaningful"
+    );
+    let begun = BeginResult {
+        schema: GENERATION_PUBLISH_SCHEMA,
+        ok: true,
+        token: OBSERVED_TOKEN,
+        blockers: Vec::new(),
+    };
+    let value = serde_json::to_value(&begun).expect("BeginResult must serialize");
+    let token = value.get("token").expect("token field must exist");
+    assert!(
+        token.is_string(),
+        "token must serialize as a JSON string, got: {token}"
+    );
+    assert!(
+        !token.is_number(),
+        "a JSON number is exactly the defect: JavaScript would truncate it"
+    );
+    assert_eq!(token.as_str().unwrap(), "12308876026142924039");
+
+    // And the emitted text must be free of quotes-as-number ambiguity.
+    let text = serde_json::to_string(&begun).expect("serialize");
+    assert!(
+        text.contains("\"token\":\"12308876026142924039\""),
+        "unexpected wire form: {text}"
+    );
+}
+
+#[test]
+fn every_inbound_command_parses_the_exact_token_back_from_text() {
+    let text = OBSERVED_TOKEN.to_string();
+
+    let member: MemberOptions = serde_json::from_value(serde_json::json!({
+        "token": text, "member": "snapshot"
+    }))
+    .expect("write_member must accept the textual token");
+    assert_eq!(member.token, OBSERVED_TOKEN, "write_member lost the token");
+
+    let commit: CommitOptions = serde_json::from_value(serde_json::json!({
+        "token": text, "expectedManifestSha256": serde_json::Value::Null
+    }))
+    .expect("commit must accept the textual token");
+    assert_eq!(commit.token, OBSERVED_TOKEN, "commit lost the token");
+
+    let abort: AbortOptions =
+        serde_json::from_value(serde_json::json!({ "token": text })).expect("abort must accept it");
+    assert_eq!(abort.token, OBSERVED_TOKEN, "abort lost the token");
+}
+
+#[test]
+fn the_full_begin_to_command_round_trip_reproduces_the_exact_u64() {
+    // Serialize as begin would, re-read as the browser would hand it back.
+    let begun = BeginResult {
+        schema: GENERATION_PUBLISH_SCHEMA,
+        ok: true,
+        token: OBSERVED_TOKEN,
+        blockers: Vec::new(),
+    };
+    let wire = serde_json::to_value(&begun).expect("serialize");
+    let echoed = wire.get("token").unwrap().clone();
+    let parsed: AbortOptions =
+        serde_json::from_value(serde_json::json!({ "token": echoed })).expect("round trip");
+    assert_eq!(parsed.token, OBSERVED_TOKEN);
+
+    /* NEGATIVE CONTROL for the shipped defect. This is what the old contract
+     * did: carry the token as a JSON number. Going through an f64 -- exactly
+     * what a JavaScript Number is -- changes the value, so the echoed token
+     * could never match the session. */
+    let through_f64 = OBSERVED_TOKEN as f64 as u64;
+    assert_ne!(
+        through_f64, OBSERVED_TOKEN,
+        "fixture no longer demonstrates the precision loss"
+    );
+    assert_eq!(through_f64, 12_308_876_026_142_924_800);
+}
+
+#[test]
+fn a_malformed_or_out_of_range_token_is_refused_cleanly() {
+    // A JSON number is refused outright: the visitor implements only visit_str.
+    let numeric = serde_json::from_value::<AbortOptions>(
+        serde_json::json!({ "token": 12_308_876_026_142_924_039u64 }),
+    );
+    assert!(numeric.is_err(), "a JSON number token must be refused");
+
+    for bad in [
+        "",                        // empty
+        " 123",                    // leading space
+        "123 ",                    // trailing space
+        "+123",                    // signed
+        "-1",                      // negative
+        "0x1f",                    // radix prefix
+        "12e3",                    // exponent
+        "1.0",                     // float
+        "abc",                     // not a number
+        "18446744073709551616",    // u64::MAX + 1 (overflow)
+        "99999999999999999999999", // far overflow
+    ] {
+        let parsed = serde_json::from_value::<AbortOptions>(serde_json::json!({ "token": bad }));
+        assert!(parsed.is_err(), "token {bad:?} must be refused, not parsed");
+    }
+
+    // The boundary values themselves remain acceptable.
+    for good in ["0", "1", "9007199254740993", "18446744073709551615"] {
+        let parsed: AbortOptions =
+            serde_json::from_value(serde_json::json!({ "token": good })).expect(good);
+        assert_eq!(parsed.token, good.parse::<u64>().unwrap());
+    }
+}
+
+#[test]
+fn internal_session_entropy_and_width_are_unchanged() {
+    /* The repair is transport-only: tokens must still span the full u64 range
+     * (never capped to a JavaScript-safe range) and stay odd. */
+    let mut seen_above_2_53 = false;
+    for _ in 0..256 {
+        let token = random_token_seed();
+        assert_eq!(token & 1, 1, "seed must remain odd");
+        if token > (1u64 << 53) {
+            seen_above_2_53 = true;
+        }
+    }
+    assert!(
+        seen_above_2_53,
+        "tokens must still use the full u64 range; they must not be capped for JavaScript"
+    );
+}

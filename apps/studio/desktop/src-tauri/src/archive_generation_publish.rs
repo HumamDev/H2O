@@ -264,11 +264,67 @@ impl PublishResult {
     }
 }
 
+/// TRANSPORT ENCODING ONLY for the opaque generation-session token.
+///
+/// The session token is a full-range u64 and stays one everywhere inside this
+/// module: the session map, the lease and the staging name are unchanged. But
+/// JSON numbers are IEEE-754 doubles in the WebView, so any token above
+/// 2^53-1 -- about 99.95% of the u64 space -- came back from JavaScript as a
+/// DIFFERENT integer and matched no session, which is why write_member was
+/// refused with `generation-session-unknown` even though begin had succeeded.
+///
+/// So the token crosses the IPC boundary as decimal text and is parsed back to
+/// the exact u64 here. Callers must treat it as opaque: it is an identifier,
+/// never a number to compute with.
+mod ipc_token {
+    use serde::de::{Error as DeError, Unexpected, Visitor};
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(token: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&token.to_string())
+    }
+
+    struct TokenVisitor;
+
+    impl<'de> Visitor<'de> for TokenVisitor {
+        type Value = u64;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("an opaque generation-session token as decimal text")
+        }
+
+        /// Deliberately the ONLY accepted form. There is no `visit_u64`, so a
+        /// JSON number is refused rather than silently accepted from a caller
+        /// that already lost precision producing it.
+        fn visit_str<E: DeError>(self, value: &str) -> Result<u64, E> {
+            if value.is_empty() {
+                return Err(E::custom("generation-session-token-empty"));
+            }
+            if !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(E::invalid_value(
+                    Unexpected::Str(value),
+                    &"decimal digits only (no sign, space or radix prefix)",
+                ));
+            }
+            value
+                .parse::<u64>()
+                .map_err(|_| E::custom("generation-session-token-out-of-range"))
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        deserializer.deserialize_str(TokenVisitor)
+    }
+}
+
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeginResult {
     pub schema: &'static str,
     pub ok: bool,
+    /// Opaque to callers; see `ipc_token` for why it is transported as text.
+    #[serde(serialize_with = "ipc_token::serialize")]
     pub token: u64,
     pub blockers: Vec<Blocker>,
 }
@@ -1821,6 +1877,7 @@ pub struct BeginOptions {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemberOptions {
+    #[serde(deserialize_with = "ipc_token::deserialize")]
     pub token: u64,
     /// Enum only — never a path or filename.
     pub member: String,
@@ -1829,6 +1886,7 @@ pub struct MemberOptions {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitOptions {
+    #[serde(deserialize_with = "ipc_token::deserialize")]
     pub token: u64,
     /// Assertion-only: it can refuse a publication, never steer one (§U).
     pub expected_manifest_sha256: Option<String>,
@@ -1837,6 +1895,7 @@ pub struct CommitOptions {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AbortOptions {
+    #[serde(deserialize_with = "ipc_token::deserialize")]
     pub token: u64,
 }
 

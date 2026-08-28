@@ -429,4 +429,86 @@ async function main() {
   }
 }
 
+/* ── Generation-publisher BRIDGE: opaque token passthrough ────────────────
+ *
+ * The bridge had no validator at all, and the Rust suite never crossed JSON,
+ * so a full-range u64 session token shipped as a JSON number and was truncated
+ * by the WebView -- begin succeeded, then write_member was refused with
+ * generation-session-unknown. The token is opaque: the bridge must hand back
+ * the EXACT value it was given, byte for byte, to every later command. */
+const PUBLISHER_BRIDGE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-generation-publisher.tauri.js';
+const BIG_TOKEN = '12308876026142924039'; // the real token from the failed run
+
+function loadPublisherBridge(invokeImpl) {
+  const context = {
+    console, setTimeout, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, Math, JSON,
+    Promise, Object, Array, String, Number, Boolean, Error, isFinite, parseInt,
+    __TAURI_INTERNALS__: { invoke: invokeImpl },
+    H2O: { Studio: { ingestion: {} } },
+  };
+  context.globalThis = context; context.window = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(PUBLISHER_BRIDGE_REL), sandbox, { filename: PUBLISHER_BRIDGE_REL });
+  return sandbox.H2O.Studio.ingestion;
+}
+
+function builtPackageFixture() {
+  const enc = new TextEncoder();
+  return {
+    manifest: { chatId: 'c_bridge_token', schemaVersion: 1 },
+    files: {
+      'snapshot.json': { bytes: enc.encode('{"snapshotId":"s1"}') },
+      'chat.md': { bytes: enc.encode('# t') },
+      'chat.html': { bytes: enc.encode('<p>t</p>') },
+      'manifest.json': { bytes: enc.encode('{"chatId":"c_bridge_token"}') },
+    },
+  };
+}
+
+await checkAsync('bridge returns the EXACT opaque token string to write/commit', async () => {
+  const seen = [];
+  const api = loadPublisherBridge(async (cmd, a, b) => {
+    if (cmd === 'h2o_archive_generation_begin') return { ok: true, token: BIG_TOKEN, blockers: [] };
+    if (cmd === 'h2o_archive_generation_write_member') {
+      const opts = JSON.parse((b && b.headers && b.headers.options) || '{}');
+      seen.push({ cmd, token: opts.token });
+      return { ok: true, blockers: [] };
+    }
+    if (cmd === 'h2o_archive_generation_commit') {
+      seen.push({ cmd, token: a && a.options && a.options.token });
+      return { ok: true, outcome: 'created', packagePath: 'archive/packages/x.h2ochat', blockers: [], advisories: [] };
+    }
+    if (cmd === 'h2o_archive_generation_abort') { seen.push({ cmd, token: a && a.options && a.options.token }); return { ok: true }; }
+    throw new Error('unexpected command ' + cmd);
+  });
+  assert.equal(typeof api.publishSavedChatGenerationV1, 'function', 'bridge did not register');
+  await api.publishSavedChatGenerationV1(builtPackageFixture());
+
+  assert.ok(seen.length >= 2, 'bridge must reach write_member and commit');
+  for (const s of seen) {
+    assert.strictEqual(typeof s.token, 'string', `${s.cmd} sent a ${typeof s.token}, not an opaque string`);
+    assert.strictEqual(s.token, BIG_TOKEN, `${s.cmd} altered the token: ${s.token}`);
+  }
+  assert.ok(seen.some((s) => s.cmd === 'h2o_archive_generation_commit'), 'commit must be reached');
+});
+
+check('NEGATIVE CONTROL — Number() coercion of this token loses precision', () => {
+  /* Proves the fixture is load-bearing: had the bridge (or the old JSON-number
+   * contract) put this token through a JS Number, the equality above could not
+   * hold. This is exactly the shipped defect. */
+  const coerced = String(Number(BIG_TOKEN));
+  assert.notEqual(coerced, BIG_TOKEN, 'fixture no longer demonstrates precision loss');
+  assert.equal(coerced, '12308876026142925000');
+  assert.ok(Number(BIG_TOKEN) > Number.MAX_SAFE_INTEGER, 'fixture must exceed MAX_SAFE_INTEGER');
+});
+
+check('bridge performs no arithmetic or numeric coercion on the token', () => {
+  const src = readRepo(PUBLISHER_BRIDGE_REL)
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  for (const banned of ['Number(token', 'parseInt(token', 'parseFloat(token', 'token +', '+ token', 'token++']) {
+    assert.ok(!src.includes(banned), `bridge must not coerce the token: ${banned}`);
+  }
+});
+
+
 await main();
