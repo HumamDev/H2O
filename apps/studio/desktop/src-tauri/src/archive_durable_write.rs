@@ -1126,7 +1126,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// Accepts `sha256-<64 hex>` or a bare `<64 hex>`, both lowercase-normalized.
 /// Anything else is rejected — this value is never used to build a path, only
 /// to refuse a mismatch.
-fn normalize_expected_sha(input: &str) -> Option<String> {
+pub(crate) fn normalize_expected_sha(input: &str) -> Option<String> {
     let trimmed = input.trim().to_ascii_lowercase();
     let hex = trimmed.strip_prefix("sha256-").unwrap_or(&trimmed);
     if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {

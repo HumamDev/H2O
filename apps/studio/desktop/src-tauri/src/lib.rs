@@ -70,6 +70,11 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T1.4 — trusted READ-ONLY SQLite protection probe. Supplies protection
+/// facts to future reclamation machinery; registers no command and decides
+/// nothing.
+pub mod archive_db_probe;
+
 /// M06 T1.3 — trusted READ-ONLY durable-temp residue probe. Registers one
 /// diagnostics command that creates, removes, renames and writes nothing.
 pub mod archive_residue_probe;
