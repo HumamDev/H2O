@@ -918,7 +918,7 @@ await fixture('H2O-owned exact container cannot bootstrap a cold boundary', () =
   equal(result.reason, 'rendered-boundary-head-unproven', 'host ownership required');
 });
 
-await fixture('cold boundary wrapper replacement invalidates the lease', () => {
+await fixture('cold boundary wrapper replacement rebinds the identity-keyed lease', () => {
   const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
   equal(h.api.get(2).supported, true, 'cold capture');
   withUnlocked(h, () => {
@@ -927,9 +927,10 @@ await fixture('cold boundary wrapper replacement invalidates the lease', () => {
     h.flow.replaceChild(replacement, h.boundaryWrapper);
   });
   const result = h.api.get(2);
-  equal(result.supported, false, 'replacement rejected');
-  equal(result.reason, 'captured-wrapper-replaced', 'exact element identity retained');
-  equal(result.leaseCurrent, false, 'lease invalidated');
+  // Host-compatibility foundation: same proven identity on a fresh element
+  // rebinds the identity-keyed lease instead of failing the capability.
+  equal(result.supported, true, 'same identity on a fresh element stays supported');
+  equal(result.leaseCurrent, true, 'lease rebinds to the replacement wrapper');
 });
 
 await fixture('cold boundary wrapper disconnection invalidates the lease', () => {
@@ -950,7 +951,7 @@ await fixture('cold boundary wrapper identity loss invalidates the lease', () =>
   equal(result.leaseCurrent, false, 'lease invalidated');
 });
 
-await fixture('cold boundary flow-root replacement invalidates the lease', () => {
+await fixture('cold boundary flow-root replacement rebinds through the live divider parent', () => {
   const h = createHarness({ coldBoundaryWrapper: true, answerMounted: false });
   h.api.get(2);
   const replacement = node('DIV', 'replacement-cold-flow', h.guard);
@@ -959,8 +960,8 @@ await fixture('cold boundary flow-root replacement invalidates the lease', () =>
     h.thread.replaceChild(replacement, h.flow);
   });
   const result = h.api.get(2);
-  equal(result.reason, 'captured-wrapper-replaced', 'flow replacement rejected');
-  equal(result.leaseCurrent, false, 'lease invalidated');
+  equal(result.supported, true, 'identity re-proven in the live flow root');
+  equal(result.leaseCurrent, true, 'lease rebinds to the replacement flow root');
 });
 
 await fixture('streaming prevents cold wrapper bootstrap', () => {
@@ -1256,7 +1257,7 @@ await fixture('corrected marker drift retains exact identity and reports placeme
   equal(h.leases.deletes, 0, 'no lease deletion');
 });
 
-await fixture('valid nested wrapper replacement invalidates the lease', () => {
+await fixture('valid nested wrapper replacement rebinds the mounted lease', () => {
   const h = createHarness({ nestedBoundary: true, nestedAnswer: true });
   equal(h.api.get(2).supported, true, 'initial nested capture');
   withUnlocked(h, () => {
@@ -1269,8 +1270,8 @@ await fixture('valid nested wrapper replacement invalidates the lease', () => {
     h.flow.replaceChild(replacement, h.boundaryWrapper);
   });
   const result = h.api.get(2);
-  equal(result.supported, false, 'replacement invalid');
-  equal(result.reason, 'captured-wrapper-replaced', 'replacement reason');
+  equal(result.supported, true, 'same identity on a fresh section stays supported');
+  equal(result.leaseCurrent, true, 'lease rebinds to the replacement wrapper');
 });
 
 await fixture('exact qId mount returns supported', () => {
@@ -1377,7 +1378,7 @@ await fixture('wrapper disconnection invalidates the lease', () => {
   equal(result.leaseCurrent, false, 'lease invalid');
 });
 
-await fixture('flow-root replacement invalidates the lease', () => {
+await fixture('flow-root replacement rebinds through the live divider parent', () => {
   const h = createHarness();
   h.api.get(2);
   const replacement = node('DIV', 'replacement-flow', h.guard);
@@ -1386,9 +1387,8 @@ await fixture('flow-root replacement invalidates the lease', () => {
     h.thread.replaceChild(replacement, h.flow);
   });
   const result = h.api.get(2);
-  equal(result.reason, 'captured-wrapper-replaced', 'flow replaced');
-  equal(result.boundaryIdentityCurrent, false, 'identity invalid');
-  equal(result.leaseCurrent, false, 'lease invalid');
+  equal(result.supported, true, 'identity re-proven in the live flow root');
+  equal(result.leaseCurrent, true, 'lease rebinds to the replacement flow root');
 });
 
 await fixture('divider absence preserves identity and reports placement repair', () => {
@@ -1500,7 +1500,7 @@ await fixture('marker DOM replacement does not replace the boundary identity lea
   ok(h.leases.get(2) === lease, 'same identity lease');
 });
 
-await fixture('boundary wrapper ceasing to be a direct child invalidates identity', () => {
+await fixture('boundary wrapper nested deeper rebinds to the resolved direct-flow wrapper', () => {
   const h = createHarness({ nestedBoundary: true });
   h.api.get(2);
   withUnlocked(h, () => {
@@ -1509,10 +1509,12 @@ await fixture('boundary wrapper ceasing to be a direct child invalidates identit
     container.appendChild(h.boundaryWrapper);
   });
   const result = h.api.get(2);
-  equal(result.supported, false, 'identity invalid');
-  equal(result.boundaryIdentityCurrent, false, 'identity not current');
-  equal(result.reason, 'captured-wrapper-replaced', 'direct-child failure');
-  equal(result.leaseCurrent, false, 'lease invalid');
+  // A fresh capture accepted this exact structure before and after the
+  // foundation refactor (probed) - the old leased-path fail was pure
+  // reference-pinning, not a structural proof. Leased and fresh reads now
+  // agree: the surface resolver's own acceptance decides.
+  equal(result.supported, true, 'leased read matches what a fresh capture proves');
+  equal(result.leaseCurrent, true, 'lease rebinds to the resolved direct-flow wrapper');
 });
 
 await fixture('retained wrapper losing exact qId container identity invalidates lease', () => {
@@ -1768,7 +1770,7 @@ await fixture('corrected Page 1 wrapper losing qId identity invalidates its leas
   equal(result.leaseCurrent, false, 'lease invalid');
 });
 
-await fixture('corrected Page 1 flow-root replacement invalidates its lease', () => {
+await fixture('corrected Page 1 flow-root replacement rebinds through the live divider parent', () => {
   const h = createHarness({ pageNum: 1, nestedBoundary: true });
   h.api.get(1);
   const replacement = node('DIV', 'replacement-flow-one', h.guard);
@@ -1777,8 +1779,8 @@ await fixture('corrected Page 1 flow-root replacement invalidates its lease', ()
     h.thread.replaceChild(replacement, h.flow);
   });
   const result = h.api.get(1);
-  equal(result.reason, 'captured-wrapper-replaced', 'flow replacement detected');
-  equal(result.leaseCurrent, false, 'lease invalid');
+  equal(result.supported, true, 'identity re-proven in the live flow root');
+  equal(result.leaseCurrent, true, 'lease rebinds to the replacement flow root');
 });
 
 await fixture('corrected Page 1 scope changes invalidate its lease', () => {

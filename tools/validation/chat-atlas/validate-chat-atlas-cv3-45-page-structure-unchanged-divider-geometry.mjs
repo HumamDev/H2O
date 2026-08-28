@@ -61,6 +61,11 @@ const RECOGNIZED_STRUCTURE = new Set([
   // Added only after all twelve behavioural fixtures were already green against
   // this build; no assertion, write count or control was weakened to accept it.
   '70433321894470ecc2dca735a326edf83c50b500ef4fc70f13437d64482c3a8b',
+  // Host-compatibility foundation (Increment D): identity-exact page anchors
+  // through the MountRegistry, approximate start fallbacks removed, deferral
+  // retention proof-gated. All behavioural fixtures green before this hash
+  // was added; no assertion or control was weakened to accept it.
+  '40435d29015e507158d84dd03421721d85d8cdc165a4d5b13e3c229759cad8f1',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

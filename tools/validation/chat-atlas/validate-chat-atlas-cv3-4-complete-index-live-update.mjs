@@ -14,7 +14,9 @@ const miniMapPath = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.
 // H2O Core source it reads is the aggregate of the files the code now lives in.
 // No assertion changes; negative checks span both owners, which is stronger.
 const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
-const coreSource = `${fs.readFileSync(path.join(root, corePath), 'utf8')}\n${fs.readFileSync(path.join(root, CHAT_ATLAS_CORE_REL), 'utf8')}`;
+const coreOwnerSource = fs.readFileSync(path.join(root, corePath), 'utf8');
+const chatAtlasOwnerSource = fs.readFileSync(path.join(root, CHAT_ATLAS_CORE_REL), 'utf8');
+const coreSource = `${coreOwnerSource}\n${chatAtlasOwnerSource}`;
 const miniMapSource = fs.readFileSync(path.join(root, miniMapPath), 'utf8');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -50,10 +52,10 @@ const fixture = async (name, fn) => {
 };
 
 function instrumentCore() {
-  const marker = coreSource.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS')) || '';
+  const marker = coreOwnerSource.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS')) || '';
   const close = '\n})();';
-  const markerIndex = coreSource.indexOf(marker);
-  const closeIndex = coreSource.lastIndexOf(close);
+  const markerIndex = coreOwnerSource.indexOf(marker);
+  const closeIndex = coreOwnerSource.lastIndexOf(close);
   if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('live-update-bootstrap-boundary-invalid');
   const required = [
     'createCompleteIndexRefreshCoordinator',
@@ -86,7 +88,25 @@ function instrumentCore() {
     coordinator: () => completeIndexRefreshCoordinator,
   });
   globalThis.__CV34_LIVE_UPDATE_BOOTSTRAP_SUPPRESSED__ = true;`;
-  return `${coreSource.slice(0, markerIndex)}${exportBlock}${close}\n`;
+  // The export block reads the complete-index authority, which Milestone 2B-2
+  // moved into 0A3a, so it has to be evaluated inside 0A3a's IIFE. Truncating
+  // the AGGREGATE at the marker cut every one of those definitions away (the
+  // marker only exists in 0A1a), so the block referenced names that were never
+  // loaded. Each owner is now assembled on its own: 0A1a still stops before
+  // its observer bootstrap — that suppression is the reason the marker is used
+  // at all — and 0A3a is appended whole with the exports injected before its
+  // own close.
+  const atlasCloseIndex = chatAtlasOwnerSource.lastIndexOf(close);
+  if (atlasCloseIndex <= 0) throw new Error('live-update-chat-atlas-boundary-invalid');
+  return [
+    coreOwnerSource.slice(0, markerIndex),
+    close,
+    '\n',
+    chatAtlasOwnerSource.slice(0, atlasCloseIndex),
+    exportBlock,
+    close,
+    '\n',
+  ].join('');
 }
 
 const coreProgram = instrumentCore();
@@ -444,6 +464,91 @@ await fixture('valid completion refresh transitions 38 plus pending to proven 39
   equal(runtime.api.state.pendingDrafts.size, 0);
 });
 
+// T03 — the whole authoritative pending-stream convergence in one pass.
+// The surrounding fixtures each prove a stage; this one holds the membership
+// invariants across every transition of the lag window, which is where a
+// regression would actually show: the new turn must appear exactly once while
+// the authoritative index still describes the previous state, must not be
+// counted twice when the index catches up, must not leave a phantom
+// assistant-only row behind a provisional streaming identity, and must never
+// drop an older authoritative turn.
+await fixture('authoritative N to pending N+1 to converged N+1 preserves exact membership', async () => {
+  const runtime = createRuntime();
+  const rows = buildRows();
+  seed(runtime, rows, 200);
+
+  const answerIdsOf = (turns) => turns.flatMap((row) => (
+    Array.isArray(row.answerIds) && row.answerIds.length
+      ? row.answerIds
+      : (row.primaryAId ? [row.primaryAId] : [])
+  ));
+  const duplicateAnswerIds = (turns) => {
+    const seen = new Map();
+    for (const id of answerIdsOf(turns)) seen.set(id, (seen.get(id) || 0) + 1);
+    return Array.from(seen.values()).filter((count) => count > 1).length;
+  };
+  const phantomRows = (turns) => turns.filter((row) => !row.qId).length;
+
+  // 1 — authoritative baseline: N proven turns, nothing pending.
+  runtime.api.buildTurns();
+  const baseline = runtime.api.listTurns();
+  const N = baseline.length;
+  equal(N, 38);
+  equal(runtime.api.state.index.turns.length, N);
+  equal(runtime.api.state.pendingDrafts.size, 0);
+  equal(runtime.api.status().enabled, true);
+  const baselineQIds = baseline.map((row) => row.qId);
+
+  // 2 — the user submits a turn. Its answer is still a provisional streaming
+  // identity, and the authoritative index has not caught up.
+  runtime.api.liveDrafts([liveDraft(NEW_Q, ['request-placeholder-live'])], runtime.api.state.index);
+  runtime.api.buildTurns();
+  const pending = runtime.api.listTurns();
+  equal(pending.length, N + 1, 'pending overlay contributes exactly one logical turn');
+  equal(runtime.api.state.index.turns.length, N, 'authoritative index still describes the previous state');
+  equal(runtime.api.state.pendingDrafts.size, 1, 'exactly one pending draft is admitted');
+  equal(runtime.api.status().pendingCount, 1);
+  equal(pending.filter((row) => row.qId === NEW_Q).length, 1, 'the new turn is never counted twice');
+  equal(pending[N].completeIndexPending, true, 'the new turn is carried by the pending overlay');
+  equal(duplicateAnswerIds(pending), 0);
+  equal(phantomRows(pending), 0);
+  equal(baselineQIds.every((qId) => pending.some((row) => row.qId === qId)), true, 'no authoritative turn is lost');
+
+  // 3 — a second streaming fragment must not admit a second logical turn.
+  runtime.api.liveDrafts([liveDraft(NEW_Q, ['request-placeholder-two'])], runtime.api.state.index);
+  runtime.api.buildTurns();
+  equal(runtime.api.listTurns().length, N + 1, 'streaming fragments do not multiply the pending turn');
+  equal(runtime.api.state.pendingDrafts.size, 1);
+
+  // 4 — the authoritative index catches up and carries the real answer id.
+  const rowsNext = appendRow(rows, {
+    qId: NEW_Q,
+    answerVariants: [NEW_A],
+    primaryAId: NEW_A,
+    noAnswer: false,
+    stopped: false,
+  });
+  runtime.setProvider(async () => ({ ok: true, index: hostIndex(runtime.api, rowsNext, 201) }));
+  const status = await runtime.api.refresh('t03-authoritative-convergence');
+  equal(status.status, 'complete-refresh-validated');
+
+  // 5 — convergence: the overlay retires and membership is exactly N+1.
+  runtime.api.buildTurns();
+  const converged = runtime.api.listTurns();
+  equal(converged.length, N + 1, 'catch-up must not create a second logical turn');
+  equal(runtime.api.state.index.turns.length, N + 1, 'authoritative index now owns the new turn');
+  equal(runtime.api.state.pendingDrafts.size, 0, 'pending overlay retires on catch-up');
+  equal(runtime.api.status().pendingCount, 0);
+  equal(converged.filter((row) => row.qId === NEW_Q).length, 1);
+  equal(converged[N].completeIndexPending === true, false, 'the converged turn is authoritative, not pending');
+  equal(converged[N].primaryAId, NEW_A, 'the provisional identity resolved to the real answer');
+  equal(duplicateAnswerIds(converged), 0);
+  equal(phantomRows(converged), 0);
+  equal(JSON.stringify(converged).includes('request-placeholder-'), false, 'no provisional identity survives');
+  equal(baselineQIds.every((qId) => converged.some((row) => row.qId === qId)), true, 'no authoritative turn is lost');
+  equal(runtime.api.status().authoritative, true, 'Tier-0 authority holds throughout');
+});
+
 await fixture('new complete cache atomically contains 39 proven rows', async () => {
   const runtime = createRuntime();
   const rows = buildRows();
@@ -629,6 +734,11 @@ await fixture('latest clean NO ANSWER remains exact', () => {
 
 await fixture('gate disabled performs zero complete-index update work', async () => {
   const runtime = createRuntime();
+  // The compiled default now ENABLES the authority, so a fresh runtime is no
+  // longer disabled by construction. Disable the gate in memory to test what
+  // this fixture is named for; memory-only keeps the zero-storage-write
+  // assertion below meaningful.
+  runtime.api.state.enabled = false;
   const status = await runtime.api.refresh('fixture-disabled');
   equal(status.status, 'disabled');
   equal(runtime.counters.networkReads, 0);

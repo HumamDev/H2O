@@ -4205,6 +4205,8 @@ const CVG_FUNCTION_NAMES = [
   'chatAtlasConvergenceTrace', 'chatAtlasConvergenceGraphScope', 'chatAtlasConvergenceUniqueNode',
   'chatAtlasConvergenceBranchRoot', 'chatAtlasConvergenceAnswerVariantRoots',
   'chatAtlasConvergenceQuestionVariants', 'chatAtlasBuildNativeBranchSelectionPlan',
+  'chatAtlasMountedTurnSections', 'chatAtlasNativePathSections', 'chatAtlasTurnsByQId',
+  'chatAtlasNativeDiagnosticsCacheKey',
   'chatAtlasMapMountedNativePath', 'chatAtlasNativeBranchPlanDiagnostics',
   'chatAtlasFirstNativePathMismatch', 'chatAtlasConvergenceExactIndicator',
   'chatAtlasNativeVariantPagers', 'chatAtlasConvergencePagerOfKind', 'chatAtlasNativeEditControls',

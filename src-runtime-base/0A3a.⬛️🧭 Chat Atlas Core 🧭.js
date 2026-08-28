@@ -1109,7 +1109,16 @@
   // merge machinery. The canary switch itself is deliberately memory-only.
   const COMPLETE_TURN_INDEX_CANARY = 'complete-turn-index-projection';
 
-  const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = false;
+  /* The host renders only a sparse window of the conversation (measured: ~5 of
+     37 turns, history never initially rendered, elements replaced on revisit),
+     so DOM-derived membership tiers structurally under- and mis-count. The
+     complete-index authority is the only membership model consistent with that
+     lifecycle and has soaked on the working-internal profile via persisted
+     preference. Default it on: an unset preference now resolves enabled, a
+     stored '0' still disables, and every activation still requires the full
+     authority proof (route match, complete status, host-payload-full-graph) —
+     otherwise the legacy tiers keep serving as the automatic fallback. */
+  const COMPLETE_TURN_INDEX_COMPILED_DEFAULT = true;
 
   const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
 
@@ -3513,6 +3522,99 @@
       stopped: false,
       isCurrentNode: false,
     };
+  }
+
+  /* Complete-index identity proof: answers "is this id a proven product
+     turn in the current authoritative scope" purely from the Tier-0
+     host-payload-proven index — no identity GRAPH required. The graph needs
+     an active backend fetch (includeIdentityGraph) that the profile
+     capability gates off on unauthorized activations (measured live:
+     profile-not-authorized), and the SSR boot payload is not fetch-visible,
+     so graph-gated consumers were structurally dead there. Consumers that
+     only need per-id membership + role proof (the rendered-boundary
+     collapse chain) belong on THIS surface; cross-branch topology consumers
+     stay on getGraphIdentityDiagnostics. */
+  function getCompleteIndexIdentityProof(ids = []) {
+    const requestedIds = chatAtlasNormalizeGraphDiagnosticIds(ids);
+    const miss = (requestedId) => ({
+      requestedId,
+      found: false,
+      role: null,
+      order: 0,
+      productUser: false,
+      productAnswer: false,
+      stopped: false,
+    });
+    const unavailable = (reason) => chatAtlasFreeze({
+      version: 1,
+      available: false,
+      reason,
+      scope: null,
+      records: requestedIds.map(miss),
+    });
+    const authority = completeTurnIndexAuthorityState;
+    const route = chatAtlasFullIndexRoute();
+    if (
+      authority.enabled !== true
+      || !chatAtlasCompleteIndexAuthorityActive()
+      || !authority.index
+      || !route?.chatId
+      || !route?.routeKey
+      || chatAtlasCompleteIndexIdentity(authority.chatId) !== chatAtlasCompleteIndexIdentity(route.chatId)
+      || String(authority.routeKey || '') !== String(route.routeKey || '')
+    ) return unavailable('authority-unavailable');
+    const turns = Array.isArray(authority.index?.turns) ? authority.index.turns : [];
+    const fingerprint = String(authority.index?.sourceFingerprint || '') || null;
+    if (!turns.length || !fingerprint) return unavailable('authority-unavailable');
+    const scope = chatAtlasFreeze({
+      chatId: chatAtlasCompleteIndexIdentity(authority.chatId) || null,
+      routeKey: String(authority.routeKey || ''),
+      generation: Math.max(0, Number(authority.generation || 0)),
+      fingerprint,
+      turnCount: turns.length,
+    });
+    const records = requestedIds.map((requestedId) => {
+      for (const turn of turns) {
+        const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+        if (qId && qId === requestedId) {
+          return {
+            requestedId,
+            found: true,
+            role: 'user',
+            order: Math.max(0, Number(turn?.order || 0)),
+            productUser: true,
+            productAnswer: false,
+            stopped: turn?.stopped === true,
+          };
+        }
+        const primary = chatAtlasCompleteIndexIdentity(turn?.primaryAId);
+        const variants = Array.isArray(turn?.answerVariants) ? turn.answerVariants : [];
+        const selectedNode = chatAtlasCompleteIndexIdentity(turn?.branch?.selectedAssistantNodeId);
+        if (
+          (primary && primary === requestedId)
+          || (selectedNode && selectedNode === requestedId)
+          || variants.some((variant) => chatAtlasCompleteIndexIdentity(variant) === requestedId)
+        ) {
+          return {
+            requestedId,
+            found: true,
+            role: 'assistant',
+            order: Math.max(0, Number(turn?.order || 0)),
+            productUser: false,
+            productAnswer: true,
+            stopped: turn?.stopped === true,
+          };
+        }
+      }
+      return miss(requestedId);
+    });
+    return chatAtlasFreeze({
+      version: 1,
+      available: true,
+      reason: null,
+      scope,
+      records,
+    });
   }
 
   function getGraphIdentityDiagnostics(ids = []) {
@@ -7917,13 +8019,68 @@
   }
 
   // The mounted native path, read once, compared against the effective branch.
+  /* The native mounted path is, by definition, the CURRENTLY MOUNTED set —
+     which the Observer Hub's MountRegistry already owns as the single writer
+     of identity->element bindings. Reading it there replaces a whole-document
+     `[data-testid^="conversation-turn-"]` sweep with an iteration bounded by
+     the mounted set (measured: ~4-30 mounted against 37 logical), which is the
+     accepted performance invariant. Returns null — never an empty array — when
+     the registry is unavailable, so callers keep their legitimate document
+     fallback rather than silently reading an empty path. */
+  function chatAtlasMountedTurnSections() {
+    let mounts = null;
+    try {
+      mounts = (typeof TOPW !== 'undefined' ? TOPW?.H2O?.obs : null)?.mounts
+        || (typeof W !== 'undefined' ? W?.H2O?.obs : null)?.mounts
+        || null;
+    } catch { mounts = null; }
+    if (!mounts || typeof mounts.all !== 'function') return null;
+    let records = [];
+    try { records = mounts.all() || []; } catch { return null; }
+    const seen = new Set();
+    const sections = [];
+    for (const record of records) {
+      const shell = record?.shell?.isConnected === true ? record.shell : null;
+      if (!shell || seen.has(shell)) continue;
+      seen.add(shell);
+      sections.push(shell);
+    }
+    // An empty registry is not proof that nothing is mounted - it may simply
+    // not have reconciled yet - so it yields no answer and the caller's
+    // document fallback decides.
+    if (!sections.length) return null;
+    // Registry order is binding order; the path readers below depend on
+    // DOCUMENT order to carry an open question forward to its answer.
+    // 4 === Node.DOCUMENT_POSITION_FOLLOWING, spelled numerically so the
+    // comparison holds in sandboxes without the Node global.
+    sections.sort((a, b) => ((a.compareDocumentPosition(b) & 4) ? -1 : 1));
+    return sections;
+  }
+
+  function chatAtlasNativePathSections() {
+    const mounted = chatAtlasMountedTurnSections();
+    if (mounted) return mounted;
+    try {
+      return Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+    } catch { return []; }
+  }
+
+  // One lookup built per derivation replaces a linear turns.find() inside the
+  // mounted loop.
+  function chatAtlasTurnsByQId(turns) {
+    const byQId = new Map();
+    for (const turn of Array.isArray(turns) ? turns : []) {
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      if (qId && !byQId.has(qId)) byQId.set(qId, turn);
+    }
+    return byQId;
+  }
+
   function chatAtlasMapMountedNativePath() {
     const index = getEffectivePresentationIndex();
     const turns = Array.isArray(index?.turns) ? index.turns : [];
-    let sections = [];
-    try {
-      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
-    } catch { sections = []; }
+    const sections = chatAtlasNativePathSections();
+    const turnsByQId = chatAtlasTurnsByQId(turns);
     // A turn's question and answer may share one container or occupy two
     // consecutive ones. Carry the open row forward so the answer is read — and
     // its pager located — under either host topology.
@@ -7938,7 +8095,7 @@
       const mountedAId = chatAtlasCompleteIndexIdentity(aEl?.getAttribute?.('data-message-id')) || '';
       const pagers = chatAtlasNativeVariantPagers(section);
       if (mountedQId) {
-        const turn = turns.find((entry) => chatAtlasCompleteIndexIdentity(entry?.qId) === mountedQId) || null;
+        const turn = turnsByQId.get(mountedQId) || null;
         open = {
           section,
           answerSection: section,
@@ -7989,7 +8146,46 @@
   // effective path holds exactly one selected root-to-leaf route, and Ledger and
   // MiniMap hold exactly that route — never the alternatives. The nested branch
   // choices live in the separate selection plan, not in any linear surface.
+  /* getCompleteTurnIndexProjectionStatus() is read as a cheap status by many
+     consumers, but it spread these diagnostics in unconditionally, so every
+     read paid for two native-path derivations and a per-section pager scan
+     (measured on this branch: 18.2 status reads, 55.9 whole-document sweeps
+     and 160.8 subtree scans per user-scroll frame at 37 logical / 4 mounted).
+     The diagnostics themselves are a pure function of state that changes on
+     lifecycle boundaries, not on reads: the mounted set (registry revision),
+     the route/authority generation, the effective path identity, and the
+     acquisition graph capture. Keying the derivation on exactly those makes a
+     status read free between boundaries while never serving DOM state that
+     has since moved. Without a MountRegistry the key cannot see mount churn,
+     so that path deliberately bypasses the cache and behaves as before. */
+  const chatAtlasNativeDiagnosticsCache = { key: '', value: null };
+
+  function chatAtlasNativeDiagnosticsCacheKey() {
+    let mounts = null;
+    try { mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null; } catch { mounts = null; }
+    if (!mounts || typeof mounts.rev !== 'function') return '';
+    let rev = -1;
+    let size = -1;
+    try { rev = Number(mounts.rev() || 0); size = Number(mounts.size() || 0); } catch { return ''; }
+    const index = getEffectivePresentationIndex();
+    return [
+      rev,
+      size,
+      String(completeTurnIndexAuthorityState.chatId || ''),
+      String(completeTurnIndexAuthorityState.routeKey || ''),
+      Number(completeTurnIndexAuthorityState.generation || 0),
+      String(index?.sourceFingerprint || ''),
+      Array.isArray(index?.turns) ? index.turns.length : 0,
+      String(selectedPathAcquisitionState.graph?.captureIdentity || ''),
+      String(completeTurnIndexAuthorityState.nativeConvergenceState?.phase || ''),
+    ].join('|');
+  }
+
   function chatAtlasNativeBranchPlanDiagnostics() {
+    const cacheKey = chatAtlasNativeDiagnosticsCacheKey();
+    if (cacheKey && chatAtlasNativeDiagnosticsCache.key === cacheKey && chatAtlasNativeDiagnosticsCache.value) {
+      return chatAtlasNativeDiagnosticsCache.value;
+    }
     const out = {
       graphNodeCount: 0,
       effectivePathTurnCount: 0,
@@ -8044,6 +8240,10 @@
       out.nativeBranchPlanRegenerationPointCount = plan.points
         .filter((p) => p.kind === 'assistant-regeneration').length;
     } catch {}
+    if (cacheKey) {
+      chatAtlasNativeDiagnosticsCache.key = cacheKey;
+      chatAtlasNativeDiagnosticsCache.value = out;
+    }
     return out;
   }
 
@@ -8060,10 +8260,8 @@
       ? targetTurns
       : (Array.isArray(index?.turns) ? index.turns : []);
     if (!turns.length) return null;
-    let sections = [];
-    try {
-      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
-    } catch { return null; }
+    const sections = chatAtlasNativePathSections();
+    const turnsByQId = chatAtlasTurnsByQId(turns);
     let lastOnBranchOrder = 0;
     // The turn whose answer has not been read yet. It stays open across one
     // container boundary so a host that splits question and answer into
@@ -8077,7 +8275,7 @@
       const mountedQId = chatAtlasCompleteIndexIdentity(qEl?.getAttribute?.('data-message-id'));
       const mountedAId = chatAtlasCompleteIndexIdentity(aEl?.getAttribute?.('data-message-id')) || '';
       if (mountedQId) {
-        const onBranch = turns.find((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === mountedQId);
+        const onBranch = turnsByQId.get(mountedQId) || null;
         if (!onBranch) {
           // Disagreement: the branch turn this position should carry is the
           // one after the nearest preceding mounted question that IS on it.
@@ -9843,7 +10041,12 @@
       compiledDefault: COMPLETE_TURN_INDEX_COMPILED_DEFAULT,
       persistedOptInSupported: true,
       activationSource: completeTurnIndexAuthorityState.activationSource,
-      status: completeTurnIndexAuthorityState.status,
+      // With the gate off there is no projection to be idle about; reporting
+      // the retained internal status made a disabled runtime look merely
+      // quiet. Enabled runtimes still report their real status verbatim.
+      status: completeTurnIndexAuthorityState.enabled
+        ? completeTurnIndexAuthorityState.status
+        : 'disabled',
       authoritative: chatAtlasCompleteIndexAuthorityActive(),
       chatId: completeTurnIndexAuthorityState.chatId,
       routeGeneration: completeTurnIndexAuthorityState.generation,
@@ -10754,10 +10957,16 @@
       completeTurnIndexAuthorityState.preferenceResolution = 'stored-disabled';
       return { enabled: false, resolution: 'stored-disabled' };
     }
+    // Diagnostic accuracy: both branches below resolve to the COMPILED
+    // DEFAULT, which has been enabled since the logical authority became the
+    // default. Labelling them '...-disabled' described the opposite of what
+    // was returned, so a reader saw `enabled: true` beside a resolution that
+    // claimed the feature was off. The label now names the resolved outcome;
+    // the resolution itself is unchanged.
     completeTurnIndexAuthorityState.preferenceStoredValue = raw == null ? null : 'invalid';
     completeTurnIndexAuthorityState.preferenceResolution = raw == null
-      ? 'compiled-default-disabled'
-      : 'malformed-disabled';
+      ? (COMPLETE_TURN_INDEX_COMPILED_DEFAULT ? 'compiled-default-enabled' : 'compiled-default-disabled')
+      : (COMPLETE_TURN_INDEX_COMPILED_DEFAULT ? 'malformed-compiled-default-enabled' : 'malformed-disabled');
     return { enabled: COMPLETE_TURN_INDEX_COMPILED_DEFAULT, resolution: completeTurnIndexAuthorityState.preferenceResolution };
   }
 
@@ -10765,11 +10974,17 @@
     const resolved = chatAtlasResolveCompleteIndexProjectionPreference();
     completeTurnIndexAuthorityState.bootApplyCount += 1;
     if (resolved.enabled) completeTurnIndexAuthorityState.bootActivationCount += 1;
+    // A compiled-default activation is not a persisted-preference boot. The
+    // source now distinguishes stored enable / stored disable / compiled
+    // default enable / compiled default disable, so activation provenance can
+    // be read without inferring it from the enabled flag.
+    const storedPreference = resolved.resolution === 'stored-enabled'
+      || resolved.resolution === 'stored-disabled';
     return chatAtlasApplyCompleteIndexProjectionEnabled(
       resolved.enabled === true,
-      resolved.enabled
-        ? 'persisted-preference-boot'
-        : (resolved.resolution === 'stored-disabled' ? 'persisted-preference-boot-disabled' : 'compiled-default-boot'),
+      storedPreference
+        ? (resolved.enabled ? 'persisted-preference-boot' : 'persisted-preference-boot-disabled')
+        : (resolved.enabled ? 'compiled-default-boot' : 'compiled-default-boot-disabled'),
     );
   }
 
@@ -11342,6 +11557,7 @@
         getSelectedPathAcquisitionStatus,
         getSelectedPathDerivationDiagnostics,
         getGraphIdentityDiagnostics,
+        getCompleteIndexIdentityProof,
         getEffectivePresentationIndex,
         getEffectivePresentationStatus,
         getEffectiveTurnRecordByQId,

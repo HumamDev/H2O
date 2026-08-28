@@ -67,6 +67,27 @@ const RECOGNIZED_PAGES = new Set([
   // refresh-time revision prune was removed; no geometry assertion was
   // weakened, reordered or relaxed to accept it.
   '299e0a4584f3f1f4b595ddba32e7a90db57a5c6ff36c2006501c416781946169',
+  // Host-compatibility foundation (Increment E): identity-keyed rendered
+  // boundary leases that rebind on element replacement, preserved collapse
+  // intent on rollback/lifecycle expansion, transient failures retryable.
+  // Registered only after every behavioural fixture was green against this
+  // build; no assertion was weakened to accept it.
+  '82f09c788c9d60304c7df732421a5f4e23bcaad2bcafbf1c7007e74f64aa1975',
+  // T01 collapse reprojection after native remount: members carry both host
+  // identity domains, rebind shares the validator's currency test and
+  // re-resolves through the MountRegistry, and deferred collapse intent is
+  // replayed. Registered only after the targeted collapse/remount fixtures
+  // above were green against this build; no assertion was weakened.
+  '0b83f04776c3e28b8528d01a340774327c41c46f5331121903234d0840490937',
+  // T04 acceptance rework: route-return collapse intent replay. A route change
+  // is a lifecycle expansion that preserves intent and drops the committed
+  // transaction, so nothing re-projected the collapse on return. Replay reads
+  // the one canonical collapsed-pages authority and re-enters the existing
+  // transaction owner; it adds no projection writer and no second intent
+  // store. Registered only after the divider-line geometry fixtures below were
+  // green against this build and the live collapse/expand route-return proofs
+  // passed; no assertion was weakened to accept it.
+  '3003756507e6057ef53f0f58aa166a535f892d33525a67a51433149332b90d50',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

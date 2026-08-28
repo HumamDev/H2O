@@ -188,6 +188,7 @@ const FN = [
   'chatAtlasRevealMeasureTarget',
   'chatAtlasExecuteOneShotRevealAction', 'chatAtlasRevealRunOneShot', 'chatAtlasRevealReconcileTick',
   'chatAtlasRevealDiagnostics',
+  'chatAtlasMountedTurnSections', 'chatAtlasNativePathSections', 'chatAtlasTurnsByQId',
   'chatAtlasMapMountedNativePath', 'chatAtlasConvergenceExactIndicator', 'chatAtlasNativeVariantPagers',
 ];
 

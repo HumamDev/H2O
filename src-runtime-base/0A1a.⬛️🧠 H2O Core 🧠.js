@@ -1655,7 +1655,17 @@
     for (const aliasId of draft?.aliasIds || []) {
       pushRecord(getRecordByTurnIdInternal(aliasId), 'historical-alias-only');
     }
-    if (!candidates.length && !(turnState.paginationDrafts && turnState.paginationDrafts.length)) {
+    if (
+      !candidates.length
+      && !(turnState.paginationDrafts && turnState.paginationDrafts.length)
+      // Host turn ordinals are window-relative and reassign on rematerialization,
+      // so ordinal adoption is only a legacy-scan crutch. Under complete-index
+      // authority every canonical draft carries stable identity: a draft that
+      // matches no record is a genuinely new turn and must append, never adopt
+      // an unrelated record by position.
+      && !(typeof chatAtlasCompleteIndexAuthorityActive === 'function'
+        && chatAtlasCompleteIndexAuthorityActive())
+    ) {
       pushRecord(getRecordByTurnNoInternal(draft?.turnNo || 0), 'ordinal-fallback');
     }
 

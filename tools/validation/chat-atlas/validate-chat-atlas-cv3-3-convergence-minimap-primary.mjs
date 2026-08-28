@@ -142,9 +142,17 @@ function guardedCallable(counters, key, label) {
   });
 }
 
+// The complete-index authority is now the compiled default (host-compatibility
+// foundation): an unset preference boots Tier-0, which emits authority state
+// events this harness's zero-dispatch contract predates. These fixtures pin
+// the LEGACY convergence matcher — the retained fallback path — so the sandbox
+// explicitly stores the disable preference to select that path, exactly as a
+// profile opting out would.
+const COMPLETE_TURN_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
+
 function createStorage(counters, label) {
   return {
-    getItem() { return null; },
+    getItem(key) { return key === COMPLETE_TURN_INDEX_PREFERENCE_KEY ? '0' : null; },
     key() { return null; },
     get length() { return 0; },
     setItem() { return forbidden(counters, 'storageWrites', `${label}.setItem`); },

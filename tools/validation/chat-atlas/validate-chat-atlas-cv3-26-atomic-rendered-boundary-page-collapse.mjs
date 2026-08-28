@@ -363,6 +363,7 @@ function createTransactionHarness(options = {}) {
     'pageCollapseRangeIdentityOfCarrier',
     'pageCollapseRangeContainerIdentity',
     'pageCollapseRangeNodeCarriesIdentity',
+    'pageCollapseMemberIdentityCurrent',
     'renderedBoundaryWrapperCarriesIdentity',
     'applyCollapsedNativeRange',
     'captureCollapsedPageViewportAnchor',
@@ -480,6 +481,7 @@ function createTransactionHarness(options = {}) {
       expandAll: expandAllAtomicPageCollapses,
       prepare: prepareDetachedPageTitleList,
       revalidate: revalidateAtomicPageCollapsePlan,
+      memberCurrent: pageCollapseMemberIdentityCurrent,
       state: S,
     });
   })()`, {
@@ -538,7 +540,10 @@ function collapse(h) {
   return h.api.collapse(1, { chatId: h.plan.chatId, source: 'validator' });
 }
 function expand(h) {
-  return h.api.expand(1, { chatId: h.plan.chatId, source: 'validator' });
+  // Models the user's second click on the divider control: an explicit
+  // chat-page-divider source clears the persisted collapse intent, while
+  // lifecycle expansions (rollback, host churn) preserve it.
+  return h.api.expand(1, { chatId: h.plan.chatId, source: 'chat-page-divider:validator' });
 }
 
 const parent = parentCapability();
@@ -639,6 +644,33 @@ await fixture('expansion moves zero host wrappers', () => equal(h.safety.hostMov
 await fixture('expansion moves zero Page units', () => equal(h.safety.pageUnitMoves, 0, 'no marker movement'));
 await fixture('expansion writes zero persistence', () => equal(h.safety.storage, 0, 'no storage'));
 await fixture('second expansion performs zero mutations', () => equal(expand(h).mutations, 0, 'idempotent expansion'));
+// A committed member must survive the host virtualizing its content away.
+// Measured live: the wrapper stays connected, in place and stamped, but its
+// inner identity carrier is gone, so the message identity recorded at commit
+// time is momentarily unprovable while the wrapper's own container id is not.
+// Before the dual-domain proof this read as "member stale" and expanded a
+// collapse the user never asked to open.
+await fixture('committed member survives content unhydration', () => {
+  const node = h.document.createElement('div');
+  node.setAttribute('data-turn-id-container', 'container-A');
+  const carrier = h.document.createElement('section');
+  carrier.setAttribute('data-turn-id', 'container-A');
+  const message = h.document.createElement('div');
+  message.setAttribute('data-message-id', 'message-A');
+  carrier.appendChild(message);
+  node.appendChild(carrier);
+  const proof = { identity: 'message-A', containerId: 'container-A' };
+  equal(h.api.memberCurrent(node, proof), true, 'hydrated member is current');
+  // Host virtualizes the content away: only the wrapper survives.
+  node.removeChild(carrier);
+  equal(h.api.memberCurrent(node, proof), true, 'unhydrated member stays current');
+  // A wrapper the host reused for a different turn is still rejected.
+  node.setAttribute('data-turn-id-container', 'container-B');
+  equal(h.api.memberCurrent(node, proof), false, 'different container is not current');
+  // A proof without the container domain still rejects an unprovable node.
+  equal(h.api.memberCurrent(node, { identity: 'message-A' }), false, 'no fallback without container proof');
+});
+
 await fixture('five cycles use identical stamp sets', () => {
   const expected = h.rawPlan.hostWrappers;
   for (let index = 0; index < 5; index += 1) {
@@ -750,7 +782,12 @@ await fixture('product feedback excludes technical internals', () => {
   ok(!/native-slot|graph|wrapper|fingerprint/.test(String(h.capability.productReason)), 'safe product reason');
 });
 await fixture('1C1b is sole native-hidden transaction writer', () => {
-  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 1, 'one writer statement');
+  // Two statements, one owner: the commit stamp in applyCollapsedNativeRange
+  // and the committed-state maintenance restamp in
+  // rebindCommittedAtomicPageCollapse (host element replacement inside a
+  // hidden range delivers replacements without the stamp). Both live in this
+  // module's transaction owner; no other module writes the attribute.
+  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 2, 'transaction-owner writer statements');
 });
 await fixture('1A1b remains Page-unit-only', () => {
   const core = fs.readFileSync(path.join(ROOT, 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js'), 'utf8');

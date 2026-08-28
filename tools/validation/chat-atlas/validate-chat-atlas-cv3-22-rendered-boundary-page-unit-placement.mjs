@@ -936,7 +936,7 @@ await fixture('later mounted Turn 74 cannot override retained qId boundary', () 
   equal(h.page2Divider.getAttribute('data-h2o-divider-anchor-mode'), 'rendered-boundary-authority', 'late mode retired');
 });
 
-await fixture('mounted-artifact fallback remains when capability is unsupported', () => {
+await fixture('unsupported capability with unmounted boundary parks instead of guessing', () => {
   const h = createHarness();
   h.pageApi.get(2);
   h.unmountBoundary();
@@ -944,8 +944,12 @@ await fixture('mounted-artifact fallback remains when capability is unsupported'
     pageNum === 2 ? Object.freeze({ version: 2, supported: false, reason: 'boundary-wrapper-unavailable' }) : get(pageNum)
   );
   const result = h.coreApi.reconcile('unsupported-fallback');
-  equal(result.pages[1].mode, 'earliest-exact-page-artifact', 'existing fallback preserved');
-  ok(h.order().indexOf('DIVIDER-2') < h.order().indexOf('TURN-74'), 'fallback anchors to later mounted artifact');
+  // Host-compatibility foundation contract: a later mounted artifact is not
+  // placement evidence for the page start. The only permitted stand-in is
+  // the page's own last PROVEN position (its start sentinel) — never an
+  // approximate mounted artifact.
+  equal(result.pages[1].mode, 'last-proven-page-start', 'only the proven sentinel may stand in');
+  ok(h.order().indexOf('DIVIDER-2') < h.order().indexOf('TURN-74'), 'divider stays at its proven position');
 });
 
 await fixture('supported capability with unresolved wrapper fails closed', () => {
@@ -1244,11 +1248,11 @@ await fixture('streaming boundary prevents rendered-boundary placement', () => {
   equal(h.pageApi.get(2).supported, false, 'streaming boundary unsupported');
 });
 
-await fixture('missing Stage 2A API preserves the existing fail-safe fallback', () => {
+await fixture('missing Stage 2A API falls back to the proven sentinel, never a guess', () => {
   const h = createHarness({ controllerAvailable: false });
   h.unmountBoundary();
   const result = h.coreApi.reconcile('missing-stage-2a');
-  equal(result.pages[1].mode, 'earliest-exact-page-artifact', 'existing fallback used');
+  equal(result.pages[1].mode, 'last-proven-page-start', 'proven position is the only stand-in');
 });
 
 await fixture('storage cache preference canonical and alias writes remain zero', () => {

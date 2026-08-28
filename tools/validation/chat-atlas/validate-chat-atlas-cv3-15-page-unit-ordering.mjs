@@ -698,29 +698,43 @@ await fixture('missing Turn 25 uses exact remaining Page 1 boundary evidence', (
   equal(harness.api.diagnostics().status, 'settled', 'missing Turn 25 remains settled');
 });
 
-await fixture('missing Turn 26 anchors Page 2 before earliest exact Page 2 artifact', () => {
+// Host-compatibility foundation contract: a page whose exact start pair is
+// not represented PARKS — no approximate placement. Under the measured
+// sparse host window, "earliest represented artifact of the page" stamped
+// "Page N" above whatever turn happened to be mounted (observed live: the
+// Page 1 divider drifting with the window at turns 23/25/18 while turn 1
+// was never mounted). The deferral path retains connected dividers and the
+// registry's mount transition re-enters reconciliation when the true start
+// materializes.
+await fixture('missing Turn 26 parks Page 2 instead of anchoring an approximate artifact', () => {
   const orders = Array.from({ length: 39 }, (_unused, index) => index + 1).filter((order) => order !== 26);
   const harness = createFixedHarness({ representedOrders: orders });
   harness.api.render('chat');
-  assertRelative(harness.api.meaningfulOrder(), ['TURN-25', 'PAGE-2', 'TURN-27'], 'Turn 26 absent');
-  equal(harness.api.diagnostics().pages[1].mode, 'earliest-exact-page-artifact', 'earliest exact mode is recorded');
+  const order = harness.api.meaningfulOrder();
+  assertRelative(order, ['PAGE-1', 'TURN-1', 'TURN-25', 'TURN-27'], 'Turn 26 absent, flow intact');
+  equal(order.includes('PAGE-2'), false, 'Page 2 is parked, never guessed');
+  const page2 = harness.api.diagnostics().pages.find((page) => page.pageNum === 2);
+  equal(page2.status, 'deferred', 'Page 2 defers until its exact start mounts');
 });
 
-await fixture('missing Turns 25 and 26 never uses a top-of-root fallback', () => {
+await fixture('missing Turns 25 and 26 parks Page 2 and never uses a top-of-root fallback', () => {
   const orders = Array.from({ length: 39 }, (_unused, index) => index + 1)
     .filter((order) => order !== 25 && order !== 26);
   const harness = createFixedHarness({ representedOrders: orders });
   harness.api.render('chat');
   const order = harness.api.meaningfulOrder();
-  assertRelative(order, ['PAGE-1', 'TURN-1', 'TURN-24', 'PAGE-2', 'TURN-27'], 'both boundaries absent');
-  ok(order.indexOf('PAGE-2') > order.indexOf('TURN-1'), 'Page 2 is not clustered above Turn 1');
+  assertRelative(order, ['PAGE-1', 'TURN-1', 'TURN-24', 'TURN-27'], 'both boundaries absent, flow intact');
+  equal(order.includes('PAGE-2'), false, 'Page 2 is parked, never clustered above Turn 1');
 });
 
-await fixture('Turn 39 is a safe earliest represented Page 2 anchor', () => {
+await fixture('Turn 39 alone is not Page 2 placement evidence', () => {
   const harness = createFixedHarness({ representedOrders: [1, 39] });
   harness.api.render('chat');
-  assertRelative(harness.api.meaningfulOrder(), ['PAGE-1', 'TURN-1', 'PAGE-2', 'TURN-39'], 'Turn 39 anchor');
-  equal(harness.api.diagnostics().pages[1].mode, 'earliest-exact-page-artifact', 'Page 2 uses Turn 39 evidence');
+  const order = harness.api.meaningfulOrder();
+  assertRelative(order, ['PAGE-1', 'TURN-1', 'TURN-39'], 'Page 1 places exactly');
+  equal(order.includes('PAGE-2'), false, 'a non-start artifact never places the divider');
+  const page2 = harness.api.diagnostics().pages.find((page) => page.pageNum === 2);
+  equal(page2.status, 'deferred', 'Page 2 parks until Turn 26 is represented');
 });
 
 await fixture('existing Page 2 before Page 1 is migrated', () => {
@@ -771,7 +785,7 @@ await fixture('existing title-list roots retain page ownership and position', ()
   assertRelative(harness.api.meaningfulOrder(), ['PAGE-1', 'LIST-1', 'PAGE-2', 'LIST-2'], 'title-list ownership');
 });
 
-await fixture('refresh reconstruction from minimal mounted DOM is ordered', () => {
+await fixture('refresh reconstruction from minimal mounted DOM places exactly and parks the rest', () => {
   const harness = createFixedHarness({ representedOrders: [1, 39] });
   const page2 = harness.api.createDivider(2);
   const page1 = harness.api.createDivider(1);
@@ -779,8 +793,11 @@ await fixture('refresh reconstruction from minimal mounted DOM is ordered', () =
   harness.moveBefore(page2, turn1);
   harness.moveBefore(page1, turn1);
   harness.api.render('chat');
-  assertRelative(harness.api.meaningfulOrder(), ['PAGE-1', 'TURN-1', 'PAGE-2', 'TURN-39'], 'minimal refresh');
-  equal(harness.api.diagnostics().status, 'settled', 'minimal refresh settles');
+  const order = harness.api.meaningfulOrder();
+  assertRelative(order, ['PAGE-1', 'TURN-1', 'TURN-39'], 'Page 1 reconstructs exactly');
+  equal(order.includes('PAGE-2'), false, 'unproven Page 2 divider is parked out of the flow');
+  const page2Stats = harness.api.diagnostics().pages.find((page) => page.pageNum === 2);
+  equal(page2Stats.status, 'deferred', 'Page 2 defers until Turn 26 is represented');
 });
 
 await fixture('collapse and expand cycles remain stable', () => {

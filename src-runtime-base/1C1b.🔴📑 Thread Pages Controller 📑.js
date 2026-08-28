@@ -2886,14 +2886,43 @@
     const id = String(identity || '').trim();
     if (!id) return { ok: false, reason: 'identity-unmounted' };
     let identityCarriers = [];
+    /* Identity domains, per measured host contract: product identities (qId,
+       primaryAId) are MESSAGE ids — the one stable identity across
+       rematerialization — while section data-turn-id carries the branch NODE
+       id. The two coincide only for never-branched turns, so a
+       data-turn-id-only lookup matched product identities by accident and
+       failed on any edited/regenerated turn (measured live: turn section
+       data-turn-id 1f6f1e66… while its qId is c06d946d…). Resolve through
+       the MountRegistry's message-id binding first; the node-id match stays
+       for callers that pass node-domain ids. */
     try {
-      identityCarriers = Array.from(document.querySelectorAll('section[data-turn-id]')).filter(
-        (carrier) => (
-          carrier?.isConnected === true
-          && String(carrier.getAttribute?.('data-turn-id') || '').trim() === id
-        )
-      );
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      const rec = mounts?.get?.(id);
+      const el = rec?.el?.isConnected === true ? rec.el : null;
+      const section = el
+        ? (el.closest?.('section[data-turn-id]') || el.closest?.(TURN_HOST_SEL) || null)
+        : null;
+      if (section?.isConnected === true) identityCarriers = [section];
     } catch {}
+    if (!identityCarriers.length) {
+      try {
+        const node = document.querySelector(`[data-message-id="${(typeof CSS !== 'undefined' && CSS?.escape) ? CSS.escape(id) : id.replace(/"/g, '\\"')}"]`);
+        const section = node?.isConnected === true
+          ? (node.closest?.('section[data-turn-id]') || node.closest?.(TURN_HOST_SEL) || null)
+          : null;
+        if (section?.isConnected === true) identityCarriers = [section];
+      } catch {}
+    }
+    if (!identityCarriers.length) {
+      try {
+        identityCarriers = Array.from(document.querySelectorAll('section[data-turn-id]')).filter(
+          (carrier) => (
+            carrier?.isConnected === true
+            && String(carrier.getAttribute?.('data-turn-id') || '').trim() === id
+          )
+        );
+      } catch {}
+    }
     if (!identityCarriers.length) return { ok: false, reason: 'identity-unmounted' };
     if (identityCarriers.length !== 1) return { ok: false, reason: 'identity-ambiguous' };
     const identityCarrier = identityCarriers[0];
@@ -3241,6 +3270,28 @@
       && lease.primaryAId === authority?.primaryAId;
   }
 
+  function renderedBoundaryIdentityProof(rt, ids) {
+    /* Identity proof source order. The Tier-0 complete-index proof is the
+       same host-payload-proven authority the whole foundation rests on and
+       is available even where the identity GRAPH cannot be acquired — the
+       graph needs an active backend fetch that the profile capability gates
+       off on unauthorized activations (measured live:
+       profile-not-authorized), which left this whole chain reporting
+       'graph-unavailable' for entire sessions. Graph diagnostics remain the
+       fallback for runtimes that predate the proof surface and for the rare
+       state where branch flows hold a current graph while the index proof
+       is momentarily unavailable. */
+    try {
+      if (typeof rt?.getCompleteIndexIdentityProof === 'function') {
+        const proof = rt.getCompleteIndexIdentityProof(ids);
+        if (proof?.available === true) return proof;
+        const graph = rt?.getGraphIdentityDiagnostics?.(ids) || null;
+        return graph?.available === true ? graph : proof;
+      }
+    } catch {}
+    try { return rt?.getGraphIdentityDiagnostics?.(ids) || null; } catch { return null; }
+  }
+
   function getRenderedPageBoundaryCapability(pageNum = 0) {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const authority = readRenderedBoundaryAuthority(num);
@@ -3270,10 +3321,11 @@
     const rt = TURN_RUNTIME();
     let graph = null;
     try {
-      graph = rt?.getGraphIdentityDiagnostics?.([
-        authority.qId,
-        authority.primaryAId,
-      ].filter(Boolean)) || null;
+      // typeof-guarded: validator sandboxes evaluate extracted slices that
+      // may not carry the proof helper.
+      graph = (typeof renderedBoundaryIdentityProof === 'function')
+        ? renderedBoundaryIdentityProof(rt, [authority.qId, authority.primaryAId].filter(Boolean))
+        : (rt?.getGraphIdentityDiagnostics?.([authority.qId, authority.primaryAId].filter(Boolean)) || null);
     } catch {}
     if (!graph?.available) {
       S.renderedPageBoundaryLeases.delete(num);
@@ -3313,7 +3365,7 @@
       return fail('streaming-active');
     }
 
-    const lease = S.renderedPageBoundaryLeases.get(num) || null;
+    let lease = S.renderedPageBoundaryLeases.get(num) || null;
     if (lease && !renderedBoundaryLeaseScopeCurrent(lease, authority, graphFingerprint)) {
       S.renderedPageBoundaryLeases.delete(num);
       return fail('boundary-scope-changed');
@@ -3326,7 +3378,9 @@
         dividerConnected: currentDivider?.isConnected === true,
       });
     }
-    const flowRoot = lease?.flowRoot || currentDivider?.parentElement || null;
+    const flowRoot = (lease?.flowRoot?.isConnected === true ? lease.flowRoot : null)
+      || currentDivider?.parentElement
+      || null;
     let activeThread = null;
     try { activeThread = document.querySelector?.('#thread') || null; } catch {}
     if (
@@ -3378,7 +3432,9 @@
         let currentGraph = null;
         try {
           currentAuthority = readRenderedBoundaryAuthority(num);
-          currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+          currentGraph = (typeof renderedBoundaryIdentityProof === 'function')
+          ? renderedBoundaryIdentityProof(rt, [authority.qId])
+          : (rt.getGraphIdentityDiagnostics?.([authority.qId]) || null);
         } catch {}
         const currentGraphFingerprint = String(currentGraph?.scope?.fingerprint || '');
         const currentGraphQ = currentGraph?.records?.find((record) => (
@@ -3453,19 +3509,47 @@
           leaseCurrent: true,
         });
       }
-      if (
-        lease.flowRoot !== flowRoot
-        || lease.boundaryWrapper?.isConnected !== true
-        || lease.boundaryWrapper?.parentElement !== flowRoot
-        || !renderedBoundaryWrapperCarriesIdentity(lease.boundaryWrapper, authority.qId)
-      ) {
-        S.renderedPageBoundaryLeases.delete(num);
-        return fail('captured-wrapper-replaced', {
-          flowRootConnected: true,
-          boundaryWrapperConnected: lease.boundaryWrapper?.isConnected === true,
-          dividerConnected: currentDivider?.isConnected === true,
-          startSentinelConnected: currentStartSentinel?.isConnected === true,
-        });
+      const leaseBindingCurrent = lease.flowRoot === flowRoot
+        && lease.boundaryWrapper?.isConnected === true
+        && lease.boundaryWrapper?.parentElement === flowRoot
+        && renderedBoundaryWrapperCarriesIdentity(lease.boundaryWrapper, authority.qId);
+      if (!leaseBindingCurrent) {
+        // Element references are ephemeral by measured host contract: a
+        // replaced wrapper (or flow root) is the normal rematerialization
+        // case, not a scope change. The lease is keyed by identity — the
+        // proven qId — so re-resolve the binding and refresh the lease;
+        // only an identity that cannot be re-proven fails.
+        const rebound = (typeof resolveColdRenderedBoundaryWrapper === 'function')
+          ? resolveColdRenderedBoundaryWrapper(flowRoot, authority.qId)
+          : { ok: false, reason: 'resolver-unavailable' };
+        if (rebound.reason === 'identity-ambiguous') {
+          S.renderedPageBoundaryLeases.delete(num);
+          return fail('boundary-section-ambiguous', {
+            flowRootConnected: true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        const reboundOwned = (typeof renderedBoundaryColdWrapperH2OOwned === 'function')
+          ? renderedBoundaryColdWrapperH2OOwned(rebound.wrapper)
+          : false;
+        if (
+          !rebound.ok
+          || rebound.wrapper?.isConnected !== true
+          || rebound.wrapper?.parentElement !== flowRoot
+          || !renderedBoundaryWrapperCarriesIdentity(rebound.wrapper, authority.qId)
+          || reboundOwned
+        ) {
+          S.renderedPageBoundaryLeases.delete(num);
+          return fail('captured-wrapper-replaced', {
+            flowRootConnected: true,
+            boundaryWrapperConnected: lease.boundaryWrapper?.isConnected === true,
+            dividerConnected: currentDivider?.isConnected === true,
+            startSentinelConnected: currentStartSentinel?.isConnected === true,
+          });
+        }
+        lease = Object.freeze({ ...lease, flowRoot, boundaryWrapper: rebound.wrapper });
+        S.renderedPageBoundaryLeases.set(num, lease);
       }
       const placement = renderedBoundaryPageUnitPlacement(
         flowRoot,
@@ -3476,7 +3560,9 @@
       let currentGraph = null;
       try {
         currentStatus = rt.getEffectivePresentationStatus?.() || null;
-        currentGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+        currentGraph = (typeof renderedBoundaryIdentityProof === 'function')
+          ? renderedBoundaryIdentityProof(rt, [authority.qId])
+          : (rt.getGraphIdentityDiagnostics?.([authority.qId]) || null);
       } catch {}
       if (
         renderedBoundaryStatusIdentity(currentStatus) !== authority.statusIdentity
@@ -3532,15 +3618,12 @@
       lease.flowRoot !== flowRoot
       || lease.boundaryWrapper !== boundaryWrapper
     )) {
-      S.renderedPageBoundaryLeases.delete(num);
-      return fail('captured-wrapper-replaced', {
-        flowRootConnected: true,
-        boundarySectionMounted: true,
-        boundaryWrapperConnected: boundaryWrapper?.isConnected === true,
-        boundaryDomRole,
-        dividerConnected: currentDivider?.isConnected === true,
-        startSentinelConnected: currentStartSentinel?.isConnected === true,
-      });
+      // The wrapper was just re-proven for the SAME identity on a fresh
+      // element — the normal rematerialization case under the measured host
+      // contract. Refresh the identity-keyed lease binding in place instead
+      // of failing the capability over reference inequality.
+      lease = Object.freeze({ ...lease, flowRoot, boundaryWrapper });
+      S.renderedPageBoundaryLeases.set(num, lease);
     }
     const placement = renderedBoundaryPageUnitPlacement(flowRoot, boundaryWrapper, num);
 
@@ -3574,7 +3657,9 @@
     let finalGraph = null;
     try {
       finalStatus = rt.getEffectivePresentationStatus?.() || null;
-      finalGraph = rt.getGraphIdentityDiagnostics?.([authority.qId]) || null;
+      finalGraph = (typeof renderedBoundaryIdentityProof === 'function')
+        ? renderedBoundaryIdentityProof(rt, [authority.qId])
+        : (rt.getGraphIdentityDiagnostics?.([authority.qId]) || null);
     } catch {}
     if (
       renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
@@ -3716,6 +3801,15 @@
   }
 
   function pageCollapseRangeIdentityOfCarrier(carrier = null) {
+    // Message ids are the product identity domain (stable across
+    // rematerialization, provable against the complete-index authority);
+    // section data-turn-id carries the branch NODE id and stays only as the
+    // fallback for unhydrated shells, whose sections expose no message id.
+    try {
+      const messageNode = carrier?.querySelector?.('[data-message-id]');
+      const messageId = String(messageNode?.getAttribute?.('data-message-id') || '').trim();
+      if (messageId) return messageId;
+    } catch {}
     return String(carrier?.getAttribute?.('data-turn-id') || '').trim();
   }
 
@@ -3723,13 +3817,35 @@
     return String(node?.getAttribute?.('data-turn-id-container') || '').trim();
   }
 
+  /* Is a COMMITTED member wrapper still the same host turn container?
+     Two host-provided identity domains answer this, and the live one depends
+     purely on hydration state:
+       - the inner message identity, present while the turn is hydrated;
+       - the wrapper's own data-turn-id-container, present in both states and
+         measured stable across the host virtualizing the content away.
+     Accepting either is what keeps a committed collapse provable when the
+     host unhydrates a hidden range (measured: wrapper still connected, still
+     a direct child, still carrying our hidden stamp, but carrierCount 0 - the
+     message identity simply has no carrier to live on). Neither domain is a
+     positional guess, so this proves membership exactly as strictly as before;
+     it only stops mistaking "content virtualized" for "different turn". */
+  function pageCollapseMemberIdentityCurrent(node = null, proof = null) {
+    if (!node || !proof) return false;
+    const identity = String(proof.identity || '').trim();
+    if (identity && pageCollapseRangeNodeCarriesIdentity(node, identity)) return true;
+    const containerId = String(proof.containerId || '').trim();
+    if (!containerId) return false;
+    return pageCollapseRangeContainerIdentity(node) === containerId;
+  }
+
   function pageCollapseRangeNodeCarriesIdentity(node = null, identity = '') {
     const id = String(identity || '').trim();
     if (!node || !id) return false;
     if (pageCollapseRangeContainerIdentity(node) === id) return true;
-    return pageCollapseRangeIdentityCarriers(node).some(
-      (carrier) => pageCollapseRangeIdentityOfCarrier(carrier) === id
-    );
+    return pageCollapseRangeIdentityCarriers(node).some((carrier) => (
+      pageCollapseRangeIdentityOfCarrier(carrier) === id
+      || String(carrier?.getAttribute?.('data-turn-id') || '').trim() === id
+    ));
   }
 
   function pageCollapseRangeHasRetainedHeight(node = null) {
@@ -3784,7 +3900,11 @@
     for (let offset = 0; offset < ids.length; offset += 32) {
       const batch = ids.slice(offset, offset + 32);
       let graph = null;
-      try { graph = rt?.getGraphIdentityDiagnostics?.(batch) || null; } catch {}
+      try {
+        graph = (typeof renderedBoundaryIdentityProof === 'function')
+          ? renderedBoundaryIdentityProof(rt, batch)
+          : (rt?.getGraphIdentityDiagnostics?.(batch) || null);
+      } catch {}
       if (!graph?.available) {
         return {
           ok: false,
@@ -4344,6 +4464,7 @@
       retainedHeightContinuity: 0,
     };
     const provenWrappers = new Map();
+    const unresolvedRangeWrappers = [];
     for (let offset = 0; offset < interval.length; offset += 1) {
       const node = interval[offset];
       const index = rangeStartIndex + offset;
@@ -4397,12 +4518,93 @@
         hostWrapperCount += 1;
         provenWrappers.set(node, Object.freeze({
           identity: provenIdentity,
+          // The wrapper's OWN host container id, captured beside the proof.
+          // Measured: it is present while the turn is hydrated and survives
+          // the host virtualizing the content away unchanged (6/6), while the
+          // inner message identity disappears with the content. Recording both
+          // domains is what lets a committed member stay provable through
+          // unhydration - see pageCollapseMemberIdentityCurrent.
+          containerId,
           proofSource,
         }));
         continue;
       }
+      unresolvedRangeWrappers.push({ node, index, offset, containerId, carriers });
+    }
+
+    /* Second pass — order-bracketed turn content. A host virtualized wrapper
+       can carry only a sub-message id (reasoning and tool messages are not
+       enumerable from the complete index; only the acquisition graph knows
+       them, and the graph is not acquirable on unauthorized activations).
+       Structural inference from PROVEN members replaces that: a host
+       turn-content wrapper (data-turn-id-container) lying strictly between
+       identity-proven neighbors whose authoritative orders differ by at
+       most one belongs to the earlier turn's span. The page boundaries
+       themselves bracket the edges. Anything wider stays ambiguous and
+       fails closed exactly as before. */
+    const rangeOrderOfProven = (candidate) => {
+      const proof = provenWrappers.get(candidate) || null;
+      if (!proof) return 0;
+      const record = graphRead.records.get(proof.identity) || null;
+      return Math.max(0, Number(record?.order || 0) || 0);
+    };
+    for (const entry of unresolvedRangeWrappers) {
+      const { node, index, containerId, carriers } = entry;
+      let bracketed = false;
+      const isTurnContent = !!containerId || node?.matches?.('[data-turn-id-container]') === true;
+      if (isTurnContent) {
+        let leftOrder = 0;
+        let leftIdentity = '';
+        for (let at = entry.offset - 1; at >= 0; at -= 1) {
+          const candidate = interval[at];
+          if (pageCollapseRangeH2OOwned(candidate)) continue;
+          if (!provenWrappers.has(candidate)) break;
+          leftOrder = rangeOrderOfProven(candidate);
+          leftIdentity = provenWrappers.get(candidate).identity;
+          break;
+        }
+        if (!leftOrder) {
+          // Left edge: the proven start boundary is the bracket.
+          leftOrder = Math.max(0, Number(base.pageStartOrder || 0) || 0);
+          leftIdentity = String(authority?.qId || '');
+        }
+        let rightOrder = 0;
+        for (let at = entry.offset + 1; at < interval.length; at += 1) {
+          const candidate = interval[at];
+          if (pageCollapseRangeH2OOwned(candidate)) continue;
+          if (!provenWrappers.has(candidate)) break;
+          rightOrder = rangeOrderOfProven(candidate);
+          break;
+        }
+        if (!rightOrder) {
+          // Right edge: the proven end boundary (next page start, or the
+          // final tail) is the bracket.
+          rightOrder = Math.max(0, Number(base.pageEndOrder || 0) || 0) + 1;
+        }
+        if (
+          leftOrder > 0
+          && rightOrder > 0
+          && leftIdentity
+          && rightOrder - leftOrder >= 0
+          && rightOrder - leftOrder <= 1
+        ) {
+          hostWrapperCount += 1;
+          provenWrappers.set(node, Object.freeze({
+            // The wrapper's own container id (a stable sub-message identity)
+            // is what member revalidation can re-verify against the node;
+            // the bracketing neighbor identity only justified membership.
+            identity: containerId || leftIdentity,
+            containerId,
+            proofSource: 'order-bracketed-turn-content',
+          }));
+          classifierSignals.orderBracketed = Number(classifierSignals.orderBracketed || 0) + 1;
+          bracketed = true;
+        }
+      }
+      if (bracketed) continue;
       ambiguousWrapperCount += 1;
       if (!firstAmbiguous) {
+        const containerRecord = containerId ? graphRead.records.get(containerId) : null;
         const mountedIds = carriers
           .map(pageCollapseRangeIdentityOfCarrier)
           .filter(Boolean);
@@ -4424,10 +4626,15 @@
     let finalGraph = null;
     try {
       finalStatus = rt?.getEffectivePresentationStatus?.() || null;
-      finalGraph = rt?.getGraphIdentityDiagnostics?.([
-        authority.qId,
-        ...(nextAuthority ? [nextAuthority.qId] : []),
-      ]) || null;
+      finalGraph = (typeof renderedBoundaryIdentityProof === 'function')
+        ? renderedBoundaryIdentityProof(rt, [
+          authority.qId,
+          ...(nextAuthority ? [nextAuthority.qId] : []),
+        ])
+        : (rt?.getGraphIdentityDiagnostics?.([
+          authority.qId,
+          ...(nextAuthority ? [nextAuthority.qId] : []),
+        ]) || null);
     } catch {}
     if (
       renderedBoundaryStatusIdentity(finalStatus) !== authority.statusIdentity
@@ -5872,7 +6079,12 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     const titleListActive = isTitleListActive(num, id);
-    const blocked = !titleListActive && readiness?.ready !== true;
+    // A ready capability whose transaction failed transiently stays
+    // RETRYABLE: the control must not render blocked (and must not stamp
+    // the unavailable readiness the skin styles as disabled) — the
+    // transient feedback message already reports the failed attempt.
+    const transientFailure = String(readiness?.productReason || '') === 'transient-failure';
+    const blocked = !titleListActive && readiness?.ready !== true && !transientFailure;
     const diagnosticReason = blocked
       ? String(readiness?.structuralReason || readiness?.reason || 'readiness-api-unavailable')
       : '';
@@ -6080,8 +6292,27 @@
       } catch { return false; }
     }
     try { current = Number(snapshot.anchor.getBoundingClientRect?.().top); } catch { return false; }
-    return Number.isFinite(current)
-      && Math.abs(current - snapshot.top) <= Math.max(0, Number(tolerancePx || 0) || 0);
+    if (!Number.isFinite(current)) return false;
+    if (Math.abs(current - snapshot.top) <= Math.max(0, Number(tolerancePx || 0) || 0)) return true;
+    // Geometric truncation: collapsing the very page the viewport sits in
+    // legitimately shortens the scroll range, so the pre-collapse offset can
+    // be unreachable rather than lost. When the scroll root is clamped at a
+    // boundary and the anchor is visible in the viewport, the restore is as
+    // good as geometry allows - rolling back a committed collapse over an
+    // unreachable pixel offset failed the user's explicit action.
+    try {
+      const root = (snapshot.scrollRoot && snapshot.scrollRoot !== W && 'scrollTop' in snapshot.scrollRoot)
+        ? snapshot.scrollRoot
+        : (document.scrollingElement || null);
+      const maxTop = root ? Math.max(0, Number(root.scrollHeight || 0) - Number(root.clientHeight || 0)) : 0;
+      const at = root ? Number(root.scrollTop || 0) : Number(W.scrollY || 0);
+      const clamped = root ? (at <= 1 || at >= maxTop - 1) : false;
+      const rect = snapshot.anchor.getBoundingClientRect?.();
+      const viewportH = Number(W.innerHeight || document.documentElement?.clientHeight || 0);
+      const visible = !!rect && rect.bottom > 0 && rect.top < viewportH;
+      if (clamped && visible) return true;
+    } catch {}
+    return false;
   }
 
   // ── Chat Page Divider -> MiniMap, one way only ───────────────────────────
@@ -6239,7 +6470,7 @@
         || node?.parentElement !== plan.flowRoot
         || pageCollapseRangeH2OOwned(node)
         || !proof?.identity
-        || !pageCollapseRangeNodeCarriesIdentity(node, proof.identity)
+        || !pageCollapseMemberIdentityCurrent(node, proof)
       ) return { ok: false, reason: 'atomic-plan-member-stale' };
     }
     const authority = readRenderedBoundaryAuthority(plan.pageNum);
@@ -6322,8 +6553,15 @@
     S.atomicPageCollapseTransactions.delete(key);
     S.nativeRangeActivePages.delete(key);
     S.titleListStacksByKey.delete(titleListStackRegistryKey(num, id));
-    setAtomicTitleListMemory(id, num, false);
-    setAtomicCollapsedPageMemory(id, num, false);
+    if (options?.preserveIntent !== true) {
+      // The persisted collapse memory is USER intent. Only a user-driven
+      // expansion may clear it: a rollback of a failed attempt or a
+      // host-lifecycle expansion undoes the ATTEMPT, not the intent — the
+      // collapse re-applies when the boundary is provable again. Erasing it
+      // here silently dropped a durable preference on transient host churn.
+      setAtomicTitleListMemory(id, num, false);
+      setAtomicCollapsedPageMemory(id, num, false);
+    }
     propagateChatPageCollapseToMiniMap(num, id, false);
     getTitleListStackStats(num, id).activeStackId = '';
     syncTitleOnlyModeRootAttribute(id);
@@ -6338,7 +6576,10 @@
   }
 
   function rollbackAtomicPageCollapse(transaction = null, viewportAnchor = null, reason = '') {
-    const released = releaseAtomicPageCollapseState(transaction, { clearDiagnostic: false });
+    const released = releaseAtomicPageCollapseState(transaction, {
+      clearDiagnostic: false,
+      preserveIntent: true,
+    });
     if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
     return {
       ok: false,
@@ -6530,6 +6771,7 @@
         controlReadiness: explicitExpansion
           ? { ready: true, reason: null, productReason: 'ready' }
           : null,
+        preserveIntent: !explicitExpansion,
       });
       if (viewportAnchor) restoreCollapsedPageViewportAnchor(viewportAnchor, 4);
       // A lifecycle expansion is not itself evidence that the exact boundaries
@@ -6558,10 +6800,147 @@
     }
   }
 
+  /* Committed-transaction identity maintenance. The host reacts to a hidden
+     collapsed range by REPLACING wrapper elements (measured live: an
+     observer-hub remount right after commit left the transaction's pinned
+     member nodes stale, which expanded a perfectly good collapse as
+     'atomic-plan-member-stale'). Element references are ephemeral by host
+     contract — the committed state is IDENTITY-keyed, so maintenance
+     re-resolves each stale member by its recorded identity inside the live
+     flow root, restamps the hidden marker the replacement arrived without,
+     and only an identity that cannot be re-resolved keeps the expansion
+     path. */
+  function rebindCommittedAtomicPageCollapse(transaction = null) {
+    if (!transaction || transaction.atomicRenderedBoundaryPlan !== true) {
+      return { ok: false, rebound: 0, reason: 'transaction-missing' };
+    }
+    let rebound = 0;
+    const divider = transaction.pageDivider?.isConnected === true
+      ? transaction.pageDivider
+      : document.querySelector(
+        `.cgxui-chat-page-divider[data-page-num="${String(transaction.pageNum)}"]`
+      );
+    if (divider && transaction.pageDivider !== divider) {
+      transaction.pageDivider = divider;
+      rebound += 1;
+    }
+    const liveFlowRoot = divider?.parentElement?.isConnected === true
+      ? divider.parentElement
+      : (transaction.flowRoot?.isConnected === true ? transaction.flowRoot : null);
+    if (!liveFlowRoot) return { ok: false, rebound, reason: 'flow-root-unavailable' };
+    if (transaction.flowRoot !== liveFlowRoot) {
+      transaction.flowRoot = liveFlowRoot;
+      rebound += 1;
+    }
+    // The direct flow child that currently hosts an element, so a registry
+    // binding (which points at the message element, not the flow wrapper)
+    // resolves to the wrapper this transaction owns.
+    const directFlowChildOf = (el) => {
+      let cur = el;
+      while (cur && cur.parentElement && cur.parentElement !== liveFlowRoot) cur = cur.parentElement;
+      return cur?.parentElement === liveFlowRoot ? cur : null;
+    };
+    const findByProof = (proof, used) => {
+      if (!proof) return null;
+      // MountRegistry first: the hub is the single writer of
+      // identity->element bindings, so a rematerialized turn resolves without
+      // scanning the flow at all.
+      try {
+        const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+        const rec = mounts?.get?.(String(proof.identity || '').trim());
+        const el = rec?.el?.isConnected === true ? (rec.shell || rec.el) : null;
+        const wrapper = el ? directFlowChildOf(el) : null;
+        if (wrapper && !used.has(wrapper) && !pageCollapseRangeH2OOwned(wrapper)) return wrapper;
+      } catch {}
+      for (const child of Array.from(liveFlowRoot.children || [])) {
+        if (used.has(child) || pageCollapseRangeH2OOwned(child)) continue;
+        if (pageCollapseMemberIdentityCurrent(child, proof)) return child;
+      }
+      return null;
+    };
+    const findByIdentity = (identity, used) => findByProof({ identity }, used);
+    // One currency test, shared with the committed-state validator. They must
+    // not disagree: the weaker "connected and a direct child" test used here
+    // before reported success having rebound nothing (measured live:
+    // rebind ok / rebound 0), after which the validator still rejected the
+    // same member and the committed collapse was expanded away.
+    const memberCurrent = (node, proof) => (
+      node?.isConnected === true
+      && node?.parentElement === liveFlowRoot
+      && !pageCollapseRangeH2OOwned(node)
+      && pageCollapseMemberIdentityCurrent(node, proof)
+    );
+    const used = new Set();
+    for (const node of transaction.hostWrappers) {
+      const proof = transaction.wrapperProofs?.get?.(node) || null;
+      if (memberCurrent(node, proof)) used.add(node);
+    }
+    const nextWrappers = [];
+    const nextProofs = new Map();
+    for (const node of transaction.hostWrappers) {
+      const proof = transaction.wrapperProofs?.get?.(node) || null;
+      if (!proof?.identity) return { ok: false, rebound, reason: 'member-proof-missing' };
+      if (memberCurrent(node, proof)) {
+        nextWrappers.push(node);
+        nextProofs.set(node, proof);
+        continue;
+      }
+      const replacement = findByProof(proof, used);
+      if (!replacement) return { ok: false, rebound, reason: 'member-identity-unresolved' };
+      used.add(replacement);
+      try {
+        replacement.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(transaction.pageNum));
+      } catch {}
+      nextWrappers.push(replacement);
+      nextProofs.set(replacement, proof);
+      rebound += 1;
+    }
+    // Boundary wrappers re-resolve by their recorded identities too.
+    if (!(transaction.startWrapper?.isConnected === true
+      && transaction.startWrapper?.parentElement === liveFlowRoot)) {
+      const replacement = findByIdentity(transaction.startBoundaryQId, used);
+      if (!replacement) return { ok: false, rebound, reason: 'start-identity-unresolved' };
+      used.add(replacement);
+      transaction.startWrapper = replacement;
+      rebound += 1;
+    }
+    if (!(transaction.endWrapper?.isConnected === true
+      && transaction.endWrapper?.parentElement === liveFlowRoot)) {
+      if (transaction.isFinalPage === true) {
+        const sentinel = renderedBoundaryPageEndSentinel(transaction.pageNum);
+        if (!(sentinel?.isConnected === true && sentinel.parentElement === liveFlowRoot)) {
+          return { ok: false, rebound, reason: 'end-identity-unresolved' };
+        }
+        transaction.endWrapper = sentinel;
+      } else {
+        const replacement = findByIdentity(transaction.nextBoundaryQId, used);
+        if (!replacement) return { ok: false, rebound, reason: 'end-identity-unresolved' };
+        transaction.endWrapper = replacement;
+      }
+      rebound += 1;
+    }
+    transaction.hostWrappers = nextWrappers;
+    transaction.wrapperProofs = nextProofs;
+    // Stale references are released, never retained as durable authority: the
+    // release path un-stamps exactly this list, so a detached original left
+    // here would both un-stamp nothing and leak our hidden attribute on the
+    // live replacement that took its place.
+    transaction.stampedWrappers = nextWrappers.slice();
+    return { ok: true, rebound, reason: null };
+  }
+
   function reconcileAtomicPageCollapseTransactions(reason = 'presentation-updated') {
     const results = [];
     for (const transaction of Array.from(S.atomicPageCollapseTransactions.values())) {
-      const current = validateCommittedAtomicPageCollapse(transaction);
+      let current = validateCommittedAtomicPageCollapse(transaction);
+      if (!current.ok && typeof rebindCommittedAtomicPageCollapse === 'function') {
+        // Identity maintenance first: host element replacement inside or
+        // around a hidden range is the normal rematerialization case, not
+        // an invalidation of the user's committed collapse. (typeof-guarded:
+        // validator sandboxes evaluate extracted slices without the helper.)
+        const rebind = rebindCommittedAtomicPageCollapse(transaction);
+        if (rebind.ok) current = validateCommittedAtomicPageCollapse(transaction);
+      }
       if (current.ok) {
         results.push({ ok: true, status: 'current', pageNum: transaction.pageNum });
         continue;
@@ -6571,7 +6950,95 @@
         source: `${reason}:${current.reason}`,
       }));
     }
+    for (const replayed of replayDeferredPageCollapseIntent(reason)) results.push(replayed);
     return results;
+  }
+
+  /* Route-return collapse replay.
+     Leaving a conversation legitimately tears the ephemeral projection down
+     while the user's intent survives - a route change is a lifecycle
+     expansion, so it preserves intent by design and drops only the committed
+     transaction. Nothing then re-projected it on return, because the pass
+     above iterates committed transactions and the route change had already
+     removed this page's. Measured: isPageCollapsed(2) true with mode normal,
+     0 synthetic lists and 0 title rows.
+
+     The canonical intent for the active (legacy) route is the collapsed-pages
+     state behind isPageCollapsed(). The title-intent ledger owns the engine
+     route and is inert here - it was never written by the legacy gesture
+     (ledgerRev 0, isTitleIntentSystemInert true), so gating replay on it
+     skipped a perfectly valid intent. Replay therefore reads that single
+     authority and re-enters collapsePageWithRenderedBoundaries, which remains
+     the sole projection writer; nothing here writes projection or intent
+     directly, so there is still exactly one logical writer.
+
+     A page whose exact boundaries are not currently provable is skipped and
+     its intent left untouched, so the collapse re-projects on a later pass
+     once its members mount. Readiness is a pure read, which keeps a page that
+     is never projectable from re-running the full plan on every reconcile. An
+     explicit divider expansion clears the intent, so a page the user opened is
+     never re-collapsed behind them. */
+  let collapseIntentReplayActive = false;
+  // Bounded per-page deferral retries. A page can legitimately be
+  // unprojectable for a beat after a route return (its exact boundary members
+  // have not mounted yet), and the ambient repair triggers are membership
+  // events that may all have fired already. This re-arms the EXISTING repair
+  // timer a bounded number of times instead of introducing another loop; the
+  // counter clears as soon as the page projects, and intent is never touched.
+  const collapseIntentReplayRetries = new Map();
+  const COLLAPSE_INTENT_REPLAY_MAX_RETRIES = 6;
+
+  function replayDeferredPageCollapseIntent(reason = 'intent-replay') {
+    if (collapseIntentReplayActive) return [];
+    const id = resolveChatId();
+    if (!id) return [];
+    let intent = null;
+    try { intent = readCollapsedPages(id); } catch { intent = null; }
+    if (!intent || !intent.size) return [];
+    const out = [];
+    collapseIntentReplayActive = true;
+    try {
+      for (const pageNum of Array.from(intent)) {
+        const num = Math.max(1, Number(pageNum || 0) || 0);
+        if (!num) continue;
+        const key = collapsedNativeRangeKey(id, num);
+        if (S.atomicPageCollapseTransactions.has(key)) continue;
+        if (S.atomicPageCollapseGuards.has(key)) continue;
+        let readiness = null;
+        try { readiness = getCollapsedNativeBoundaryReadiness(num); } catch { readiness = null; }
+        if (readiness?.activationReady !== true) {
+          const retryKey = `${id}|${num}`;
+          const attempts = Math.max(0, Number(collapseIntentReplayRetries.get(retryKey) || 0));
+          if (attempts < COLLAPSE_INTENT_REPLAY_MAX_RETRIES) {
+            collapseIntentReplayRetries.set(retryKey, attempts + 1);
+            try { scheduleActiveTitleListRepair('collapse-intent-replay-retry', 400, num); } catch {}
+          }
+          out.push({
+            ok: true,
+            status: 'intent-replay-deferred',
+            pageNum: num,
+            chatId: id,
+            attempts,
+            reason: String(readiness?.reason || 'not-projectable'),
+          });
+          continue;
+        }
+        collapseIntentReplayRetries.delete(`${id}|${num}`);
+        let replayed = null;
+        try {
+          replayed = collapsePageWithRenderedBoundaries(num, {
+            chatId: id,
+            source: `intent-replay:${String(reason || 'reconcile')}`,
+          });
+        } catch {
+          replayed = { ok: false, status: 'intent-replay-failed', pageNum: num, chatId: id };
+        }
+        out.push(replayed);
+      }
+    } finally {
+      collapseIntentReplayActive = false;
+    }
+    return out;
   }
 
   function expandAllAtomicPageCollapses(reason = 'scope-change') {
@@ -8908,7 +9375,15 @@
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
     if (transaction) {
-      const current = validateCommittedAtomicPageCollapse(transaction);
+      let current = validateCommittedAtomicPageCollapse(transaction);
+      if (!current.ok && typeof rebindCommittedAtomicPageCollapse === 'function') {
+        // Same identity maintenance the reconcile path performs: a projection
+        // sync must re-resolve replacement elements before it concludes the
+        // committed collapse is gone, or a remount during sync releases a
+        // projection the user never asked to expand.
+        const rebind = rebindCommittedAtomicPageCollapse(transaction);
+        if (rebind.ok) current = validateCommittedAtomicPageCollapse(transaction);
+      }
       if (!current.ok) {
         return expandPageWithRenderedBoundaries(num, {
           chatId: id,

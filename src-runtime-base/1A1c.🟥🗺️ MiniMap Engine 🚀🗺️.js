@@ -179,6 +179,9 @@
     offShellNoButtons: null,
     offCoreTurnUpdated: null,
     offCompleteTurnIndexState: null,
+    offMountTransitions: null,
+    offStaleWatchdog: null,
+    completeIndexAnchorsBootstrapped: false,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -268,7 +271,15 @@
       if (!operation || operation.done || operation.generation !== state.generation) return 'cancelled';
       if (!enabled()) return 'gate-disabled';
       if (operation.routeKey !== currentRouteKey()) return 'stale-route';
-      if ((now() - operation.startedAtMs) >= Number(limits.totalDurationMs || 5000)) return 'navigation-timeout';
+      // Far materialization legitimately outlives the 5s near-target budget:
+      // the host loads history in windows, so the driver extends this one
+      // operation's deadline from the measured per-cycle cost. Progress and
+      // cancellation are the primary controls; this stays a hard watchdog.
+      const deadlineMs = Math.max(
+        Number(limits.totalDurationMs || 5000),
+        Number(operation.deadlineMs || 0),
+      );
+      if ((now() - operation.startedAtMs) >= deadlineMs) return 'navigation-timeout';
       return '';
     };
     const finish = (operation, status, partial = {}, result = {}) => {
@@ -345,6 +356,46 @@
           return finish(operation, navigated ? 'navigated' : 'unreachable', navigated ? {} : { errorCode: 'precise-navigation-failed' });
         }
         setState('mounting-target');
+        // A target beyond the materialised host range cannot be reached by the
+        // bounded hop walk — the host renders history in windows. The far
+        // driver runs widened native reveal cycles while progress continues,
+        // and returns null when the target is near so the hop walk below keeps
+        // owning that case unchanged.
+        if (typeof adapters?.materializeFar === 'function') {
+          const far = await adapters.materializeFar(descriptor, surface, {
+            operation,
+            isStale: () => staleReason(operation),
+            setState,
+            extendDeadline: (ms) => {
+              operation.deadlineMs = Math.max(Number(operation.deadlineMs || 0), Number(ms) || 0);
+            },
+          });
+          const afterFar = staleReason(operation);
+          if (afterFar) {
+            const stale = afterFar === 'stale-route';
+            return finish(operation, stale ? 'stale-route-discarded' : (afterFar === 'navigation-timeout' ? 'unreachable' : 'cancelled'), {
+              errorCode: afterFar,
+              hopCount: Number(far?.cycles || 0),
+            });
+          }
+          if (far?.mounted) {
+            setState('target-mounted', { hopCount: Number(far.cycles || 0) });
+            const aligner = typeof adapters?.alignFar === 'function' ? adapters.alignFar : adapters?.navigateMounted;
+            const navigated = (await aligner?.(far.mounted, descriptor, surface)) !== false;
+            return finish(
+              operation,
+              navigated ? 'navigated' : 'unreachable',
+              navigated ? { hopCount: Number(far.cycles || 0) } : { errorCode: 'precise-navigation-failed' },
+              { farCycles: Number(far.cycles || 0), historyRewrites: Number(far.rewrites || 0) },
+            );
+          }
+          if (far?.attempted) {
+            return finish(operation, 'unreachable', {
+              errorCode: far.errorCode || 'far-materialization-failed',
+              hopCount: Number(far.cycles || 0),
+            }, { farCycles: Number(far.cycles || 0), historyRewrites: Number(far.rewrites || 0) });
+          }
+        }
         for (let hop = 1; hop <= Number(limits.maxHops || 5); hop += 1) {
           const before = staleReason(operation);
           if (before) {
@@ -1631,8 +1682,15 @@
     }
   }
 
-  function MINI_completeIndexDescriptor(request = {}) {
-    const records = MINI_completeIndexRecords();
+  /* `records` may be supplied by a caller that already owns the complete
+     logical set for this pass. Deriving it here once per descriptor turned a
+     single bind pass into one complete-index/status derivation per logical
+     record — the O(N) amplification behind the measured storm. The default
+     stays identical for every single-descriptor caller. */
+  function MINI_completeIndexDescriptor(request = {}, providedRecords = null) {
+    const records = Array.isArray(providedRecords) && providedRecords.length
+      ? providedRecords
+      : MINI_completeIndexRecords();
     if (!records.length) return null;
     const turn = request?.turn || null;
     const normalizeQId = (value) => String(value || '').replace(/^conversation-turn-/, '').replace(/^turn:/, '').trim();
@@ -1697,13 +1755,46 @@
     return value?.isConnected ? value : null;
   }
 
+  /* Identity->element resolution goes through the Observer Hub's
+     MountRegistry: element references are ephemeral (the host replaces them
+     on rematerialization), so the registry is the single writer of the
+     binding and a lookup here is an O(1) Map get keyed by the one stable
+     host identity, data-message-id. A registry miss means "not mounted right
+     now" — never "does not exist" — and costs no DOM probe. The legacy
+     document-wide selector probes survive only as the degraded fallback for
+     a runtime booted without the hub. */
+  function MINI_mountRegistry() {
+    try {
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      return (mounts && typeof mounts.get === 'function') ? mounts : null;
+    } catch { return null; }
+  }
+
+  function MINI_mountedElementById(anyId) {
+    const mounts = MINI_mountRegistry();
+    if (!mounts) return null;
+    for (const variant of buildIdVariants(anyId)) {
+      // Registry keys are raw data-message-id values; prefixed variants
+      // (turn:, turn:a:) can never match and are skipped outright.
+      if (!variant || variant.includes(':')) continue;
+      try {
+        const el = MINI_connectedElement(mounts.get(variant)?.el || null);
+        if (el) return el;
+      } catch {}
+    }
+    return null;
+  }
+
   function MINI_resolveCompleteIndexMounted(descriptor, surface = 'answer') {
     if (!descriptor?.qId || COMPLETE_INDEX_INTERNAL_QIDS.has(descriptor.qId)) return null;
     const record = descriptor.record || null;
+    const registry = MINI_mountRegistry();
     const liveQuestion = MINI_connectedElement(record?.live?.qEl || record?.qEl || null);
     const exactQuestion = liveQuestion
-      || normalizeQuestionEl(findTurnHostById(descriptor.qId))
-      || normalizeQuestionEl(findTurnHostById(descriptor.turnId));
+      || (registry
+        ? normalizeQuestionEl(MINI_mountedElementById(descriptor.qId) || MINI_mountedElementById(descriptor.turnId))
+        : (normalizeQuestionEl(findTurnHostById(descriptor.qId))
+          || normalizeQuestionEl(findTurnHostById(descriptor.turnId))));
     if (exactQuestion) {
       const handle = MINI_hiddenPageHandleForElement(exactQuestion);
       completeIndexMountedAnchors.set(descriptor.qId, exactQuestion);
@@ -1715,7 +1806,9 @@
       .map((value) => normalizeNavId(value))
       .filter(Boolean);
     for (const alias of Array.from(new Set(aliases))) {
-      const answer = MINI_connectedElement(findAnswerById(alias));
+      const answer = registry
+        ? normalizeAssistantEl(MINI_mountedElementById(alias))
+        : MINI_connectedElement(findAnswerById(alias));
       if (!answer) continue;
       const handle = MINI_hiddenPageHandleForElement(answer);
       completeIndexMountedAnchors.set(descriptor.qId, answer);
@@ -1740,14 +1833,88 @@
         qId: record?.qId,
         turnId: record?.turnId,
         turn: record,
-      });
+      }, records);
       if (descriptor) MINI_resolveCompleteIndexMounted(descriptor, record?.noAnswer ? 'question' : 'answer');
     }
     return completeIndexMountedAnchors.size;
   }
 
+  /* Anchor maintenance driven by MountRegistry deltas.
+     A full rebind walks every logical record and probes the document for each
+     one that is not mounted; running it on every user-scroll rAF is the O(N)
+     amplification this replaces. A mount transition already names exactly
+     which identities changed, so only those turns are re-resolved, and the
+     work is bounded by the transition batch instead of the logical set.
+     Every transition kind resolves the same way on purpose:
+     MINI_resolveCompleteIndexMounted rebinds the turn to whatever element is
+     currently mounted for it and deletes the binding when nothing is, so
+     mounted/replaced establish or update it, unmounted drops it (including a
+     disconnected element that would otherwise survive), and a route reset
+     clears every incompatible binding before the batch is applied. */
+  function MINI_applyMountTransitions(payload) {
+    if (!MINI_completeIndexNavigationEnabled()) {
+      completeIndexMountedAnchors.clear();
+      return 0;
+    }
+    const transitions = Array.isArray(payload?.transitions) ? payload.transitions : [];
+    if (!transitions.length) return 0;
+    if (transitions.some((entry) => entry?.type === 'route-reset')) {
+      completeIndexMountedAnchors.clear();
+    }
+    const records = MINI_completeIndexRecords();
+    if (!records.length) return 0;
+    const recordById = new Map();
+    for (const record of records) {
+      const ids = [
+        record?.qId,
+        record?.primaryAId,
+        ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
+        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ];
+      for (const raw of ids) {
+        const id = normalizeNavId(raw);
+        if (id && !recordById.has(id)) recordById.set(id, record);
+      }
+    }
+    const touched = new Set();
+    for (const entry of transitions) {
+      const record = recordById.get(normalizeNavId(entry?.id));
+      const qId = String(record?.qId || '').trim();
+      if (!qId || touched.has(qId)) continue;
+      touched.add(qId);
+      const descriptor = MINI_completeIndexDescriptor({
+        qId: record.qId,
+        turnId: record.turnId,
+        turn: record,
+      }, records);
+      if (descriptor) MINI_resolveCompleteIndexMounted(descriptor, record?.noAnswer ? 'question' : 'answer');
+    }
+    return touched.size;
+  }
+
+  /* Does this frame still owe a full anchor bootstrap?
+     Without a MountRegistry there are no mount deltas to consume, so every
+     frame must reconcile exactly as before. With one, a single pass per index
+     generation establishes the bindings and MINI_applyMountTransitions keeps
+     them current, so the answer is yes once and then no — which is what takes
+     the O(N) rebind out of the steady-state scroll path. Lifecycle events
+     (route change, complete-index state) clear the flag to re-arm it. */
+  function MINI_claimCompleteIndexAnchorBootstrap() {
+    if (!MINI_mountRegistry()) return true;
+    if (S.completeIndexAnchorsBootstrapped) return false;
+    S.completeIndexAnchorsBootstrapped = true;
+    return true;
+  }
+
   function MINI_completeIndexScrollRoot() {
-    const anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
+    // Seed the ancestor walk from a registry element when available — the
+    // registry already knows a mounted turn without a document-wide probe.
+    let anyTurn = null;
+    try {
+      const rec = MINI_mountRegistry()?.all?.()[0] || null;
+      anyTurn = MINI_connectedElement(rec?.shell || rec?.el || null);
+    } catch {}
+    if (!anyTurn) anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
     let cur = anyTurn?.parentElement || convContainer()?.parentElement || null;
     while (cur && cur !== document.body && cur !== document.documentElement) {
       try {
@@ -1869,11 +2036,681 @@
     });
   }
 
+  /* ── Far-target native history materialization ─────────────────────────────
+     The host renders only a window of the conversation and loads older turns
+     through its own cursor endpoint, ten per round trip. A far MiniMap target
+     is reached by repeating the host's own reveal — scroll the conversation to
+     its history boundary so ChatGPT issues its next request — while a
+     navigation-scoped fetch hook widens only `num_turns` on that one request
+     so each cycle covers far more ground. The host keeps ownership of the
+     request, its state and its rendering; the hook is inactive by default,
+     rewrites at most one request per arm, and disarms on use, route change,
+     generation supersession or expiry. Cycles continue only while the
+     materialised edge measurably advances and stop with an accurate error
+     otherwise. Success is only ever the requested turn, mounted and aligned. */
+  const HISTORY_WIDEN_MAX = 50;
+  // Measured settle for one widened host reveal (request + render + record
+  // binding) runs to ~14s; the grace window covers late binding once per cycle.
+  const FAR_NAV_CYCLE_WAIT_MS = 14000;
+  const FAR_NAV_LOCAL_WAIT_MS = 6000;
+  const FAR_NAV_CYCLE_BUDGET_MS = 19500;
+  const FAR_NAV_MAX_CYCLES = 16;
+  const historyWiden = {
+    armed: false,
+    generation: 0,
+    routeKey: '',
+    chatId: '',
+    numTurns: 0,
+    hooked: false,
+    rewriteCount: 0,
+    lastRewrite: null,
+    lastDisarmReason: null,
+    expiryTimer: 0,
+  };
+
+  function MINI_historyWidenMatches(url) {
+    if (!historyWiden.armed || !historyWiden.chatId) return null;
+    // Ownership is re-verified at rewrite time, not just at arm time: a route
+    // change or a newer navigation generation invalidates a pending widening.
+    if (historyWiden.routeKey !== MINI_completeIndexRouteKey()) {
+      MINI_disarmHistoryWidening('route-changed');
+      return null;
+    }
+    try {
+      const status = completeIndexNavigationCoordinator?.getStatus?.();
+      if (status && Number(status.generation) !== Number(historyWiden.generation)) {
+        MINI_disarmHistoryWidening('generation-superseded');
+        return null;
+      }
+    } catch {}
+    let parsed = null;
+    try { parsed = new URL(String(url || ''), location.href); } catch { return null; }
+    if (parsed.origin !== location.origin) return null;
+    // Exactly this conversation's history endpoint, nothing else.
+    if (parsed.pathname !== `/backend-api/conversations/${historyWiden.chatId}/messages`) return null;
+    const before = parsed.searchParams.get('before');
+    const numTurns = parsed.searchParams.get('num_turns');
+    if (!before || !numTurns) return null;
+    const widened = Math.max(0, Math.min(HISTORY_WIDEN_MAX, Number(historyWiden.numTurns) || 0));
+    if (!(widened > (Number(numTurns) || 0))) return null;
+    parsed.searchParams.set('num_turns', String(widened));
+    return { url: parsed.toString(), from: numTurns, to: String(widened) };
+  }
+
+  function MINI_ensureHistoryWidenHook() {
+    if (historyWiden.hooked || typeof W.fetch !== 'function') return;
+    if (W.fetch.__h2oMiniMapHistoryWiden) { historyWiden.hooked = true; return; }
+    const original = W.fetch;
+    function h2oMiniMapHistoryWiden(input, init) {
+      try {
+        if (historyWiden.armed) {
+          const raw = (typeof input === 'string' || input instanceof URL)
+            ? String(input)
+            : (input && typeof input.url === 'string' ? input.url : '');
+          const method = String(
+            (init && init.method) || (input && input.method) || 'GET',
+          ).toUpperCase();
+          if (method === 'GET') {
+            const match = MINI_historyWidenMatches(raw);
+            if (match) {
+              historyWiden.rewriteCount += 1;
+              historyWiden.lastRewrite = { from: match.from, to: match.to };
+              MINI_disarmHistoryWidening('rewritten');
+              // Re-issue against the widened URL. A Request instance is rebuilt
+              // from itself so credentials/headers/mode carry unchanged.
+              const next = (typeof input === 'string' || input instanceof URL)
+                ? match.url
+                : new Request(match.url, input);
+              return original.call(this, next, init);
+            }
+          }
+        }
+      } catch (e) {
+        derr('farnav:widen-match', e);
+      }
+      return original.apply(this, arguments);
+    }
+    h2oMiniMapHistoryWiden.__h2oMiniMapHistoryWiden = true;
+    h2oMiniMapHistoryWiden.__h2oOriginalFetch = original;
+    historyWiden.hooked = true;
+    try { W.fetch = h2oMiniMapHistoryWiden; } catch (e) { derr('farnav:widen-install', e); }
+  }
+
+  function MINI_armHistoryWidening(generation, gapTurns) {
+    const chatId = String(resolveChatId() || '').trim();
+    if (!chatId) return false;
+    const gap = Math.max(0, Number(gapTurns) || 0);
+    if (!gap) return false;
+    MINI_ensureHistoryWidenHook();
+    if (!historyWiden.hooked) return false;
+    historyWiden.armed = true;
+    historyWiden.generation = Number(generation) || 0;
+    historyWiden.routeKey = MINI_completeIndexRouteKey();
+    historyWiden.chatId = chatId;
+    // Enough contiguous history to cover the remaining gap plus margin, bounded
+    // by the empirically honored server range. Sizes the network page only —
+    // logical membership is never derived from it.
+    historyWiden.numTurns = Math.max(10, Math.min(HISTORY_WIDEN_MAX, gap + 5));
+    try { clearTimeout(historyWiden.expiryTimer); } catch {}
+    // Never outlive its cycle, even if the host issues no request at all.
+    historyWiden.expiryTimer = setTimeout(
+      () => MINI_disarmHistoryWidening('expired'),
+      FAR_NAV_CYCLE_BUDGET_MS,
+    );
+    return true;
+  }
+
+  function MINI_disarmHistoryWidening(reason = 'disarm') {
+    try { clearTimeout(historyWiden.expiryTimer); } catch {}
+    historyWiden.expiryTimer = 0;
+    if (!historyWiden.armed) return false;
+    historyWiden.armed = false;
+    historyWiden.numTurns = 0;
+    historyWiden.lastDisarmReason = String(reason || 'disarm');
+    return true;
+  }
+
+  function getHistoryWideningStatus() {
+    return Object.freeze({
+      armed: historyWiden.armed,
+      hooked: historyWiden.hooked,
+      generation: historyWiden.generation,
+      chatId: historyWiden.chatId,
+      numTurns: historyWiden.numTurns,
+      rewriteCount: historyWiden.rewriteCount,
+      lastRewrite: historyWiden.lastRewrite,
+      lastDisarmReason: historyWiden.lastDisarmReason,
+      lastDriverTrace: Array.isArray(historyWiden.lastDriverTrace)
+        ? historyWiden.lastDriverTrace.slice(0, 12)
+        : null,
+    });
+  }
+
+  function MINI_materialisedOrderRange() {
+    let oldest = 0;
+    let newest = 0;
+    try {
+      for (const record of MINI_completeIndexRecords()) {
+        const el = record?.live?.qEl || record?.live?.primaryAEl || null;
+        if (!el || !el.isConnected) continue;
+        const order = Math.max(0, Number(record?.turnNo || record?.order) || 0);
+        if (!order) continue;
+        if (!oldest || order < oldest) oldest = order;
+        if (order > newest) newest = order;
+      }
+    } catch (e) { derr('farnav:range', e); }
+    return { oldest, newest };
+  }
+
+  function MINI_farNavStatusEl(create = false) {
+    const root = document.getElementById('cgx-mm-root');
+    if (!root) return null;
+    let el = root.querySelector('[data-cgxui="mnmp-farnav-status"]');
+    if (!el && create) {
+      el = document.createElement('div');
+      el.setAttribute('data-cgxui', 'mnmp-farnav-status');
+      el.setAttribute('data-cgxui-owner', 'mnmp');
+      el.setAttribute('role', 'status');
+      el.title = 'Loading history for navigation. Click to cancel.';
+      el.style.cssText = 'margin-top:4px;padding:3px 8px;border-radius:8px;'
+        + 'font:600 10px/1.3 system-ui,sans-serif;background:rgba(20,20,24,.82);'
+        + 'color:#fff;cursor:pointer;text-align:center;user-select:none;';
+      el.addEventListener('click', () => {
+        try { completeIndexNavigationCoordinator.cancel('user-cancelled'); } catch {}
+      });
+      root.appendChild(el);
+    }
+    return el;
+  }
+
+  function MINI_showFarNavProgress(generation, text) {
+    const el = MINI_farNavStatusEl(true);
+    if (!el) return;
+    el.dataset.generation = String(generation);
+    el.textContent = String(text || '');
+  }
+
+  function MINI_clearFarNavProgress(generation = null) {
+    const el = MINI_farNavStatusEl(false);
+    if (!el) return;
+    if (generation !== null && el.dataset.generation !== String(generation)) return;
+    try { el.remove(); } catch {}
+  }
+
+  /* Materializer evidence reads the MountRegistry: the mounted set is the
+     hub's identity->element binding (single writer), so evidence iteration
+     scales with the mounted window instead of polling every record's cached
+     element for connectivity. The record.live path survives only as the
+     no-hub fallback. */
+  function MINI_completeIndexOrderById() {
+    const byId = new Map();
+    try {
+      for (const record of MINI_completeIndexRecords()) {
+        const order = Math.max(0, Number(record?.turnNo || record?.order) || 0);
+        if (!order) continue;
+        const qId = normalizeNavId(record?.qId);
+        if (qId) byId.set(qId, order);
+        const aId = normalizeNavId(record?.primaryAId);
+        if (aId) byId.set(aId, order);
+        for (const variant of Array.isArray(record?.answerVariants) ? record.answerVariants : []) {
+          const id = normalizeNavId(variant);
+          if (id && !byId.has(id)) byId.set(id, order);
+        }
+      }
+    } catch (e) { derr('farnav:order-map', e); }
+    return byId;
+  }
+
+  function MINI_mountedOrderSet() {
+    const registry = MINI_mountRegistry();
+    if (registry) {
+      const orders = [];
+      try {
+        const byId = MINI_completeIndexOrderById();
+        for (const rec of registry.all()) {
+          const order = byId.get(String(rec?.id || '')) || 0;
+          if (order) orders.push(order);
+        }
+      } catch (e) { derr('farnav:orders', e); }
+      return orders;
+    }
+    const orders = [];
+    try {
+      for (const record of MINI_completeIndexRecords()) {
+        const el = record?.live?.qEl || record?.live?.primaryAEl || null;
+        if (!el || !el.isConnected) continue;
+        const order = Math.max(0, Number(record?.turnNo || record?.order) || 0);
+        if (order) orders.push(order);
+      }
+    } catch (e) { derr('farnav:orders', e); }
+    return orders;
+  }
+
+  function MINI_mountedElementForOrder(order) {
+    const registry = MINI_mountRegistry();
+    try {
+      for (const record of MINI_completeIndexRecords()) {
+        if (Math.max(0, Number(record?.turnNo || record?.order) || 0) !== order) continue;
+        if (registry) {
+          const el = MINI_mountedElementById(record?.qId)
+            || MINI_mountedElementById(record?.primaryAId);
+          if (el) return el;
+        }
+        const el = record?.live?.qEl || record?.live?.primaryAEl || null;
+        return el && el.isConnected ? el : null;
+      }
+    } catch (e) { derr('farnav:anchor-el', e); }
+    return null;
+  }
+
+  /* Event-driven wait on the registry's typed transitions: resolves on the
+     first batch the caller accepts, or on timeout. The timeout tick covers
+     the measured starved-hydration case, where nothing binds until the
+     viewport moves again. */
+  function MINI_awaitMountEvidence(timeoutMs, acceptBatch = null) {
+    return new Promise((resolve) => {
+      const registry = MINI_mountRegistry();
+      const budget = Math.max(60, Number(timeoutMs) || 0);
+      if (!registry || typeof registry.onTransitions !== 'function') {
+        setTimeout(() => resolve('timeout'), budget);
+        return;
+      }
+      let done = false;
+      let off = null;
+      let timer = 0;
+      const finish = (reason) => {
+        if (done) return;
+        done = true;
+        try { off?.(); } catch {}
+        try { clearTimeout(timer); } catch {}
+        resolve(reason);
+      };
+      off = registry.onTransitions('minimap-materializer', (payload) => {
+        try {
+          if (!acceptBatch || acceptBatch(payload) === true) finish('transitions');
+        } catch {}
+      });
+      timer = setTimeout(() => finish('timeout'), budget);
+    });
+  }
+
+  function MINI_ensureHistoryRequestObserver() {
+    if (historyWiden.requestObserver) return;
+    try {
+      // The page's resource-timing buffer caps out on a long-lived tab, so
+      // entry counts freeze; a live observer keeps counting regardless.
+      const observer = new PerformanceObserver((list) => {
+        try {
+          for (const entry of list.getEntries()) {
+            if (/\/backend-api\/conversations\/[^/]+\/messages/.test(String(entry?.name || ''))) {
+              historyWiden.observedRequests = (historyWiden.observedRequests || 0) + 1;
+            }
+          }
+        } catch {}
+      });
+      observer.observe({ type: 'resource', buffered: false });
+      historyWiden.requestObserver = observer;
+    } catch (e) { derr('farnav:request-observer', e); }
+  }
+
+  function MINI_historyRequestCount() {
+    MINI_ensureHistoryRequestObserver();
+    return Number(historyWiden.observedRequests || 0);
+  }
+
+  function MINI_nearestMountedGap(order, orders = MINI_mountedOrderSet()) {
+    if (!orders.length) return { gap: Infinity, below: 0, above: 0, min: 0, max: 0 };
+    let below = 0;
+    let above = 0;
+    let gap = Infinity;
+    let min = 0;
+    let max = 0;
+    for (const value of orders) {
+      const distance = Math.abs(value - order);
+      if (distance < gap) gap = distance;
+      if (value < order && value > below) below = value;
+      if (value > order && (!above || value < above)) above = value;
+      if (!min || value < min) min = value;
+      if (value > max) max = value;
+    }
+    return { gap, below, above, min, max };
+  }
+
+  /* The host keeps mounting and settling for a beat after the walk concludes,
+     so a verdict taken at the loop boundary reads false failures — the target
+     is repeatedly observed mounted and aligned two seconds after an
+     "unreachable". One bounded grace re-check at the exact failure boundary
+     converts those into honest successes without loosening anything: the
+     target is still resolved by canonical identity and still verified. */
+  async function MINI_farFailureGrace(order, surface, descriptor, ctl) {
+    if (ctl.isStale()) return null;
+    // Wake on the registry's next mount batch — the exact signal the late
+    // settle produces — instead of a fixed sleep; the timeout keeps the
+    // original bounded window.
+    await MINI_awaitMountEvidence(2000);
+    if (ctl.isStale()) return null;
+    const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface)
+      || (() => {
+        const gap = MINI_nearestMountedGap(order).gap;
+        if (gap !== 0) return null;
+        const el = MINI_mountedElementForOrder(order);
+        return el ? { element: el } : null;
+      })();
+    return mounted ? { mounted } : null;
+  }
+
+  async function MINI_materializeFarTarget(descriptor, surface, ctl) {
+    const order = Math.max(0, Number(descriptor?.order) || 0);
+    const total = Math.max(1, Number(descriptor?.total) || 1);
+    if (!order) return null;
+    let startOrders = MINI_mountedOrderSet();
+    // Right after a load the records bind their live elements a beat later
+    // than the MiniMap becomes clickable; give binding a short window before
+    // concluding there is no evidence.
+    for (let i = 0; i < 10 && !startOrders.length; i += 1) {
+      if (ctl.isStale()) return null;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      startOrders = MINI_mountedOrderSet();
+    }
+    // With no bound evidence at all, the bounded hop walk keeps ownership.
+    if (!startOrders.length) return null;
+    const generation = Number(ctl?.operation?.generation || 0);
+    const rewritesBefore = historyWiden.rewriteCount;
+    const startGap = MINI_nearestMountedGap(order, startOrders).gap;
+    // The viewport walk advances one to four turns per cycle depending on turn
+    // heights, so the ceiling scales generously with distance; cycles that make
+    // progress break early, and the stall counter ends stuck runs long before
+    // the ceiling does.
+    const maxCycles = Math.min(FAR_NAV_MAX_CYCLES, Math.ceil(startGap / 2) + 4);
+    // Hard watchdog derived from the measured per-cycle host cost, capped so a
+    // pathological run can never hold the coordinator for minutes.
+    try { ctl.extendDeadline(Math.min(120000, (maxCycles * FAR_NAV_CYCLE_BUDGET_MS) + 15000)); } catch {}
+    let cycles = 0;
+    let lastGap = startGap;
+    let stallCycles = 0;
+    // Which neighbour pair the positional anchor was last parked against. A
+    // cycle that re-parks on unchanged evidence throws away the distance the
+    // previous cycle's sweep covered, so the anchor is only re-applied when
+    // the mounted neighbours actually moved.
+    let lastAnchorKey = '';
+    // Bindings flicker as the host re-windows, so a momentarily absent
+    // neighbor must not be mistaken for never-loaded history. The loaded
+    // range only ever grows; track it monotonically and pin a history edge
+    // only for targets genuinely beyond it.
+    let knownMin = Math.min(...startOrders);
+    let knownMax = Math.max(...startOrders);
+    const result = (partial) => ({
+      attempted: true,
+      cycles,
+      rewrites: Math.max(0, historyWiden.rewriteCount - rewritesBefore),
+      ...partial,
+    });
+    const trace = [];
+    historyWiden.lastDriverTrace = trace;
+    try {
+      MINI_showFarNavProgress(generation, `Loading turn ${order}…`);
+      while (cycles < maxCycles) {
+        if (ctl.isStale()) return result({ errorCode: 'cancelled' });
+        cycles += 1;
+        const near = MINI_nearestMountedGap(order);
+        const traceRow = {
+          c: cycles,
+          below: near.below,
+          above: near.above,
+          gap: near.gap,
+          stale: '',
+        };
+        trace.push(traceRow);
+        // Direction per cycle from live evidence: everything mounted sits after
+        // the target → the host must load older history (widened). Everything
+        // before it → reveal newer. A mid-window gap needs the host viewport
+        // moved near the target's proportional position so it renders there.
+        if (near.min) knownMin = Math.min(knownMin, near.min);
+        if (near.max) knownMax = Math.max(knownMax, near.max);
+        const mode = order < knownMin ? 'older' : (order > knownMax ? 'newer' : 'positional');
+        const guardToken = armPageJumpGuard(FAR_NAV_CYCLE_BUDGET_MS, 'farnav');
+        if (mode === 'older') MINI_armHistoryWidening(generation, Math.max(1, near.above - order));
+        const requestsBefore = MINI_historyRequestCount();
+        try {
+          const rootBefore = MINI_completeIndexScrollRoot();
+          traceRow.mode = mode;
+          traceRow.topB = rootBefore ? Math.round(rootBefore.scrollTop) : null;
+          if (mode === 'positional') {
+            // Mid-window gap: park the nearest mounted neighbor on the far
+            // side of the target at the opposing viewport edge, so the host
+            // renders the region the target lives in. Identity-anchored, never
+            // turn-by-turn. With neighbors on both sides the NEAREST one wins,
+            // by the same rule the sweep below already applies: anchoring on
+            // the far neighbor scrolls the viewport clean past the region the
+            // previous cycle just revealed, so the host virtualizes it away
+            // and every later cycle re-measures the same gap (measured: a
+            // 35 -> 10 request anchored on turn 36, teleported to the bottom
+            // and oscillated to the cycle ceiling without ever binding).
+            const anchorOrder = (near.above && near.below)
+              ? ((near.above - order) <= (order - near.below) ? near.above : near.below)
+              : (near.above || near.below);
+            const anchorEl = MINI_mountedElementForOrder(anchorOrder);
+            traceRow.anchor = anchorOrder;
+            traceRow.anchorEl = !!anchorEl;
+            // Re-park only on fresh evidence. The sweep inside the cycle walks
+            // the viewport toward the target; re-parking on an unchanged
+            // neighbour pair teleports it straight back to the anchor and the
+            // gap can never close across a hole wider than one cycle's sweep
+            // (measured: a target 15 turns from its nearest mounted neighbour
+            // oscillated anchor->sweep->anchor for twelve cycles at a constant
+            // gap and ended at the ceiling). Unchanged evidence means the
+            // previous cycle's displacement is the only progress there is —
+            // keep it and sweep on from there.
+            const anchorKey = `${near.below}:${near.above}`;
+            const reAnchor = anchorKey !== lastAnchorKey;
+            lastAnchorKey = anchorKey;
+            traceRow.reanchor = reAnchor;
+            if (anchorEl) {
+              // Side is read from the chosen anchor, not from which neighbor
+              // merely exists: an anchor above the target parks at the bottom
+              // edge so the region above it renders, and vice versa.
+              if (reAnchor) anchorEl.scrollIntoView({ block: anchorOrder > order ? 'end' : 'start', behavior: 'auto' });
+            } else if (rootBefore) {
+              rootBefore.scrollTop = Math.floor(Math.min(1, Math.max(0, (order - 0.5) / total))
+                * Math.max(0, Number(rootBefore.scrollHeight || 0) - Number(rootBefore.clientHeight || 0)));
+            }
+          } else if (rootBefore) {
+            // History boundary: park the edge; the settle loop keeps it pinned
+            // through the host's post-ingest re-anchor.
+            rootBefore.scrollTop = mode === 'older'
+              ? 0
+              : Math.max(0, Number(rootBefore.scrollHeight || 0) - Number(rootBefore.clientHeight || 0));
+          }
+          traceRow.topA = rootBefore ? Math.round(rootBefore.scrollTop) : null;
+        } catch (e) { traceRow.err = String(e?.message || e).slice(0, 60); derr('farnav:trigger', e); }
+        ctl.setState('mounting-target', { hopCount: cycles });
+        // Adaptive settle: a neighbor-anchored render binds in ~2s, so poll
+        // fast and hand back to the next cycle as soon as the gap moves —
+        // idling the full budget lets the host virtualize the progress away
+        // again. Only a network cycle (host request in flight) waits long.
+        let mounted = null;
+        {
+          const cycleStart = Date.now();
+          const innerBudget = mode === 'older' ? FAR_NAV_CYCLE_WAIT_MS : FAR_NAV_LOCAL_WAIT_MS;
+          let progressedAtMs = 0;
+          let lastEdgeEventMs = Date.now();
+          while ((Date.now() - cycleStart) < innerBudget) {
+            if (ctl.isStale()) break;
+            const requestedYet = MINI_historyRequestCount() > requestsBefore;
+            // The mounted set churns every tick as the host re-windows, so the
+            // action is re-decided per tick, not per cycle. With the target
+            // outside the loaded range, pin the history boundary — arrival
+            // followed by stillness is what fires the host's next (widened)
+            // request, and re-pinning defeats the post-ingest re-anchor that
+            // would otherwise virtualize the gain away. With neighbors on both
+            // sides, hold the nearest one at the opposing viewport edge; each
+            // fresh binding immediately steps the viewport closer.
+            try {
+              const step = MINI_nearestMountedGap(order);
+              if (step.min) knownMin = Math.min(knownMin, step.min);
+              if (step.max) knownMax = Math.max(knownMax, step.max);
+              const pinRoot = MINI_completeIndexScrollRoot();
+              if (order < knownMin || order > knownMax) {
+                if (pinRoot) {
+                  const bottom = Math.max(0, Number(pinRoot.scrollHeight || 0) - Number(pinRoot.clientHeight || 0));
+                  const edge = order < knownMin ? 0 : bottom;
+                  const atEdge = Math.abs(Number(pinRoot.scrollTop || 0) - edge) <= 2;
+                  if (!atEdge) {
+                    pinRoot.scrollTop = edge;
+                    lastEdgeEventMs = Date.now();
+                  } else if (!requestedYet && (Date.now() - lastEdgeEventMs) > 5000) {
+                    pinRoot.scrollTop = order < knownMin ? 240 : Math.max(0, bottom - 240);
+                    lastEdgeEventMs = Date.now();
+                  }
+                }
+              } else if (pinRoot) {
+                // The host hydrates message identity only while the viewport
+                // actually moves, so a parked anchor starves the region and
+                // nothing new ever binds. Sweep steadily toward the target
+                // instead — natural-scroll-sized steps every tick — and let
+                // bindings picked up along the way shrink the gap; the next
+                // cycle re-anchors precisely from whatever bound closest.
+                const stepOrder = step.above && step.below
+                  ? ((step.above - order) <= (order - step.below) ? step.above : step.below)
+                  : (step.above || step.below);
+                const upward = stepOrder > order;
+                const stride = Math.max(240, Math.floor(Number(pinRoot.clientHeight || 800) * 0.55));
+                const bottom = Math.max(0, Number(pinRoot.scrollHeight || 0) - Number(pinRoot.clientHeight || 0));
+                pinRoot.scrollTop = Math.min(bottom, Math.max(0,
+                  Number(pinRoot.scrollTop || 0) + (upward ? -stride : stride)));
+              }
+            } catch {}
+            mounted = MINI_resolveCompleteIndexMounted(descriptor, surface) || null;
+            const gapMid = MINI_nearestMountedGap(order).gap;
+            if (!mounted && gapMid === 0) {
+              // The target's own record is bound but the requested surface may
+              // hydrate later (an answer body can trail its question by
+              // seconds). The turn is reached; align on the element that
+              // exists — for a turn click that is the turn's beginning anyway.
+              const ownEl = MINI_mountedElementForOrder(order);
+              if (ownEl) mounted = { element: ownEl };
+            }
+            if (mounted) break;
+            if (gapMid < lastGap && !progressedAtMs) progressedAtMs = Date.now();
+            // Local render cycles hand back quickly so the next cycle can
+            // re-anchor closer; a network cycle holds its window open so the
+            // host's request/ingest is never starved by an early break.
+            const canBreakEarly = mode !== 'older' || requestedYet;
+            if (canBreakEarly && progressedAtMs && (Date.now() - progressedAtMs) > 900) break;
+            // Registry transitions are the wake signal: the loop reacts the
+            // moment the host mounts, replaces, or unmounts turn elements
+            // instead of polling on a hot timer; the timeout tick keeps the
+            // viewport-movement trigger alive through starved stretches.
+            await MINI_awaitMountEvidence(1100);
+          }
+        }
+        cancelPageJumpGuard(guardToken);
+        MINI_disarmHistoryWidening('cycle-complete');
+        if (ctl.isStale()) return result({ errorCode: 'cancelled' });
+        if (mounted) return result({ mounted });
+        const gapNow = MINI_nearestMountedGap(order).gap;
+        // A cycle whose host request is still being ingested must not be judged
+        // stalled — its progress lands in the next cycle's measurement. Only a
+        // cycle with neither gap movement nor a request fails here.
+        const requestedThisCycle = MINI_historyRequestCount() > requestsBefore;
+        traceRow.g1 = gapNow;
+        traceRow.req = requestedThisCycle;
+        traceRow.topEnd = (() => { try { const r = MINI_completeIndexScrollRoot(); return r ? Math.round(r.scrollTop) : null; } catch { return null; } })();
+        // The mounted set churns while the host re-windows and sweep-driven
+        // bindings jitter, so short tied stretches are normal recovery. The
+        // nearest-gap metric also freezes while the sweep crosses a turn
+        // taller than the viewport, so real scroll displacement counts as
+        // progress too. Three consecutive cycles with none of gap movement,
+        // displacement or a host request is a real stall.
+        const topDelta = (traceRow.topEnd != null && traceRow.topA != null)
+          ? Math.abs(Number(traceRow.topEnd) - Number(traceRow.topA))
+          : 0;
+        const viewportH = (() => {
+          try { return Number(MINI_completeIndexScrollRoot()?.clientHeight || 800); } catch { return 800; }
+        })();
+        const movedEnough = topDelta >= Math.floor(viewportH * 0.6);
+        if (gapNow < lastGap || requestedThisCycle || movedEnough) stallCycles = 0;
+        else stallCycles += 1;
+        if (stallCycles >= 3) {
+          return result(await MINI_farFailureGrace(order, surface, descriptor, ctl)
+            || { errorCode: 'no-progress' });
+        }
+        MINI_showFarNavProgress(generation, `History ${gapNow} turns away…`);
+        lastGap = Math.min(lastGap, gapNow);
+      }
+      return result(await MINI_farFailureGrace(order, surface, descriptor, ctl)
+        || { errorCode: 'materialization-ceiling' });
+    } finally {
+      MINI_disarmHistoryWidening('driver-exit');
+      MINI_clearFarNavProgress(generation);
+    }
+  }
+
+  /* Far completions align the requested turn at the start of the usable
+     viewport and verify it, allowing one bounded correction after late host
+     layout. Near-target navigation keeps its established centering. */
+  async function MINI_alignFarTarget(mounted, descriptor, surface) {
+    const el = mounted?.element || null;
+    if (!el || !el.isConnected) return false;
+    const INSET = 48;
+    const root = MINI_completeIndexScrollRoot();
+    // Direct delta scroll: the shared 'start' path derives its offset from the
+    // target's own height, which overshoots badly on turns taller than the
+    // viewport. rect.top minus the usable inset is exact regardless of height.
+    const alignOnce = () => {
+      const rect = el.getBoundingClientRect();
+      const delta = rect.top - INSET;
+      if (root) root.scrollTop = Math.max(0, Number(root.scrollTop || 0) + delta);
+      else W.scrollBy({ top: delta, behavior: 'auto' });
+    };
+    const measure = () => {
+      try {
+        const rect = el.getBoundingClientRect();
+        return { top: Math.round(rect.top), ok: rect.height > 0 && rect.top >= -8 && rect.top <= 240 };
+      } catch { return { top: null, ok: false }; }
+    };
+    // The walk leaves the host re-laying-out for seconds — late images and
+    // hydration above the target shift it in both directions, so any single
+    // read lies. Own the whole settle window: re-correct on every out-of-band
+    // read, require three consecutive in-band reads, then hold through one
+    // more beat and spend a final correction on any late drift.
+    let corrections = 0;
+    let inBandStreak = 0;
+    const deadline = Date.now() + 6500;
+    try { alignOnce(); corrections += 1; } catch (e) { derr('farnav:align', e); return false; }
+    while (Date.now() < deadline && el.isConnected) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const state = measure();
+      if (state.ok) {
+        inBandStreak += 1;
+        if (inBandStreak >= 3) {
+          await new Promise((resolve) => setTimeout(resolve, 1400));
+          const settled = measure();
+          if (settled.ok || !el.isConnected) return settled.ok && el.isConnected;
+          try { alignOnce(); } catch { return false; }
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          return measure().ok && el.isConnected;
+        }
+        continue;
+      }
+      inBandStreak = 0;
+      if (corrections >= 6) break;
+      try { alignOnce(); corrections += 1; } catch { return false; }
+    }
+    if (inBandStreak >= 3 && el.isConnected) return true;
+    // Same boundary hazard as the driver: the reading that failed is often one
+    // settle-beat early. A final grace measure decides, with no correction.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return measure().ok && el.isConnected;
+  }
+
   const completeIndexNavigationCoordinator = createCompleteIndexNavigationCoordinator({
     isEnabled: MINI_completeIndexNavigationEnabled,
     routeKey: MINI_completeIndexRouteKey,
     describeTarget: MINI_completeIndexDescriptor,
     resolveMounted: MINI_resolveCompleteIndexMounted,
+    materializeFar: MINI_materializeFarTarget,
+    alignFar: MINI_alignFarTarget,
     moveToward: MINI_moveTowardCompleteIndexTarget,
     waitForMounted: MINI_waitForCompleteIndexMounted,
     navigateMounted: (mounted, descriptor, surface) => {
@@ -3205,7 +4042,17 @@
 
   function syncActive(reason = 'scroll') {
     if (!S.running) return;
-    try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
+    // Anchor binding rebuilds the complete-index projection status once per
+    // record and probes the document for every unmounted one, so it is far too
+    // expensive to repeat on any frame — during our own programmatic
+    // navigation it is also pointless, because the coordinator resolves its
+    // target itself. With the MountRegistry present the steady state is
+    // maintained from mount transitions (MINI_applyMountTransitions), so this
+    // frame path only needs to establish the initial binding once per index
+    // generation; lifecycle events below re-arm that bootstrap. Without a
+    // registry there are no deltas to consume, so the legacy per-frame
+    // reconciliation is preserved exactly as the fallback.
+    if (!S.mmProgram) { if (MINI_claimCompleteIndexAnchorBootstrap()) { try { MINI_bindCompleteIndexMountedAnchors(); } catch {} } }
     if (S.scrollSyncDisabled) return;
     if (S.mmUser || S.mmProgram) return;
     const scanTick0 = Number(S.perfFullScanTick || 0);
@@ -3463,7 +4310,18 @@
     let hydratedAnswerTotal = 0;
     let firstVisibleIdentityMatches = true;
     try {
-      const hydratedAnswers = Array.from(document.querySelectorAll(answersSelector()));
+      // The registry already holds the mounted assistant set — read it there
+      // (document-ordered) instead of sweeping the host document again.
+      const registry = MINI_mountRegistry();
+      let hydratedAnswers = null;
+      if (registry) {
+        hydratedAnswers = registry.all()
+          .filter((rec) => rec?.role === 'assistant' && rec?.el?.isConnected)
+          .map((rec) => rec.el)
+          .sort((a, b) => ((a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1));
+      } else {
+        hydratedAnswers = Array.from(document.querySelectorAll(answersSelector()));
+      }
       hydratedAnswerTotal = hydratedAnswers.length;
       const firstId = String(
         hydratedAnswers[0]?.getAttribute?.('data-message-id')
@@ -4066,6 +4924,9 @@
     try { S.offShellNoButtons?.(); } catch {}
     try { S.offCoreTurnUpdated?.(); } catch {}
     try { S.offCompleteTurnIndexState?.(); } catch {}
+    try { S.offMountTransitions?.(); } catch {}
+    try { S.offStaleWatchdog?.(); } catch {}
+    S.offStaleWatchdog = null;
     S.offScroll = null;
     S.activeScrollRoot = null;
     S.offResize = null;
@@ -4081,6 +4942,7 @@
     S.offShellNoButtons = null;
     S.offCoreTurnUpdated = null;
     S.offCompleteTurnIndexState = null;
+    S.offMountTransitions = null;
 
     S.running = false;
     S.scrollSyncDisabled = false;
@@ -4259,33 +5121,40 @@
   }
 
   function startStaleStateWatchdog(tag = 'watchdog') {
+    // Retired 300ms interval poller. The MountRegistry's typed transitions
+    // (occlusion-proof since the hub's fallback delivery) are the signal
+    // that conversation structure changed; three bounded settle checks
+    // cover boots where nothing transitions at all. The stale predicate and
+    // rebuild action are unchanged.
     try { clearInterval(S.routeRebuildPoller); } catch {}
+    S.routeRebuildPoller = null;
+    try { S.offStaleWatchdog?.(); } catch {}
+    S.offStaleWatchdog = null;
     const startedAt = Date.now();
-    const POLL_MS = 300;
     const MAX_MS = 30000;
-    let stableTicks = 0;
-    let lastDomCount = -1;
-    const countDomAnswers = () => {
-      try { return document.querySelectorAll(answersSelector()).length; } catch { return 0; }
+    const stop = () => {
+      try { S.offStaleWatchdog?.(); } catch {}
+      S.offStaleWatchdog = null;
     };
-    const tick = () => {
-      if (!S.running) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
-      const elapsed = Date.now() - startedAt;
-      if (elapsed > MAX_MS) { try { clearInterval(S.routeRebuildPoller); } catch {} return; }
-      const domCount = countDomAnswers();
-      if (domCount === 0) { stableTicks = 0; lastDomCount = -1; return; }
-      if (domCount === lastDomCount) stableTicks += 1; else { stableTicks = 0; lastDomCount = domCount; }
+    const check = (why) => {
+      if (!S.running) { stop(); return; }
+      if (Date.now() - startedAt > MAX_MS) { stop(); return; }
       let stale = false;
       try {
-        stale = buildMissing() || paginationCoverageNeedsRebuild(`${tag}:poll`);
+        stale = buildMissing() || paginationCoverageNeedsRebuild(`${tag}:${why}`);
       } catch {}
       if (!stale) return;
-      if (stableTicks < 1) return;
       S.moRebuildCooldownUntil = 0;
-      try { rebuildNow(`${tag}:poll`); } catch { scheduleRebuild(`${tag}:poll`); }
+      try { rebuildNow(`${tag}:${why}`); } catch { scheduleRebuild(`${tag}:${why}`); }
     };
-    tick();
-    S.routeRebuildPoller = setInterval(tick, POLL_MS);
+    const registry = MINI_mountRegistry();
+    if (registry && typeof registry.onTransitions === 'function') {
+      S.offStaleWatchdog = registry.onTransitions('minimap-stale-watchdog', () => check('transition'));
+    }
+    for (const delay of [500, 2000, 8000]) {
+      setTimeout(() => check(`settle-${delay}`), delay);
+    }
+    check('immediate');
   }
 
   function bindObservers() {
@@ -4381,12 +5250,32 @@
         if (event?.detail?.enabled !== true) {
           completeIndexNavigationCoordinator.cancel('gate-disabled', 'cancelled');
           completeIndexMountedAnchors.clear();
+          S.completeIndexAnchorsBootstrapped = false;
           return;
         }
         MINI_bindActiveScrollRoot('complete-index-state:scroll-root-bind');
-        try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
+        S.completeIndexAnchorsBootstrapped = false;
+        try {
+          MINI_bindCompleteIndexMountedAnchors();
+          S.completeIndexAnchorsBootstrapped = true;
+        } catch {}
         scheduleSyncActive('complete-index-state');
       }, { passive: true });
+    }
+    if (!S.offMountTransitions) {
+      /* Registry transitions replace rescanning: when the host mounts,
+         replaces, or unmounts turn elements, the hub tells us — anchor
+         rebinding and active-row sync become event-driven instead of a
+         per-frame document sweep. The scheduleSyncActive path keeps the
+         mmProgram/mmUser guards, so programmatic navigation stays exempt. */
+      const mounts = MINI_mountRegistry();
+      if (mounts && typeof mounts.onTransitions === 'function') {
+        S.offMountTransitions = mounts.onTransitions('minimap-engine', (payload) => {
+          if (!S.running) return;
+          try { MINI_applyMountTransitions(payload); } catch {}
+          scheduleSyncActive('mount-transition');
+        });
+      }
     }
     bindMiniMapScrollGuards();
 
@@ -4394,6 +5283,8 @@
       if (!S.running) return;
       completeIndexNavigationCoordinator.cancel('route-changed', 'stale-route-discarded');
       completeIndexMountedAnchors.clear();
+      // A new route needs its own bounded bootstrap before deltas maintain it.
+      S.completeIndexAnchorsBootstrapped = false;
       MINI_clearActiveScrollRoot();
       resetVisibleAnswersObserver();
       MINI_bindActiveScrollRoot(`${tag}:scroll-root-bind`);
@@ -4733,6 +5624,7 @@
     getTurnIndex,
     onTurnChange,
     getCompleteIndexNavigationStatus,
+    getHistoryWideningStatus,
   };
 
   function installRuntimeApi() {

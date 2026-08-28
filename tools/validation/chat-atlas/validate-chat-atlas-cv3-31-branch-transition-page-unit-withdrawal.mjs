@@ -1276,9 +1276,34 @@ await fixture('stage-2c items 1-2: effective-path identity is separate, guarded 
     'pinned projection getter does not call or wrap the new accessor');
   equal(accessorSrc.includes('function getCompleteTurnIndexProjectionStatus'), false,
     'accessor does not redefine the pinned getter');
-  equal(createHash('sha256').update(pinnedSrc, 'utf8').digest('hex'),
-    '5183fc701d98db7d57c544b1dfd832545d8abe66465b36a2b7d655012db8fcb7',
-    'pinned projection getter body is byte-identical to its accepted bytes');
+  // The byte pin that used to stand here was a proxy for THIS fixture's real
+  // claim: that introducing getChatAtlasEffectivePathIdentity did not replace,
+  // wrap or absorb the projection getter. The two assertions above state that
+  // directly. Byte identity additionally forbade any later change to the
+  // getter for any reason, which has since collided with two separately
+  // accepted corrections to its body - memoizing the native diagnostics it
+  // spread in (the steady-state selector-storm fix) and reporting a disabled
+  // gate truthfully instead of as 'idle'. Neither touches this fixture's
+  // subject, so the contract is stated semantically instead: the getter
+  // remains one self-contained function that still publishes the
+  // branch-transition fields page-unit withdrawal reads.
+  ok(/^\s*function getCompleteTurnIndexProjectionStatus\(/.test(pinnedSrc),
+    'projection getter remains its own self-contained function');
+  equal((pinnedSrc.match(/function getCompleteTurnIndexProjectionStatus\(/g) || []).length, 1,
+    'projection getter is not redefined inside its own body');
+  for (const field of [
+    'branchTransactionPending',
+    'branchExpansionPending',
+    'branchExpansionFailClosed',
+    'selectedPathRequestLeaseActive',
+    'selectedPathConfirmationLeaseActive',
+    'selectedPathConfirmationPending',
+    'trustedSelectionIntentActive',
+    'branchSelectionStale',
+  ]) {
+    ok(pinnedSrc.includes(`${field}:`),
+      `projection getter still publishes ${field} for page-unit withdrawal`);
+  }
 
   // (2) exported on the public runtime api. The accessor and its export both
   // moved to 0A3a, which adopts H2O.turnRuntime through Object.assign(rt, {...}),
