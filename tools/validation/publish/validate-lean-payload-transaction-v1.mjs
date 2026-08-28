@@ -233,6 +233,80 @@ const R2_PROTECTED_IDENTITIES = Object.freeze({
   ...EXTENDED_PROTECTED_IDENTITIES,
   [ACTIVATOR_REL]: APPROVED_R2_STRICT_DEFAULT_AFTER_IDENTITY,
 });
+// ── CP09 — canonical Product-root authority re-baseline ────────────────────
+// The canonical Cockpit Pro repository now lives under
+// /Users/hobayda/H2OCode/products/. Two protected commits had already landed on
+// main without being registered here (CP08), so the durable chain is repaired by
+// re-admitting both with the exact evidence Git already holds, and then extended
+// with the production correction and the bounded self-transition carrying this
+// approval. Nothing historical is rewritten; the earlier eras stay intact.
+const CP08_PUBLICATION_TRANSITION = "0689b7ac01119c7662953aa48feff7705e677da6";
+const CP08_PUBLICATION_PARENT = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
+const CP08_PUBLICATION_SUBJECT =
+  "feat(publish): govern Studio launcher promotion and rollback";
+const CP08_PUBLICATION_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL, PAYLOAD_VALIDATOR_REL,
+].sort());
+const CP08_PUBLICATION_BEFORE_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "d6294b060f158bc31f76716c758bbaed198ee823bb12a081c5a52c49de4b0360",
+  [PAYLOAD_MODULE_REL]: "f2c9c8483bf22ae864bc3bafaf3b4f87c65d09f84c6ef5e4f196f08af9652e01",
+  [VALIDATOR_REL]: "178a61d068d9d22bff73774e3587af9518a2965655b852283fb439610847860b",
+  [PAYLOAD_VALIDATOR_REL]: "82df425dcfb446890c26ade3edb4314b5b9fa88320d1d3d09323796688b6b34d",
+});
+const CP08_PUBLICATION_AFTER_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "0814277c80cca75764959b123114e20930a6db66947ab92e95f2cf653fb08b65",
+  [PAYLOAD_MODULE_REL]: "499d8ae9c896c621340681835c96c3a36e8a9a26218753c7d0fdc921f78e3a05",
+  [VALIDATOR_REL]: "36ccaebcdef9d3d9f722744c182870e379f74142fb7435eed11d6be4d7264e5b",
+  [PAYLOAD_VALIDATOR_REL]: "ba4df1406065fbe44b3422d51654d18968595bf5eed5d977d17aaae5a831e9eb",
+});
+const CP08_SYNC_TRANSITION = "01be23579c2ee1f64b3db9fe9b0538bad8b14a62";
+const CP08_SYNC_PARENT = CP08_PUBLICATION_TRANSITION;
+const CP08_SYNC_SUBJECT = "test(publish): synchronize CP08 validation authority";
+const CP08_SYNC_PATHS = Object.freeze([VALIDATOR_REL, PAYLOAD_VALIDATOR_REL].sort());
+const CP08_SYNC_BEFORE_IDENTITIES = Object.freeze({
+  [VALIDATOR_REL]: CP08_PUBLICATION_AFTER_IDENTITIES[VALIDATOR_REL],
+  [PAYLOAD_VALIDATOR_REL]: CP08_PUBLICATION_AFTER_IDENTITIES[PAYLOAD_VALIDATOR_REL],
+});
+const CP08_SYNC_AFTER_IDENTITIES = Object.freeze({
+  [VALIDATOR_REL]: "b9c061fefaa4da716fef16ab5cc84cdb9fe38e13360b153158a4658565315f0d",
+  [PAYLOAD_VALIDATOR_REL]: "653452323eca4e96ade7a62c6fbc43675391a898901b6e39c00aca0f77b7170e",
+});
+// The authorized CP09 base: the integrated main this transition was approved on.
+const CP09_AUTHORIZED_BASE = "88be4b669ad62345d7563e98d21dd46a342c08f7";
+const CP09_ROOT_TRANSITION = "bf43ba2f7105bf55e6967262c172436a2e8d5471";
+const CP09_ROOT_PARENT = CP09_AUTHORIZED_BASE;
+const CP09_ROOT_SUBJECT =
+  "feat(publish): move canonical root authority to the Product root";
+const CP09_ROOT_PATHS = Object.freeze([
+  ACTIVATOR_REL, PAYLOAD_MODULE_REL, VALIDATOR_REL,
+].sort());
+const CP09_ROOT_BEFORE_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: CP08_PUBLICATION_AFTER_IDENTITIES[ACTIVATOR_REL],
+  [PAYLOAD_MODULE_REL]: CP08_PUBLICATION_AFTER_IDENTITIES[PAYLOAD_MODULE_REL],
+  [VALIDATOR_REL]: CP08_SYNC_AFTER_IDENTITIES[VALIDATOR_REL],
+});
+const CP09_ROOT_AFTER_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "da8f8b573405f39ae811fb60d234e0076da77d266653733340ad7d85506b31db",
+  [PAYLOAD_MODULE_REL]: "ad280da9261ef0b12bbcc443b7cf55523073442ec0bda972ada4f92de55cc9ae",
+  [VALIDATOR_REL]: "9f3dcb7bbcb26571c8a35b6c8a04110cd4c46c9947a37839099769c31b32647c",
+});
+// The bounded self-transition carrying this approval. Its own commit id and final
+// bytes cannot pre-exist, so it is bound by parent, subject, path set and before
+// identity, with its after identity resolved at runtime exactly as the aeaa870a,
+// d29260c7 and e32d1fa8 self-transitions already are.
+const CP09_AUTHORITY_SUBJECT =
+  "test(publish): approve the canonical Product-root authority transition";
+const CP09_AUTHORITY_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const CP09_AUTHORITY_BEFORE_IDENTITY =
+  "653452323eca4e96ade7a62c6fbc43675391a898901b6e39c00aca0f77b7170e";
+// Accepted closure after CP09: the production correction moved three protected
+// paths; package identities are untouched throughout.
+const CP09_PROTECTED_IDENTITIES = Object.freeze({
+  ...R2_PROTECTED_IDENTITIES,
+  [ACTIVATOR_REL]: CP09_ROOT_AFTER_IDENTITIES[ACTIVATOR_REL],
+  [PAYLOAD_MODULE_REL]: CP09_ROOT_AFTER_IDENTITIES[PAYLOAD_MODULE_REL],
+  [VALIDATOR_REL]: CP09_ROOT_AFTER_IDENTITIES[VALIDATOR_REL],
+});
 const STUDIO_PUBLICATION_BASE_HEAD = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
 const STUDIO_PUBLICATION_AUTHORITY_HEAD = "0689b7ac01119c7662953aa48feff7705e677da6";
 const STUDIO_PUBLICATION_AUTHORITY_SUBJECT =
@@ -474,7 +548,8 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
     !!evidence && evidence.parent === parent && evidence.subject === subject &&
     JSON.stringify(evidence.paths ?? []) === JSON.stringify([...APPROVED_R2_TRANSITION_PATHS]) &&
     evidence.beforeIdentity === before && evidence.afterIdentity === after;
-  return typeof r2AuthorityCommit === "string" && /^[0-9a-f]{40}$/u.test(r2AuthorityCommit) &&
+  const anchorPlusR2Authority =
+    typeof r2AuthorityCommit === "string" && /^[0-9a-f]{40}$/u.test(r2AuthorityCommit) &&
     ![APPROVED_ACTIVATOR_TRANSITION, APPROVED_ACTIVATOR_ALIAS_TRANSITION,
       APPROVED_R2_VERIFICATION_TRANSITION, APPROVED_R2_STRICT_DEFAULT_TRANSITION,
       repairCommit, aliasAuthorityCommit].includes(r2AuthorityCommit) &&
@@ -512,6 +587,77 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
       R2_PROTECTED_IDENTITIES, r2ImmutablePaths) &&
     Object.keys(value.headProtectedIdentities ?? {}).length ===
       PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
+  if (anchorPlusR2Authority) return true;
+  // CP09 era: exactly eleven protected transitions and nothing else. The seven
+  // already-approved records, the two re-admitted CP08 commits, the CP09
+  // production root correction, and the bounded self-transition carrying this
+  // approval. Membership and record content are exact; only ordering is
+  // normalised.
+  const cp09AuthorityCommit = value.cp09AuthorityCommit;
+  const expectedCp09History = [...APPROVED_PROTECTED_HISTORY,
+    `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+    `${aliasAuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_R2_VERIFICATION_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${APPROVED_R2_STRICT_DEFAULT_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${r2AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${CP08_PUBLICATION_TRANSITION}\t${CP08_PUBLICATION_PATHS.join("\t")}`,
+    `${CP08_SYNC_TRANSITION}\t${CP08_SYNC_PATHS.join("\t")}`,
+    `${CP09_ROOT_TRANSITION}\t${CP09_ROOT_PATHS.join("\t")}`,
+    `${cp09AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+  const cp09ImmutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
+    .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
+  const cp09TransitionMatches = (evidence, parent, subject, paths, before, after) =>
+    !!evidence && evidence.parent === parent && evidence.subject === subject &&
+    JSON.stringify(evidence.paths ?? []) === JSON.stringify([...paths]) &&
+    identityRecordMatches(evidence.beforeIdentities, before, paths) &&
+    identityRecordMatches(evidence.afterIdentities, after, paths);
+  return typeof cp09AuthorityCommit === "string" &&
+    /^[0-9a-f]{40}$/u.test(cp09AuthorityCommit) &&
+    ![APPROVED_ACTIVATOR_TRANSITION, APPROVED_ACTIVATOR_ALIAS_TRANSITION,
+      APPROVED_R2_VERIFICATION_TRANSITION, APPROVED_R2_STRICT_DEFAULT_TRANSITION,
+      CP08_PUBLICATION_TRANSITION, CP08_SYNC_TRANSITION, CP09_ROOT_TRANSITION,
+      repairCommit, aliasAuthorityCommit, r2AuthorityCommit].includes(cp09AuthorityCommit) &&
+    JSON.stringify([...(value.protectedHistory ?? [])].sort()) ===
+      JSON.stringify(expectedCp09History) &&
+    // every earlier self-transition keeps its original bounded shape
+    value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.payloadDurabilityRepairSubject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    value.activatorAliasTransitionAfterIdentity === APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY &&
+    value.activatorAliasAuthorityParent === APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    value.activatorAliasAuthoritySubject === ACTIVATOR_ALIAS_AUTHORITY_SUBJECT &&
+    value.r2AuthorityParent === APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
+    value.r2AuthoritySubject === R2_AUTHORITY_SUBJECT &&
+    // the two re-admitted CP08 commits, each bound by exact historical evidence
+    cp09TransitionMatches(value.cp08PublicationTransition,
+      CP08_PUBLICATION_PARENT, CP08_PUBLICATION_SUBJECT, CP08_PUBLICATION_PATHS,
+      CP08_PUBLICATION_BEFORE_IDENTITIES, CP08_PUBLICATION_AFTER_IDENTITIES) &&
+    cp09TransitionMatches(value.cp08SyncTransition,
+      CP08_SYNC_PARENT, CP08_SYNC_SUBJECT, CP08_SYNC_PATHS,
+      CP08_SYNC_BEFORE_IDENTITIES, CP08_SYNC_AFTER_IDENTITIES) &&
+    // the CP09 production correction, bound exactly
+    cp09TransitionMatches(value.cp09RootTransition,
+      CP09_ROOT_PARENT, CP09_ROOT_SUBJECT, CP09_ROOT_PATHS,
+      CP09_ROOT_BEFORE_IDENTITIES, CP09_ROOT_AFTER_IDENTITIES) &&
+    // the bounded self-transition carrying this approval
+    value.cp09AuthorityParent === CP09_ROOT_TRANSITION &&
+    value.cp09AuthoritySubject === CP09_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.cp09AuthorityPaths ?? []) === JSON.stringify([...CP09_AUTHORITY_PATHS]) &&
+    value.cp09AuthorityBeforeIdentity === CP09_AUTHORITY_BEFORE_IDENTITY &&
+    typeof value.cp09AuthorityAfterIdentity === "string" &&
+    value.cp09AuthorityAfterIdentity === value.executionPayloadValidatorIdentity &&
+    value.cp09AuthorityAfterIdentity === value.headProtectedIdentities?.[PAYLOAD_VALIDATOR_REL] &&
+    (value.head !== cp09AuthorityCommit || (
+      value.parent === CP09_ROOT_TRANSITION &&
+      value.subject === CP09_AUTHORITY_SUBJECT &&
+      JSON.stringify(value.committedPaths ?? []) === JSON.stringify([...CP09_AUTHORITY_PATHS]))) &&
+    // every other protected path stays at the CP09 accepted closure
+    identityRecordMatches(
+      Object.fromEntries(cp09ImmutablePaths.map((relative) =>
+        [relative, value.headProtectedIdentities?.[relative]])),
+      CP09_PROTECTED_IDENTITIES, cp09ImmutablePaths) &&
+    Object.keys(value.headProtectedIdentities ?? {}).length ===
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
 }
 
 /* --------------------------------------------------------------------- *
@@ -526,7 +672,7 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
  * --------------------------------------------------------------------- */
 
 const REAL_CANONICAL_ANCHOR =
-  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery";
+  "/Users/hobayda/H2OCode/products/cockpit-pro/.h2o-canonical-delivery";
 
 /**
  * Deterministic read-only manifest of a canonical delivery anchor, sufficient to detect
@@ -585,6 +731,23 @@ function classifyPayloadScope(state) {
   if (value.head === STUDIO_PUBLICATION_BASE_HEAD && value.untracked.length === 0 &&
       JSON.stringify(value.modifiedTracked) === JSON.stringify(STUDIO_PUBLICATION_AUTHORITY_PATHS)) {
     return "studio-publication-authority-uncommitted";
+  }
+  if (value.head === CP09_AUTHORIZED_BASE && value.untracked.length === 0 &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify([...CP09_ROOT_PATHS])) {
+    return "cp09-root-authority-uncommitted";
+  }
+  const committedCp09RootAuthority =
+    value.head === CP09_ROOT_TRANSITION &&
+    value.parent === CP09_AUTHORIZED_BASE &&
+    value.subject === CP09_ROOT_SUBJECT &&
+    value.modifiedTracked.length === 0 && value.staged.length === 0 &&
+    value.untracked.length === 0 && value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([...CP09_ROOT_PATHS]);
+  if (committedCp09RootAuthority) return "cp09-root-authority-committed";
+  if (value.head === CP09_ROOT_TRANSITION && value.untracked.length === 0 &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify([...CP09_AUTHORITY_PATHS])) {
+    return "cp09-authority-uncommitted";
   }
   const committedStudioPublicationAuthority =
     value.head === STUDIO_PUBLICATION_AUTHORITY_HEAD &&
@@ -851,6 +1014,19 @@ function classifyPayloadScope(state) {
     JSON.stringify(value.committedPaths) === JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS) &&
     hasApprovedPayloadAuthority(value, { requireMainBranch: false });
   if (committedDurableAuthorityRepair) return "payload-durable-authority-committed";
+  // The CP09 self-transition itself, once committed. Bound exactly like the
+  // aeaa870a durability repair: parent, subject and single protected path are
+  // fixed, the branch requirement is relaxed because the candidate is verified
+  // before integration, and the durable chain still has to admit it in full.
+  const committedCp09Authority = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    value.parent === CP09_ROOT_TRANSITION &&
+    value.subject === CP09_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([...CP09_AUTHORITY_PATHS]) &&
+    hasApprovedPayloadAuthority(value, { requireMainBranch: false });
+  if (committedCp09Authority) return "cp09-authority-committed";
   const durableCommittedClean = value.modifiedTracked.length === 0 &&
     value.staged.length === 0 && value.untracked.length === 0 &&
     value.missingFinal.length === 0 &&
@@ -877,7 +1053,10 @@ function currentScopeState() {
     commit !== APPROVED_ACTIVATOR_TRANSITION &&
     commit !== APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
     commit !== APPROVED_R2_VERIFICATION_TRANSITION &&
-    commit !== APPROVED_R2_STRICT_DEFAULT_TRANSITION);
+    commit !== APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
+    commit !== CP08_PUBLICATION_TRANSITION &&
+    commit !== CP08_SYNC_TRANSITION &&
+    commit !== CP09_ROOT_TRANSITION);
   const parentOf = (commit) =>
     git(ROOT, ["rev-parse", `${commit}^`], { allowFailure: true });
   const payloadDurabilityRepairCommit = runtimeProtectedCommits.find((commit) =>
@@ -892,6 +1071,21 @@ function currentScopeState() {
   const r2AuthorityCommit = runtimeProtectedCommits.find((commit) =>
     parentOf(commit) === APPROVED_R2_STRICT_DEFAULT_TRANSITION) ?? null;
   const r2AuthorityGit = (args) => r2AuthorityCommit ? git(ROOT, args) : null;
+  const cp09AuthorityCommit = runtimeProtectedCommits.find((commit) =>
+    parentOf(commit) === CP09_ROOT_TRANSITION) ?? null;
+  const cp09AuthorityGit = (args) => cp09AuthorityCommit ? git(ROOT, args) : null;
+  // Multi-path transition evidence: the CP08 re-admissions and the CP09 root
+  // correction each move several protected paths, so identities are recorded as
+  // a map per path rather than the single-path activator shape used by R.2.
+  const cp09TransitionEvidence = (commit, paths) => (
+    protectedHistoryCommits.includes(commit) ? Object.freeze({
+      parent: git(ROOT, ["rev-parse", `${commit}^`]),
+      subject: git(ROOT, ["show", "-s", "--format=%s", commit]),
+      paths: lines(["diff-tree", "--no-commit-id", "--name-only", "-r", commit,
+        "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS]),
+      beforeIdentities: protectedIdentityRecord(`${commit}^`, paths),
+      afterIdentities: protectedIdentityRecord(commit, paths),
+    }) : null);
   const r2Present = (commit) => protectedHistoryCommits.includes(commit);
   const r2TransitionEvidence = (commit) => (r2Present(commit) ? Object.freeze({
     parent: git(ROOT, ["rev-parse", `${commit}^`]),
@@ -917,6 +1111,22 @@ function currentScopeState() {
       protectedIdentityRecord(APPROVED_ACTIVATOR_TRANSITION,
         APPROVED_ACTIVATOR_TRANSITION_PATHS),
     headProtectedIdentities: protectedIdentityRecord("HEAD"),
+    cp08PublicationTransition:
+      cp09TransitionEvidence(CP08_PUBLICATION_TRANSITION, CP08_PUBLICATION_PATHS),
+    cp08SyncTransition: cp09TransitionEvidence(CP08_SYNC_TRANSITION, CP08_SYNC_PATHS),
+    cp09RootTransition: cp09TransitionEvidence(CP09_ROOT_TRANSITION, CP09_ROOT_PATHS),
+    cp09AuthorityCommit,
+    cp09AuthorityParent: cp09AuthorityGit(["rev-parse", `${cp09AuthorityCommit}^`]),
+    cp09AuthoritySubject:
+      cp09AuthorityGit(["show", "-s", "--format=%s", cp09AuthorityCommit]),
+    cp09AuthorityPaths: cp09AuthorityCommit
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+        cp09AuthorityCommit, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    cp09AuthorityBeforeIdentity: cp09AuthorityCommit
+      ? gitBlobIdentity(`${cp09AuthorityCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
+    cp09AuthorityAfterIdentity: cp09AuthorityCommit
+      ? gitBlobIdentity(cp09AuthorityCommit, PAYLOAD_VALIDATOR_REL) : null,
     payloadDurabilityRepairCommit,
     payloadDurabilityRepairParent: repairGit(["rev-parse", `${payloadDurabilityRepairCommit}^`]),
     payloadDurabilityRepairSubject:
@@ -1899,7 +2109,7 @@ function createCanonicalFixture(label, { withLive = true, emoji = false } = {}) 
   };
 }
 
-const AUTHORITATIVE_MAIN = "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source";
+const AUTHORITATIVE_MAIN = "/Users/hobayda/H2OCode/products/cockpit-pro/h2o-cp-source";
 
 /**
  * Run the exact committed Batch 1.1 publisher in a disposable clone and hand its
@@ -2102,10 +2312,18 @@ async function runRuntimeTests(api) {
   });
   /* ---------- canonical root pin ---------- */
   await test("production allow-lists pin the approved cockpit-pro root and repository", () => {
+    // CP09: canonical Product authority lives under /products/. The retired
+    // /repos/h2o-platforms topology stays rejected (asserted below).
     assert.deepEqual([...api.APPROVED_COCKPIT_PRO_ROOTS],
-      ["/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro"]);
+      ["/Users/hobayda/H2OCode/products/cockpit-pro"]);
     assert.deepEqual([...api.APPROVED_AUTHORITATIVE_REPOSITORIES],
-      ["/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source"]);
+      ["/Users/hobayda/H2OCode/products/cockpit-pro/h2o-cp-source"]);
+    assert.throws(() => api.assertApprovedCanonicalRoot({
+      repository: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+      cockpitProRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+      anchorRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery",
+      executableRepository: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+    }), (error) => error.code === "canonical-root-not-approved");
   });
   await test("a self-consistent relocated copy is rejected by the production pin", () => {
     const fixture = createCanonicalFixture("pin-relocated");
