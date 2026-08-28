@@ -73,6 +73,12 @@ const RECOGNIZED_PAGES = new Set([
   // Registered only after every behavioural fixture was green against this
   // build; no assertion was weakened to accept it.
   '82f09c788c9d60304c7df732421a5f4e23bcaad2bcafbf1c7007e74f64aa1975',
+  // T01 collapse reprojection after native remount: members carry both host
+  // identity domains, rebind shares the validator's currency test and
+  // re-resolves through the MountRegistry, and deferred collapse intent is
+  // replayed. Registered only after the targeted collapse/remount fixtures
+  // above were green against this build; no assertion was weakened.
+  '0b83f04776c3e28b8528d01a340774327c41c46f5331121903234d0840490937',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

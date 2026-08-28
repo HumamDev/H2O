@@ -657,7 +657,7 @@ await fixture('five collapse-expand cycles have no cumulative marker drift', () 
 
 await fixture('second identical reconciliation performs zero mutations', () => {
   ok(ATOMIC_VALIDATOR_OUTPUT.includes('PASS second expansion performs zero mutations'), 'expansion idempotent');
-  ok(ATOMIC_VALIDATOR_OUTPUT.includes('Fixtures: 95/95'), 'full atomic transaction suite passed');
+  ok(ATOMIC_VALIDATOR_OUTPUT.includes('Fixtures: 96/96'), 'full atomic transaction suite passed');
 });
 
 await fixture('Thread Pages Controller is sole native visibility writer', () => {

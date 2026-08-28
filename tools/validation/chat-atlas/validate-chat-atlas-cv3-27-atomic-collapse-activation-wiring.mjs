@@ -198,6 +198,7 @@ const RANGE_NAMES = [
   'frozenPageCollapseRangeDiagnostics', 'pageCollapseRangeH2OOwned',
   'pageCollapseRangeIdentityCarriers', 'pageCollapseRangeIdentityOfCarrier',
   'pageCollapseRangeContainerIdentity', 'pageCollapseRangeNodeCarriesIdentity',
+  'pageCollapseMemberIdentityCurrent',
   'pageCollapseRangeHasRetainedHeight', 'pageCollapseRangeScopeCurrent',
   'clearStalePageCollapseRangeContinuity', 'readPageCollapseRangeGraphRecords',
   'buildPageCollapseRangePlan', 'classifyPageCollapseRange',

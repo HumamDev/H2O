@@ -3817,6 +3817,27 @@
     return String(node?.getAttribute?.('data-turn-id-container') || '').trim();
   }
 
+  /* Is a COMMITTED member wrapper still the same host turn container?
+     Two host-provided identity domains answer this, and the live one depends
+     purely on hydration state:
+       - the inner message identity, present while the turn is hydrated;
+       - the wrapper's own data-turn-id-container, present in both states and
+         measured stable across the host virtualizing the content away.
+     Accepting either is what keeps a committed collapse provable when the
+     host unhydrates a hidden range (measured: wrapper still connected, still
+     a direct child, still carrying our hidden stamp, but carrierCount 0 - the
+     message identity simply has no carrier to live on). Neither domain is a
+     positional guess, so this proves membership exactly as strictly as before;
+     it only stops mistaking "content virtualized" for "different turn". */
+  function pageCollapseMemberIdentityCurrent(node = null, proof = null) {
+    if (!node || !proof) return false;
+    const identity = String(proof.identity || '').trim();
+    if (identity && pageCollapseRangeNodeCarriesIdentity(node, identity)) return true;
+    const containerId = String(proof.containerId || '').trim();
+    if (!containerId) return false;
+    return pageCollapseRangeContainerIdentity(node) === containerId;
+  }
+
   function pageCollapseRangeNodeCarriesIdentity(node = null, identity = '') {
     const id = String(identity || '').trim();
     if (!node || !id) return false;
@@ -4497,6 +4518,13 @@
         hostWrapperCount += 1;
         provenWrappers.set(node, Object.freeze({
           identity: provenIdentity,
+          // The wrapper's OWN host container id, captured beside the proof.
+          // Measured: it is present while the turn is hydrated and survives
+          // the host virtualizing the content away unchanged (6/6), while the
+          // inner message identity disappears with the content. Recording both
+          // domains is what lets a committed member stay provable through
+          // unhydration - see pageCollapseMemberIdentityCurrent.
+          containerId,
           proofSource,
         }));
         continue;
@@ -4566,6 +4594,7 @@
             // is what member revalidation can re-verify against the node;
             // the bracketing neighbor identity only justified membership.
             identity: containerId || leftIdentity,
+            containerId,
             proofSource: 'order-bracketed-turn-content',
           }));
           classifierSignals.orderBracketed = Number(classifierSignals.orderBracketed || 0) + 1;
@@ -6441,7 +6470,7 @@
         || node?.parentElement !== plan.flowRoot
         || pageCollapseRangeH2OOwned(node)
         || !proof?.identity
-        || !pageCollapseRangeNodeCarriesIdentity(node, proof.identity)
+        || !pageCollapseMemberIdentityCurrent(node, proof)
       ) return { ok: false, reason: 'atomic-plan-member-stale' };
     }
     const authority = readRenderedBoundaryAuthority(plan.pageNum);
@@ -6803,30 +6832,60 @@
       transaction.flowRoot = liveFlowRoot;
       rebound += 1;
     }
-    const findByIdentity = (identity, used) => {
-      const id = String(identity || '').trim();
-      if (!id) return null;
+    // The direct flow child that currently hosts an element, so a registry
+    // binding (which points at the message element, not the flow wrapper)
+    // resolves to the wrapper this transaction owns.
+    const directFlowChildOf = (el) => {
+      let cur = el;
+      while (cur && cur.parentElement && cur.parentElement !== liveFlowRoot) cur = cur.parentElement;
+      return cur?.parentElement === liveFlowRoot ? cur : null;
+    };
+    const findByProof = (proof, used) => {
+      if (!proof) return null;
+      // MountRegistry first: the hub is the single writer of
+      // identity->element bindings, so a rematerialized turn resolves without
+      // scanning the flow at all.
+      try {
+        const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+        const rec = mounts?.get?.(String(proof.identity || '').trim());
+        const el = rec?.el?.isConnected === true ? (rec.shell || rec.el) : null;
+        const wrapper = el ? directFlowChildOf(el) : null;
+        if (wrapper && !used.has(wrapper) && !pageCollapseRangeH2OOwned(wrapper)) return wrapper;
+      } catch {}
       for (const child of Array.from(liveFlowRoot.children || [])) {
         if (used.has(child) || pageCollapseRangeH2OOwned(child)) continue;
-        if (pageCollapseRangeNodeCarriesIdentity(child, id)) return child;
+        if (pageCollapseMemberIdentityCurrent(child, proof)) return child;
       }
       return null;
     };
+    const findByIdentity = (identity, used) => findByProof({ identity }, used);
+    // One currency test, shared with the committed-state validator. They must
+    // not disagree: the weaker "connected and a direct child" test used here
+    // before reported success having rebound nothing (measured live:
+    // rebind ok / rebound 0), after which the validator still rejected the
+    // same member and the committed collapse was expanded away.
+    const memberCurrent = (node, proof) => (
+      node?.isConnected === true
+      && node?.parentElement === liveFlowRoot
+      && !pageCollapseRangeH2OOwned(node)
+      && pageCollapseMemberIdentityCurrent(node, proof)
+    );
     const used = new Set();
     for (const node of transaction.hostWrappers) {
-      if (node?.isConnected === true && node?.parentElement === liveFlowRoot) used.add(node);
+      const proof = transaction.wrapperProofs?.get?.(node) || null;
+      if (memberCurrent(node, proof)) used.add(node);
     }
     const nextWrappers = [];
     const nextProofs = new Map();
     for (const node of transaction.hostWrappers) {
       const proof = transaction.wrapperProofs?.get?.(node) || null;
       if (!proof?.identity) return { ok: false, rebound, reason: 'member-proof-missing' };
-      if (node?.isConnected === true && node?.parentElement === liveFlowRoot) {
+      if (memberCurrent(node, proof)) {
         nextWrappers.push(node);
         nextProofs.set(node, proof);
         continue;
       }
-      const replacement = findByIdentity(proof.identity, used);
+      const replacement = findByProof(proof, used);
       if (!replacement) return { ok: false, rebound, reason: 'member-identity-unresolved' };
       used.add(replacement);
       try {
@@ -6862,6 +6921,11 @@
     }
     transaction.hostWrappers = nextWrappers;
     transaction.wrapperProofs = nextProofs;
+    // Stale references are released, never retained as durable authority: the
+    // release path un-stamps exactly this list, so a detached original left
+    // here would both un-stamp nothing and leak our hidden attribute on the
+    // live replacement that took its place.
+    transaction.stampedWrappers = nextWrappers.slice();
     return { ok: true, rebound, reason: null };
   }
 
@@ -9223,7 +9287,15 @@
       return { ok: true, status: 'inactive', pageNum: num, rows: 0, released };
     }
     if (transaction) {
-      const current = validateCommittedAtomicPageCollapse(transaction);
+      let current = validateCommittedAtomicPageCollapse(transaction);
+      if (!current.ok && typeof rebindCommittedAtomicPageCollapse === 'function') {
+        // Same identity maintenance the reconcile path performs: a projection
+        // sync must re-resolve replacement elements before it concludes the
+        // committed collapse is gone, or a remount during sync releases a
+        // projection the user never asked to expand.
+        const rebind = rebindCommittedAtomicPageCollapse(transaction);
+        if (rebind.ok) current = validateCommittedAtomicPageCollapse(transaction);
+      }
       if (!current.ok) {
         return expandPageWithRenderedBoundaries(num, {
           chatId: id,

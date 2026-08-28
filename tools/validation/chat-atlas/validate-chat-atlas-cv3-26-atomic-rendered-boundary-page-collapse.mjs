@@ -363,6 +363,7 @@ function createTransactionHarness(options = {}) {
     'pageCollapseRangeIdentityOfCarrier',
     'pageCollapseRangeContainerIdentity',
     'pageCollapseRangeNodeCarriesIdentity',
+    'pageCollapseMemberIdentityCurrent',
     'renderedBoundaryWrapperCarriesIdentity',
     'applyCollapsedNativeRange',
     'captureCollapsedPageViewportAnchor',
@@ -480,6 +481,7 @@ function createTransactionHarness(options = {}) {
       expandAll: expandAllAtomicPageCollapses,
       prepare: prepareDetachedPageTitleList,
       revalidate: revalidateAtomicPageCollapsePlan,
+      memberCurrent: pageCollapseMemberIdentityCurrent,
       state: S,
     });
   })()`, {
@@ -642,6 +644,33 @@ await fixture('expansion moves zero host wrappers', () => equal(h.safety.hostMov
 await fixture('expansion moves zero Page units', () => equal(h.safety.pageUnitMoves, 0, 'no marker movement'));
 await fixture('expansion writes zero persistence', () => equal(h.safety.storage, 0, 'no storage'));
 await fixture('second expansion performs zero mutations', () => equal(expand(h).mutations, 0, 'idempotent expansion'));
+// A committed member must survive the host virtualizing its content away.
+// Measured live: the wrapper stays connected, in place and stamped, but its
+// inner identity carrier is gone, so the message identity recorded at commit
+// time is momentarily unprovable while the wrapper's own container id is not.
+// Before the dual-domain proof this read as "member stale" and expanded a
+// collapse the user never asked to open.
+await fixture('committed member survives content unhydration', () => {
+  const node = h.document.createElement('div');
+  node.setAttribute('data-turn-id-container', 'container-A');
+  const carrier = h.document.createElement('section');
+  carrier.setAttribute('data-turn-id', 'container-A');
+  const message = h.document.createElement('div');
+  message.setAttribute('data-message-id', 'message-A');
+  carrier.appendChild(message);
+  node.appendChild(carrier);
+  const proof = { identity: 'message-A', containerId: 'container-A' };
+  equal(h.api.memberCurrent(node, proof), true, 'hydrated member is current');
+  // Host virtualizes the content away: only the wrapper survives.
+  node.removeChild(carrier);
+  equal(h.api.memberCurrent(node, proof), true, 'unhydrated member stays current');
+  // A wrapper the host reused for a different turn is still rejected.
+  node.setAttribute('data-turn-id-container', 'container-B');
+  equal(h.api.memberCurrent(node, proof), false, 'different container is not current');
+  // A proof without the container domain still rejects an unprovable node.
+  equal(h.api.memberCurrent(node, { identity: 'message-A' }), false, 'no fallback without container proof');
+});
+
 await fixture('five cycles use identical stamp sets', () => {
   const expected = h.rawPlan.hostWrappers;
   for (let index = 0; index < 5; index += 1) {
