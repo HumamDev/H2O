@@ -8029,7 +8029,11 @@
      fallback rather than silently reading an empty path. */
   function chatAtlasMountedTurnSections() {
     let mounts = null;
-    try { mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null; } catch { mounts = null; }
+    try {
+      mounts = (typeof TOPW !== 'undefined' ? TOPW?.H2O?.obs : null)?.mounts
+        || (typeof W !== 'undefined' ? W?.H2O?.obs : null)?.mounts
+        || null;
+    } catch { mounts = null; }
     if (!mounts || typeof mounts.all !== 'function') return null;
     let records = [];
     try { records = mounts.all() || []; } catch { return null; }
@@ -8041,6 +8045,10 @@
       seen.add(shell);
       sections.push(shell);
     }
+    // An empty registry is not proof that nothing is mounted - it may simply
+    // not have reconciled yet - so it yields no answer and the caller's
+    // document fallback decides.
+    if (!sections.length) return null;
     // Registry order is binding order; the path readers below depend on
     // DOCUMENT order to carry an open question forward to its answer.
     // 4 === Node.DOCUMENT_POSITION_FOLLOWING, spelled numerically so the

@@ -164,8 +164,15 @@
     // several times per user-scroll frame. The document query remains the
     // fallback when the registry is unavailable.
     let sections = [];
+    // The registry read is isolated: a missing or unusable registry must fall
+    // back to the document, never surface as "the query failed". An EMPTY
+    // registry result is also treated as no answer rather than as proof that
+    // nothing is mounted, because the registry can legitimately not have
+    // reconciled yet while turns are already in the flow.
     try {
-      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null;
+      const mounts = (typeof TOPW !== 'undefined' ? TOPW?.H2O?.obs : null)?.mounts
+        || (typeof W !== 'undefined' ? W?.H2O?.obs : null)?.mounts
+        || null;
       if (mounts && typeof mounts.all === 'function') {
         const seen = new Set();
         for (const record of mounts.all() || []) {
@@ -174,10 +181,13 @@
           seen.add(shell);
           sections.push(shell);
         }
-      } else {
-        sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
       }
-    } catch { return fail('reveal-container-query-failed'); }
+    } catch { sections = []; }
+    if (!sections.length) {
+      try {
+        sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+      } catch { return fail('reveal-container-query-failed'); }
+    }
     if (!sections.length) return fail('reveal-container-no-mounted-turns');
     const governing = new Map();
     for (const section of sections) {

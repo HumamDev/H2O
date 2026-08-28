@@ -321,6 +321,7 @@ const PUB_FN = [
   'chatAtlasSamePathIdentity', 'chatAtlasPathIdentityKey', 'chatAtlasFirstPathIdentityDifference',
   'chatAtlasDefaultAnswerOnlyDivergence', 'chatAtlasConvergeDefaultNativeAnswers',
   'chatAtlasEvaluateNativeAgainstTarget', 'chatAtlasFirstDivergenceTarget',
+  'chatAtlasMountedTurnSections', 'chatAtlasNativePathSections', 'chatAtlasTurnsByQId',
   'chatAtlasFirstNativePathMismatch', 'chatAtlasProveConvergenceStep', 'chatAtlasMapMountedNativePath',
   'chatAtlasConvergenceExactIndicator', 'chatAtlasNativeVariantPagers', 'chatAtlasConvergencePagerOfKind',
   'chatAtlasNativeEditControls', 'chatAtlasNativeRegenerationControls',

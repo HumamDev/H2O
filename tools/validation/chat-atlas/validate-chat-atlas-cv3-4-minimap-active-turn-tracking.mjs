@@ -270,6 +270,12 @@ function createEnvironment() {
     MM_schedule() { return null; },
     MM_scheduleRafOnce() { throw new Error('unexpected-shared-scheduler'); },
     MINI_bindCompleteIndexMountedAnchors() { return 39; },
+    // This harness models a runtime with no MountRegistry, where the real
+    // helper returns true on every sync (there are no mount deltas to consume,
+    // so the legacy per-frame reconciliation is the correct path). Stubbing it
+    // to true therefore reproduces production behaviour for this topology and
+    // keeps the binding expectations below unchanged.
+    MINI_claimCompleteIndexAnchorBootstrap() { return true; },
     getCoreSurface() { return core; },
     disableScrollSync() { S.scrollSyncDisabled = true; },
     syncViewportPageDivider() { return false; },

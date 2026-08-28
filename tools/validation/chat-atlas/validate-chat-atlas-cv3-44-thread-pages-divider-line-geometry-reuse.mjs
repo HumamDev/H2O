@@ -79,6 +79,15 @@ const RECOGNIZED_PAGES = new Set([
   // replayed. Registered only after the targeted collapse/remount fixtures
   // above were green against this build; no assertion was weakened.
   '0b83f04776c3e28b8528d01a340774327c41c46f5331121903234d0840490937',
+  // T04 acceptance rework: route-return collapse intent replay. A route change
+  // is a lifecycle expansion that preserves intent and drops the committed
+  // transaction, so nothing re-projected the collapse on return. Replay reads
+  // the one canonical collapsed-pages authority and re-enters the existing
+  // transaction owner; it adds no projection writer and no second intent
+  // store. Registered only after the divider-line geometry fixtures below were
+  // green against this build and the live collapse/expand route-return proofs
+  // passed; no assertion was weakened to accept it.
+  '3003756507e6057ef53f0f58aa166a535f892d33525a67a51433149332b90d50',
 ]);
 
 const CV331 = path.join(HERE, 'validate-chat-atlas-cv3-31-branch-transition-page-unit-withdrawal.mjs');

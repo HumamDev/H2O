@@ -6950,7 +6950,95 @@
         source: `${reason}:${current.reason}`,
       }));
     }
+    for (const replayed of replayDeferredPageCollapseIntent(reason)) results.push(replayed);
     return results;
+  }
+
+  /* Route-return collapse replay.
+     Leaving a conversation legitimately tears the ephemeral projection down
+     while the user's intent survives - a route change is a lifecycle
+     expansion, so it preserves intent by design and drops only the committed
+     transaction. Nothing then re-projected it on return, because the pass
+     above iterates committed transactions and the route change had already
+     removed this page's. Measured: isPageCollapsed(2) true with mode normal,
+     0 synthetic lists and 0 title rows.
+
+     The canonical intent for the active (legacy) route is the collapsed-pages
+     state behind isPageCollapsed(). The title-intent ledger owns the engine
+     route and is inert here - it was never written by the legacy gesture
+     (ledgerRev 0, isTitleIntentSystemInert true), so gating replay on it
+     skipped a perfectly valid intent. Replay therefore reads that single
+     authority and re-enters collapsePageWithRenderedBoundaries, which remains
+     the sole projection writer; nothing here writes projection or intent
+     directly, so there is still exactly one logical writer.
+
+     A page whose exact boundaries are not currently provable is skipped and
+     its intent left untouched, so the collapse re-projects on a later pass
+     once its members mount. Readiness is a pure read, which keeps a page that
+     is never projectable from re-running the full plan on every reconcile. An
+     explicit divider expansion clears the intent, so a page the user opened is
+     never re-collapsed behind them. */
+  let collapseIntentReplayActive = false;
+  // Bounded per-page deferral retries. A page can legitimately be
+  // unprojectable for a beat after a route return (its exact boundary members
+  // have not mounted yet), and the ambient repair triggers are membership
+  // events that may all have fired already. This re-arms the EXISTING repair
+  // timer a bounded number of times instead of introducing another loop; the
+  // counter clears as soon as the page projects, and intent is never touched.
+  const collapseIntentReplayRetries = new Map();
+  const COLLAPSE_INTENT_REPLAY_MAX_RETRIES = 6;
+
+  function replayDeferredPageCollapseIntent(reason = 'intent-replay') {
+    if (collapseIntentReplayActive) return [];
+    const id = resolveChatId();
+    if (!id) return [];
+    let intent = null;
+    try { intent = readCollapsedPages(id); } catch { intent = null; }
+    if (!intent || !intent.size) return [];
+    const out = [];
+    collapseIntentReplayActive = true;
+    try {
+      for (const pageNum of Array.from(intent)) {
+        const num = Math.max(1, Number(pageNum || 0) || 0);
+        if (!num) continue;
+        const key = collapsedNativeRangeKey(id, num);
+        if (S.atomicPageCollapseTransactions.has(key)) continue;
+        if (S.atomicPageCollapseGuards.has(key)) continue;
+        let readiness = null;
+        try { readiness = getCollapsedNativeBoundaryReadiness(num); } catch { readiness = null; }
+        if (readiness?.activationReady !== true) {
+          const retryKey = `${id}|${num}`;
+          const attempts = Math.max(0, Number(collapseIntentReplayRetries.get(retryKey) || 0));
+          if (attempts < COLLAPSE_INTENT_REPLAY_MAX_RETRIES) {
+            collapseIntentReplayRetries.set(retryKey, attempts + 1);
+            try { scheduleActiveTitleListRepair('collapse-intent-replay-retry', 400, num); } catch {}
+          }
+          out.push({
+            ok: true,
+            status: 'intent-replay-deferred',
+            pageNum: num,
+            chatId: id,
+            attempts,
+            reason: String(readiness?.reason || 'not-projectable'),
+          });
+          continue;
+        }
+        collapseIntentReplayRetries.delete(`${id}|${num}`);
+        let replayed = null;
+        try {
+          replayed = collapsePageWithRenderedBoundaries(num, {
+            chatId: id,
+            source: `intent-replay:${String(reason || 'reconcile')}`,
+          });
+        } catch {
+          replayed = { ok: false, status: 'intent-replay-failed', pageNum: num, chatId: id };
+        }
+        out.push(replayed);
+      }
+    } finally {
+      collapseIntentReplayActive = false;
+    }
+    return out;
   }
 
   function expandAllAtomicPageCollapses(reason = 'scope-change') {
