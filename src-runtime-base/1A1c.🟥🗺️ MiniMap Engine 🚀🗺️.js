@@ -2353,6 +2353,11 @@
     let cycles = 0;
     let lastGap = startGap;
     let stallCycles = 0;
+    // Which neighbour pair the positional anchor was last parked against. A
+    // cycle that re-parks on unchanged evidence throws away the distance the
+    // previous cycle's sweep covered, so the anchor is only re-applied when
+    // the mounted neighbours actually moved.
+    let lastAnchorKey = '';
     // Bindings flicker as the host re-windows, so a momentarily absent
     // neighbor must not be mistaken for never-loaded history. The loaded
     // range only ever grows; track it monotonically and pin a history edge
@@ -2399,13 +2404,37 @@
             // Mid-window gap: park the nearest mounted neighbor on the far
             // side of the target at the opposing viewport edge, so the host
             // renders the region the target lives in. Identity-anchored, never
-            // turn-by-turn.
-            const anchorOrder = near.above || near.below;
+            // turn-by-turn. With neighbors on both sides the NEAREST one wins,
+            // by the same rule the sweep below already applies: anchoring on
+            // the far neighbor scrolls the viewport clean past the region the
+            // previous cycle just revealed, so the host virtualizes it away
+            // and every later cycle re-measures the same gap (measured: a
+            // 35 -> 10 request anchored on turn 36, teleported to the bottom
+            // and oscillated to the cycle ceiling without ever binding).
+            const anchorOrder = (near.above && near.below)
+              ? ((near.above - order) <= (order - near.below) ? near.above : near.below)
+              : (near.above || near.below);
             const anchorEl = MINI_mountedElementForOrder(anchorOrder);
             traceRow.anchor = anchorOrder;
             traceRow.anchorEl = !!anchorEl;
+            // Re-park only on fresh evidence. The sweep inside the cycle walks
+            // the viewport toward the target; re-parking on an unchanged
+            // neighbour pair teleports it straight back to the anchor and the
+            // gap can never close across a hole wider than one cycle's sweep
+            // (measured: a target 15 turns from its nearest mounted neighbour
+            // oscillated anchor->sweep->anchor for twelve cycles at a constant
+            // gap and ended at the ceiling). Unchanged evidence means the
+            // previous cycle's displacement is the only progress there is —
+            // keep it and sweep on from there.
+            const anchorKey = `${near.below}:${near.above}`;
+            const reAnchor = anchorKey !== lastAnchorKey;
+            lastAnchorKey = anchorKey;
+            traceRow.reanchor = reAnchor;
             if (anchorEl) {
-              anchorEl.scrollIntoView({ block: near.above ? 'end' : 'start', behavior: 'auto' });
+              // Side is read from the chosen anchor, not from which neighbor
+              // merely exists: an anchor above the target parks at the bottom
+              // edge so the region above it renders, and vice versa.
+              if (reAnchor) anchorEl.scrollIntoView({ block: anchorOrder > order ? 'end' : 'start', behavior: 'auto' });
             } else if (rootBefore) {
               rootBefore.scrollTop = Math.floor(Math.min(1, Math.max(0, (order - 0.5) / total))
                 * Math.max(0, Number(rootBefore.scrollHeight || 0) - Number(rootBefore.clientHeight || 0)));
