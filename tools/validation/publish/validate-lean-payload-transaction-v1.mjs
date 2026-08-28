@@ -307,6 +307,39 @@ const CP09_PROTECTED_IDENTITIES = Object.freeze({
   [PAYLOAD_MODULE_REL]: CP09_ROOT_AFTER_IDENTITIES[PAYLOAD_MODULE_REL],
   [VALIDATOR_REL]: CP09_ROOT_AFTER_IDENTITIES[VALIDATOR_REL],
 });
+// ── CP10 — historical activation-intent relocation compatibility ──────────
+// The approved relocation moved the canonical root, so accepted historical
+// activations now record a location that is no longer current. C1 teaches the
+// classifier to recognise exactly one registered retired generation while
+// leaving admission untouched; C2 is the bounded self-transition that registers
+// C1. Nothing historical is rewritten and the payload module is not touched.
+const CP10_AUTHORIZED_BASE = "1e8f16dfd9be05411845eccbd9310b628b8a2107";
+const CP10_INTENT_TRANSITION = "4c26ce426dca33bb1e7d08f961fe53fb50ca1cdd";
+const CP10_INTENT_PARENT = CP10_AUTHORIZED_BASE;
+const CP10_INTENT_SUBJECT =
+  "fix(publish): classify relocated historical activation intents";
+const CP10_INTENT_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
+const CP10_INTENT_BEFORE_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "da8f8b573405f39ae811fb60d234e0076da77d266653733340ad7d85506b31db",
+  [VALIDATOR_REL]: "9f3dcb7bbcb26571c8a35b6c8a04110cd4c46c9947a37839099769c31b32647c",
+});
+const CP10_INTENT_AFTER_IDENTITIES = Object.freeze({
+  [ACTIVATOR_REL]: "cbeedb44548124adb55373f8211caa16cf4d3a0bbccea9eb657f9416bf0d5b22",
+  [VALIDATOR_REL]: "1688ba0335ec33a99d39b34ded4ed99d9e355f282b357afeae67b373db809f48",
+});
+// Bounded self-transition, resolved at runtime exactly as aeaa870a, d29260c7,
+// e32d1fa8 and the CP09 authority commit already are.
+const CP10_AUTHORITY_SUBJECT =
+  "test(publish): approve the historical intent relocation transition";
+const CP10_AUTHORITY_PATHS = Object.freeze([PAYLOAD_VALIDATOR_REL]);
+const CP10_AUTHORITY_BEFORE_IDENTITY =
+  "ce2c34f70a8b993ac461265d47b5c5dc479e4f392870bc37e903f9dbf3ef83c3";
+// Accepted closure after CP10: only the activator and its validator moved.
+const CP10_PROTECTED_IDENTITIES = Object.freeze({
+  ...CP09_PROTECTED_IDENTITIES,
+  [ACTIVATOR_REL]: CP10_INTENT_AFTER_IDENTITIES[ACTIVATOR_REL],
+  [VALIDATOR_REL]: CP10_INTENT_AFTER_IDENTITIES[VALIDATOR_REL],
+});
 const STUDIO_PUBLICATION_BASE_HEAD = "394f4e6a85084c6550b3f8c098cbd8370fa585a5";
 const STUDIO_PUBLICATION_AUTHORITY_HEAD = "0689b7ac01119c7662953aa48feff7705e677da6";
 const STUDIO_PUBLICATION_AUTHORITY_SUBJECT =
@@ -612,7 +645,8 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
     JSON.stringify(evidence.paths ?? []) === JSON.stringify([...paths]) &&
     identityRecordMatches(evidence.beforeIdentities, before, paths) &&
     identityRecordMatches(evidence.afterIdentities, after, paths);
-  return typeof cp09AuthorityCommit === "string" &&
+  const anchorPlusCp09Authority =
+    typeof cp09AuthorityCommit === "string" &&
     /^[0-9a-f]{40}$/u.test(cp09AuthorityCommit) &&
     ![APPROVED_ACTIVATOR_TRANSITION, APPROVED_ACTIVATOR_ALIAS_TRANSITION,
       APPROVED_R2_VERIFICATION_TRANSITION, APPROVED_R2_STRICT_DEFAULT_TRANSITION,
@@ -656,6 +690,79 @@ function hasApprovedPayloadAuthority(value, { requireMainBranch = true } = {}) {
       Object.fromEntries(cp09ImmutablePaths.map((relative) =>
         [relative, value.headProtectedIdentities?.[relative]])),
       CP09_PROTECTED_IDENTITIES, cp09ImmutablePaths) &&
+    Object.keys(value.headProtectedIdentities ?? {}).length ===
+      PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
+  if (anchorPlusCp09Authority) return true;
+  // CP10 era: exactly thirteen protected transitions and nothing else. The
+  // eleven already-approved records, the CP10 classifier correction, and the
+  // bounded self-transition carrying this approval. Membership and record
+  // content are exact; only ordering is normalised.
+  const cp10AuthorityCommit = value.cp10AuthorityCommit;
+  const expectedCp10History = [...APPROVED_PROTECTED_HISTORY,
+    `${repairCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_ACTIVATOR_ALIAS_TRANSITION}\t${VALIDATOR_REL}`,
+    `${aliasAuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${APPROVED_R2_VERIFICATION_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${APPROVED_R2_STRICT_DEFAULT_TRANSITION}\t${ACTIVATOR_REL}`,
+    `${r2AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${CP08_PUBLICATION_TRANSITION}\t${CP08_PUBLICATION_PATHS.join("\t")}`,
+    `${CP08_SYNC_TRANSITION}\t${CP08_SYNC_PATHS.join("\t")}`,
+    `${CP09_ROOT_TRANSITION}\t${CP09_ROOT_PATHS.join("\t")}`,
+    `${cp09AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`,
+    `${CP10_INTENT_TRANSITION}\t${CP10_INTENT_PATHS.join("\t")}`,
+    `${cp10AuthorityCommit}\t${PAYLOAD_VALIDATOR_REL}`].sort();
+  const cp10ImmutablePaths = PROTECTED_PAYLOAD_AUTHORITY_PATHS
+    .filter((relative) => relative !== PAYLOAD_VALIDATOR_REL);
+  return typeof cp10AuthorityCommit === "string" &&
+    /^[0-9a-f]{40}$/u.test(cp10AuthorityCommit) &&
+    ![APPROVED_ACTIVATOR_TRANSITION, APPROVED_ACTIVATOR_ALIAS_TRANSITION,
+      APPROVED_R2_VERIFICATION_TRANSITION, APPROVED_R2_STRICT_DEFAULT_TRANSITION,
+      CP08_PUBLICATION_TRANSITION, CP08_SYNC_TRANSITION, CP09_ROOT_TRANSITION,
+      CP10_INTENT_TRANSITION, repairCommit, aliasAuthorityCommit, r2AuthorityCommit,
+      cp09AuthorityCommit].includes(cp10AuthorityCommit) &&
+    JSON.stringify([...(value.protectedHistory ?? [])].sort()) ===
+      JSON.stringify(expectedCp10History) &&
+    // every earlier self-transition keeps its original bounded shape
+    value.payloadDurabilityRepairParent === CURRENT_DURABLE_AUTHORITY_BASE &&
+    value.payloadDurabilityRepairSubject === PAYLOAD_DURABLE_AUTHORITY_SUBJECT &&
+    value.activatorAliasTransitionAfterIdentity === APPROVED_ACTIVATOR_ALIAS_AFTER_IDENTITY &&
+    value.activatorAliasAuthorityParent === APPROVED_ACTIVATOR_ALIAS_TRANSITION &&
+    value.activatorAliasAuthoritySubject === ACTIVATOR_ALIAS_AUTHORITY_SUBJECT &&
+    value.r2AuthorityParent === APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
+    value.r2AuthoritySubject === R2_AUTHORITY_SUBJECT &&
+    value.cp09AuthorityParent === CP09_ROOT_TRANSITION &&
+    value.cp09AuthoritySubject === CP09_AUTHORITY_SUBJECT &&
+    // the earlier exactly-bound transitions still hold
+    cp09TransitionMatches(value.cp08PublicationTransition,
+      CP08_PUBLICATION_PARENT, CP08_PUBLICATION_SUBJECT, CP08_PUBLICATION_PATHS,
+      CP08_PUBLICATION_BEFORE_IDENTITIES, CP08_PUBLICATION_AFTER_IDENTITIES) &&
+    cp09TransitionMatches(value.cp08SyncTransition,
+      CP08_SYNC_PARENT, CP08_SYNC_SUBJECT, CP08_SYNC_PATHS,
+      CP08_SYNC_BEFORE_IDENTITIES, CP08_SYNC_AFTER_IDENTITIES) &&
+    cp09TransitionMatches(value.cp09RootTransition,
+      CP09_ROOT_PARENT, CP09_ROOT_SUBJECT, CP09_ROOT_PATHS,
+      CP09_ROOT_BEFORE_IDENTITIES, CP09_ROOT_AFTER_IDENTITIES) &&
+    // the CP10 classifier correction, bound exactly
+    cp09TransitionMatches(value.cp10IntentTransition,
+      CP10_INTENT_PARENT, CP10_INTENT_SUBJECT, CP10_INTENT_PATHS,
+      CP10_INTENT_BEFORE_IDENTITIES, CP10_INTENT_AFTER_IDENTITIES) &&
+    // the bounded self-transition carrying this approval
+    value.cp10AuthorityParent === CP10_INTENT_TRANSITION &&
+    value.cp10AuthoritySubject === CP10_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.cp10AuthorityPaths ?? []) === JSON.stringify([...CP10_AUTHORITY_PATHS]) &&
+    value.cp10AuthorityBeforeIdentity === CP10_AUTHORITY_BEFORE_IDENTITY &&
+    typeof value.cp10AuthorityAfterIdentity === "string" &&
+    value.cp10AuthorityAfterIdentity === value.executionPayloadValidatorIdentity &&
+    value.cp10AuthorityAfterIdentity === value.headProtectedIdentities?.[PAYLOAD_VALIDATOR_REL] &&
+    (value.head !== cp10AuthorityCommit || (
+      value.parent === CP10_INTENT_TRANSITION &&
+      value.subject === CP10_AUTHORITY_SUBJECT &&
+      JSON.stringify(value.committedPaths ?? []) === JSON.stringify([...CP10_AUTHORITY_PATHS]))) &&
+    // every other protected path stays at the CP10 accepted closure
+    identityRecordMatches(
+      Object.fromEntries(cp10ImmutablePaths.map((relative) =>
+        [relative, value.headProtectedIdentities?.[relative]])),
+      CP10_PROTECTED_IDENTITIES, cp10ImmutablePaths) &&
     Object.keys(value.headProtectedIdentities ?? {}).length ===
       PROTECTED_PAYLOAD_AUTHORITY_PATHS.length;
 }
@@ -1014,6 +1121,19 @@ function classifyPayloadScope(state) {
     JSON.stringify(value.committedPaths) === JSON.stringify(PAYLOAD_DURABLE_AUTHORITY_PATHS) &&
     hasApprovedPayloadAuthority(value, { requireMainBranch: false });
   if (committedDurableAuthorityRepair) return "payload-durable-authority-committed";
+  if (value.head === CP10_INTENT_TRANSITION && value.untracked.length === 0 &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify([...CP10_AUTHORITY_PATHS])) {
+    return "cp10-authority-uncommitted";
+  }
+  const committedCp10Authority = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS) &&
+    value.parent === CP10_INTENT_TRANSITION &&
+    value.subject === CP10_AUTHORITY_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([...CP10_AUTHORITY_PATHS]) &&
+    hasApprovedPayloadAuthority(value, { requireMainBranch: false });
+  if (committedCp10Authority) return "cp10-authority-committed";
   // The CP09 self-transition itself, once committed. Bound exactly like the
   // aeaa870a durability repair: parent, subject and single protected path are
   // fixed, the branch requirement is relaxed because the candidate is verified
@@ -1056,7 +1176,8 @@ function currentScopeState() {
     commit !== APPROVED_R2_STRICT_DEFAULT_TRANSITION &&
     commit !== CP08_PUBLICATION_TRANSITION &&
     commit !== CP08_SYNC_TRANSITION &&
-    commit !== CP09_ROOT_TRANSITION);
+    commit !== CP09_ROOT_TRANSITION &&
+    commit !== CP10_INTENT_TRANSITION);
   const parentOf = (commit) =>
     git(ROOT, ["rev-parse", `${commit}^`], { allowFailure: true });
   const payloadDurabilityRepairCommit = runtimeProtectedCommits.find((commit) =>
@@ -1086,6 +1207,9 @@ function currentScopeState() {
       beforeIdentities: protectedIdentityRecord(`${commit}^`, paths),
       afterIdentities: protectedIdentityRecord(commit, paths),
     }) : null);
+  const cp10AuthorityCommit = runtimeProtectedCommits.find((commit) =>
+    parentOf(commit) === CP10_INTENT_TRANSITION) ?? null;
+  const cp10AuthorityGit = (args) => cp10AuthorityCommit ? git(ROOT, args) : null;
   const r2Present = (commit) => protectedHistoryCommits.includes(commit);
   const r2TransitionEvidence = (commit) => (r2Present(commit) ? Object.freeze({
     parent: git(ROOT, ["rev-parse", `${commit}^`]),
@@ -1115,6 +1239,19 @@ function currentScopeState() {
       cp09TransitionEvidence(CP08_PUBLICATION_TRANSITION, CP08_PUBLICATION_PATHS),
     cp08SyncTransition: cp09TransitionEvidence(CP08_SYNC_TRANSITION, CP08_SYNC_PATHS),
     cp09RootTransition: cp09TransitionEvidence(CP09_ROOT_TRANSITION, CP09_ROOT_PATHS),
+    cp10IntentTransition: cp09TransitionEvidence(CP10_INTENT_TRANSITION, CP10_INTENT_PATHS),
+    cp10AuthorityCommit,
+    cp10AuthorityParent: cp10AuthorityGit(["rev-parse", `${cp10AuthorityCommit}^`]),
+    cp10AuthoritySubject:
+      cp10AuthorityGit(["show", "-s", "--format=%s", cp10AuthorityCommit]),
+    cp10AuthorityPaths: cp10AuthorityCommit
+      ? lines(["diff-tree", "--no-commit-id", "--name-only", "-r",
+        cp10AuthorityCommit, "--", ...PROTECTED_PAYLOAD_AUTHORITY_PATHS])
+      : [],
+    cp10AuthorityBeforeIdentity: cp10AuthorityCommit
+      ? gitBlobIdentity(`${cp10AuthorityCommit}^`, PAYLOAD_VALIDATOR_REL) : null,
+    cp10AuthorityAfterIdentity: cp10AuthorityCommit
+      ? gitBlobIdentity(cp10AuthorityCommit, PAYLOAD_VALIDATOR_REL) : null,
     cp09AuthorityCommit,
     cp09AuthorityParent: cp09AuthorityGit(["rev-parse", `${cp09AuthorityCommit}^`]),
     cp09AuthoritySubject:
