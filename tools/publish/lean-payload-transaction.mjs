@@ -25,11 +25,23 @@ export const PAYLOAD_TRANSACTION_PHASE = "p3a";
 
 // Production authority. A relocated standalone copy is self-consistent under the
 // P2.3 module-relative pin; these allow-lists are what reject it.
+//
+// CP09: this module is the SINGLE owner of the approved Cockpit Pro root
+// authority for the delivery boundary. lean-activator imports these exact
+// symbols rather than keeping its own copy, so the two admission gates cannot
+// drift apart.
+//
+// Canonical Product authority lives under /Users/hobayda/H2OCode/products/.
+// The retired /Users/hobayda/H2OCode/repos/h2o-platforms/... topology is no
+// longer canonical Product authority and stays rejected. Admission remains an
+// exact realpath-normalized membership test against these entries - never a
+// prefix, substring, broad /products/ acceptance, existence-only check, or an
+// environment-supplied root.
 export const APPROVED_COCKPIT_PRO_ROOTS = Object.freeze([
-  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+  "/Users/hobayda/H2OCode/products/cockpit-pro",
 ]);
 export const APPROVED_AUTHORITATIVE_REPOSITORIES = Object.freeze([
-  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+  "/Users/hobayda/H2OCode/products/cockpit-pro/h2o-cp-source",
 ]);
 export const CANONICAL_ANCHOR_BASENAME = ".h2o-canonical-delivery";
 export const ACCEPTED_EXTENSION_VARIANT = "dev-controls-oauth-google";

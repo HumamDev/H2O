@@ -176,6 +176,11 @@ const ACCEPTED_CANONICAL_LIBRARY_IMPORTS = Object.freeze([
 ].sort());
 const ACCEPTED_PAYLOAD_MODULE_IMPORTS = Object.freeze([
   // P3C-A2 adds the read-only canonical-verification symbols.
+  // CP09 admits the two approved-root authority symbols: the payload module is
+  // their single owner and the activator consumes them over this same pinned
+  // edge instead of keeping a second copy. They are frozen data, not capability.
+  "APPROVED_AUTHORITATIVE_REPOSITORIES",
+  "APPROVED_COCKPIT_PRO_ROOTS",
   "ACTIVATION_RECEIPT_MODE",
   "ACTIVATION_RECEIPT_SCHEMA_VERSION",
   "ROLLBACK_RECEIPT_MODE",
@@ -5710,13 +5715,48 @@ function runStructuralTests() {
   });
   structural("the activator gate and payload module pin identical approved roots", () => {
     const payloadSource = fs.readFileSync(path.join(ROOT, PAYLOAD_MODULE_REL), "utf8");
+    // CP09 replaces "both files literally contain the same strings" with the
+    // stronger property it was standing in for: there is exactly ONE owner of
+    // the approved roots, so the two gates cannot disagree. Duplicated literals
+    // could drift; a single definition consumed by both cannot.
     for (const literal of [
+      "/Users/hobayda/H2OCode/products/cockpit-pro",
+      "/Users/hobayda/H2OCode/products/cockpit-pro/h2o-cp-source",
+    ]) {
+      assert.equal(payloadSource.includes(literal), true, literal);
+    }
+    // The retired topology is approved by neither gate.
+    for (const retired of [
       "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
       "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
     ]) {
-      assert.equal(source.includes(literal), true, literal);
-      assert.equal(payloadSource.includes(literal), true, literal);
+      assert.equal(payloadSource.includes(`"${retired}",`), false, retired);
+      assert.equal(source.includes(`"${retired}",`), false, retired);
     }
+    // The activator owns no independent canonical-root literal and takes the
+    // authority symbols through the pinned payload edge.
+    assert.doesNotMatch(source,
+      /export const APPROVED_(?:COCKPIT_PRO_ROOTS|AUTHORITATIVE_REPOSITORIES)\s*=/u);
+    assert.match(source,
+      /export \{ APPROVED_COCKPIT_PRO_ROOTS, APPROVED_AUTHORITATIVE_REPOSITORIES \}/u);
+    const payloadEdge = source.match(/import \{([^}]*?)\} from "\.\/lean-payload-transaction\.mjs";/u);
+    assert.ok(payloadEdge, "the payload import edge must remain a single named-import declaration");
+    for (const symbol of ["APPROVED_COCKPIT_PRO_ROOTS", "APPROVED_AUTHORITATIVE_REPOSITORIES"]) {
+      assert.equal(payloadEdge[1].includes(symbol), true, symbol);
+    }
+    // Both gates therefore resolve to the same authorized values by identity,
+    // not by two copies that happen to agree: the activator re-exports the very
+    // symbols it imports. It still owns its admission function, and that
+    // function still decides by exact realpath-normalized membership.
+    const gate = source.match(/export function assertApprovedProductionRoot\([^]*?\n\}/u);
+    assert.ok(gate, "the activator retains its own approved-root admission function");
+    assert.match(gate[0], /realAware\(repository\)/u);
+    assert.match(gate[0], /realAware\(cockpitProRoot\)/u);
+    assert.match(gate[0], /approvedRepositories\.map\(\(entry\) => realAware\(entry\)\)\.includes\(/u);
+    assert.match(gate[0], /approvedCockpitProRoots\.map\(\(entry\) => realAware\(entry\)\)\.includes\(/u);
+    assert.match(gate[0], /canonical-root-not-approved/u);
+    // Admission stays exact membership - never prefix, substring or existence.
+    assert.doesNotMatch(gate[0], /startsWith\(|\.includes\(normalizedRepository\.|existsSync/u);
     assert.match(source, /assertApprovedProductionRoot/u);
     // Intent preparation is gated, and the CLI has no injection route.
     const cliStart = source.indexOf("export async function runLeanActivator");

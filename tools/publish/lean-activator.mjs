@@ -60,6 +60,8 @@ import {
   rollbackReceiptPath,
   rollbackRetiredPath,
   rollbackUnitToPrevious,
+  APPROVED_AUTHORITATIVE_REPOSITORIES,
+  APPROVED_COCKPIT_PRO_ROOTS,
   TARGET_AWARE_RECEIPT_SCHEMA_VERSION,
   TRANSACTION_MODE,
   transactionDirectory,
@@ -1298,12 +1300,12 @@ export function evaluateFutureTransaction(model) {
 // the activator holds no import edge to the P3 payload module, so the capability
 // boundary stays provable by import inspection. A structural test asserts both
 // allow-lists are identical.
-export const APPROVED_COCKPIT_PRO_ROOTS = Object.freeze([
-  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
-]);
-export const APPROVED_AUTHORITATIVE_REPOSITORIES = Object.freeze([
-  "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
-]);
+// CP09: the approved canonical roots are owned by lean-payload-transaction and
+// imported through the existing pinned payload edge, never redefined here. Two
+// independently maintained copies of one allow-list can drift; a single
+// definition consumed by both admission gates cannot. Re-exported so existing
+// consumers of these names keep resolving to the same authority.
+export { APPROVED_COCKPIT_PRO_ROOTS, APPROVED_AUTHORITATIVE_REPOSITORIES };
 
 // Fixture roots are supplied only through this explicit injection. No CLI path,
 // environment value or receipt field reaches it, and runLeanActivator never calls
