@@ -1307,6 +1307,67 @@ export function evaluateFutureTransaction(model) {
 // consumers of these names keep resolving to the same authority.
 export { APPROVED_COCKPIT_PRO_ROOTS, APPROVED_AUTHORITATIVE_REPOSITORIES };
 
+/* CP10 - retired canonical generations.
+ *
+ * HISTORICAL CLASSIFICATION AUTHORITY ONLY.
+ *
+ * Accepted activations recorded the absolute paths of the canonical generation
+ * that was current when they ran. The approved repository relocation did not
+ * invalidate that evidence, but it did move the canonical root, so those
+ * records now name a location that is no longer current. This registry lets the
+ * classifier RECOGNISE such a generation when reading immutable historical
+ * evidence.
+ *
+ * It is deliberately NOT an admission surface. It is never consulted by
+ * assertApprovedProductionRoot, never merged into APPROVED_COCKPIT_PRO_ROOTS or
+ * APPROVED_AUTHORITATIVE_REPOSITORIES, and can never make a retired root
+ * acceptable for a NEW publication or activation. Membership here is finite,
+ * exact and auditable: a generation is matched by whole-path equality after
+ * realpath normalisation, never by prefix, suffix, basename or any
+ * environment-supplied value.
+ */
+export const RETIRED_CANONICAL_GENERATIONS = Object.freeze([
+  Object.freeze({
+    repository: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+    cockpitProRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+    anchorRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery",
+  }),
+]);
+
+/* Select EXACTLY ONE canonical generation for a historical intent: today's, or
+ * one registered retired generation. Both recorded location fields must name
+ * the same generation, so a record cannot mix identities. Anything else is
+ * unresolved, and the caller keeps its fail-closed foreign classification. */
+export function selectCanonicalGenerationForIntent(journal, foundation, source) {
+  const repository = realAware(journal?.repositoryRealpath ?? "");
+  const worktree = realAware(journal?.authorizedWorktreeRealpath ?? "");
+  if (!repository || !worktree || repository !== worktree) return null;
+  if (repository === source?.repository) {
+    return Object.freeze({ retired: false, repository, anchorRoot: foundation?.root });
+  }
+  for (const generation of RETIRED_CANONICAL_GENERATIONS) {
+    if (repository === realAware(generation.repository)) {
+      return Object.freeze({
+        retired: true,
+        repository,
+        anchorRoot: realAware(generation.anchorRoot),
+      });
+    }
+  }
+  return null;
+}
+
+/* The activation-intent path a generation would have recorded. Built from the
+ * generation's own anchor with the same coordination subpath the foundation
+ * uses, never by rewriting or stripping a current path. */
+export function generationActivationIntentPath(anchorRoot, activationId) {
+  validateActivationId(activationId);
+  if (typeof anchorRoot !== "string" || !anchorRoot || !path.isAbsolute(anchorRoot)) {
+    fail("generation-anchor-invalid", "Generation anchor root must be an absolute path.", { anchorRoot });
+  }
+  return path.join(path.resolve(anchorRoot), "activation-intents", `${activationId}.json`);
+}
+
 // Fixture roots are supplied only through this explicit injection. No CLI path,
 // environment value or receipt field reaches it, and runLeanActivator never calls
 // it; a structural assertion pins that.
@@ -1668,13 +1729,14 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
   try { targetPolicy = activatorTargetPolicy(targetId); } catch {
     return unresolved("intent-target-mismatch");
   }
-  // 1: the intent must belong to this canonical repository and branch. Its
-  // generation identity is historical evidence, however, so HEAD, tree and Git
-  // executable are compared to the receipt and transaction below rather than
-  // to today's executable checkout.
-  if (realAware(journal.repositoryRealpath ?? "") !== source.repository ||
-      realAware(journal.authorizedWorktreeRealpath ?? "") !== source.repository ||
-      journal.branch !== source.branch) {
+  // 1: the intent must belong to exactly ONE canonical generation - today's
+  // repository, or one explicitly registered retired generation - and to this
+  // branch. Its generation identity is historical evidence, so HEAD, tree and
+  // Git executable are compared to the receipt and transaction below rather
+  // than to today's executable checkout. An unknown location resolves to no
+  // generation and stays foreign.
+  const generation = selectCanonicalGenerationForIntent(journal, foundation, source);
+  if (!generation || journal.branch !== source.branch) {
     return unresolved("intent-foreign-source");
   }
   if (journal.acceptedExtensionVariant !== undefined &&
@@ -1682,7 +1744,14 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("intent-variant-mismatch");
   }
   // 2-3: a durable activation receipt must exist at the derived path and verify.
+  // Bytes are read from where the evidence physically lives today; the paths the
+  // evidence RECORDED are derived from the selected generation's own anchor, so
+  // one generation owns the complete location tuple and no comparison mixes two.
   const receiptPath = activationReceiptPath(foundation.root, activationId);
+  const recordedIntentPath = realAware(
+    generationActivationIntentPath(generation.anchorRoot, activationId));
+  const recordedReceiptPath = realAware(
+    activationReceiptPath(generation.anchorRoot, activationId));
   let receiptBytes;
   try {
     const stat = fs.lstatSync(receiptPath);
@@ -1706,7 +1775,7 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("receipt-identity-mismatch");
   }
   // 4: the receipt must bind this exact intent path and digest.
-  if (realAware(receipt.intentPath ?? "") !== realAware(intentPath) ||
+  if (realAware(receipt.intentPath ?? "") !== recordedIntentPath ||
       receipt.intentSha256 !== sha256Bytes(bytes)) {
     return unresolved("receipt-intent-binding-mismatch");
   }
@@ -1747,7 +1816,7 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
       terminal.branch !== journal.branch || terminal.approvedHead !== journal.approvedHead ||
       terminal.sourceTree !== journal.sourceTree ||
       !sameJson(terminal.stableGitIdentity, journal.gitExecutable) ||
-      realAware(terminal.intentPath ?? "") !== realAware(intentPath) ||
+      realAware(terminal.intentPath ?? "") !== recordedIntentPath ||
       terminal.intentSha256 !== sha256Bytes(bytes) ||
       realAware(terminal.stageReceiptPath ?? "") !== realAware(journal.stageReceiptPath ?? "") ||
       terminal.stageReceiptSha256 !== journal.stageReceiptSha256 ||
@@ -1762,7 +1831,7 @@ export function classifyExistingIntent(intentPath, foundation, source, { environ
     return unresolved("transaction-foreign");
   }
   if (terminal.transactionState !== "accepted") return unresolved("transaction-not-accepted");
-  if (realAware(terminal.activationReceiptPath ?? "") !== realAware(receiptPath) ||
+  if (realAware(terminal.activationReceiptPath ?? "") !== recordedReceiptPath ||
       terminal.activationReceiptSha256 !== receiptSha256) {
     return unresolved("accepted-receipt-binding-mismatch");
   }

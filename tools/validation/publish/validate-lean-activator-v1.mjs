@@ -136,6 +136,13 @@ const P3C_A3B_SUBJECT = "test(publish): close activation completeness validation
 // unchanged while main advanced through later non-publish repository work.
 // This fresh port intentionally pins that current authority and authorizes
 // exactly one narrow phase: this validator alone, on the current main head.
+// CP10 — historical activation-intent relocation compatibility. Exactly two
+// protected commits on the authorized base: the production classifier fix plus
+// this validator, then the payload-validator registration (which is not an
+// activator-scope state).
+const CP10_BASE_HEAD = "1e8f16dfd9be05411845eccbd9310b628b8a2107";
+const CP10_SUBJECT = "fix(publish): classify relocated historical activation intents";
+const CP10_AUTHORIZED_PATHS = Object.freeze([ACTIVATOR_REL, VALIDATOR_REL].sort());
 const ACCEPTED_CURRENT_MAIN_HEAD = "81ea28259c1399b92214f76f8ac43f44bfdaee4b";
 const CURRENT_BASELINE_AUTHORIZED_PATHS = Object.freeze([VALIDATOR_REL]);
 const CURRENT_BASELINE_SUBJECT =
@@ -160,7 +167,7 @@ const REQUIRED_FILES = Object.freeze([
   "provider/identity-provider-supabase.js",
 ]);
 const EXPECTED_SCOPE = 63;
-const EXPECTED_RUNTIME = 229;
+const EXPECTED_RUNTIME = 237;
 const EXPECTED_STRUCTURAL = 56;
 // P3C-A1 adds the three real canonical-delivery lease symbols. The activator is
 // the only module that may hold a lease; the payload module never sees one.
@@ -674,6 +681,22 @@ function classifyScope(state) {
     value.missingFinal.length === 0 &&
     JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
   if (historicalIntentFix) return "historical-intent-fix-uncommitted";
+  const cp10Base = value.head === CP10_BASE_HEAD &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (cp10Base &&
+      JSON.stringify(value.modifiedTracked) === JSON.stringify([...CP10_AUTHORIZED_PATHS])) {
+    return "cp10-historical-intent-uncommitted";
+  }
+  const cp10Committed = value.modifiedTracked.length === 0 &&
+    value.staged.length === 0 && value.untracked.length === 0 &&
+    value.missingFinal.length === 0 &&
+    value.parent === CP10_BASE_HEAD &&
+    value.subject === CP10_SUBJECT &&
+    JSON.stringify(value.committedPaths) === JSON.stringify([...CP10_AUTHORIZED_PATHS]) &&
+    JSON.stringify(value.trackedFinal) === JSON.stringify(FINAL_PATHS);
+  if (cp10Committed) return "cp10-historical-intent-committed";
   const durableCommittedClean = value.modifiedTracked.length === 0 &&
     value.staged.length === 0 && value.untracked.length === 0 &&
     value.missingFinal.length === 0 &&
@@ -1394,7 +1417,8 @@ function evaluateRegisteredMainAuthority(evidence) {
     "p3c-integration-uncommitted", "p3c-integration-committed",
     "current-baseline-uncommitted", "current-baseline-committed",
     "classifier-durability-uncommitted", "historical-intent-fix-uncommitted",
-    "studio-publication-authority-uncommitted", "studio-validator-sync-uncommitted"]
+    "studio-publication-authority-uncommitted", "studio-validator-sync-uncommitted",
+    "cp10-historical-intent-uncommitted", "cp10-historical-intent-committed"]
     .includes(evidence.executionScope)) {
     authorityError("execution-scope-not-integrated-authority", evidence);
   }
@@ -4904,6 +4928,149 @@ function secondActivation(context, label) {
 const readReceiptAt = (p) => JSON.parse(fs.readFileSync(p, "utf8"));
 
 async function runP3cA3Tests() {
+  // ── CP10 — historical activation-intent relocation compatibility ──────────
+  // Accepted activations recorded the absolute paths of the canonical
+  // generation current at the time. The approved relocation moved the files but
+  // not the evidence inside them, so these fixtures reproduce that exact shape:
+  // the bytes live at the fixture anchor while the recorded location fields
+  // name a registered retired generation.
+  const RETIRED = {
+    repository: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
+    anchorRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/.h2o-canonical-delivery",
+  };
+  const generationPaths = (anchorRoot, activationId) => ({
+    intentPath: path.join(anchorRoot, "activation-intents", `${activationId}.json`),
+    receiptPath: path.join(anchorRoot, "activations", `${activationId}.json`),
+  });
+  const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+  const writeJson = (file, value) => fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+  // Rewrites ONLY synthetic fixture evidence so it describes the given
+  // generation. Production historical evidence is never touched by this suite.
+  const relocateFixtureEvidence = (context, generation, { mixRecordedIntent = false } = {}) => {
+    const activationId = context.intent.activationId;
+    const recorded = generationPaths(generation.anchorRoot, activationId);
+    const current = generationPaths(context.anchor, activationId);
+    const recordedIntentPath = mixRecordedIntent ? current.intentPath : recorded.intentPath;
+    const intent = readJson(context.intent.intentPath);
+    intent.repositoryRealpath = generation.repository;
+    intent.authorizedWorktreeRealpath = generation.repository;
+    writeJson(context.intent.intentPath, intent);
+    const intentSha256 = sha256(fs.readFileSync(context.intent.intentPath));
+    const receiptFile = context.activation.activationReceiptPath;
+    const receipt = readJson(receiptFile);
+    receipt.repositoryRealpath = generation.repository;
+    receipt.authorizedWorktreeRealpath = generation.repository;
+    receipt.intentPath = recordedIntentPath;
+    receipt.intentSha256 = intentSha256;
+    writeJson(receiptFile, receipt);
+    const receiptSha256 = sha256(fs.readFileSync(receiptFile));
+    const transactionDir = path.join(context.anchor, "transactions", activationId);
+    const records = fs.readdirSync(transactionDir).sort();
+    const terminalFile = path.join(transactionDir, records[records.length - 1]);
+    const terminal = readJson(terminalFile);
+    terminal.repositoryRealpath = generation.repository;
+    terminal.authorizedWorktreeRealpath = generation.repository;
+    terminal.intentPath = recordedIntentPath;
+    terminal.intentSha256 = intentSha256;
+    terminal.activationReceiptPath = recorded.receiptPath;
+    terminal.activationReceiptSha256 = receiptSha256;
+    writeJson(terminalFile, terminal);
+    return { terminalFile, receiptFile, intentSha256, receiptSha256 };
+  };
+
+  await test("CP10 A: an accepted intent from a registered retired generation resolves", async () => {
+    const context = await resolvedActivationFixture("cp10-retired-accepted");
+    relocateFixtureEvidence(context, RETIRED);
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, true, outcome.code);
+  });
+
+  await test("CP10 B: an arbitrary foreign generation stays fail-closed", async () => {
+    const context = await resolvedActivationFixture("cp10-foreign");
+    relocateFixtureEvidence(context, {
+      repository: "/Users/hobayda/H2OCode/repos/h2o-platforms/not-cockpit-pro/h2o-cp-source",
+      anchorRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/not-cockpit-pro/.h2o-canonical-delivery",
+    });
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, false);
+    assert.equal(outcome.code, "intent-foreign-source");
+  });
+
+  await test("CP10 C: a retired generation with a non-accepted terminal is blocked", async () => {
+    const context = await resolvedActivationFixture("cp10-retired-unaccepted");
+    const { terminalFile } = relocateFixtureEvidence(context, RETIRED);
+    const terminal = readJson(terminalFile);
+    terminal.transactionState = "incoming-promoted";
+    writeJson(terminalFile, terminal);
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, false);
+    assert.equal(outcome.code, "transaction-not-accepted");
+  });
+
+  await test("CP10 D: a retired generation with broken lineage is blocked", async () => {
+    const context = await resolvedActivationFixture("cp10-retired-lineage");
+    const { receiptFile } = relocateFixtureEvidence(context, RETIRED);
+    const receipt = readJson(receiptFile);
+    receipt.intentSha256 = "0".repeat(64);
+    writeJson(receiptFile, receipt);
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, false);
+    assert.equal(outcome.code, "receipt-intent-binding-mismatch");
+  });
+
+  await test("CP10 E: a current-canonical intent without acceptance stays blocked", async () => {
+    const context = await createActivationFixture("cp10-current-unresolved");
+    const outcome = context.api.classifyExistingIntent(context.intent.intentPath,
+      { root: context.anchor },
+      {
+        repository: fs.realpathSync.native(context.fixture.repository),
+        branch: "main",
+        approvedHead: git(context.fixture.repository, ["rev-parse", "HEAD"]),
+        sourceTree: git(context.fixture.repository, ["rev-parse", "HEAD^{tree}"]),
+        gitExecutable: readJson(context.intent.intentPath).gitExecutable,
+      },
+      { environment: cleanEnvironment() });
+    assert.equal(outcome.resolved, false);
+    assert.equal(outcome.code, "receipt-absent");
+  });
+
+  await test("CP10 F: a current-canonical accepted intent still resolves", async () => {
+    const context = await resolvedActivationFixture("cp10-current-accepted");
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, true, outcome.code);
+  });
+
+  await test("CP10 G: the retired root is still rejected for NEW authority", async () => {
+    // The real production module, not a fixture copy: this is the negative
+    // control proving historical compatibility did not restore the retired
+    // location as current admission authority.
+    const productionApi = await import(
+      `${pathToFileURL(path.join(ROOT, ACTIVATOR_REL)).href}?cp10-negative=${Date.now()}`);
+    expectActivatorError(() => productionApi.assertApprovedProductionRoot({
+      repository: RETIRED.repository,
+      cockpitProRoot: "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
+      anchorRoot: RETIRED.anchorRoot,
+    }), "canonical-root-not-approved");
+    // and it did not widen either approved list
+    assert.deepEqual([...productionApi.APPROVED_AUTHORITATIVE_REPOSITORIES],
+      ["/Users/hobayda/H2OCode/products/cockpit-pro/h2o-cp-source"]);
+    assert.deepEqual([...productionApi.APPROVED_COCKPIT_PRO_ROOTS],
+      ["/Users/hobayda/H2OCode/products/cockpit-pro"]);
+    // the registry itself carries exactly the one authorized retired generation
+    assert.equal(productionApi.RETIRED_CANONICAL_GENERATIONS.length, 1);
+    assert.equal(productionApi.RETIRED_CANONICAL_GENERATIONS[0].repository, RETIRED.repository);
+    assert.equal(Object.isFrozen(productionApi.RETIRED_CANONICAL_GENERATIONS), true);
+  });
+
+  await test("CP10 mixing: one generation must own the whole location tuple", async () => {
+    const context = await resolvedActivationFixture("cp10-mixed-generation");
+    // retired repository identity, but the recorded intent path of today's anchor
+    relocateFixtureEvidence(context, RETIRED, { mixRecordedIntent: true });
+    const outcome = classify(context);
+    assert.equal(outcome.resolved, false);
+    assert.equal(outcome.code, "receipt-intent-binding-mismatch");
+  });
+
   await test("two consecutive activations succeed in one anchor with immutable intents", async () => {
     const context = await createActivationFixture("a3-consecutive");
     const firstIntentBytes = fs.readFileSync(context.intent.intentPath);
@@ -5725,14 +5892,37 @@ function runStructuralTests() {
     ]) {
       assert.equal(payloadSource.includes(literal), true, literal);
     }
-    // The retired topology is approved by neither gate.
+    // The retired topology is approved by neither gate. CP10 gives the activator
+    // a historical-classification registry that legitimately NAMES the retired
+    // paths, so "the literal is absent from the activator" is no longer the
+    // property worth asserting - and asserting it would forbid the registry.
+    // What must hold is that the retired location is never ADMISSIBLE, which is
+    // proven here structurally and by the runtime negative control below.
     for (const retired of [
       "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro",
       "/Users/hobayda/H2OCode/repos/h2o-platforms/cockpit-pro/h2o-cp-source",
     ]) {
       assert.equal(payloadSource.includes(`"${retired}",`), false, retired);
-      assert.equal(source.includes(`"${retired}",`), false, retired);
     }
+    // (B) the retired-generation registry is not consulted by the admission gate.
+    const admissionGate = source.match(/export function assertApprovedProductionRoot\([^]*?\n\}/u);
+    assert.ok(admissionGate, "the activator retains its own approved-root admission function");
+    assert.equal(admissionGate[0].includes("RETIRED_CANONICAL_GENERATIONS"), false,
+      "admission must never consult the historical registry");
+    assert.equal(admissionGate[0].includes("selectCanonicalGenerationForIntent"), false,
+      "admission must never consult historical generation selection");
+    // (C) and it does not broaden either approved list: both remain re-exported
+    // from the payload owner, and the registry is a separate frozen constant.
+    assert.match(source,
+      /export const RETIRED_CANONICAL_GENERATIONS = Object\.freeze\(\[/u);
+    assert.doesNotMatch(source,
+      /APPROVED_(?:COCKPIT_PRO_ROOTS|AUTHORITATIVE_REPOSITORIES)[^\n]*RETIRED_CANONICAL_GENERATIONS/u);
+    assert.doesNotMatch(source,
+      /RETIRED_CANONICAL_GENERATIONS[^\n]*APPROVED_(?:COCKPIT_PRO_ROOTS|AUTHORITATIVE_REPOSITORIES)/u);
+    // Selection stays finite and exact: no prefix/suffix/basename/env trust.
+    const selector = source.match(/export function selectCanonicalGenerationForIntent\([^]*?\n\}/u);
+    assert.ok(selector, "generation selection must be its own auditable function");
+    assert.doesNotMatch(selector[0], /startsWith|endsWith|basename|replace\(|process\.env/u);
     // The activator owns no independent canonical-root literal and takes the
     // authority symbols through the pinned payload edge.
     assert.doesNotMatch(source,
