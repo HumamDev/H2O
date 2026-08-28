@@ -6,6 +6,7 @@
 // SQLite, package writer, CAS, Sync, import/recovery, capabilities, or UI.
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -15,6 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const MODULE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-requests.tauri.js';
+const INBOX_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-request-inbox.tauri.js';
 const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_STUDIO_REL = 'tools/product/studio/pack-studio.mjs';
 const CONTRACT_REL = 'docs/systems/archive/saved-chat-archive-request-v1.md';
@@ -116,7 +118,7 @@ function merge(base, overrides) {
   return out;
 }
 
-function loadModule({ missingStore = false, missingChat = false, missingSnapshot = false, throwStore = false } = {}) {
+function loadModule({ missingStore = false, missingChat = false, missingSnapshot = false, throwStore = false, projection = null } = {}) {
   const queueRows = [];
   const chats = {
     get: async (chatId) => {
@@ -184,8 +186,26 @@ function loadModule({ missingStore = false, missingChat = false, missingSnapshot
   };
   context.globalThis = context;
   context.window = context;
+  // M05 Phase 3: the governed probe + codec supply the Desktop-derived
+  // projection half of the effective dedupe identity. Injected here so the
+  // intake suite can vary the projection without touching the real archive.
+  const probeCalls = [];
+  if (projection) {
+    context.H2O.Studio = context.H2O.Studio || {};
+    context.H2O.Studio.ingestion = Object.assign({}, context.H2O.Studio.ingestion, {
+      probeCurrentSavedChatProjectionV1: async (opts) => {
+        probeCalls.push(opts);
+        return typeof projection === 'function' ? projection(probeCalls.length) : projection;
+      },
+      savedChatPackageCodec: {
+        sha256PrefixedBytes: async (bytes) => 'sha256-' + crypto.createHash('sha256').update(Buffer.from(bytes)).digest('hex'),
+      },
+    });
+  }
+  context.TextEncoder = TextEncoder;
   const sandbox = vm.createContext(context);
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
+  sandbox.H2O.Studio.ingestion.__probeCalls = probeCalls;
   sandbox.H2O.Studio.ingestion.__queueRows = queueRows;
   return sandbox.H2O.Studio.ingestion;
 }
@@ -504,6 +524,168 @@ await checkAsync('list returns persisted requests and diagnose queue returns cou
   assert.equal(diag.boundaries.chromeRuntime, false);
   assert.equal(diag.boundaries.syncTransport, false);
 });
+
+
+
+
+
+// ── M05 Phase 3: projection-aware refresh identity ──────────────────────────
+
+const okProjection = (contentHash) => ({
+  status: 'ok', reason: '', contentHash, snapshotId: 'snap_d2a', schemaVersion: 2, payloadVersion: 2, assetShas: [],
+});
+const PROJ_A = 'sha256-' + 'a'.repeat(64);
+const PROJ_B = 'sha256-' + 'b'.repeat(64);
+
+await checkAsync('P3F-1/2 unchanged projection dedupes; CHANGED projection admits a refresh', async () => {
+  // One module instance, one queue: the ONLY thing that varies between calls
+  // is the authoritative projection, which is exactly the metadata-only
+  // refresh case the browser-side dedupe key cannot see.
+  const ingestion = loadModule({ projection: (n) => okProjection(n <= 2 ? PROJ_A : PROJ_B) });
+  const key = 'sha256-' + '3'.repeat(64);
+
+  const first = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_a', dedupeKey: key }));
+  assert.equal(first.persisted, true, 'the first request is admitted');
+  assert.notEqual(first.dedupeKey, key, 'the persisted key carries the projection half');
+
+  const same = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_b', dedupeKey: key }));
+  assert.equal(same.status, 'duplicate', 'an unchanged projection must still dedupe');
+  assert.equal(same.persisted, false);
+
+  // Same browser request identity, same snapshotId — only the projection moved.
+  const refreshed = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_c', dedupeKey: key }));
+  assert.notEqual(refreshed.status, 'duplicate', 'a changed projection must be refreshable');
+  assert.equal(refreshed.persisted, true);
+  assert.notEqual(refreshed.dedupeKey, first.dedupeKey, 'a different projection yields a different identity');
+});
+
+await checkAsync('P3F-3 an INDETERMINATE projection never fabricates a refresh identity', async () => {
+  const ingestion = loadModule({ projection: { status: 'indeterminate', reason: 'store-not-ready', contentHash: '' } });
+  const key = 'sha256-' + '5'.repeat(64);
+  const first = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_3a', dedupeKey: key }));
+  assert.equal(first.persisted, true);
+  assert.equal(first.dedupeKey, key,
+    'the base key is used UNCHANGED: a partial current state must never manufacture an identity');
+  const second = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_3b', dedupeKey: key }));
+  assert.equal(second.status, 'duplicate', 'and behaviour is unchanged from before');
+});
+
+await checkAsync('P3F-4 the projection half is Desktop-derived, never caller-supplied', async () => {
+  // A caller trying to supply projection hash material must be refused
+  // outright by the forbidden-payload guard.
+  const ingestion = loadModule({ projection: okProjection(PROJ_A) });
+  const forged = validEnvelope({ requestId: 'req_p3f_4', dedupeKey: 'sha256-' + '6'.repeat(64) });
+  forged.projectionContentHash = PROJ_B;
+  const r = await ingestion.resolveSavedChatArchiveRequestV1(forged);
+  const codes = (r.blockers || []).map((b) => b.code || b);
+  assert.ok(codes.includes('content-hash-payload-forbidden'), `caller-supplied projection hash must be refused: ${JSON.stringify(codes)}`);
+});
+
+await checkAsync('P3F-5 the probe is consulted with the resolved chatId', async () => {
+  const ingestion = loadModule({ projection: okProjection(PROJ_A) });
+  await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_5', dedupeKey: 'sha256-' + '7'.repeat(64) }));
+  assert.equal(ingestion.__probeCalls.length, 1, 'the governed probe is the projection authority');
+  assert.equal(ingestion.__probeCalls[0].chatId, 'chat_d2a');
+});
+
+/* ── Phase 5 — the newly reachable operator intake, end to end ─────────────
+ * The New UI "Scan request inbox" control calls exactly this authority. This
+ * proves the operation it now reaches actually closes the prerequisite gap: a
+ * genuine producer-shaped request FILE, against a disposable chat/snapshot of
+ * the kind the sanctioned #/migrate/import path establishes, becomes a
+ * validated queue row bound to that exact chat/snapshot — with no raw queue
+ * insertion anywhere in the path. */
+function loadInboxRuntime({ files, chatId, snapshotId }) {
+  const queueRows = [];
+  const chats = { get: async (id) => (id === chatId ? { chatId } : null) };
+  const snapshots = {
+    get: async (id) => (id === snapshotId ? { snapshot: { snapshotId, chatId } } : null),
+    listByChat: async () => [{ snapshotId, chatId }],
+  };
+  const context = {
+    console, JSON, TextEncoder, TextDecoder, Date, Math, Promise, Object, Array,
+    String, Number, Boolean, Error, isFinite, parseInt, Buffer,
+    H2O: { Studio: { store: { chats, snapshots } } },
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd, args = {}) => {
+        if (cmd === 'plugin:fs|read_dir') {
+          return Object.keys(files).map((name) => ({ name, isFile: true, isDirectory: false }));
+        }
+        if (cmd === 'plugin:fs|read_file' || cmd === 'plugin:fs|read_text_file') {
+          const leaf = String(args.path || '').split('/').pop();
+          if (!(leaf in files)) throw new Error('ENOENT ' + leaf);
+          const text = files[leaf];
+          return cmd === 'plugin:fs|read_file' ? Array.from(Buffer.from(text, 'utf8')) : text;
+        }
+        if (cmd === 'plugin:fs|mkdir' || cmd === 'plugin:fs|write_text_file') return null;
+        if (cmd === 'plugin:sql|select') {
+          const query = String(args.query || '');
+          const values = Array.isArray(args.values) ? args.values : [];
+          if (/WHERE dedupe_key = \?/.test(query)) return queueRows.filter((r) => r.dedupe_key === values[0]).slice(0, 1);
+          if (/WHERE request_id = \?/.test(query)) return queueRows.filter((r) => r.request_id === values[0]).slice(0, 1);
+          if (/WHERE status = \?/.test(query)) return queueRows.filter((r) => r.status === values[0]);
+          return queueRows.slice();
+        }
+        if (cmd === 'plugin:sql|execute') {
+          const query = String(args.query || '');
+          const values = Array.isArray(args.values) ? args.values : [];
+          assert.ok(/^INSERT INTO saved_chat_archive_requests/.test(query), 'only governed queue INSERT allowed: ' + query);
+          if (queueRows.some((r) => r.dedupe_key === values[1])) throw new Error('UNIQUE constraint failed: saved_chat_archive_requests.dedupe_key');
+          queueRows.push({ request_id: values[0], dedupe_key: values[1], status: values[3], studio_chat_id: values[8], snapshot_id: values[9] });
+          return [1, 0];
+        }
+        throw new Error('unexpected invoke command: ' + cmd);
+      },
+    },
+  };
+  context.globalThis = context; context.window = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
+  vm.runInContext(readRepo(INBOX_REL), sandbox, { filename: INBOX_REL });
+  return { api: sandbox.H2O.Studio.ingestion, queueRows };
+}
+
+/* Reuses this suite's own known-good envelope rather than hand-rolling a second
+ * one, so the file on disk is exactly the shape the producer emits. */
+function producerRequestFile({ requestId, chatId, snapshotId }) {
+  return JSON.stringify(validEnvelope({
+    requestId,
+    dedupeKey: 'sha256-' + '9'.repeat(64),
+    desktopResolution: { studioChatId: chatId, snapshotId },
+  }));
+}
+
+await checkAsync('[P5.H] producer request file -> governed inbox -> validated row bound to the disposable chat/snapshot', async () => {
+  const chatId = 'p5-disposable-chat';
+  const snapshotId = 'snap_p5_disposable';
+  const requestId = 'req_p5_disposable';
+  const { api, queueRows } = loadInboxRuntime({
+    chatId, snapshotId,
+    files: { [requestId + '.request.json']: producerRequestFile({ requestId, chatId, snapshotId }) },
+  });
+  assert.equal(typeof api.scanSavedChatArchiveRequestInboxV1, 'function', 'inbox authority not exported');
+  const res = await api.scanSavedChatArchiveRequestInboxV1({ limit: 50 });
+  assert.equal(res.scanned, 1, 'producer request file not discovered');
+  assert.equal(res.processed, 1, 'producer request file not processed');
+  assert.equal(res.validated, 1, 'did not reach validated: ' + JSON.stringify({ status: res.status, rejected: res.rejected, needs: res.needsDesktopSnapshot, blockers: res.blockers }));
+  assert.equal(queueRows.length, 1, 'exactly one queue row expected');
+  assert.equal(queueRows[0].status, 'validated');
+  assert.equal(queueRows[0].studio_chat_id, chatId, 'queue row not bound to the disposable chat');
+  assert.equal(queueRows[0].snapshot_id, snapshotId, 'queue row not bound to the disposable snapshot');
+});
+
+await checkAsync('[P5.H] a malformed request file is rejected and enqueues nothing', async () => {
+  const { api, queueRows } = loadInboxRuntime({
+    chatId: 'p5-disposable-chat', snapshotId: 'snap_p5_disposable',
+    files: { 'bad-1.request.json': '{ this is not valid json' },
+  });
+  const res = await api.scanSavedChatArchiveRequestInboxV1({ limit: 50 });
+  assert.equal(res.processed, 1, 'the malformed file must actually be processed, not filtered away');
+  assert.equal(res.validated, 0, 'a malformed file must never validate');
+  assert.equal(res.rejected, 1, 'a malformed file must be counted rejected');
+  assert.equal(queueRows.length, 0, 'a malformed file must not enqueue');
+});
+
 
 if (FAIL.length) {
   console.error(`[saved-chat-archive-request-intake] ${FAIL.length} failed, ${PASS.length} passed`);

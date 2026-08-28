@@ -299,10 +299,26 @@
             chatId: cleanString(d.chatId) || cleanString(m.chatId),
             snapshotId: cleanString(d.snapshotId) || cleanString(m.snapshotId),
             title: titleFromMarkdown(markdown),
-            contentHash: cleanString(hashChecks.expectedContentHash) || cleanString(m.contentHash),
+            /* RECOMPUTED by the governed validator from stored bytes. The
+             * manifest's own claim is shown separately and never substituted
+             * for it: a package that lies about its identity must not be able
+             * to display a borrowed one. */
+            contentHash: cleanString(hashChecks.expectedContentHash),
+            manifestClaimedContentHash: cleanString(m.contentHash),
+            contentHashVerified: hashChecks.contentHashOk === true,
             schemaVersion: schemaVersion,
             payloadVersion: payloadVersion,
+            /* Recorded by the writer; presentation metadata only — never
+             * currentness or ordering authority. */
             generatedAt: cleanString(m.generatedAt),
+            /* M05 §D verified classification (legacy | generation | mismatch |
+             * unclassified). Derived from verified identity, never a filename
+             * parse. */
+            nameClassification: cleanString(d.nameClassification) || 'unclassified',
+            packageKind: (function () {
+              var c = cleanString(d.nameClassification);
+              return c === 'generation' ? 'generation' : (c === 'legacy' ? 'legacy' : 'unusable');
+            })(),
             messageCount: isFiniteNumber(m.messageCount) ? m.messageCount : null,
           },
           checks: {
@@ -379,16 +395,31 @@
       var preset = STATUS_PRESENTATION[r.status] || { tone: 'neutral', label: r.status, note: '' };
       var id = safeObject(r.identity);
       var ck = safeObject(r.checks);
+      var KIND_TEXT = {
+        generation: 'immutable generation',
+        legacy: 'legacy package (grandfathered)',
+        unusable: 'unusable / identity mismatch',
+      };
       var idHtml = ''
+        /* Recorded location, shown for operator reference only. */
         + identityRow('package', r.packageDirName)
+        + identityRow('kind', KIND_TEXT[id.packageKind] || '')
         + identityRow('chatId', id.chatId)
         + identityRow('snapshotId', id.snapshotId)
         + identityRow('title', id.title)
         + identityRow('messageCount', id.messageCount == null ? '' : String(id.messageCount))
-        + identityRow('contentHash', id.contentHash)
+        /* The recomputed, verified identity — the only value freshness is ever
+         * compared against. */
+        + identityRow('contentHash (verified)', id.contentHash)
+        /* Shown separately so a divergence is visible rather than hidden by a
+         * fallback. */
+        + (cleanString(id.manifestClaimedContentHash) && id.manifestClaimedContentHash !== id.contentHash
+          ? identityRow('contentHash (claimed)', id.manifestClaimedContentHash + '  ⚠ does not match verified')
+          : '')
         + identityRow('schemaVersion', id.schemaVersion == null ? '' : String(id.schemaVersion))
         + identityRow('payloadVersion', id.payloadVersion == null ? '' : String(id.payloadVersion))
-        + identityRow('generatedAt', id.generatedAt);
+        /* Write-time record; never currentness. */
+        + identityRow('generatedAt (recorded)', id.generatedAt);
       var checksLine = 'files: '
         + (ck.manifestPresent ? 'manifest✓ ' : 'manifest✗ ')
         + (ck.snapshotPresent ? 'snapshot✓ ' : 'snapshot✗ ')

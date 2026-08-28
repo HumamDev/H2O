@@ -84,6 +84,22 @@
   /* Pure: map a diagnoseSavedChatArchiveV1 result to a status-only summary. */
   function formatArchiveHealthSummary(result) {
     var status = result && typeof result === 'object' ? String(result.status || '') : '';
+    /* M05: an incomplete enumeration can never be presented as "nothing is
+     * here". `empty` and every absence-flavoured verdict below assume the scan
+     * saw the whole archive; when it did not, say so instead. */
+    var scanComplete = !(result && typeof result === 'object') || result.complete !== false;
+    if (!scanComplete) {
+      return {
+        state: 'ready',
+        status: 'incomplete',
+        pill: { label: 'Partial scan', tone: 'warn' },
+        headline: 'Archive discovery was incomplete.',
+        explanation: 'Only part of the archive could be enumerated, so absence '
+          + 'cannot be concluded: packages may exist that this scan did not see. '
+          + 'Existing findings below remain valid for the packages that WERE read.',
+        complete: false,
+      };
+    }
     if (status === 'empty') {
       return { state: 'empty', status: 'empty', pill: { label: 'Empty', tone: 'neutral' }, headline: TEXT.empty, explanation: EXPLAIN.empty };
     }
@@ -240,11 +256,21 @@
       pkg = safeObject(pkg);
       var blockers = Array.isArray(pkg.blockers) ? pkg.blockers : [];
       var warnings = Array.isArray(pkg.warnings) ? pkg.warnings : [];
+      /* M05 §D verified classification. Every package is listed on its own
+       * row: multiple generations of one chat are distinct preservation
+       * artifacts and must never be collapsed into a single "package" for
+       * display compatibility. */
+      var classification = String(pkg.nameClassification || 'unclassified');
+      var kind = classification === 'generation' ? 'generation'
+        : (classification === 'legacy' ? 'legacy' : 'unusable');
       return {
         index: index,
         packagePath: String(pkg.packagePath || ''),
         schemaVersion: pkg.schemaVersion == null ? '' : String(pkg.schemaVersion),
         status: String(pkg.status || 'unknown'),
+        kind: kind,
+        kindLabel: kind === 'generation' ? 'generation'
+          : (kind === 'legacy' ? 'legacy' : 'unusable'),
         blockersCount: blockers.length,
         warningsCount: warnings.length,
         chatId: String(pkg.chatId || ''),

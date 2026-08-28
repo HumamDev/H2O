@@ -121,7 +121,7 @@ check('module is loaded in studio.html and packed', () => {
 console.log('[archive-materializer] behavioral checks');
 
 // In-memory queue + mock ingestion, loaded into a VM that satisfies the Tauri gate.
-function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
+function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage, coverageThrows, raceAfterRead } = {}) {
   const queue = new Map();
   if (row) queue.set(row.request_id, { ...row });
   const sqlCalls = [];
@@ -132,7 +132,11 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
     if (cmd === 'plugin:sql|select') {
       const m = q.match(/WHERE request_id = \?/);
       const r = m ? queue.get(v[0]) : null;
-      return r ? [{ ...r }] : [];
+      const snapshotOfRow = r ? [{ ...r }] : [];
+      // Simulates a concurrent worker moving the row AFTER this one read it as
+      // `validated` — the exact window the compare-and-swap claim exists for.
+      if (raceAfterRead && r) { r.status = raceAfterRead; raceAfterRead = null; }
+      return snapshotOfRow;
     }
     if (cmd === 'plugin:sql|execute') {
       assert.match(q, /UPDATE saved_chat_archive_requests/, 'only the queue table may be written');
@@ -172,12 +176,22 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows } = {}) {
       },
     },
   };
+  const coverageCalls = [];
+  if (coverage || coverageThrows) {
+    context.H2O.Studio.ingestion.describeSavedChatCoverageV1 = async (opts) => {
+      coverageCalls.push(opts);
+      if (coverageThrows) throw new Error(coverageThrows);
+      return coverage;
+    };
+  }
   context.globalThis = context;
   const sandbox = vm.createContext(context);
   vm.runInContext(src, sandbox, { filename: MODULE_REL });
   const api = sandbox.H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1;
+  const rearm = sandbox.H2O.Studio.ingestion.rearmFailedSavedChatArchiveRequestV1;
+  const reconcile = sandbox.H2O.Studio.ingestion.reconcileStrandedSavedChatArchiveWritingV1;
   if (typeof api !== 'function') throw new Error('materialize API did not register');
-  return { api, queue, sqlCalls, writerCalls, context };
+  return { api, rearm, reconcile, queue, sqlCalls, writerCalls, coverageCalls, context };
 }
 
 function validatedRow() {
@@ -266,17 +280,33 @@ await checkAsync('writer throw -> failed, error metadata persisted, no overwrite
   const fx = loadFixture({
     row: validatedRow(),
     resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
-    writerThrows: 'saved chat package already exists: archive/packages/chat_1.h2ochat',
+    writerThrows: 'trusted publication refused: generation-manifest-invalid',
   });
   const r = await fx.api({ requestId: 'req_1' });
   assert.equal(r.status, 'failed');
   assert.equal(r.ok, false);
-  assert.equal(r.error, 'package-already-exists');
+  // M05 Phase 3: the legacy `already exists -> package-already-exists` mapping
+  // is RETIRED. An occupied exact generation is verified by the trusted
+  // publisher and returned as DEDUPED (a success), never adjudicated here, so
+  // only a genuine throw reaches this branch.
+  assert.equal(r.error, 'package-writer-threw');
   assert.equal(fx.writerCalls.length, 1);
   const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
-  assert.equal(mat.errorCode, 'package-already-exists');
-  assert.ok(mat.errorMessage.includes('already exists'));
+  assert.equal(mat.errorCode, 'package-writer-threw');
   assert.equal(fx.queue.get('req_1').status, 'failed');
+});
+
+await checkAsync('M05 P3: the retired package-already-exists failure mapping is gone', async () => {
+  // Even a throw whose text says "already exists" must not resurrect the old
+  // code path: dedupe is a trusted verdict, not a renderer inference.
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    writerThrows: 'saved chat package already exists: archive/packages/chat_1.h2ochat',
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.error, 'package-writer-threw');
+  assert.notEqual(r.error, 'package-already-exists');
 });
 
 await checkAsync('missing request -> not-found, no writer call', async () => {
@@ -353,7 +383,464 @@ await checkAsync('losing writing -> written reports the conflict and still surfa
   assert.equal(r.transitionConflict.nextStatus, 'written');
 });
 
+// ── M05 Phase 3: coverage-aware lifecycle ────────────────────────────────────
+
+const FRESH_HASH = 'sha256-' + 'a'.repeat(64);
+
+function coverageFresh(overrides = {}) {
+  return Object.assign({
+    chatId: 'chat_1',
+    projection: { status: 'ok', reason: '', contentHash: FRESH_HASH, snapshotId: 'snap_1', schemaVersion: 2 },
+    legacy: [], generations: [], unusable: [], stale: [],
+    fresh: [{ packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }],
+    selected: { packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, payloadVersion: 2, classification: 'generation' },
+    preserved: true, covered: true, bestHistorical: null, bestHistoricalTies: [], complete: true, reason: '',
+  }, overrides);
+}
+
+function coverageStale(overrides = {}) {
+  return Object.assign({}, coverageFresh(), {
+    fresh: [], selected: null, covered: false,
+    stale: [{ packagePath: 'archive/packages/chat_1.gbbb.h2ochat', contentHash: 'sha256-' + 'b'.repeat(64), staleKind: 'content-stale' }],
+  }, overrides);
+}
+
+const okWriterResult = {
+  packagePath: 'archive/packages/chat_1.gccc.h2ochat',
+  schemaVersion: 2, payloadVersion: 2,
+  contentHash: 'sha256-' + 'c'.repeat(64),
+  snapshotId: 'snap_1', writtenAt: '2026-08-27T00:00:00.000Z',
+  outcome: 'created', committed: true, deduped: false, durabilityComplete: true, advisories: [],
+};
+
+await checkAsync('P3-1 re-resolution runs BEFORE coverage and before the writing claim', async () => {
+  const order = [];
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  // The queue's first UPDATE is the claim; coverage must already have run.
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written');
+  assert.equal(fx.coverageCalls.length, 1, 'coverage consulted exactly once');
+  const firstUpdate = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|execute');
+  const firstSelect = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|select');
+  assert.ok(firstSelect >= 0 && firstSelect < firstUpdate, 'the row is read before any transition');
+});
+
+await checkAsync('P3-2 a FRESH package short-circuits: no publish, sanctioned success', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh(),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'completes through the sanctioned terminal state');
+  assert.equal(r.ok, true);
+  assert.equal(fx.writerCalls.length, 0, 'NO publication may occur when already fresh');
+  assert.equal(r.package.outcome, 'already-fresh');
+  assert.equal(r.package.contentHash, FRESH_HASH);
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3-3 PRESERVED-but-stale does NOT short-circuit: publication occurs', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'a stale archive must still publish');
+  assert.equal(r.status, 'written');
+  assert.equal(r.package.outcome, 'created');
+});
+
+await checkAsync('P3-3b BEST-HISTORICAL and PRESERVED never satisfy the fresh path', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({
+      preserved: true,
+      bestHistorical: { packagePath: 'archive/packages/chat_1.gbbb.h2ochat', contentHash: 'sha256-' + 'b'.repeat(64) },
+    }),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'a historical candidate is not freshness');
+  assert.equal(r.package.outcome, 'created');
+});
+
+await checkAsync('P3-4 no valid package at all ⇒ publication occurs', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ stale: [], preserved: false, covered: false }),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1);
+  assert.equal(r.status, 'written');
+});
+
+await checkAsync('P3-6 trusted DEDUPED is a SUCCESSFUL materialization', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: Object.assign({}, okWriterResult, { outcome: 'deduped', deduped: true, committed: false }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'DEDUPED must not be a failure');
+  assert.equal(r.ok, true);
+  assert.equal(r.package.outcome, 'deduped');
+  assert.equal(r.package.deduped, true);
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3-7 indeterminate projection: no publish, no fresh/stale assertion, row stays retryable', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({
+      projection: { status: 'indeterminate', reason: 'store-not-ready', contentHash: '' },
+      covered: null, fresh: [], stale: [],
+    }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 0, 'must not publish on an unproven current state');
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'projection-indeterminate');
+  // Row remains immediately eligible; no durable status was invented.
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+});
+
+await checkAsync('P3-9 incomplete discovery cannot justify publication', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ covered: null, complete: false, fresh: [], reason: 'discovery-incomplete' }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 0, 'a truncated scan is not evidence that no fresh package exists');
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'discovery-incomplete');
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+});
+
+await checkAsync('P3-9b a truncated scan that already found a FRESH package may still short-circuit', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh({ complete: false }),
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'a verified positive is safe under a partial scan');
+  assert.equal(fx.writerCalls.length, 0);
+});
+
+await checkAsync('P3-10 a lost fresh-path claim reports conflict, never false success', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageFresh(),
+    // The row is read as `validated`, then a concurrent worker claims it. Our
+    // claim must lose, and losing must never become a success.
+    raceAfterRead: 'writing',
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.notEqual(r.status, 'written');
+  assert.equal(r.ok, false, 'a lost claim must never report success');
+  assert.ok(r.transitionConflict, 'the conflict must be reported');
+  assert.equal(fx.writerCalls.length, 0);
+  // The concurrent owner's state is untouched.
+  assert.equal(fx.queue.get('req_1').status, 'writing');
+});
+
+await checkAsync('P3-11 queue metadata is never consulted as freshness authority', async () => {
+  // The row already claims a written package with the CURRENT hash in
+  // meta_json. That must not short-circuit anything: only the coverage
+  // authority decides, and here it says stale.
+  const row = validatedRow();
+  row.meta_json = JSON.stringify({ materialization: { contentHash: FRESH_HASH, packagePath: 'archive/packages/chat_1.gaaa.h2ochat', outcome: 'created' } });
+  const fx = loadFixture({
+    row,
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(fx.writerCalls.length, 1, 'recorded-at-write-time metadata is history, not present truth');
+  assert.equal(r.status, 'written');
+});
+
+await checkAsync('P3-12 a coverage authority that throws degrades to the existing publish path', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverageThrows: 'coverage exploded',
+    writerResult: okWriterResult,
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'written', 'coverage is an optimization; its failure must not break materialization');
+  assert.equal(fx.writerCalls.length, 1);
+});
+
+// ── M05 Phase 3: recovery, re-arm & recorded intent ─────────────────────────
+
+const INTENDED = 'sha256-' + 'd'.repeat(64);
+
+function rowIn(status, matOverrides = {}) {
+  const r = validatedRow();
+  r.status = status;
+  r.meta_json = JSON.stringify({ materialization: Object.assign({ processingStartedAt: '2026-08-27T00:00:00.000Z' }, matOverrides) });
+  return r;
+}
+
+function coverageWith(entries, overrides = {}) {
+  return Object.assign({
+    chatId: 'chat_1',
+    projection: { status: 'ok', reason: '', contentHash: FRESH_HASH, snapshotId: 'snap_1', schemaVersion: 2 },
+    legacy: [], generations: entries, unusable: [], fresh: [], stale: [],
+    preserved: entries.length > 0, covered: false, selected: null,
+    bestHistorical: null, bestHistoricalTies: [], complete: true, reason: '',
+  }, overrides);
+}
+
+await checkAsync('P3R-1 the writing claim durably records the intended projection identity', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  await fx.api({ requestId: 'req_1' });
+  // Inspect the CLAIM update (the first execute), not the terminal one: the
+  // intent must be durable BEFORE publication, or a crash loses it.
+  const executes = fx.sqlCalls.filter((c) => c.cmd === 'plugin:sql|execute');
+  const claimMeta = JSON.parse(executes[0].values[2]).materialization;
+  assert.equal(claimMeta.intendedContentHash, FRESH_HASH, 'intent must be persisted with the claim');
+  assert.equal(executes[0].values[0], 'writing');
+});
+
+await checkAsync('P3R-2 re-arm is CAS-guarded from failed only, and preserves evidence', async () => {
+  const fx = loadFixture({ row: rowIn('failed', { errorCode: 'package-writer-threw', errorMessage: 'boom' }) });
+  const r = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(r.ok, true);
+  assert.equal(r.status, 'validated');
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.attempts.length, 1, 'prior failure evidence is preserved');
+  assert.equal(mat.attempts[0].errorCode, 'package-writer-threw');
+  assert.equal(mat.rearmCount, 1);
+  assert.equal(mat.errorCode, null, 'the retry starts from a clean slate');
+});
+
+await checkAsync('P3R-3 a non-failed row cannot be re-armed', async () => {
+  for (const status of ['validated', 'writing', 'written', 'needs-desktop-snapshot']) {
+    const fx = loadFixture({ row: rowIn(status) });
+    const r = await fx.rearm({ requestId: 'req_1' });
+    assert.equal(r.ok, false, `${status} must not be re-armable`);
+    assert.equal(r.status, 'not-eligible');
+    assert.equal(fx.queue.get('req_1').status, status, 'no row may jump to validated');
+  }
+});
+
+await checkAsync('P3R-4 re-arm losing the CAS race reports conflict, never success', async () => {
+  const fx = loadFixture({ row: rowIn('failed'), raceAfterRead: 'validated' });
+  const r = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 'transition-conflict');
+  assert.ok(r.transitionConflict);
+});
+
+await checkAsync('P3R-5 stranded writing + verified matching generation ⇒ written (no republish)', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.ok, true);
+  assert.equal(r.status, 'written');
+  assert.equal(r.package.outcome, 'recovered-package-present');
+  assert.equal(r.package.contentHash, INTENDED);
+  assert.equal(fx.writerCalls.length, 0, 'never republish merely to prove existence');
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3R-6 reconciliation is idempotent', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  const first = await fx.reconcile({ requestId: 'req_1' });
+  const second = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(first.status, 'written');
+  assert.equal(second.ok, true);
+  assert.equal(second.status, 'already-written', 'repeating must be a safe no-op');
+  assert.equal(fx.queue.get('req_1').status, 'written');
+});
+
+await checkAsync('P3R-7 complete scan with NO matching package ⇒ sanctioned failed, evidence kept', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gzzz.h2ochat', contentHash: 'sha256-' + 'e'.repeat(64), schemaVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'failed', 'routes through the sanctioned writing -> failed edge');
+  assert.equal(r.recovered.rearmRequired, true, 'reset is explicit, never automatic');
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.errorCode, 'stranded-writing-recovered');
+  assert.equal(mat.intendedContentHash, INTENDED, 'evidence preserved for the re-arm');
+  // And it is then re-armable, completing the recovery route.
+  const armed = await fx.rearm({ requestId: 'req_1' });
+  assert.equal(armed.status, 'validated');
+});
+
+await checkAsync('P3R-8 incomplete verification never asserts absence or failure', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([], { complete: false, covered: null }),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'discovery-incomplete');
+  assert.equal(fx.queue.get('req_1').status, 'writing', 'no destructive mutation on unproven evidence');
+});
+
+await checkAsync('P3R-9 a row with no recorded intent is surfaced, never guessed', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing'),
+    // Today's projection matches a package — which must NOT be used as a
+    // substitute for what the stranded worker actually intended.
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gaaa.h2ochat', contentHash: FRESH_HASH, schemaVersion: 2, classification: 'generation' }]),
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.status, 'recovery-intent-unknown');
+  assert.equal(fx.queue.get('req_1').status, 'writing', 'no mutation without recorded intent');
+  assert.equal(r.ok, false);
+});
+
+await checkAsync('P3R-10 age alone never resets a writing row', async () => {
+  // No age/timeout input exists in the decision at all: an ancient row with a
+  // verifiable package still reconciles to written, and one without evidence
+  // still refuses to guess.
+  const src = readRepo(MODULE_REL);
+  const fnStart = src.indexOf('async function reconcileStrandedSavedChatArchiveWritingV1');
+  const fnBody = src.slice(fnStart, src.indexOf('materializeSavedChatArchiveRequestV1.__installed', fnStart));
+  for (const forbidden of ['Date.now()', 'setTimeout', 'elapsed', 'ageMs', 'timeoutMs']) {
+    assert.ok(!fnBody.includes(forbidden), `reconciliation must not consult ${forbidden}`);
+  }
+});
+
+await checkAsync('P3R-11 RESTART proof: intent persisted, process restarted, then reconciled', async () => {
+  // 1. A worker claims and records intent, then is interrupted.
+  const first = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale({ projection: { status: 'ok', contentHash: INTENDED, snapshotId: 'snap_1', schemaVersion: 2 } }),
+    writerThrows: 'simulated interruption before completion',
+  });
+  await first.api({ requestId: 'req_1' });
+  // The writer threw, so this worker moved the row to failed; simulate instead
+  // a HARD interruption by restoring the durable state as it was mid-write.
+  const durable = { ...first.queue.get('req_1') };
+  durable.status = 'writing';
+  durable.meta_json = JSON.stringify({ materialization: { intendedContentHash: INTENDED, processingStartedAt: '2026-08-27T00:00:00.000Z' } });
+
+  // 2. A NEW process (fresh sandbox, fresh module instance) sees only the
+  //    persisted row — nothing in memory survives.
+  const after = loadFixture({
+    row: durable,
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+  });
+  assert.equal(after.queue.get('req_1').status, 'writing', 'pre-state: stranded');
+  const r = after.reconcile ? await after.reconcile({ requestId: 'req_1' }) : null;
+  assert.ok(r, 'the recovery API must exist in the restarted process');
+  assert.equal(r.status, 'written', 'recovered purely from persisted intent + verified package');
+  assert.equal(after.writerCalls.length, 0);
+});
+
+await checkAsync('P3R-12 a stale worker cannot overwrite a newer owner during recovery', async () => {
+  const fx = loadFixture({
+    row: rowIn('writing', { intendedContentHash: INTENDED }),
+    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, classification: 'generation' }]),
+    raceAfterRead: 'written',
+  });
+  const r = await fx.reconcile({ requestId: 'req_1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.status, 'transition-conflict');
+  assert.equal(fx.queue.get('req_1').status, 'written', 'the newer owner state is intact');
+});
+
 console.log('');
+/* ── Phase 5 repair — the failure path must not erase claim metadata ───────
+ *
+ * A real assembled run failed at publication and the persisted row came back
+ * WITHOUT intendedContentHash: the writing->failed transition merged its patch
+ * onto `currentMeta`, which was read BEFORE the claim, so it stamped the
+ * pre-claim row over what the claim had durably written. That is precisely the
+ * recovery evidence stranded-`writing` reconciliation reads. */
+await checkAsync('P5.F1 a package-writer failure PRESERVES the claim intent it was supposed to record', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerThrows: new Error('generation member write refused: generation-session-unknown'),
+  });
+  const res = await fx.api({ requestId: 'req_1' });
+  assert.equal(res.status, 'failed', `expected failed, got ${res.status}`);
+
+  const row = fx.queue.get('req_1');
+  assert.equal(row.status, 'failed');
+  const mat = JSON.parse(row.meta_json).materialization;
+
+  // The claim's recovery intent survives the failure record.
+  assert.equal(mat.intendedContentHash, FRESH_HASH,
+    'intendedContentHash from the writing claim was erased by the failure record');
+  assert.ok(mat.processingStartedAt, 'processingStartedAt must survive');
+  // Layered over it: the failure evidence itself.
+  assert.equal(mat.errorCode, 'package-writer-threw');
+  assert.match(String(mat.errorMessage), /generation-session-unknown/);
+  assert.ok(mat.processingFinishedAt, 'processingFinishedAt must be recorded');
+});
+
+await checkAsync('P5.F2 the transition stays CAS-guarded writing -> failed (no shortcut)', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerThrows: new Error('boom'),
+  });
+  await fx.api({ requestId: 'req_1' });
+  const executes = fx.sqlCalls.filter((c) => c.cmd === 'plugin:sql|execute');
+  // Claim, then failure — each guarded on its expected prior status.
+  assert.equal(executes[0].values[0], 'writing', 'first transition must claim writing');
+  assert.equal(executes[0].values[executes[0].values.length - 1], 'validated', 'claim guarded on validated');
+  const fail = executes[executes.length - 1];
+  assert.equal(fail.values[0], 'failed', 'terminal transition must be failed');
+  assert.equal(fail.values[fail.values.length - 1], 'writing', 'failure must be guarded on writing');
+  // And no writing -> validated shortcut was introduced.
+  assert.ok(!executes.some((e) => e.values[0] === 'validated' && e.values[e.values.length - 1] === 'writing'),
+    'no writing -> validated shortcut may exist in the failure path');
+});
+
+await checkAsync('P5.F3 a successful publication also preserves the claim intent', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
+    coverage: coverageStale(),
+    writerResult: okWriterResult,
+  });
+  await fx.api({ requestId: 'req_1' });
+  const mat = JSON.parse(fx.queue.get('req_1').meta_json).materialization;
+  assert.equal(mat.intendedContentHash, FRESH_HASH,
+    'the written record must not stamp the pre-claim row either');
+});
+
+
 if (FAIL.length) {
   console.error(`[archive-materializer] ${FAIL.length} failed, ${PASS.length} passed`);
   process.exitCode = 1;

@@ -43,7 +43,6 @@
     lastPackage: null,
     lastError: null,
   };
-  var v3WritesInFlight = Object.create(null);
 
   function nowIso() {
     try { return new Date().toISOString(); }
@@ -892,7 +891,34 @@
   }
 
   /* Resolve the C4 asset stack (all injected via globals, never required). */
-  function getAssetStack() {
+  /* Resolves the inline-asset stack used during projection.
+   *
+   * `override` exists so a caller can drive this EXACT build path with a
+   * different stack — specifically the mutation-free projection probe, which
+   * needs the same identity math without writing CAS blobs or registry rows.
+   * It is accepted only as a COMPLETE stack: a partial override would silently
+   * mix probe and production dependencies, which is precisely the confusion
+   * this seam must not create.
+   *
+   * With no override the production stack resolves exactly as before, so
+   * production behaviour is unchanged. The override is passed per call and is
+   * never installed globally. */
+  function isCompleteAssetStack(candidate) {
+    var c = safeObject(candidate);
+    return !!(c.materializer && typeof c.materializer.materializeInlineImageAssetsV2 === 'function'
+      && c.assetCas && typeof c.assetCas.putAssetBytes === 'function'
+      && c.assetStore && typeof c.assetStore.upsert === 'function'
+      && typeof c.assetStore.linkToTurn === 'function');
+  }
+
+  function getAssetStack(override) {
+    if (override != null) {
+      if (!isCompleteAssetStack(override)) {
+        throw new Error('assetStack override must supply materializer + assetCas + assetStore');
+      }
+      var o = safeObject(override);
+      return { materializer: o.materializer, assetCas: o.assetCas, assetStore: o.assetStore };
+    }
     var ing = (H2O.Studio && H2O.Studio.ingestion) || {};
     var store = (H2O.Studio && H2O.Studio.store) || {};
     return { materializer: ing.savedChatPackageAssets, assetCas: ing.assetCas, assetStore: store.assets };
@@ -909,12 +935,8 @@
     if (o.skipAssetMaterialization === true) {
       return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-opt-out' };
     }
-    var stack = getAssetStack();
-    var ok = stack.materializer && typeof stack.materializer.materializeInlineImageAssetsV2 === 'function'
-      && stack.assetCas && typeof stack.assetCas.putAssetBytes === 'function'
-      && stack.assetStore && typeof stack.assetStore.upsert === 'function'
-      && typeof stack.assetStore.linkToTurn === 'function';
-    if (!ok) {
+    var stack = getAssetStack(o.assetStack);
+    if (!isCompleteAssetStack(stack)) {
       return { snapshotJson: snapshotJson, manifestAssets: [], changed: false, status: 'skipped-no-deps' };
     }
     var out = await stack.materializer.materializeInlineImageAssetsV2({
@@ -1228,28 +1250,8 @@
     }
   }
 
-  async function fsMkdir(path, options) {
-    var invoke = getTauriInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs mkdir');
-    return invoke('plugin:fs|mkdir', { path: path, options: options || fsOptions() });
-  }
 
-  async function fsRemove(path, options) {
-    var invoke = getTauriInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs remove');
-    return invoke('plugin:fs|remove', { path: path, options: options || fsOptions() });
-  }
 
-  async function fsWriteFile(path, bytes, options) {
-    var invoke = getTauriInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs write_file');
-    return invoke('plugin:fs|write_file', bytesFor(bytes), {
-      headers: {
-        path: encodeURIComponent(path),
-        options: JSON.stringify(options || fsOptions()),
-      },
-    });
-  }
 
   function textBytes(text) {
     return bytesFor(String(text == null ? '' : text));
@@ -1300,35 +1302,6 @@
     return asArray(await invoke('plugin:fs|read_dir', { path: path, options: options || fsOptions() }));
   }
 
-  /* Conservative guard before a recursive overwrite delete: only ever delete a
-   * directory that looks like one of our packages. The basename must end in
-   * '.h2ochat' (always true for our own materializer), and if a manifest.json is
-   * readable it must declare our package schema. A missing/unreadable manifest is
-   * tolerated (a partial package we wrote) because the '.h2ochat' basename guard
-   * already prevents targeting an arbitrary user directory — documented
-   * limitation: we do not deep-verify packages whose manifest cannot be read. */
-  async function assertOverwritableSavedChatPackage(packagePath, options) {
-    var base = cleanString(packagePath).replace(/[\/\\]+$/g, '');
-    if (base.indexOf(PACKAGE_ROOT + '/') !== 0) {
-      throw new Error('refusing recursive overwrite outside app archive packages root: ' + packagePath);
-    }
-    var basename = base.slice(base.lastIndexOf('/') + 1);
-    basename = basename.slice(basename.lastIndexOf('\\') + 1);
-    if (!/\.h2ochat$/.test(basename)) {
-      throw new Error('refusing recursive overwrite of non-package path (expected *.h2ochat): ' + packagePath);
-    }
-    var manifestText = '';
-    try { manifestText = await fsReadTextFile(joinPath(packagePath, 'manifest.json'), options); }
-    catch (_) { manifestText = ''; }
-    if (!manifestText) return;
-    var parsed = null;
-    try { parsed = JSON.parse(manifestText); }
-    catch (_) { parsed = null; }
-    var schema = parsed && cleanString(parsed.schema);
-    if (schema && schema !== MANIFEST_SCHEMA) {
-      throw new Error('refusing overwrite: existing folder has foreign manifest schema "' + schema + '"');
-    }
-  }
 
   function normalizeAssetSha(shaInput) {
     var sha = cleanString(shaInput).toLowerCase();
@@ -1419,27 +1392,6 @@
     return prepared;
   }
 
-  async function writePackageAssetCopies(packagePath, assets, options, preparedOpt) {
-    var list = asArray(assets);
-    if (!list.length) return [];
-    /* Verify first: no directory is created and no byte is written until every
-     * asset in the set has proven its identity. The v1 writer verifies even
-     * earlier — before the package directory itself exists — and hands the
-     * prepared set in, so the bytes here are the ones already proven. */
-    var prepared = Array.isArray(preparedOpt) && preparedOpt.length === list.length
-      ? preparedOpt
-      : await readVerifiedPackageAssetSet(list);
-    var assetsPath = joinPath(packagePath, 'assets');
-    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
-    var written = [];
-    for (var j = 0; j < prepared.length; j += 1) {
-      var entry = prepared[j];
-      var path = joinPath(packagePath, entry.relativePath);
-      await fsWriteFile(path, entry.bytes, options);
-      written.push({ path: path, relativePath: entry.relativePath, sha256: normalizeAssetSha(entry.asset.sha256), byteLength: entry.bytes.length });
-    }
-    return written;
-  }
 
   function fsEntryName(entry) {
     var raw = (typeof entry === 'string') ? entry : firstString(
@@ -1563,216 +1515,74 @@
     return retainedCandidate;
   }
 
-  /* A no-manifest directory is resumable only when every present entry is an
-   * exact desired v3 member. Validate the entire shallow inventory before any
-   * missing member is written; unexpected or mismatching bytes fail closed. */
-  async function inspectIncompleteV3Package(packagePath, built, options) {
-    var expectedAssets = Object.create(null);
-    asArray(built.manifest && built.manifest.assets).forEach(function (asset) {
-      var relativePath = packageAssetPathForDescriptor(asset);
-      var name = relativePath.slice('assets/'.length);
-      if (expectedAssets[name]) throw new Error('duplicate v3 package asset path: ' + relativePath);
-      expectedAssets[name] = asset;
-    });
-    var rootEntries = await fsReadDir(packagePath, options);
-    var rootSeen = Object.create(null);
-    var snapshotPresent = false;
-    var assetsPresent = false;
-    for (var i = 0; i < rootEntries.length; i += 1) {
-      var entry = rootEntries[i];
-      var name = fsEntryName(entry);
-      if (!name || rootSeen[name]) throw new Error('refusing interrupted v3 retry with invalid package inventory');
-      rootSeen[name] = true;
-      rejectSymlinkV3(entry, joinPath(packagePath, name));
-      if (name === 'manifest.json') throw new Error('saved chat package already complete: ' + packagePath);
-      if (name === 'snapshot.json') {
-        if (fsEntryIsDirectory(entry) === true) throw new Error('refusing interrupted v3 retry: snapshot.json is not a file');
-        snapshotPresent = true;
-        continue;
-      }
-      if (name === 'assets' && Object.keys(expectedAssets).length) {
-        if (fsEntryIsDirectory(entry) === false) throw new Error('refusing interrupted v3 retry: assets is not a directory');
-        assetsPresent = true;
-        continue;
-      }
-      throw new Error('refusing interrupted v3 retry with unexpected member: ' + name);
-    }
 
-    var retainedSnapshotCandidate = snapshotPresent
-      ? await inspectInterruptedSnapshotV3(packagePath, built)
-      : null;
 
-    var existingAssets = Object.create(null);
-    if (assetsPresent) {
-      var assetEntries = await fsReadDir(joinPath(packagePath, 'assets'), options);
-      for (var ai = 0; ai < assetEntries.length; ai += 1) {
-        var assetEntry = assetEntries[ai];
-        var assetName = fsEntryName(assetEntry);
-        if (!assetName || existingAssets[assetName]) throw new Error('refusing interrupted v3 retry with invalid asset inventory');
-        existingAssets[assetName] = true;
-        rejectSymlinkV3(assetEntry, joinPath(joinPath(packagePath, 'assets'), assetName));
-        if (fsEntryIsDirectory(assetEntry) === true || !expectedAssets[assetName]) {
-          throw new Error('refusing interrupted v3 retry with unexpected asset member: ' + assetName);
-        }
-        var expected = expectedAssets[assetName];
-        await verifyExistingV3Member(
-          joinPath(joinPath(packagePath, 'assets'), assetName),
-          normalizeAssetSha(expected.sha256),
-          numberOrZero(expected.byteLength),
-          options
-        );
-      }
-    }
-
-    var missingAssets = Object.keys(expectedAssets).sort().filter(function (name) {
-      return !existingAssets[name];
-    }).map(function (name) { return expectedAssets[name]; });
-    return {
-      snapshotMissing: !snapshotPresent,
-      missingAssets: missingAssets,
-      retainedSnapshotCandidate: retainedSnapshotCandidate,
-    };
-  }
-
-  async function writeMissingPackageAssetCopiesV3(packagePath, assets, options) {
-    var list = asArray(assets);
-    if (!list.length) return [];
-    /* Same atomic-refusal rule as the v1 path: every asset in the set proves
-     * its identity before any member is written. A member already present from
-     * an interrupted write is verified in place and needs no CAS read, so the
-     * existence check runs first. */
-    var prepared = [];
-    for (var i = 0; i < list.length; i += 1) {
-      var asset = list[i] || {};
-      var relativePath = packageAssetPathForDescriptor(asset);
-      var path = joinPath(packagePath, relativePath);
-      if (await fsExists(path, options)) {
-        await verifyExistingV3Member(path, normalizeAssetSha(asset.sha256), numberOrZero(asset.byteLength), options);
-        continue;
-      }
-      prepared.push({ asset: asset, relativePath: relativePath, path: path, bytes: await readPackageAssetBytes(asset) });
-    }
-    if (!prepared.length) return [];
-    var assetsPath = joinPath(packagePath, 'assets');
-    await fsMkdir(assetsPath, Object.assign({}, options, { recursive: true }));
-    var written = [];
-    for (var j = 0; j < prepared.length; j += 1) {
-      var entry = prepared[j];
-      await fsWriteFile(entry.path, entry.bytes, options);
-      written.push({ path: entry.path, relativePath: entry.relativePath, sha256: normalizeAssetSha(entry.asset.sha256), byteLength: entry.bytes.length });
-    }
-    return written;
-  }
-
+  /* M05 G1: the live package-write path is now the TRUSTED generation
+   * publisher. This function builds the sanctioned package with the unchanged
+   * construction authority and hands it to trusted Rust, which derives the
+   * final immutable generation path from its own recomputed contentHash.
+   *
+   * What changed, and why:
+   *   - the renderer no longer creates the package directory, writes members,
+   *     or copies assets — after the G1 capability cutover it holds no
+   *     mutation authority under archive/** at all;
+   *   - `built.packageDirName` / `built.packagePath` are LEGACY CONSTRUCTION
+   *     METADATA and are no longer publication authority;
+   *   - `overwrite` is forbidden outright: generations are create-only, and a
+   *     historical package is never destroyed to make room for a new one.
+   *
+   * A trusted DEDUPED verdict is a SUCCESSFUL publication: the identical
+   * content already exists as a verified generation, so there is nothing to
+   * write. The caller is told which it was.
+   */
   async function writeSavedChatPackageV1(options) {
     var opts = safeObject(options);
     if (firstString(opts.targetDir, opts.targetFolder)) {
-      throw new Error('targetDir/targetFolder is deferred; saved chat packages write under AppLocalData archive/packages in C4.3');
+      throw new Error('targetDir/targetFolder is not supported; saved chat generations are published under AppLocalData archive/packages by trusted code');
     }
+    if (opts.overwrite === true) {
+      throw new Error('saved chat generation publication is create-only; overwrite is forbidden');
+    }
+    var publish = H2O.Studio.ingestion && H2O.Studio.ingestion.publishSavedChatGenerationV1;
+    if (typeof publish !== 'function') {
+      throw new Error('H2O.Studio.ingestion.publishSavedChatGenerationV1 unavailable for generation publication');
+    }
+
     var built = await buildSavedChatPackageV1(opts);
-    var baseOptions = fsOptions();
-    var packagePath = joinPath(PACKAGE_ROOT, built.packageDirName);
-    var exists = await fsExists(packagePath, baseOptions);
-    if (exists && !opts.overwrite) {
-      throw new Error('saved chat package already exists: ' + packagePath);
-    }
-    /* Verify the ENTIRE asset set before the package directory exists (and,
-     * on the overwrite path, before the old package is destroyed). The writer
-     * refuses an existing package path, so a directory created ahead of a
-     * failed verification would strand the request permanently; verifying
-     * first keeps the refusal atomic — nothing on disk changes at all. */
-    var preparedAssets = await readVerifiedPackageAssetSet(built.manifest.assets);
-    if (exists && opts.overwrite) {
-      await assertOverwritableSavedChatPackage(packagePath, baseOptions);
-      await fsRemove(packagePath, Object.assign({}, baseOptions, { recursive: true }));
-    }
-    await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
-    var writtenAssets = await writePackageAssetCopies(packagePath, built.manifest.assets, baseOptions, preparedAssets);
-    await fsWriteFile(joinPath(packagePath, 'manifest.json'), textBytes(built.files['manifest.json'].text), baseOptions);
-    await fsWriteFile(joinPath(packagePath, 'snapshot.json'), textBytes(built.files['snapshot.json'].text), baseOptions);
-    await fsWriteFile(joinPath(packagePath, 'chat.md'), textBytes(built.files['chat.md'].text), baseOptions);
-    await fsWriteFile(joinPath(packagePath, 'chat.html'), textBytes(built.files['chat.html'].text), baseOptions);
+    var result = await publish(built);
+
     var writtenAt = nowIso();
     state.lastWriteAt = writtenAt;
     return Object.assign({}, built, {
       written: true,
       writtenAt: writtenAt,
-      packagePath: packagePath,
-      paths: {
-        root: packagePath,
-        manifest: joinPath(packagePath, 'manifest.json'),
-        snapshot: joinPath(packagePath, 'snapshot.json'),
-        markdown: joinPath(packagePath, 'chat.md'),
-        html: joinPath(packagePath, 'chat.html'),
-        assets: writtenAssets.length ? joinPath(packagePath, 'assets') : '',
-      },
-      writtenAssets: writtenAssets,
+      /* Trusted-side truth, consumed verbatim. */
+      outcome: result.outcome,
+      committed: result.committed,
+      deduped: result.deduped,
+      durabilityComplete: result.durabilityComplete,
+      advisories: result.advisories,
+      /* The path Rust derived — reported, never supplied. */
+      packagePath: result.generationPath,
+      paths: { root: result.generationPath },
+      contentHash: result.contentHash || built.contentHash,
     });
   }
 
-  async function writeSavedChatPackageV3(options) {
-    var opts = safeObject(options);
-    if (firstString(opts.targetDir, opts.targetFolder)) {
-      throw new Error('targetDir/targetFolder is deferred; saved chat packages write under AppLocalData archive/packages');
-    }
-    if (opts.overwrite === true) throw new Error('v3 package overwrite is forbidden');
-    var baseOptions = fsOptions();
-    var target = await resolvePackageTargetV3(opts);
-    var packagePath = target.packagePath;
-    if (v3WritesInFlight[packagePath]) throw new Error('v3 package write already in flight: ' + packagePath);
-    v3WritesInFlight[packagePath] = true;
-    try {
-      var exists = await fsExists(packagePath, baseOptions);
-      if (exists && await fsExists(joinPath(packagePath, 'manifest.json'), baseOptions)) {
-        throw new Error('saved chat package already exists: ' + packagePath);
-      }
-      var built = await buildSavedChatPackageV3(opts);
-      if (built.packagePath !== packagePath) throw new Error('v3 package target changed during build');
-      var plan;
-      if (exists) {
-        if (await fsExists(joinPath(packagePath, 'manifest.json'), baseOptions)) {
-          throw new Error('saved chat package already exists: ' + packagePath);
-        }
-        plan = await inspectIncompleteV3Package(packagePath, built, baseOptions);
-        if (plan.retainedSnapshotCandidate) installCandidateV3(built, plan.retainedSnapshotCandidate);
-      } else {
-        await fsMkdir(packagePath, Object.assign({}, baseOptions, { recursive: true }));
-        plan = { snapshotMissing: true, missingAssets: asArray(built.manifest.assets) };
-      }
-
-      var writtenAssets = await writeMissingPackageAssetCopiesV3(packagePath, plan.missingAssets, baseOptions);
-      var snapshotPath = joinPath(packagePath, 'snapshot.json');
-      if (plan.snapshotMissing) {
-        if (await fsExists(snapshotPath, baseOptions)) {
-          installCandidateV3(built, await inspectInterruptedSnapshotV3(packagePath, built));
-        } else {
-          await fsWriteFile(snapshotPath, built.files['snapshot.json'].bytes, baseOptions);
-        }
-      }
-
-      var manifestPath = joinPath(packagePath, 'manifest.json');
-      if (await fsExists(manifestPath, baseOptions)) {
-        throw new Error('saved chat package became complete during v3 write: ' + packagePath);
-      }
-      await fsWriteFile(manifestPath, built.files['manifest.json'].bytes, baseOptions);
-      var writtenAt = nowIso();
-      state.lastWriteAt = writtenAt;
-      return Object.assign({}, built, {
-        written: true,
-        writtenAt: writtenAt,
-        resumedIncomplete: exists,
-        packagePath: packagePath,
-        paths: {
-          root: packagePath,
-          manifest: manifestPath,
-          snapshot: snapshotPath,
-          assets: built.manifest.assets.length ? joinPath(packagePath, 'assets') : '',
-        },
-        writtenAssets: writtenAssets,
-      });
-    } finally {
-      delete v3WritesInFlight[packagePath];
-    }
+  /* M05 G1: the dormant v3 package writer is RETIRED as a mutation path.
+   *
+   * It had no production caller and live v3 remains OFF, but it was the last
+   * renderer-side code able to mkdir a package directory and write members
+   * under archive/**. Leaving it callable would have kept exactly the
+   * authority the G1 capability cutover removes — and after that cutover its
+   * plugin-fs calls could only fail with an opaque scope error.
+   *
+   * Publication of any version goes through the trusted generation publisher.
+   * When live v3 is separately activated, it publishes through that same
+   * trusted path; it does not resurrect this one.
+   */
+  async function writeSavedChatPackageV3() {
+    throw new Error('writeSavedChatPackageV3 is retired: saved chat packages are published as immutable generations by trusted code (M05 G1)');
   }
 
   function diagnoseSavedChatPackageV1() {

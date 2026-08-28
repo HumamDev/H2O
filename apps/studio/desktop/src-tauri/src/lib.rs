@@ -70,6 +70,16 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+// M05 T1.2.1: trusted staged publication of immutable saved-chat archive
+// generations. Purpose-bounded and SEPARATE from the CAS-scoped durable write
+// above — the renderer names only a semantic chatId, a member enum and bytes,
+// while the final generation path, the content hash and the CAS source are all
+// derived on the trusted side. Its Tauri command wrappers are deliberately NOT
+// registered in generate_handler! yet: registration lands atomically with the
+// G1 capability cutover, because publishing must not become renderer-invokable
+// while the renderer still holds broad archive mutation authority.
+pub mod archive_generation_publish;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum F5g4ProofFailure {
     TombstoneInsert,
@@ -2508,6 +2518,10 @@ macro_rules! h2o_studio_invoke_handler {
             apply_folder_metadata_color,
             archive_durable_write::h2o_archive_durable_write,
             archive_durable_write::h2o_archive_cas_repair_write,
+            archive_generation_publish::h2o_archive_generation_begin,
+            archive_generation_publish::h2o_archive_generation_write_member,
+            archive_generation_publish::h2o_archive_generation_commit,
+            archive_generation_publish::h2o_archive_generation_abort,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2538,7 +2552,11 @@ macro_rules! h2o_studio_invoke_handler {
             prove_folder_metadata_color_apply_rollback,
             apply_folder_metadata_color,
             archive_durable_write::h2o_archive_durable_write,
-            archive_durable_write::h2o_archive_cas_repair_write
+            archive_durable_write::h2o_archive_cas_repair_write,
+            archive_generation_publish::h2o_archive_generation_begin,
+            archive_generation_publish::h2o_archive_generation_write_member,
+            archive_generation_publish::h2o_archive_generation_commit,
+            archive_generation_publish::h2o_archive_generation_abort
         ]
     };
 }
@@ -2549,6 +2567,10 @@ pub fn run() {
         .expect("failed to install SQLite writer identity auto-extension");
 
     tauri::Builder::default()
+        // G1: the generation publisher's session registry. Sessions must
+        // survive across invokes, so the publisher is app state rather than
+        // per-command.
+        .manage(archive_generation_publish::PublisherState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

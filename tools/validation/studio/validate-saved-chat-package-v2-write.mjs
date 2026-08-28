@@ -349,489 +349,166 @@ async function main() {
   });
 
   let v1Env = null;
-  await checkAsync('v1 asset-less write emits only four binary package files under archive/packages', async () => {
-    v1Env = loadProjector({ withImage: false });
-    const out = await v1Env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write' });
-    assert.equal(out.packagePath, 'archive/packages/chat_v1_write.h2ochat');
-    assert.equal(out.paths.assets, '');
-    const writes = v1Env.fs.writes.map((w) => w.path).sort();
-    assert.deepEqual(writes, [
-      'archive/packages/chat_v1_write.h2ochat/chat.html',
-      'archive/packages/chat_v1_write.h2ochat/chat.md',
-      'archive/packages/chat_v1_write.h2ochat/manifest.json',
-      'archive/packages/chat_v1_write.h2ochat/snapshot.json',
-    ].sort());
-    assert.equal(v1Env.fs.dirs.has('archive/packages/chat_v1_write.h2ochat/assets'), false);
-    assertAllAppLocalData(v1Env.fs);
-    assertNoSyncPath(v1Env.fs);
-  });
+  /* ────────────────────────────────────────────────────────────────────────
+   * M05 G1 CUTOVER.
+   *
+   * Every check below this banner previously drove the renderer-side package
+   * writer: directory creation, member write ordering, CAS asset copies, and
+   * the DP-M03-B/C v3 interrupted-write resume semantics. That writer is
+   * retired. Publication is now a trusted Rust operation, and after the G1
+   * capability narrowing the renderer holds NO mutation authority under
+   * archive/** — so those code paths cannot run and cannot be tested here.
+   *
+   * The guarantees they protected did not disappear; they moved to where they
+   * are actually enforced, and are proven by cargo tests in
+   * apps/studio/desktop/src-tauri/src/archive_generation_publish/tests.rs:
+   * required-member completeness, per-member re-hash against manifest.files,
+   * in-Rust CAS re-verification by sha AND length, refusal before any
+   * publication with no partial directory, exclusive create-only promotion,
+   * and honest durability reporting.
+   *
+   * DELIBERATE, RECORDED COVERAGE DEFERRAL: the DP-M03-B/C v3 interrupted-write
+   * resume semantics are frozen normative behaviour for a payload version that
+   * is NOT live (live v3 remains OFF). They must be re-established inside the
+   * trusted publisher as a prerequisite of any future live-v3 activation. This
+   * note exists so that requirement is explicit rather than silently lost with
+   * the retired writer.
+   * ──────────────────────────────────────────────────────────────────────── */
 
-  await checkAsync('writer rejects arbitrary targetDir / targetFolder options', async () => {
+  await checkAsync('the retired v1 writer now publishes through trusted Rust and mutates nothing itself', async () => {
     const env = loadProjector({ withImage: false });
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write', targetDir: '/tmp/user-selected' }),
-      /targetDir\/targetFolder is deferred/
-    );
-    assert.deepEqual(env.fs.writes, []);
-  });
-
-  let v2Env = null;
-  await checkAsync('v2 asset-bearing write copies CAS asset before text files', async () => {
-    v2Env = loadProjector({ withImage: true });
-    const out = await v2Env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' });
-    assert.equal(out.schemaVersion, 2);
-    assert.equal(out.packagePath, 'archive/packages/chat_v2_write.h2ochat');
-    assert.equal(out.writtenAssets.length, 1);
-    assert.equal(out.writtenAssets[0].relativePath, PNG_PATH);
-    const writes = v2Env.fs.writes;
-    assert.ok(writes.length >= 5, 'asset + four package files expected');
-    assert.match(writes[0].path, new RegExp(`^archive/packages/chat_v2_write\\.h2ochat/${PNG_PATH.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`));
-    assert.equal(textWrites(v2Env.fs).length, 4);
-    assert.equal(assetWrites(v2Env.fs).length, 1);
-    assert.ok(v2Env.cas.gets.includes(PNG_SHA), 'write must read asset bytes from live CAS');
-    assertAllAppLocalData(v2Env.fs);
-    assertNoSyncPath(v2Env.fs);
-  });
-
-  check('v2 manifest.assets[] path matches written package asset path', () => {
-    const manifestBytes = v2Env.fs.files.get('archive/packages/chat_v2_write.h2ochat/manifest.json');
-    const manifest = JSON.parse(decode(manifestBytes));
-    assert.equal(manifest.assets.length, 1);
-    assert.equal(manifest.assets[0].sha256, PNG_SHA);
-    assert.equal(manifest.assets[0].path, PNG_PATH);
-    assert.equal(v2Env.fs.files.has(`archive/packages/chat_v2_write.h2ochat/${PNG_PATH}`), true);
-  });
-
-  await checkAsync('missing CAS asset fails before manifest/snapshot/renderers are written', async () => {
-    const env = loadProjector({ withImage: true, missingOnGet: true });
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
-      /missing CAS asset/
-    );
-    assert.equal(textWrites(env.fs).length, 0, 'text files must not be written after missing asset failure');
-    assert.equal(assetWrites(env.fs).length, 0, 'asset copy must not be written when CAS read returns null');
-    assertAllAppLocalData(env.fs);
-  });
-
-  // ── Package copies consume VERIFIED CAS bytes (T07) ──────────────────────
-  await checkAsync('corrupt CAS bytes are refused before any package member is written', async () => {
-    const env = loadProjector({ withImage: true, corruptOnGet: true });
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
-      /failed verification/,
-      'a CAS object contradicting its own name must fail the package write',
-    );
-    assert.equal(assetWrites(env.fs).length, 0, 'no asset copy may be written from unverified bytes');
-    assert.equal(textWrites(env.fs).length, 0, 'no manifest/snapshot may be written after the refusal');
-    assertAllAppLocalData(env.fs);
-  });
-
-  // A single-asset fixture cannot observe an interleaved read/write loop: the
-  // corruption has to sit behind a good asset for the partial-write to appear.
-  await checkAsync('a corrupt SECOND asset leaves no partial package directory', async () => {
-    const env = loadProjector({ withImage: true, secondImage: true, corruptOnNthRead: 2 });
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
-      /failed verification/,
-    );
-    assert.equal(
-      assetWrites(env.fs).length,
-      0,
-      'no asset copy may be written when a later asset in the set fails verification',
-    );
-    assert.equal(textWrites(env.fs).length, 0, 'no manifest/snapshot may be written');
-    assert.deepEqual(
-      env.fs.writes.map((w) => w.path),
-      [],
-      'no file may be written after the refusal',
-    );
-    // The refusal must be atomic on disk: the writer refuses an EXISTING
-    // package path, so even an empty directory created before verification
-    // would strand the request permanently. Verification therefore runs
-    // before mkdir, and a retry after fixing the CAS must succeed.
-    assert.equal(
-      [...env.fs.dirs].filter((d) => d.startsWith('archive/packages/')).length,
-      0,
-      'a package directory created before verification would strand the request',
-    );
-  });
-
-  await checkAsync('after the CAS is fixed, the same request succeeds (no strand)', async () => {
-    // corruptOnNthRead: 2 corrupts only the SECOND verified read overall, so a
-    // second attempt on the same fixture sees clean reads and must succeed —
-    // proving the earlier refusal left nothing behind that blocks retry.
-    const env = loadProjector({ withImage: true, secondImage: true, corruptOnNthRead: 2 });
-    await assert.rejects(() => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }));
-    const out = await env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' });
-    assert.equal(out.written, true, 'the retry must succeed once the corrupt read clears');
-    assert.ok(assetWrites(env.fs).length >= 2, 'both assets must be copied on the retry');
-  });
-
-  await checkAsync('the package writer actually calls the verified read, not the raw one', async () => {
-    const env = loadProjector({ withImage: true });
-    await env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' });
-    assert.ok(
-      env.cas.verifiedGets.length >= 1,
-      'readVerifiedAssetBytes must be exercised by the package asset copy path',
-    );
-    assert.ok(env.cas.verifiedGets.includes(PNG_SHA), 'the descriptor sha must be the verified identity');
-  });
-
-  // Negative control: if the projector were reverted to the unverified reader,
-  // the corruption test above could not fail, so assert the call site directly.
-  check('a revert to the unverified reader would be caught (negative control)', () => {
-    const src = readRepo(PROJECTOR_REL);
-    const body = src.slice(src.indexOf('async function readPackageAssetBytes'));
-    const fn = body.slice(0, body.indexOf('\n  }') + 4);
-    assert.match(fn, /readVerifiedAssetBytes\(sha\)/, 'the asset copy path must use the verified read');
-    assert.doesNotMatch(fn, /getAssetBytes\(sha\)/, 'the unverified read must not be used for package copies');
-    assert.match(fn, /byteLength/, 'the descriptor byteLength must be enforced where present');
-  });
-
-  await checkAsync('a descriptor length that disagrees with the CAS object is refused', async () => {
-    const env = loadProjector({ withImage: true });
-    // Same bytes, but the descriptor claims a different length.
-    const original = env.ingestion.__savedChatPackageV1;
-    void original;
-    const stack = env.sandbox.H2O.Studio.ingestion;
-    const realRead = stack.assetCas.readVerifiedAssetBytes;
-    stack.assetCas.readVerifiedAssetBytes = async (sha) => {
-      const bytes = await realRead(sha);
-      return bytes ? Uint8Array.from([...bytes, 0x00]) : bytes;
+    const staged = [];
+    env.ingestion.publishSavedChatGenerationV1 = async (built) => {
+      for (const member of ['snapshot', 'markdown', 'html', 'manifest']) staged.push(member);
+      const hex = String(built.contentHash || '').replace(/^sha256-/, '');
+      return {
+        ok: true, outcome: 'created', committed: true, deduped: false,
+        durabilityComplete: true,
+        generationPath: `archive/packages/${built.manifest.chatId}.g${hex}.h2ochat`,
+        contentHash: built.contentHash, blockers: [], advisories: [],
+      };
     };
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v2_write' }),
-      /length mismatch/,
-      'a length disagreeing with the descriptor must fail closed',
-    );
-    assert.equal(assetWrites(env.fs).length, 0, 'no asset copy may be written on length mismatch');
+    const before = env.fs.writes.length;
+    const written = await env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write' });
+    assert.equal(written.written, true);
+    assert.deepEqual(staged, ['snapshot', 'markdown', 'html', 'manifest']);
+    assert.match(written.packagePath, /\.g[0-9a-f]{64}\.h2ochat$/,
+      'the trusted side derives the generation path');
+    assert.equal(env.fs.writes.length, before,
+      'the renderer must issue no plugin-fs writes during publication');
   });
 
-  await checkAsync('overwrite defaults to fail-if-existing', async () => {
-    await assert.rejects(
-      () => v1Env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write' }),
-      /already exists/
-    );
-  });
-
-  await checkAsync('explicit overwrite removes only guarded .h2ochat package path', async () => {
-    const out = await v1Env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write', overwrite: true });
-    assert.equal(out.written, true);
-    assert.ok(v1Env.fs.removes.length >= 1, 'overwrite should remove old package before rewrite');
-    const last = v1Env.fs.removes[v1Env.fs.removes.length - 1];
-    assert.equal(last.path, 'archive/packages/chat_v1_write.h2ochat');
-    assert.match(last.path, /\.h2ochat$/);
-    assert.equal(last.baseDir, APP_LOCAL_DATA);
-  });
-
-  check('write_file body+headers form was used for all package file writes', () => {
-    for (const env of [v1Env, v2Env]) {
-      for (const w of env.fs.writes) {
-        assert.equal(w.baseDir, APP_LOCAL_DATA);
-        assert.ok(w.bytes instanceof Uint8Array);
-      }
-      assert.equal(env.fs.calls.some((c) => c.cmd === 'plugin:fs|write_text_file'), false);
-    }
-  });
-
-  // ── Additive v3 write/retry/coexistence coverage (M02 T06) ───────
-  let v3Env = null;
-  await checkAsync('v3 writes assets, snapshot, then manifest last with no persistent renderers', async () => {
-    v3Env = loadProjector({ withImage: true });
-    const out = await v3Env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v2_write' });
-    assert.equal(out.schemaVersion, 3);
-    assert.match(out.manifest.files.snapshot.encoding, /^(identity|gzip)$/);
-    const paths = v3Env.fs.writes.map((write) => write.path);
-    assert.match(paths[0], /\/assets\/sha256-[0-9a-f]{64}\.png$/);
-    assert.match(paths[1], /\/snapshot\.json$/);
-    assert.match(paths[2], /\/manifest\.json$/);
-    assert.equal(paths.some((p) => /\/chat\.(md|html)$/.test(p)), false);
-    assert.deepEqual(Object.keys(out.files).sort(), ['manifest.json', 'snapshot.json']);
-    const descriptor = out.manifest.files.snapshot;
-    assert.ok(out.metadata.logicalSnapshotByteLength > 0);
-    assert.ok(out.metadata.logicalSnapshotByteLength <= 8 * 1024 * 1024);
-    if (descriptor.encoding === 'gzip') {
-      assert.ok(descriptor.byteLength > 0);
-      assert.ok(descriptor.byteLength < descriptor.contentByteLength);
-      assert.ok(out.metadata.gzipTotalBytes < out.metadata.identityTotalBytes);
-    }
-    assert.deepEqual(v3Env.fs.files.get(out.paths.snapshot), out.files['snapshot.json'].bytes);
-    assert.deepEqual(v3Env.fs.files.get(out.paths.manifest), out.files['manifest.json'].bytes);
-  });
-
-  await checkAsync('v3 complete-package coexistence refusal preserves every existing byte', async () => {
-    const before = [...v3Env.fs.files.entries()].map(([p, b]) => [p, Buffer.from(b).toString('hex')]);
-    await assert.rejects(
-      () => v3Env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v2_write' }),
-      /already exists/
-    );
-    const after = [...v3Env.fs.files.entries()].map(([p, b]) => [p, Buffer.from(b).toString('hex')]);
-    assert.deepEqual(after, before);
-  });
-
-  await checkAsync('v3 rejects overwrite:true without remove/rename authority', async () => {
+  await checkAsync('the destructive overwrite path is unreachable', async () => {
     const env = loadProjector({ withImage: false });
     await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write', overwrite: true }),
-      /overwrite is forbidden/
+      () => env.ingestion.writeSavedChatPackageV1({ snapshotId: 'snap_v1_write', overwrite: true }),
+      /create-only|overwrite is forbidden/,
     );
-    assert.equal(env.fs.removes.length, 0);
-    assert.deepEqual(env.fs.writes, []);
   });
 
-  await checkAsync('v3 interrupted manifest write leaves an exact subset and retries idempotently', async () => {
-    const env = loadProjector({ withImage: false, failWritePath: '/manifest.json' });
-    const root = 'archive/packages/chat_v1_write.h2ochat';
+  await checkAsync('the dormant v3 renderer writer is retired, not merely unused', async () => {
+    const env = loadProjector({ withImage: false });
     await assert.rejects(
       () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-      /injected write failure/
+      /retired/,
+      'it was the last renderer path able to mkdir a package and write members',
     );
-    assert.equal(env.fs.files.has(root + '/snapshot.json'), true);
-    assert.equal(env.fs.files.has(root + '/manifest.json'), false);
-    assert.equal([...env.fs.files.keys()].some((p) => /chat\.(md|html)$/.test(p)), false);
-    env.fs.controls.failWritePath = '';
-    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
-    assert.equal(resumed.resumedIncomplete, true);
-    assert.equal(env.fs.files.has(root + '/manifest.json'), true);
-    const rootWrites = env.fs.writes.filter((w) => w.path.startsWith(root + '/'));
-    assert.match(rootWrites[rootWrites.length - 1].path, /\/manifest\.json$/);
-    assert.equal(rootWrites.filter((w) => /\/snapshot\.json$/.test(w.path)).length, 1, 'matching snapshot must not be rewritten');
   });
 
-  await checkAsync('M03 T05 identity fallback is unreachable by payload size and needs a non-compressing encoder', async () => {
-    /* Permanent record of WHY the identity branch is exercised with a
-     * non-compressing encoder rather than a small on-disk fixture: every payload
-     * this projector can emit — including an empty turn — carries enough
-     * canonical JSON scaffolding that real gzip wins the exact whole-package
-     * comparison. There is no sub-threshold fixture that reaches the branch, and
-     * inventing a size threshold to force it would violate the approved rule. */
-    for (const probe of ['', 'a', 'ok', 'hello world']) {
-      const env = loadProjector({ withImage: false, turnText: probe });
-      const built = await buildV3(env);
-      assert.equal(built.metadata.encoding, 'gzip', `payload ${JSON.stringify(probe)} still compresses`);
-      assert.ok(built.metadata.gzipTotalBytes < built.metadata.identityTotalBytes,
-        'gzip must win the exact whole-package comparison for real payloads');
-    }
-    /* The governed fallback itself: with an encoder that cannot shrink the
-     * payload, the SAME rule selects identity and emits the frozen identity
-     * descriptor shape (no logical fields required). */
-    const flat = loadProjector({
-      withImage: false,
-      turnText: 'identity fallback probe',
-      CompressionStreamImpl: passthroughCompressionStreamClass(),
-    });
-    const identityBuilt = await buildV3(flat);
-    assert.equal(identityBuilt.metadata.encoding, 'identity');
-    assert.ok(identityBuilt.metadata.gzipTotalBytes >= identityBuilt.metadata.identityTotalBytes,
-      'identity must win when gzip produces no whole-package saving');
-    const d = identityBuilt.manifest.files.snapshot;
-    assert.equal(d.encoding, 'identity');
-    assert.equal(d.byteLength, identityBuilt.metadata.logicalSnapshotByteLength);
-    assert.equal(d.contentSha256, undefined, 'identity descriptors omit logical fields');
-    assert.equal(d.contentByteLength, undefined, 'identity descriptors omit logical fields');
-    assert.match(identityBuilt.manifest.contentHash, /^sha256-[0-9a-f]{64}$/);
-  });
-
-  await checkAsync('DP-M03-C R1 retains admissible gzip when fresh selection is identity', async () => {
-    const turnText = 'compressible branch flip '.repeat(600);
-    const native = loadProjector({ withImage: false, turnText });
-    const gzipBuilt = await buildV3(native);
-    assert.equal(gzipBuilt.metadata.encoding, 'gzip');
-    assert.ok(gzipBuilt.files['snapshot.json'].bytes.byteLength < gzipBuilt.metadata.logicalSnapshotByteLength);
-
-    const env = loadProjector({
-      withImage: false,
-      turnText,
-      CompressionStreamImpl: passthroughCompressionStreamClass(),
-    });
-    const fresh = await buildV3(env);
-    assert.equal(fresh.metadata.encoding, 'identity');
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    const retained = new Uint8Array(gzipBuilt.files['snapshot.json'].bytes);
-    installInterruptedSnapshot(env, root, retained);
-    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
-    assert.equal(resumed.manifest.files.snapshot.encoding, 'gzip');
-    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), retained);
-  });
-
-  await checkAsync('DP-M03-C R2 retains identity equality when fresh selection is gzip', async () => {
-    const turnText = 'compressible identity branch '.repeat(600);
-    const env = loadProjector({ withImage: false, turnText });
-    const fresh = await buildV3(env);
-    assert.equal(fresh.metadata.encoding, 'gzip');
-    const identityBytes = new TextEncoder().encode(fresh.metadata.logicalSnapshotText);
-    assert.equal(identityBytes.byteLength, fresh.metadata.logicalSnapshotByteLength);
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    installInterruptedSnapshot(env, root, identityBytes);
-    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
-    assert.equal(resumed.manifest.files.snapshot.encoding, 'identity');
-    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), identityBytes);
-  });
-
-  await checkAsync('DP-M03-C R3 retains physically different admissible gzip bytes', async () => {
-    const turnText = 'physical nondeterminism '.repeat(700);
-    const env = loadProjector({ withImage: false, turnText });
-    const fresh = await buildV3(env);
-    assert.equal(fresh.metadata.encoding, 'gzip');
-    const alternate = new Uint8Array(fresh.files['snapshot.json'].bytes);
-    alternate[4] ^= 1;
-    assert.notDeepEqual(alternate, fresh.files['snapshot.json'].bytes);
-    assert.ok(alternate.byteLength < fresh.metadata.logicalSnapshotByteLength);
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    installInterruptedSnapshot(env, root, alternate);
-    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
-    assert.equal(resumed.manifest.files.snapshot.encoding, 'gzip');
-    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), alternate);
-  });
-
-  await checkAsync('DP-M03-C R4 retains identity equality when fresh selection is identity', async () => {
-    const env = loadProjector({
-      withImage: false,
-      CompressionStreamImpl: passthroughCompressionStreamClass(),
-    });
-    const fresh = await buildV3(env);
-    assert.equal(fresh.metadata.encoding, 'identity');
-    const identityBytes = new TextEncoder().encode(fresh.metadata.logicalSnapshotText);
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    installInterruptedSnapshot(env, root, identityBytes);
-    const resumed = await env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' });
-    assert.equal(resumed.manifest.files.snapshot.encoding, 'identity');
-    assert.deepEqual(env.fs.files.get(root + '/snapshot.json'), identityBytes);
-  });
-
-  await checkAsync('DP-M03-C same-length gzip is read under the trusted cap then rejected before decode', async () => {
-    let decoderCalls = 0;
-    class ForbiddenDecoder {
-      constructor() { decoderCalls += 1; throw new Error('decoder must not run'); }
-    }
-    const env = loadProjector({ withImage: false, DecompressionStreamImpl: ForbiddenDecoder });
-    const built = await buildV3(env);
-    const sameLengthGzip = new Uint8Array(built.metadata.logicalSnapshotByteLength);
-    sameLengthGzip[0] = 0x1f;
-    sameLengthGzip[1] = 0x8b;
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    installInterruptedSnapshot(env, root, sameLengthGzip);
-    await assert.rejects(
-      () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-      /gzip snapshot physical byteLength must be smaller/
-    );
-    assert.equal(snapshotReadCalls(env, root).length, 1, 'bounded whole-file read should identify representation');
-    assert.equal(decoderCalls, 0, 'same-length gzip must fail before decoder construction');
-    assert.equal(env.fs.files.has(root + '/manifest.json'), false);
-  });
-
-  await checkAsync('DP-M03-C oversized and empty members fail from metadata before read', async () => {
-    for (const kind of ['oversized', 'empty']) {
-      const env = loadProjector({ withImage: false });
-      const built = await buildV3(env);
-      const length = kind === 'oversized' ? built.metadata.logicalSnapshotByteLength + 1 : 0;
-      const bytes = new Uint8Array(length);
-      if (length >= 2) { bytes[0] = 0x1f; bytes[1] = 0x8b; }
-      const root = 'archive/packages/chat_v1_write.h2ochat';
-      installInterruptedSnapshot(env, root, bytes);
-      await assert.rejects(
-        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-        kind === 'oversized' ? /exceeds trusted logical/ : /must be positive/
-      );
-      assert.equal(snapshotReadCalls(env, root).length, 0, kind + ' member must fail before read_file');
-      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
+  check('the package module issues no archive filesystem mutation at all', () => {
+    const src = readRepo(PROJECTOR_REL);
+    for (const forbidden of ['plugin:fs|write_file', 'plugin:fs|mkdir', 'plugin:fs|remove', 'plugin:fs|rename', 'plugin:fs|open']) {
+      assert.ok(!src.includes(forbidden), `the package module must not invoke ${forbidden} after the G1 cutover`);
     }
   });
 
-  await checkAsync('DP-M03-C symlink and non-regular snapshot states fail before read', async () => {
-    for (const kind of ['symlink', 'non-regular']) {
-      const env = loadProjector({ withImage: false });
-      const root = 'archive/packages/chat_v1_write.h2ochat';
-      installInterruptedSnapshot(env, root, new Uint8Array([0x7b]));
-      env.fs.lstatOverrides.set(root + '/snapshot.json', kind === 'symlink'
-        ? { isFile: true, isSymlink: true, size: 1 }
-        : { isFile: false, isDirectory: true, isSymlink: false, size: 1 });
-      await assert.rejects(
-        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-        /regular non-symlink file/
-      );
-      assert.equal(snapshotReadCalls(env, root).length, 0);
-    }
-  });
-
-  await checkAsync('DP-M03-C unsupported and corrupt gzip representations remain fail-closed', async () => {
-    const cases = [
-      { bytes: new Uint8Array([0x00, 0x01]), error: /unknown snapshot representation/ },
-      { bytes: new Uint8Array([0x1f, 0x8b, 0x08]), error: /decompression failed|decoded-length-mismatch/ },
-    ];
-    for (const item of cases) {
-      const env = loadProjector({ withImage: false });
-      const root = 'archive/packages/chat_v1_write.h2ochat';
-      installInterruptedSnapshot(env, root, item.bytes);
-      await assert.rejects(
-        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-        item.error
-      );
-      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
-    }
-  });
-
-  await checkAsync('DP-M03-C decoded overflow, length mismatch, and SHA mismatch remain fail-closed', async () => {
-    for (const kind of ['overflow', 'length', 'sha']) {
-      const turnText = 'bounded logical verification '.repeat(500);
-      const env = loadProjector({ withImage: false, turnText });
-      const built = await buildV3(env);
-      const expected = new TextEncoder().encode(built.metadata.logicalSnapshotText);
-      let logical;
-      let error;
-      if (kind === 'overflow') {
-        logical = new Uint8Array(expected.byteLength + 1).fill(65);
-        error = /decoded gzip output exceeds|decoded-output-exceeds-cap/;
-      } else if (kind === 'length') {
-        logical = expected.slice(0, expected.byteLength - 1);
-        error = /decoded gzip byteLength|decoded-length-mismatch/;
-      } else {
-        logical = new Uint8Array(expected);
-        logical[logical.byteLength - 1] ^= 1;
-        error = /decoded gzip SHA-256|decoded-hash-mismatch/;
-      }
-      const physical = await env.ingestion.savedChatPackageCodec.gzipEncodeBytes(logical, {
-        physicalByteCap: expected.byteLength,
-      });
-      assert.ok(physical.byteLength < expected.byteLength);
-      const root = 'archive/packages/chat_v1_write.h2ochat';
-      installInterruptedSnapshot(env, root, physical);
-      await assert.rejects(
-        () => env.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-        error
-      );
-      assert.equal(env.fs.files.has(root + '/manifest.json'), false);
-    }
-  });
-
-  await checkAsync('v3 interrupted retry rejects mismatching and unexpected members fail-closed', async () => {
-    const mismatch = loadProjector({ withImage: false });
-    const root = 'archive/packages/chat_v1_write.h2ochat';
-    mismatch.fs.dirs.add(root);
-    mismatch.fs.files.set(root + '/snapshot.json', new Uint8Array(Buffer.from('mismatch')));
-    await assert.rejects(
-      () => mismatch.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-      /unknown snapshot representation|logically mismatching snapshot/
-    );
-    assert.equal(mismatch.fs.files.has(root + '/manifest.json'), false);
-
-    const unexpected = loadProjector({ withImage: false });
-    unexpected.fs.dirs.add(root);
-    unexpected.fs.files.set(root + '/unexpected.bin', new Uint8Array([1, 2, 3]));
-    await assert.rejects(
-      () => unexpected.ingestion.writeSavedChatPackageV3({ snapshotId: 'snap_v1_write' }),
-      /unexpected member/
-    );
-    assert.equal(unexpected.fs.files.has(root + '/manifest.json'), false);
-  });
-
-  console.log('');
-  console.log(`PASS ${PASS.length}`);
   if (FAIL.length) {
     console.log(`FAIL ${FAIL.length}`);
     for (const f of FAIL) console.log(`- ${f.label}: ${f.m}`);
     process.exitCode = 1;
   }
 }
+
+/* ── Generation-publisher BRIDGE: opaque token passthrough ────────────────
+ *
+ * The bridge had no validator at all, and the Rust suite never crossed JSON,
+ * so a full-range u64 session token shipped as a JSON number and was truncated
+ * by the WebView -- begin succeeded, then write_member was refused with
+ * generation-session-unknown. The token is opaque: the bridge must hand back
+ * the EXACT value it was given, byte for byte, to every later command. */
+const PUBLISHER_BRIDGE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-generation-publisher.tauri.js';
+const BIG_TOKEN = '12308876026142924039'; // the real token from the failed run
+
+function loadPublisherBridge(invokeImpl) {
+  const context = {
+    console, setTimeout, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, Math, JSON,
+    Promise, Object, Array, String, Number, Boolean, Error, isFinite, parseInt,
+    __TAURI_INTERNALS__: { invoke: invokeImpl },
+    H2O: { Studio: { ingestion: {} } },
+  };
+  context.globalThis = context; context.window = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(PUBLISHER_BRIDGE_REL), sandbox, { filename: PUBLISHER_BRIDGE_REL });
+  return sandbox.H2O.Studio.ingestion;
+}
+
+function builtPackageFixture() {
+  const enc = new TextEncoder();
+  return {
+    manifest: { chatId: 'c_bridge_token', schemaVersion: 1 },
+    files: {
+      'snapshot.json': { bytes: enc.encode('{"snapshotId":"s1"}') },
+      'chat.md': { bytes: enc.encode('# t') },
+      'chat.html': { bytes: enc.encode('<p>t</p>') },
+      'manifest.json': { bytes: enc.encode('{"chatId":"c_bridge_token"}') },
+    },
+  };
+}
+
+await checkAsync('bridge returns the EXACT opaque token string to write/commit', async () => {
+  const seen = [];
+  const api = loadPublisherBridge(async (cmd, a, b) => {
+    if (cmd === 'h2o_archive_generation_begin') return { ok: true, token: BIG_TOKEN, blockers: [] };
+    if (cmd === 'h2o_archive_generation_write_member') {
+      const opts = JSON.parse((b && b.headers && b.headers.options) || '{}');
+      seen.push({ cmd, token: opts.token });
+      return { ok: true, blockers: [] };
+    }
+    if (cmd === 'h2o_archive_generation_commit') {
+      seen.push({ cmd, token: a && a.options && a.options.token });
+      return { ok: true, outcome: 'created', packagePath: 'archive/packages/x.h2ochat', blockers: [], advisories: [] };
+    }
+    if (cmd === 'h2o_archive_generation_abort') { seen.push({ cmd, token: a && a.options && a.options.token }); return { ok: true }; }
+    throw new Error('unexpected command ' + cmd);
+  });
+  assert.equal(typeof api.publishSavedChatGenerationV1, 'function', 'bridge did not register');
+  await api.publishSavedChatGenerationV1(builtPackageFixture());
+
+  assert.ok(seen.length >= 2, 'bridge must reach write_member and commit');
+  for (const s of seen) {
+    assert.strictEqual(typeof s.token, 'string', `${s.cmd} sent a ${typeof s.token}, not an opaque string`);
+    assert.strictEqual(s.token, BIG_TOKEN, `${s.cmd} altered the token: ${s.token}`);
+  }
+  assert.ok(seen.some((s) => s.cmd === 'h2o_archive_generation_commit'), 'commit must be reached');
+});
+
+check('NEGATIVE CONTROL — Number() coercion of this token loses precision', () => {
+  /* Proves the fixture is load-bearing: had the bridge (or the old JSON-number
+   * contract) put this token through a JS Number, the equality above could not
+   * hold. This is exactly the shipped defect. */
+  const coerced = String(Number(BIG_TOKEN));
+  assert.notEqual(coerced, BIG_TOKEN, 'fixture no longer demonstrates precision loss');
+  assert.equal(coerced, '12308876026142925000');
+  assert.ok(Number(BIG_TOKEN) > Number.MAX_SAFE_INTEGER, 'fixture must exceed MAX_SAFE_INTEGER');
+});
+
+check('bridge performs no arithmetic or numeric coercion on the token', () => {
+  const src = readRepo(PUBLISHER_BRIDGE_REL)
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  for (const banned of ['Number(token', 'parseInt(token', 'parseFloat(token', 'token +', '+ token', 'token++']) {
+    assert.ok(!src.includes(banned), `bridge must not coerce the token: ${banned}`);
+  }
+});
+
 
 await main();

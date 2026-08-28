@@ -21,6 +21,7 @@ const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const MATERIALIZER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-assets.tauri.js';
 const CODEC_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const PROJECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
+const PROBE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-projection-probe.tauri.js';
 
 const PASS = [];
 const FAIL = [];
@@ -141,6 +142,43 @@ function buildProjector({ withImage }) {
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (!ingestion || typeof ingestion.buildSavedChatPackageV1 !== 'function') throw new Error('projector did not register');
   return { ingestion, mocks, cas };
+}
+
+/* Phase 2.1: the same sandbox, plus the projection probe. `readiness` lets a
+ * test mark one authoritative store unready. The sandbox's __TAURI_INTERNALS__
+ * invoke THROWS, so any filesystem call by the probe fails the test
+ * structurally rather than by assertion. */
+function buildProbeEnv({ withImage, readiness = {} }) {
+  const mocks = createMockStores({ withImage });
+  const cas = createMockCas();
+  for (const [name, ready] of Object.entries(readiness)) {
+    mocks.stores[name] = { ...(mocks.stores[name] || {}), isReady: () => ready };
+  }
+  const context = {
+    console, setTimeout, URL,
+    atob: globalThis.atob,
+    TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
+    ReadableStream, TransformStream, CompressionStream, DecompressionStream,
+    crypto: globalThis.crypto || crypto.webcrypto,
+    __TAURI_INTERNALS__: { invoke: async (cmd) => { throw new Error(`probe must not invoke ${cmd}`); } },
+    H2O: { Studio: { store: mocks.stores, ingestion: { assetCas: cas.api } } },
+    chrome: { runtime: { id: 'desktop-test', getManifest: () => ({ name: 'H2O Studio Test', version: '0.0.0-test' }) } },
+  };
+  context.globalThis = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(SANITIZER_REL), sandbox, { filename: SANITIZER_REL });
+  vm.runInContext(readRepo(MATERIALIZER_REL), sandbox, { filename: MATERIALIZER_REL });
+  vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
+  vm.runInContext(readRepo(PROJECTOR_REL), sandbox, { filename: PROJECTOR_REL });
+  vm.runInContext(readRepo(PROBE_REL), sandbox, { filename: PROBE_REL });
+  const ingestion = sandbox.H2O?.Studio?.ingestion;
+  if (typeof ingestion?.probeCurrentSavedChatProjectionV1 !== 'function') {
+    throw new Error('projection probe did not register');
+  }
+  /* The probe reuses the REAL governed bound; the mock CAS must publish it or
+   * the probe would silently lose its asset-bound enforcement. */
+  ingestion.assetCas.assetBlobCapBytes = 33554432;
+  return { ingestion, mocks, cas, ids: mocks.ids };
 }
 
 async function main() {
@@ -338,6 +376,124 @@ async function main() {
 
   console.log('');
   console.log(`PASS ${PASS.length}`);
+  // ── M05 Phase 2.1: mutation-free current-projection probe ────────────────
+
+  await checkAsync('P2.1 the assetStack override drives the SAME builder, and the default is unchanged', () => {
+    // The override must be a COMPLETE stack: a partial one would silently mix
+    // probe and production dependencies.
+    const env = buildProbeEnv({ withImage: false });
+    return assert.rejects(
+      () => env.ingestion.buildSavedChatPackageV1({
+        snapshotId: env.ids.snapshotId,
+        assetStack: { assetCas: {} },
+      }),
+      /assetStack override must supply/,
+    ).then(async () => {
+      // With no override, production resolution is untouched: this build still
+      // reaches the production mock CAS registered on the namespace.
+      const built = await env.ingestion.buildSavedChatPackageV1({ snapshotId: env.ids.snapshotId });
+      assert.equal(typeof built.contentHash, 'string');
+      assert.ok(built.contentHash.startsWith('sha256-'));
+    });
+  });
+
+  await checkAsync('P2.1 v1 probe identity EXACTLY equals the writer projection', async () => {
+    const env = buildProbeEnv({ withImage: false });
+    const built = await env.ingestion.buildSavedChatPackageV1({ snapshotId: env.ids.snapshotId });
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(probe.status, 'ok', probe.reason);
+    assert.equal(probe.contentHash, built.contentHash, 'probe must agree with the writer byte-for-byte');
+    assert.equal(probe.schemaVersion, 1);
+    assert.equal(probe.snapshotId, env.ids.snapshotId);
+    assert.equal(probe.assetShas.length, 0);
+  });
+
+  await checkAsync('P2.1 v2 probe identity EXACTLY equals the writer projection with inline assets', async () => {
+    const env = buildProbeEnv({ withImage: true });
+    const built = await env.ingestion.buildSavedChatPackageV1({ snapshotId: env.ids.snapshotId });
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(probe.status, 'ok', probe.reason);
+    assert.equal(probe.schemaVersion, 2, 'inline assets must still select v2 in the probe');
+    assert.equal(probe.payloadVersion, 2);
+    assert.equal(probe.contentHash, built.contentHash, 'v2 probe must agree with the writer');
+    // Asset identity is equivalent, including the deterministic sort.
+    const builtShas = built.manifest.assets.map((a) => a.sha256);
+    // Cross-realm: compare contents, not prototypes.
+    assert.deepEqual([...probe.assetShas], [...builtShas]);
+    assert.ok(probe.assetShas.length > 0);
+  });
+
+  await checkAsync('P2.1 the v2 probe rewrites HTML refs the same way the writer does', async () => {
+    const env = buildProbeEnv({ withImage: true });
+    const built = await env.ingestion.buildSavedChatPackageV1({ snapshotId: env.ids.snapshotId });
+    // The rewritten snapshot the probe hashes is the same one the writer emits:
+    // equal contentHash over an asset-bearing package already proves the
+    // rewritten bytes match, since the snapshot hash feeds the identity.
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(probe.contentHash, built.contentHash);
+    const snapshotText = built.files['snapshot.json'].text;
+    assert.ok(!/data:image\//.test(snapshotText), 'inline data URIs must have been rewritten');
+    assert.ok(/assets\/sha256-[0-9a-f]{64}\./.test(snapshotText), 'refs must be package-relative');
+  });
+
+  await checkAsync('P2.1 the probe mutates NOTHING: no fs invoke, no CAS write, no registry row', async () => {
+    const env = buildProbeEnv({ withImage: true });
+    // Any filesystem call throws in this sandbox, so reaching 'ok' is itself
+    // proof no fs invoke happened.
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(probe.status, 'ok', probe.reason);
+    assert.equal(env.cas.puts.length, 0, 'the real CAS must never be called by the probe');
+    assert.equal(env.mocks.registry.upserts.length, 0, 'no asset registry row may be written');
+    assert.equal(env.mocks.registry.links.length, 0, 'no turn link may be written');
+  });
+
+  for (const store of ['chats', 'snapshots', 'folders', 'categories', 'labels', 'tags']) {
+    await checkAsync(`P2.1 an unready '${store}' store yields indeterminate with NO hash`, async () => {
+      const env = buildProbeEnv({ withImage: false, readiness: { [store]: false } });
+      const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+      assert.equal(probe.status, 'indeterminate');
+      assert.equal(probe.reason, 'store-not-ready');
+      assert.ok(probe.notReady.includes(store));
+      // Never a hash a consumer could mistake for freshness authority.
+      assert.equal(probe.contentHash, '');
+      assert.notEqual(probe.status, 'ok');
+    });
+  }
+
+  await checkAsync('P2.1 no current snapshot yields undefined-no-snapshot, never stale', async () => {
+    const env = buildProbeEnv({ withImage: false });
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: 'chat_does_not_exist' });
+    assert.equal(probe.status, 'undefined-no-snapshot');
+    assert.equal(probe.reason, 'no-current-snapshot');
+    assert.equal(probe.contentHash, '');
+  });
+
+  await checkAsync('P2.1 a governed asset-bound violation is indeterminate, not stale, and mutates nothing', async () => {
+    const env = buildProbeEnv({ withImage: true });
+    // Force the governed bound below the fixture asset size.
+    env.ingestion.assetCas.assetBlobCapBytes = 1;
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(probe.status, 'indeterminate');
+    assert.equal(probe.reason, 'asset-bound-exceeded');
+    assert.equal(probe.contentHash, '', 'an unpublishable state must not carry an identity');
+    assert.equal(env.cas.puts.length, 0);
+    assert.equal(env.mocks.registry.upserts.length, 0);
+    assert.equal(env.mocks.registry.links.length, 0);
+  });
+
+  check('P2.1 the probe module performs no filesystem or SQL work by construction', () => {
+    // Match the actual invoke forms, not English words: the module's own
+    // comments legitimately discuss removing checks.
+    const src = readRepo(PROBE_REL);
+    for (const forbidden of [
+      'plugin:fs|', 'plugin:sql|',
+      "'write_file'", "'mkdir'", "'remove'", "'rename'",
+      'invoke(',
+    ]) {
+      assert.ok(!src.includes(forbidden), `the probe must not reference ${forbidden}`);
+    }
+  });
+
   if (FAIL.length) {
     console.log(`FAIL ${FAIL.length}`);
     for (const f of FAIL) console.log(`- ${f.label}: ${f.m}`);

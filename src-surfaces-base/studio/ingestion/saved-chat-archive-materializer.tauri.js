@@ -289,18 +289,136 @@
       return result;
     }
 
+    /* ── M05 Phase 3: coverage decision ──────────────────────────────────
+     *
+     * Runs AFTER re-resolution and BEFORE the writing claim, deliberately:
+     * freshness must be judged against the exact snapshot re-resolution just
+     * selected, and a row should not enter `writing` when no write is needed.
+     *
+     * Freshness comes only from the Phase 2 authorities — the recomputed
+     * package contentHash versus the current projection contentHash. Queue
+     * metadata is NEVER consulted for it: `meta_json.materialization` records
+     * what happened at write time, which is history, not present truth. */
+    var coverage = null;
+    if (typeof ingestion.describeSavedChatCoverageV1 === 'function') {
+      var coverageChatId = cleanString(reresolve.resolution && reresolve.resolution.studioChatId)
+        || cleanString(row.studio_chat_id);
+      if (coverageChatId) {
+        try {
+          coverage = await ingestion.describeSavedChatCoverageV1({ chatId: coverageChatId });
+        } catch (err) {
+          coverage = null;
+        }
+      }
+    }
+
+    if (coverage) {
+      var projectionStatus = cleanString(safeObject(coverage.projection).status);
+
+      if (projectionStatus === 'indeterminate') {
+        /* Neither fresh nor stale may be asserted, so publishing would be
+         * acting on an unproven negative. DEFER by leaving the row in
+         * `validated`: it stays immediately eligible for a later attempt,
+         * whereas any transition out of `validated` would strand it until the
+         * re-arm work of the next increment exists. No new durable status is
+         * introduced. */
+        result.status = 'deferred';
+        result.deferred = { reason: 'projection-indeterminate', projectionReason: cleanString(coverage.projection.reason) };
+        return result;
+      }
+
+      if (coverage.covered === true && asArray(coverage.fresh).length > 0) {
+        /* ALREADY FRESH — a freshness short-circuit, not filesystem dedupe.
+         * A valid package already represents this exact projection, so there
+         * is nothing to publish. BEST-HISTORICAL and PRESERVED deliberately do
+         * NOT reach here: only `fresh` does.
+         *
+         * The row still claims `writing` first. That is not a write — it is
+         * the existing single-owner mechanism, and `validated -> written` is
+         * not a sanctioned edge, so claim-then-complete keeps the edge set
+         * unchanged. No publication, CAS or package mutation occurs. */
+        var freshEntry = safeObject(asArray(coverage.fresh)[0]);
+        var freshSelected = safeObject(coverage.selected);
+        var freshPick = cleanString(freshSelected.contentHash) ? freshSelected : freshEntry;
+        var freshStartedAt = nowIso();
+        var freshClaim = await transitionRequestStatus({
+          requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_WRITING,
+          patch: {
+            processingStartedAt: freshStartedAt, snapshotId: snapshotId, overwrite: false,
+            intendedContentHash: cleanString(safeObject(coverage.projection).contentHash) || null,
+          },
+          currentMeta: currentMeta, snapshotId: snapshotId,
+        });
+        if (!freshClaim.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_WRITING);
+
+        var freshPkg = {
+          packagePath: cleanString(freshPick.packagePath),
+          schemaVersion: (typeof freshPick.schemaVersion === 'number') ? freshPick.schemaVersion : null,
+          payloadVersion: (typeof freshPick.payloadVersion === 'number') ? freshPick.payloadVersion : null,
+          contentHash: cleanString(freshPick.contentHash) || null,
+          snapshotId: snapshotId,
+          writtenAt: freshStartedAt,
+          outcome: 'already-fresh',
+        };
+        var freshDone = await transitionRequestStatus({
+          requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
+          patch: Object.assign({}, freshPkg, { processingStartedAt: freshStartedAt, processingFinishedAt: nowIso(), overwrite: false }),
+          currentMeta: currentMeta, snapshotId: snapshotId,
+        });
+        if (!freshDone.ok) {
+          conflictResult(result, STATUS_WRITING, STATUS_WRITTEN);
+          result.package = freshPkg;
+          return result;
+        }
+        result.status = STATUS_WRITTEN;
+        result.ok = true;
+        result.package = freshPkg;
+        return result;
+      }
+
+      /* Reaching a publication decision from here needs the NEGATIVE
+       * conclusion "no fresh package represents this projection". Only a
+       * complete scan can support that; a truncated one cannot, so defer
+       * rather than publish on an unproven absence. Phase 2 reports `covered`
+       * as null (not false) in exactly that case. */
+      if (coverage.covered === null && coverage.complete !== true) {
+        result.status = 'deferred';
+        result.deferred = { reason: 'discovery-incomplete' };
+        return result;
+      }
+    }
+
     /* validated -> writing. This is the claim: only the caller that actually
      * moves the row out of `validated` may call the package writer. */
     var processingStartedAt = nowIso();
+    /* RECOVERY INTENT, recorded durably with the claim itself so a row later
+     * found stranded in `writing` can be reconciled against what THAT worker
+     * intended to publish. Today's current projection is not a substitute:
+     * the chat may have changed again since the interruption. This is
+     * historical intent only and is never future freshness authority. */
+    var intendedContentHash = coverage
+      ? cleanString(safeObject(coverage.projection).contentHash) || null
+      : null;
     var claim = await transitionRequestStatus({
       requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_WRITING,
-      patch: { processingStartedAt: processingStartedAt, snapshotId: snapshotId, overwrite: false },
+      patch: {
+        processingStartedAt: processingStartedAt, snapshotId: snapshotId, overwrite: false,
+        intendedContentHash: intendedContentHash,
+      },
       currentMeta: currentMeta, snapshotId: snapshotId,
     });
     /* Returning here rather than falling through is load-bearing: `currentMeta`
      * is the pre-claim snapshot, so a later write would stamp stale metadata
      * over whichever caller actually owns the row. */
     if (!claim.ok) return conflictResult(result, STATUS_VALIDATED, STATUS_WRITING);
+
+    /* From here on the claim's metadata is the base, not the pre-claim row.
+     * `currentMeta` was read BEFORE the claim, so merging a later patch onto it
+     * silently drops what the claim persisted -- including intendedContentHash,
+     * the recorded publication intent that stranded-`writing` reconciliation
+     * depends on. A real failed run lost exactly that. `transitionRequestStatus`
+     * already returns what it wrote, so use it. */
+    var claimedMeta = safeObject(claim.meta) || currentMeta;
 
     /* Call the existing Desktop writer with ONLY the resolved snapshotId.
      * Never pass request/Chrome content as package source; overwrite stays false. */
@@ -309,11 +427,16 @@
       written = await ingestion.writeSavedChatPackageV1({ snapshotId: snapshotId, overwrite: false });
     } catch (err) {
       var errorMessage = String((err && err.message) || err || 'package writer failed');
-      var errorCode = /already exists/i.test(errorMessage) ? 'package-already-exists' : 'package-writer-threw';
+      /* The legacy `package already exists -> failure` mapping is RETIRED.
+       * An occupied exact generation is no longer a renderer-adjudicated
+       * error: the trusted publisher verifies the occupant itself and returns
+       * DEDUPED, which is a successful publication handled below. Only a real
+       * throw reaches here. */
+      var errorCode = 'package-writer-threw';
       var failMove = await transitionRequestStatus({
         requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED,
         patch: { errorCode: errorCode, errorMessage: errorMessage, snapshotId: snapshotId, processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false },
-        currentMeta: currentMeta, snapshotId: snapshotId,
+        currentMeta: claimedMeta, snapshotId: snapshotId,
       });
       if (!failMove.ok) {
         conflictResult(result, STATUS_WRITING, STATUS_FAILED);
@@ -326,6 +449,12 @@
     }
 
     var w = safeObject(written);
+    /* Trusted-side truth, recorded verbatim. Both Created and DEDUPED are
+     * successful materializations: DEDUPED means the trusted publisher found
+     * the exact generation already present AND verified it, so there was
+     * nothing to write. The renderer never adjudicates that — it consumes the
+     * verdict. This metadata is recorded-at-write-time history, never future
+     * freshness authority. */
     var pkg = {
       packagePath: cleanString(w.packagePath),
       schemaVersion: (typeof w.schemaVersion === 'number') ? w.schemaVersion : null,
@@ -333,12 +462,16 @@
       contentHash: cleanString(w.contentHash) || null,
       snapshotId: cleanString(w.snapshotId) || snapshotId,
       writtenAt: cleanString(w.writtenAt) || nowIso(),
+      outcome: cleanString(w.outcome) || (w.deduped === true ? 'deduped' : 'created'),
+      deduped: w.deduped === true,
+      durabilityComplete: w.durabilityComplete === true,
+      advisories: asArray(w.advisories).map(cleanString).filter(Boolean),
     };
     /* writing -> written */
     var doneMove = await transitionRequestStatus({
       requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
       patch: Object.assign({}, pkg, { processingStartedAt: processingStartedAt, processingFinishedAt: nowIso(), overwrite: false }),
-      currentMeta: currentMeta, snapshotId: pkg.snapshotId,
+      currentMeta: claimedMeta, snapshotId: pkg.snapshotId,
     });
     if (!doneMove.ok) {
       /* The package exists on disk but this caller no longer owns the row.
@@ -352,8 +485,223 @@
     result.package = pkg;
     return result;
   }
+  /* ── M05 Phase 3: explicit re-arm (Task C) ───────────────────────────────
+   *
+   * A failed row is deliberately NOT retried automatically. Re-arm is an
+   * explicit operator action: it moves failed -> validated under the same
+   * compare-and-swap guard every other transition uses, so it cannot resurrect
+   * a row another worker has already moved on.
+   *
+   * Failure evidence is preserved rather than overwritten — each re-arm pushes
+   * the prior errorCode/errorMessage onto a bounded attempts history, so a row
+   * that keeps failing stays diagnosable instead of laundering its past. */
+  var MAX_RECORDED_ATTEMPTS = 10;
+
+  async function rearmFailedSavedChatArchiveRequestV1(input) {
+    var opts = safeObject(input);
+    var requestId = cleanString(opts.requestId);
+    var result = { ok: false, status: 'not-found', requestId: requestId || null, transitionConflict: null };
+    if (!requestId) { result.status = 'request-id-required'; return result; }
+
+    var row;
+    try {
+      row = await loadQueueRow(requestId);
+    } catch (err) {
+      result.status = STATUS_DB_UNAVAILABLE;
+      result.error = String((err && err.message) || err || 'queue read failed');
+      return result;
+    }
+    if (!row) return result;
+
+    var previousStatus = cleanString(row.status);
+    if (previousStatus !== STATUS_FAILED) {
+      /* Only a failed row may be re-armed: nothing may jump to validated from
+       * an arbitrary state. */
+      result.status = 'not-eligible';
+      result.currentStatus = previousStatus;
+      return result;
+    }
+
+    var currentMeta = parseJsonObject(row.meta_json);
+    var priorMat = safeObject(safeObject(currentMeta).materialization);
+    var attempts = asArray(priorMat.attempts).slice();
+    attempts.push({
+      errorCode: cleanString(priorMat.errorCode) || null,
+      errorMessage: cleanString(priorMat.errorMessage) || null,
+      processingStartedAt: cleanString(priorMat.processingStartedAt) || null,
+      processingFinishedAt: cleanString(priorMat.processingFinishedAt) || null,
+      rearmedAt: nowIso(),
+    });
+    if (attempts.length > MAX_RECORDED_ATTEMPTS) {
+      attempts = attempts.slice(attempts.length - MAX_RECORDED_ATTEMPTS);
+    }
+
+    var move = await transitionRequestStatus({
+      requestId: requestId, expectedStatus: STATUS_FAILED, nextStatus: STATUS_VALIDATED,
+      patch: {
+        attempts: attempts,
+        rearmedAt: nowIso(),
+        rearmCount: (typeof priorMat.rearmCount === 'number' ? priorMat.rearmCount : 0) + 1,
+        /* Cleared so the re-armed attempt starts from a clean slate; the
+         * evidence lives in attempts[]. */
+        errorCode: null, errorMessage: null,
+        processingStartedAt: null, processingFinishedAt: null,
+        intendedContentHash: null,
+        overwrite: false,
+      },
+      currentMeta: currentMeta,
+    });
+    if (!move.ok) {
+      result.transitionConflict = { expectedStatus: STATUS_FAILED, nextStatus: STATUS_VALIDATED };
+      result.status = 'transition-conflict';
+      return result;
+    }
+    result.ok = true;
+    result.status = STATUS_VALIDATED;
+    return result;
+  }
+
+  /* ── M05 Phase 3: stranded `writing` reconciliation (Task E) ─────────────
+   *
+   * Correctness comes from verified filesystem/package state plus the recorded
+   * intent, NEVER from elapsed time. Age may only decide that a row is worth
+   * LOOKING at; it can never prove that publication failed, that a package is
+   * absent, or that anything is stale. Reconciliation is idempotent and is
+   * driven from an explicit bounded invocation — no daemon, no scheduler.
+   */
+  async function reconcileStrandedSavedChatArchiveWritingV1(input) {
+    var opts = safeObject(input);
+    var requestId = cleanString(opts.requestId);
+    var result = { ok: false, status: 'not-found', requestId: requestId || null, transitionConflict: null };
+    if (!requestId) { result.status = 'request-id-required'; return result; }
+
+    var row;
+    try {
+      row = await loadQueueRow(requestId);
+    } catch (err) {
+      result.status = STATUS_DB_UNAVAILABLE;
+      result.error = String((err && err.message) || err || 'queue read failed');
+      return result;
+    }
+    if (!row) return result;
+
+    var previousStatus = cleanString(row.status);
+    if (previousStatus === STATUS_WRITTEN) {
+      /* Idempotent: an already-reconciled row is a no-op success. */
+      result.ok = true;
+      result.status = 'already-written';
+      return result;
+    }
+    if (previousStatus !== STATUS_WRITING) {
+      result.status = 'not-eligible';
+      result.currentStatus = previousStatus;
+      return result;
+    }
+
+    var currentMeta = parseJsonObject(row.meta_json);
+    var mat = safeObject(safeObject(currentMeta).materialization);
+    var intendedContentHash = cleanString(mat.intendedContentHash);
+    if (!intendedContentHash) {
+      /* CASE 4: a historical row claimed before intent was recorded. Today's
+       * projection is NOT a substitute — the chat may have changed since. Say
+       * so explicitly instead of fabricating an outcome, and mutate nothing. */
+      result.status = 'recovery-intent-unknown';
+      return result;
+    }
+
+    var ingestion = getIngestion();
+    if (typeof ingestion.describeSavedChatCoverageV1 !== 'function') {
+      result.status = 'coverage-unavailable';
+      return result;
+    }
+    var chatId = cleanString(row.studio_chat_id);
+    if (!chatId) { result.status = 'chat-id-unknown'; return result; }
+
+    var coverage;
+    try {
+      coverage = safeObject(await ingestion.describeSavedChatCoverageV1({ chatId: chatId }));
+    } catch (err) {
+      result.status = 'coverage-failed';
+      result.error = String((err && err.message) || err);
+      return result;
+    }
+
+    /* Look for a VALID package whose RECOMPUTED hash equals what this worker
+     * intended to publish — across every verified package, fresh or not,
+     * because the intent may well be stale by now. */
+    var verified = asArray(coverage.legacy).concat(asArray(coverage.generations));
+    var match = null;
+    for (var i = 0; i < verified.length; i += 1) {
+      if (cleanString(verified[i].contentHash) === intendedContentHash) { match = verified[i]; break; }
+    }
+
+    if (match) {
+      /* CASE 1: the publication demonstrably completed. Adopt it through the
+       * sanctioned edge; never republish merely to prove existence. */
+      var pkg = {
+        packagePath: cleanString(match.packagePath),
+        schemaVersion: (typeof match.schemaVersion === 'number') ? match.schemaVersion : null,
+        payloadVersion: (typeof match.payloadVersion === 'number') ? match.payloadVersion : null,
+        contentHash: cleanString(match.contentHash),
+        snapshotId: cleanString(row.snapshot_id) || null,
+        writtenAt: cleanString(mat.processingStartedAt) || nowIso(),
+        outcome: 'recovered-package-present',
+      };
+      var doneMove = await transitionRequestStatus({
+        requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN,
+        patch: Object.assign({}, pkg, { processingFinishedAt: nowIso(), overwrite: false }),
+        currentMeta: currentMeta,
+      });
+      if (!doneMove.ok) {
+        result.transitionConflict = { expectedStatus: STATUS_WRITING, nextStatus: STATUS_WRITTEN };
+        result.status = 'transition-conflict';
+        return result;
+      }
+      result.ok = true;
+      result.status = STATUS_WRITTEN;
+      result.package = pkg;
+      return result;
+    }
+
+    /* CASE 3: verification is not authoritative enough to conclude anything.
+     * Absence of evidence is not evidence of absence — defer without mutating. */
+    if (coverage.complete !== true) {
+      result.status = 'deferred';
+      result.deferred = { reason: 'discovery-incomplete' };
+      return result;
+    }
+
+    /* CASE 2: a complete scan positively shows no package carrying the
+     * intended identity, so the publication did not complete. Route through
+     * the sanctioned writing -> failed edge, preserving the evidence; an
+     * operator then re-arms explicitly. `writing -> validated` is deliberately
+     * NOT added: an automatic reset would be indistinguishable from an
+     * unguarded retry. */
+    var failMove = await transitionRequestStatus({
+      requestId: requestId, expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED,
+      patch: {
+        errorCode: 'stranded-writing-recovered',
+        errorMessage: 'Interrupted publication left no package carrying the recorded intended identity; re-arm to retry.',
+        intendedContentHash: intendedContentHash,
+        processingFinishedAt: nowIso(),
+        overwrite: false,
+      },
+      currentMeta: currentMeta,
+    });
+    if (!failMove.ok) {
+      result.transitionConflict = { expectedStatus: STATUS_WRITING, nextStatus: STATUS_FAILED };
+      result.status = 'transition-conflict';
+      return result;
+    }
+    result.status = STATUS_FAILED;
+    result.recovered = { reason: 'stranded-writing-recovered', rearmRequired: true };
+    return result;
+  }
+
   materializeSavedChatArchiveRequestV1.__installed = true;
   materializeSavedChatArchiveRequestV1.__version = MODULE_VERSION;
 
   H2O.Studio.ingestion.materializeSavedChatArchiveRequestV1 = materializeSavedChatArchiveRequestV1;
+  H2O.Studio.ingestion.rearmFailedSavedChatArchiveRequestV1 = rearmFailedSavedChatArchiveRequestV1;
+  H2O.Studio.ingestion.reconcileStrandedSavedChatArchiveWritingV1 = reconcileStrandedSavedChatArchiveWritingV1;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -405,8 +405,8 @@ function gzipCommittedV3Fixture({ corrupt = false } = {}) {
   });
 }
 
-function installBehaviorPackage(mem, pkg) {
-  const root = `archive/packages/${pkg.chatId}.h2ochat`;
+function installBehaviorPackage(mem, pkg, rootOverride) {
+  const root = rootOverride || `archive/packages/${pkg.chatId}.h2ochat`;
   mem.mkdir(mem.APP, root);
   mem.put(mem.APP, `${root}/manifest.json`, pkg.manifestText);
   mem.put(mem.APP, `${root}/snapshot.json`, pkg.snapshotBytes);
@@ -956,6 +956,123 @@ checkAsync('M03 T04 corrupt gzip-v3 fails closed and creates no export', async (
 });
 
 let failures = 0;
+/* ── M05 Phase 4 — zero-asset v2 identity ──────────────────────────────────
+ * A v2 package with NO assets is ordinary: any chat without images produces
+ * one. Its identity is the canonical preservation descriptor with an empty
+ * assets array — the same rule every other v2 package uses. The exporter used
+ * to treat an empty array as "not really v2" and verify the copy against the
+ * v1 bare-snapshot hash instead, so export rejected packages the governed
+ * builder and validator both accept. This proves the three authorities agree. */
+checkAsync('M05 P4 zero-asset v2 exports: governed identity holds without assets', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'p4_v2_zero_asset' });
+  assert.equal(pkg.assets.length, 0, 'fixture error: this package must have zero assets');
+  assert.equal(pkg.manifest.assets.length, 0, 'fixture error: manifest.assets must be empty');
+
+  /* The fixture's contentHash is built by the governed v2 construction, and it
+   * must NOT coincide with the bare snapshot hash — otherwise the old and new
+   * exporter branches would agree and this proof would be vacuous. */
+  const snapshotSha = pkg.manifest.files.snapshot.sha256;
+  assert.notEqual(pkg.manifest.contentHash, snapshotSha,
+    'fixture error: governed v2 identity must differ from the v1 bare snapshot hash');
+
+  // Install under a real §D generation basename derived from its own hash.
+  const genHex = String(pkg.manifest.contentHash).match(/[0-9a-f]{64}/)[0];
+  const root = installBehaviorPackage(mem, pkg, `archive/packages/p4_v2_zero_asset.g${genHex}.h2ochat`);
+  const runtime = loadBehaviorRuntime(mem);
+
+  // 1. Governed inspection accepts the package.
+  const inspection = await runtime.H2O.Studio.archiveInspector.inspectPackage({ packagePath: root });
+  assert.equal(inspection.status, 'verified', `governed inspection rejected a valid zero-asset v2 package: ${JSON.stringify(inspection.blockers || [])}`);
+  assert.equal(inspection.checks.contentHashOk, true, 'governed recomputation disagreed with the manifest');
+  assert.equal(inspection.identity.contentHash, pkg.manifest.contentHash);
+
+  const exporter = runtime.H2O.Studio.archiveExporter;
+
+  // 2. Export dry-run accepts it.
+  const dry = await exporter.dryRunExportPackage({ packagePath: root, exportName: 'p4-v2-zero.h2ochat' });
+  assert.equal(dry.status, 'export-ready', `dry-run rejected a governed-valid package: ${dry.reason}`);
+
+  // 3/4. Export succeeds, preserves the explicit path, and reports the
+  //      governed recomputed identity — not the v1 fallback.
+  const out = await exporter.exportVerifiedPackage({ packagePath: root, exportName: 'p4-v2-zero.h2ochat' });
+  assert.equal(out.status, 'exported', `export self-verification rejected a governed-valid package: ${out.reason}`);
+  assert.equal(out.packagePath, root, 'export retargeted a different package');
+  assert.equal(out.contentHash, pkg.manifest.contentHash, 'exported identity is not the governed v2 contentHash');
+  assert.notEqual(out.contentHash, snapshotSha, 'exported identity fell back to the v1 bare snapshot hash');
+  assert.equal(out.contentHashVerified, true);
+
+  // The copy is byte-faithful.
+  for (const leaf of ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html']) {
+    assert.deepEqual(
+      mem.files.get(mem.key(mem.HOME, `H2O Studio Exports/p4-v2-zero.h2ochat/${leaf}`)),
+      mem.files.get(mem.key(mem.APP, `${root}/${leaf}`)),
+      `${leaf} was not copied byte-identically`,
+    );
+  }
+});
+
+/* ── M05 Phase 4 proof 10 — export preserves the explicitly selected generation ──
+ * Two valid sibling generations of ONE chat, differing in content. Export is
+ * handed one path; it must copy THAT package. An exporter that resolved
+ * "the newest sibling" or re-derived a path from the chat id would hand the
+ * operator an archive they did not choose — silently, and with a plausible
+ * name on it. */
+checkAsync('M05 P4.10 export copies the explicitly selected generation, not a sibling', async () => {
+  const mem = createBehaviorFs();
+  const CHAT = 'p4_export_sel';
+  const genOld = makeBehaviorPackage({ schemaVersion: 1, chatId: CHAT });
+  const genNew = makeBehaviorPackage({ schemaVersion: 2, chatId: CHAT });
+  assert.notEqual(genOld.manifest.contentHash, genNew.manifest.contentHash,
+    'fixture error: siblings must differ in content');
+
+  const oldRoot = installBehaviorPackage(mem, genOld, `archive/packages/${CHAT}.h2ochat`);
+  /* The sibling wears a real §D generation basename — derived from its own
+   * contentHash, since a basename claiming any other hash is a `mismatch` and
+   * would be rejected before selection is ever tested. It is the newer-format
+   * package of the pair, so an exporter that preferred "the newest generation"
+   * over the path it was handed would take it instead. */
+  const newGenHex = String(genNew.manifest.contentHash).match(/[0-9a-f]{64}/)[0];
+  const newRoot = installBehaviorPackage(mem, genNew, `archive/packages/${CHAT}.g${newGenHex}.h2ochat`);
+  assert.notEqual(newRoot, oldRoot, 'fixture error: siblings must occupy distinct paths');
+
+  const exporter = loadBehaviorRuntime(mem).H2O.Studio.archiveExporter;
+  const out = await exporter.exportVerifiedPackage({ packagePath: oldRoot, exportName: 'p4-selected.h2ochat' });
+  assert.equal(out.status, 'exported');
+
+  // 1. The result names the selected package, not the sibling.
+  assert.equal(out.packagePath, oldRoot, 'export retargeted a sibling generation');
+
+  // 2. The BYTES that landed are the selected generation's. Two generations of
+  //    one chat share their rendered views when only the snapshot format moved,
+  //    so divergence is asserted exactly where the sources actually diverge —
+  //    demanding it everywhere would be a fixture assumption, not a proof.
+  let discriminated = 0;
+  for (const leaf of ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html']) {
+    const exported = mem.files.get(mem.key(mem.HOME, `H2O Studio Exports/p4-selected.h2ochat/${leaf}`));
+    const selectedBytes = mem.files.get(mem.key(mem.APP, `${oldRoot}/${leaf}`));
+    const siblingBytes = mem.files.get(mem.key(mem.APP, `${newRoot}/${leaf}`));
+    assert.deepEqual(exported, selectedBytes, `${leaf} is not the selected generation`);
+    if (!selectedBytes.equals(siblingBytes)) {
+      discriminated += 1;
+      assert.notDeepEqual(exported, siblingBytes, `${leaf} came from the sibling generation`);
+    }
+  }
+  assert.ok(discriminated >= 2, `fixture error: siblings differ in only ${discriminated} file(s) — too weak to discriminate`);
+
+  // 3. The reported identity is the selected generation's verified hash.
+  assert.equal(out.contentHash, genOld.manifest.contentHash, 'reported contentHash is not the selected generation');
+  assert.notEqual(out.contentHash, genNew.manifest.contentHash);
+  assert.equal(out.contentHashVerified, true, 'export did not report a verified identity');
+
+  // 4. Exporting the sibling explicitly yields the sibling — selection is honoured
+  //    in both directions, so this is not passing by always picking the first.
+  const out2 = await exporter.exportVerifiedPackage({ packagePath: newRoot, exportName: 'p4-selected-2.h2ochat' });
+  assert.equal(out2.status, 'exported');
+  assert.equal(out2.packagePath, newRoot);
+  assert.equal(out2.contentHash, genNew.manifest.contentHash);
+});
+
 for (const { name, fn } of checks) {
   try {
     fn();

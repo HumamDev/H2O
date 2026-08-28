@@ -326,7 +326,14 @@
         assets: assets,
       })));
     }
-    if (schemaVersion >= 2 && assets.length) {
+    /* v2 identity is the canonical preservation descriptor { snapshot, assets },
+     * and an empty assets array is a legitimate value of it — not a reason to
+     * fall back to the v1 rule. Gating this on assets.length made a zero-asset
+     * v2 package (an ordinary chat with no images) verify against the v1 hash
+     * here while the governed builder and validator both used the descriptor,
+     * so export self-verification rejected packages those authorities accept.
+     * Only v1 uses the bare snapshot hash. */
+    if (schemaVersion >= 2) {
       return sha256Prefixed(new TextEncoder().encode(canonicalJson({ snapshot: snapshotSha, assets: assets })));
     }
     return Promise.resolve(snapshotSha);
@@ -365,12 +372,30 @@
       inspectionStatus: cleanString(d.inspectionStatus),
       schemaVersion: d.schemaVersion == null ? null : d.schemaVersion,
       payloadVersion: d.payloadVersion == null ? null : d.payloadVersion,
+      /* M05 §D — the exact generation being exported. `contentHash` is the
+       * inspector's RECOMPUTED hash (for a `generation` package, the generation
+       * identifier in its basename), never the manifest's unverified claim.
+       * Export copies the operator's explicitly selected packagePath verbatim:
+       * it never substitutes a newer sibling generation or a BEST-HISTORICAL
+       * pick, so what lands in the export is what was named. */
       contentHash: cleanString(d.contentHash),
+      contentHashVerified: d.contentHashVerified === true,
+      packageKind: cleanString(d.packageKind) || null,
       fileCount: isFiniteNumber(d.fileCount) ? d.fileCount : 0,
       assetCount: isFiniteNumber(d.assetCount) ? d.assetCount : 0,
       reason: cleanString(d.reason),
       exportedAt: cleanString(d.exportedAt),
     };
+  }
+
+  /* The inspector's VERIFIED identity for a package this flow already
+   * inspected. Export must name the generation by its recomputed hash: the
+   * manifest's own contentHash field is a claim by the artifact about itself.
+   * (Reaching here implies contentHashOk, so the two agree today — but naming
+   * the claim as the identity would silently become wrong the moment that
+   * precondition is relaxed.) */
+  function verifiedIdentity(verified) {
+    return safeObject(safeObject(safeObject(verified).inspection).identity);
   }
 
   function resolveExportDestination(options) {
@@ -433,7 +458,9 @@
         inspectionStatus: 'verified',
         schemaVersion: verified.manifest.schemaVersion,
         payloadVersion: verified.manifest.payloadVersion,
-        contentHash: verified.manifest.contentHash,
+        contentHash: cleanString(verifiedIdentity(verified).contentHash),
+        contentHashVerified: verifiedIdentity(verified).contentHashVerified === true,
+        packageKind: cleanString(verifiedIdentity(verified).packageKind),
         fileCount: declared.length + (schemaVersion === 3 ? 2 : 0),
         assetCount: asArray(verified.manifest.assets).length,
         reason: 'verified and destination available',
@@ -543,7 +570,11 @@
         inspectionStatus: 'verified',
         schemaVersion: verified.manifest.schemaVersion,
         payloadVersion: verified.manifest.payloadVersion,
+        /* Recomputed over the COPIED bytes — this is the proof the export is
+         * byte-faithful, not a restatement of the source manifest's claim. */
         contentHash: postCopy.contentHash,
+        contentHashVerified: true,
+        packageKind: cleanString(verifiedIdentity(verified).packageKind),
         fileCount: copied.length + derivedCompanions.length,
         assetCount: asArray(verified.manifest.assets).length,
         exportedAt: nowIso(),

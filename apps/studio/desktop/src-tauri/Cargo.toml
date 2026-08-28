@@ -44,3 +44,9 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[dev-dependencies]
+# Test-only: lets T1.2.2 EXECUTE the pinned glob matcher semantics that §R.1
+# depends on, instead of asserting on source text. Same version tauri already
+# resolves, so the production dependency graph is unchanged.
+glob = "0.3"

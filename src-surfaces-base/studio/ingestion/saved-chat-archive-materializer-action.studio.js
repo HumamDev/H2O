@@ -46,6 +46,12 @@
   /* G.2 bounded "Materialize validated" batch limits (G.1 contract: default 10,
    * hard cap 50). The operator may raise the per-run count up to the cap; there
    * is no "materialize all" / unbounded run. */
+  /* Inbox intake bounds mirror the shipped inbox module's own contract
+   * (DEFAULT_SCAN_LIMIT 50 / MAX_SCAN_LIMIT 200) so this control cannot widen
+   * the governed scan; the inbox re-clamps whatever it is handed. */
+  var DEFAULT_INTAKE_LIMIT = 50;
+  var MAX_INTAKE_LIMIT = 200;
+
   var DEFAULT_BATCH_LIMIT = 10;
   var MAX_BATCH_LIMIT = 50;
 
@@ -106,12 +112,24 @@
     batchLimitLabel: 'Batch limit',
     batchHint: 'Materializes up to the batch limit of validated requests sequentially (default ' + DEFAULT_BATCH_LIMIT + ', max ' + MAX_BATCH_LIMIT + '). Explicit operator action; no scanner, no automatic trigger.',
     batchEmpty: 'No validated requests to materialize.',
+    intakeButton: 'Scan request inbox',
+    intakeBusy: 'Scanning request inbox…',
+    intakeHint: 'Reads producer-delivered archive requests from the request inbox and admits them through the governed inbox authority (default ' + DEFAULT_INTAKE_LIMIT + ', max ' + MAX_INTAKE_LIMIT + '). Explicit operator action; no watcher, no polling, and it never materializes.',
+    intakeUnavailable: 'The request inbox module is not loaded.',
+    intakeEmpty: 'No request files were found to process.',
+    intakeFailed: 'The inbox scan did not run. The inbox was not read, so this is not an empty-inbox result.',
   };
 
   /* Pure presentation map for every materializer result status this action can
    * surface, plus the two local pre-call states (desktop-only / invalid-state). */
   var RESULT_PRESENTATION = {
     'written': { tone: 'ok', label: 'Package written', note: 'A new saved chat package was written to the Desktop archive store.' },
+    /* M05: a request can succeed in several materially different ways, and
+     * flattening them into "written" would tell an operator a generation was
+     * created when nothing was written at all. */
+    'deferred': { tone: 'warn', label: 'Deferred', note: 'Nothing was written and nothing was concluded: the current Desktop state or the archive scan was not authoritative enough to decide. The request stays eligible and can be retried.' },
+    'recovery-intent-unknown': { tone: 'warn', label: 'Recovery intent unknown', note: 'This interrupted request predates recorded publication intent, so what it was publishing cannot be established. It was left untouched rather than guessed at.' },
+    'transition-conflict': { tone: 'warn', label: 'Claimed by another worker', note: 'Another worker moved this row first. Nothing was written by this attempt and the other owner’s state was left intact.' },
     'already-written': { tone: 'ok', label: 'Already written', note: 'This request was already materialized; the existing package was returned (idempotent — nothing re-written).' },
     'failed': { tone: 'block', label: 'Materialization failed', note: 'The Desktop package writer reported a failure. See the error code below.' },
     'needs-desktop-snapshot': { tone: 'warn', label: 'Needs Desktop snapshot', note: 'The request no longer resolves to a Desktop snapshot. Re-snapshot on Desktop and re-validate; nothing was written.' },
@@ -151,11 +169,33 @@
     var pkg = (r.package && typeof r.package === 'object') ? r.package : null;
     var details = [];
     if (pkg) {
-      if (cleanString(pkg.packagePath)) details.push({ key: 'packagePath', value: cleanString(pkg.packagePath) });
-      if (cleanString(pkg.contentHash)) details.push({ key: 'contentHash', value: cleanString(pkg.contentHash) });
+      /* M05 publication outcome. `created` is the only one that wrote a
+       * package: `deduped` found the exact generation already present and
+       * verified, and `already-fresh` short-circuited before any publication.
+       * Presenting all three as "written" would be inaccurate. */
+      var OUTCOME_TEXT = {
+        'created': 'created — a new immutable generation was written',
+        'deduped': 'deduped — the identical generation was already present and verified',
+        'already-fresh': 'already fresh — the archive already matched the current chat; nothing was written',
+        'recovered-package-present': 'recovered — the interrupted publication had in fact completed',
+      };
+      var outcome = cleanString(pkg.outcome);
+      if (outcome) details.push({ key: 'outcome', value: OUTCOME_TEXT[outcome] || outcome });
+      /* Everything below is RECORDED OPERATION HISTORY — what was true when
+       * the operation ran. It is never present-tense proof: if the recorded
+       * path no longer verifies, Archive Health and the Inspector control. */
+      if (cleanString(pkg.packagePath)) details.push({ key: 'packagePath (recorded)', value: cleanString(pkg.packagePath) });
+      if (cleanString(pkg.contentHash)) details.push({ key: 'contentHash (recorded)', value: cleanString(pkg.contentHash) });
       if (cleanString(pkg.snapshotId)) details.push({ key: 'snapshotId', value: cleanString(pkg.snapshotId) });
       if (pkg.schemaVersion != null && pkg.schemaVersion !== '') details.push({ key: 'schemaVersion', value: cleanString(pkg.schemaVersion) });
-      if (cleanString(pkg.writtenAt)) details.push({ key: 'writtenAt', value: cleanString(pkg.writtenAt) });
+      if (cleanString(pkg.writtenAt)) details.push({ key: 'writtenAt (recorded)', value: cleanString(pkg.writtenAt) });
+      if (pkg.durabilityComplete === false) details.push({ key: 'durability', value: 'committed, but the durability fence did not confirm' });
+      var advisories = Array.isArray(pkg.advisories) ? pkg.advisories : [];
+      if (advisories.length) details.push({ key: 'advisories', value: advisories.join(', ') + ' (non-blocking)' });
+    }
+    if (cleanString(r.status) === 'deferred') {
+      var deferred = (r.deferred && typeof r.deferred === 'object') ? r.deferred : {};
+      if (cleanString(deferred.reason)) details.push({ key: 'deferredReason', value: cleanString(deferred.reason) });
     }
     if (cleanString(r.previousStatus)) details.push({ key: 'previousStatus', value: cleanString(r.previousStatus) });
     if (cleanString(r.error)) details.push({ key: 'error', value: cleanString(r.error) });
@@ -218,6 +258,32 @@
         }).filter(function (o) { return !!o.requestId; });
       })
       .catch(function () { return []; });
+  }
+
+  /* ---- Phase 5: explicit operator request-inbox intake --------------------
+   * The producer (Chrome MV3) delivers h2o.savedChatArchiveRequest.v1 files
+   * into the request inbox, but nothing in the product ever asked the inbox to
+   * read them, so a delivered request could never become a validated queue row.
+   * This is that missing operator trigger and NOTHING else: every rule about
+   * what a request file is, whether it is admissible, how it dedupes and how it
+   * is enqueued already lives in the inbox module, and is reused verbatim here.
+   * No parsing, no validation, no dedupe key, no enqueue is reimplemented. */
+  async function scanRequestInbox(options) {
+    /* This module's own idiom: it defines cleanString/escapeHtml and no
+     * safeObject. The earlier call to safeObject() was carried over from the
+     * sibling ingestion modules and threw a ReferenceError on every click,
+     * before the governed scanner was ever reached. */
+    var opts = (options && typeof options === 'object') ? options : {};
+    var ingestion = (global.H2O && global.H2O.Studio && global.H2O.Studio.ingestion) || {};
+    var scan = ingestion.scanSavedChatArchiveRequestInboxV1;
+    if (typeof scan !== 'function') {
+      return { ok: false, status: 'inbox-unavailable', unavailable: true, scanned: 0, processed: 0 };
+    }
+    var limit = Number(opts.limit);
+    if (!isFinite(limit) || limit < 1) limit = DEFAULT_INTAKE_LIMIT;
+    if (limit > MAX_INTAKE_LIMIT) limit = MAX_INTAKE_LIMIT;
+    /* Bounded and explicit. The inbox owns every admission decision from here. */
+    return scan({ limit: Math.floor(limit) });
   }
 
   /* ---- G.2: bounded "Materialize validated" batch ------------------------- */
@@ -315,6 +381,7 @@
     var listValidated = (typeof opts.listValidatedRequests === 'function') ? opts.listValidatedRequests : loadValidatedRequests;
     var desktop = (typeof opts.isDesktop === 'boolean') ? opts.isDesktop : isDesktopCapable();
     var batchMaterialize = (typeof opts.materializeBatch === 'function') ? opts.materializeBatch : materializeValidatedBatch;
+    var runIntake = (typeof opts.scanInbox === 'function') ? opts.scanInbox : scanRequestInbox;
 
     var card = {
       desktop: desktop,
@@ -326,6 +393,8 @@
       lastResult: null,
       batchBusy: false,
       batchLimit: DEFAULT_BATCH_LIMIT,
+      intakeBusy: false,
+      lastIntake: null,
       lastBatch: null,
     };
 
@@ -412,6 +481,55 @@
         + '</div>';
     }
 
+    /* Presents the inbox scan result using the inbox's OWN counters and status
+     * vocabulary (scanned/processed/validated/duplicates/rejected/
+     * needsDesktopSnapshot/dbUnavailable, completed / nothing-to-process) rather
+     * than inventing a second state model over the same facts. */
+    function intakeResultHtml() {
+      if (!card.lastIntake) return '';
+      var r = card.lastIntake;
+      if (r.unavailable) {
+        return '<div data-archive-materializer-intake-result="1" data-archive-materializer-intake-status="inbox-unavailable" style="margin-top:10px;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+          + '<div style="font-size:12px">' + escapeHtml(TEXT.intakeUnavailable) + '</div></div>';
+      }
+      var status = cleanString(r.status) || 'unknown';
+      var num = function (v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; };
+      var rows = [
+        ['scanned', num(r.scanned)],
+        ['processed', num(r.processed)],
+        ['validated', num(r.validated)],
+        ['duplicates', num(r.duplicates)],
+        ['rejected', num(r.rejected)],
+        ['needsDesktopSnapshot', num(r.needsDesktopSnapshot)],
+        ['dbUnavailable', num(r.dbUnavailable)],
+      ];
+      var body = '';
+      for (var i = 0; i < rows.length; i += 1) {
+        body += '<div style="display:flex;justify-content:space-between;gap:10px;font-size:12px">'
+          + '<span style="opacity:.65">' + escapeHtml(rows[i][0]) + '</span>'
+          + '<span style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace">' + escapeHtml(rows[i][1]) + '</span></div>';
+      }
+      var blockers = Array.isArray(r.blockers) ? r.blockers.length : 0;
+      var warnings = Array.isArray(r.warnings) ? r.warnings.length : 0;
+      if (blockers) body += '<div style="font-size:12px;margin-top:4px">blockers: ' + escapeHtml(blockers) + '</div>';
+      if (warnings) body += '<div style="font-size:12px;opacity:.75">warnings: ' + escapeHtml(warnings) + '</div>';
+      /* A scan that THREW never read the inbox, so it must never be presented
+       * as "nothing to process" — that reads as an authoritative empty inbox
+       * and hides the real fault. Only a scanner that returned normally can
+       * report emptiness. */
+      var threwError = cleanString(r.error);
+      if (threwError) {
+        body += '<div style="font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeFailed) + '</div>'
+          + '<div style="font-size:12px;opacity:.8;margin-top:2px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;word-break:break-word">' + escapeHtml(threwError) + '</div>';
+      } else if (num(r.processed) === 0) {
+        body += '<div style="opacity:.6;font-size:12px;margin-top:4px">' + escapeHtml(TEXT.intakeEmpty) + '</div>';
+      }
+      return '<div data-archive-materializer-intake-result="1" data-archive-materializer-intake-status="' + escapeHtml(status) + '" style="margin-top:10px;border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:10px;background:rgba(255,255,255,.025)">'
+        + '<div style="font-weight:600;font-size:12px;margin-bottom:6px">' + escapeHtml(status) + '</div>'
+        + body
+        + '</div>';
+    }
+
     function render() {
       var disabledAction = (!card.desktop || card.busy) ? ' disabled' : '';
       var disabledLoad = (!card.desktop || card.listBusy || card.busy) ? ' disabled' : '';
@@ -420,6 +538,9 @@
         + ((!card.desktop || card.busy) ? 'opacity:.5;cursor:default;' : '');
       var loadStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
         + ((!card.desktop || card.listBusy || card.busy) ? 'opacity:.5;cursor:default;' : '');
+      var disabledIntake = (!card.desktop || card.intakeBusy || card.busy || card.batchBusy) ? ' disabled' : '';
+      var intakeStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;'
+        + ((!card.desktop || card.intakeBusy || card.busy || card.batchBusy) ? 'opacity:.5;cursor:default;' : '');
       var batchStyle = 'padding:8px 14px;border-radius:6px;cursor:pointer;background:rgba(46,160,67,.16);border:1px solid rgba(46,160,67,.4);color:inherit;font:inherit;'
         + ((!card.desktop || card.busy || card.batchBusy) ? 'opacity:.5;cursor:default;' : '');
       var bodyHtml;
@@ -434,6 +555,11 @@
           + '<button type="button" data-archive-materializer-run="1" style="' + actionStyle + '"' + disabledAction + '>' + escapeHtml(card.busy ? TEXT.busy : TEXT.materializeButton) + '</button>'
           + '<button type="button" data-archive-materializer-load="1" style="' + loadStyle + '"' + disabledLoad + '>' + escapeHtml(TEXT.loadButton) + '</button>'
           + '</div>'
+          + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">'
+          + '<button type="button" data-archive-materializer-intake-run="1" style="' + intakeStyle + '"' + disabledIntake + '>' + escapeHtml(card.intakeBusy ? TEXT.intakeBusy : TEXT.intakeButton) + '</button>'
+          + '</div>'
+          + '<div style="opacity:.55;font-size:11px;margin-top:4px">' + escapeHtml(TEXT.intakeHint) + '</div>'
+          + intakeResultHtml()
           + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.08)">'
           + '<label style="font-size:12px;opacity:.7">' + escapeHtml(TEXT.batchLimitLabel) + '</label>'
           + '<input type="number" min="1" max="' + MAX_BATCH_LIMIT + '" value="' + escapeHtml(card.batchLimit) + '" data-archive-materializer-batch-limit="1" style="width:64px;padding:7px;border-radius:6px;background:rgba(0,0,0,.18);border:1px solid rgba(255,255,255,.14);color:inherit;font:inherit" />'
@@ -459,6 +585,8 @@
       if (select) select.addEventListener('change', onSelectChange);
       var batchBtn = container.querySelector('[data-archive-materializer-batch-run="1"]');
       if (batchBtn && card.desktop && !card.batchBusy && !card.busy) batchBtn.addEventListener('click', doMaterializeBatch, { once: true });
+      var intakeBtn = container.querySelector('[data-archive-materializer-intake-run="1"]');
+      if (intakeBtn && card.desktop && !card.intakeBusy && !card.busy && !card.batchBusy) intakeBtn.addEventListener('click', doScanInbox, { once: true });
     }
 
     function doMaterialize() {
@@ -477,6 +605,24 @@
         var out = localResult('failed', card.requestId);
         out.error = String((err && err.message) || err || 'materializer threw');
         card.lastResult = out;
+        render();
+      });
+    }
+
+    /* Explicit operator intake. It admits requests and STOPS: materializing
+     * remains the separate "Materialize validated" action, per G.0. */
+    function doScanInbox() {
+      if (card.intakeBusy || card.busy || card.batchBusy || !card.desktop) return;
+      card.intakeBusy = true;
+      card.lastIntake = null;
+      render();
+      Promise.resolve(runIntake({ limit: DEFAULT_INTAKE_LIMIT })).then(function (res) {
+        card.intakeBusy = false;
+        card.lastIntake = (res && typeof res === 'object') ? res : { ok: false, status: 'failed', scanned: 0, processed: 0 };
+        render();
+      }, function (err) {
+        card.intakeBusy = false;
+        card.lastIntake = { ok: false, status: 'failed', scanned: 0, processed: 0, error: String((err && err.message) || err || 'inbox scan threw') };
         render();
       });
     }
@@ -571,6 +717,7 @@
     materializeRequest: materializeRequest,
     loadValidatedRequests: loadValidatedRequests,
     materializeValidatedBatch: materializeValidatedBatch,
+    scanRequestInbox: scanRequestInbox,
     formatMaterializeResult: formatMaterializeResult,
     renderArchiveMaterializerActionCard: renderArchiveMaterializerActionCard,
     mountArchiveMaterializerActionCard: mountArchiveMaterializerActionCard,

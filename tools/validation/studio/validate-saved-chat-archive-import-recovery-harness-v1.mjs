@@ -394,6 +394,20 @@ async function runHarness() {
       generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
     }
 
+    /* M05 Phase 4 (proofs 11–13): two packages for the SAME chat with different
+     * content, one of them wearing a generation-style basename that sorts last.
+     * Every explicit-selection flow must bind to the path it was handed. A flow
+     * that quietly enumerated siblings and preferred the "latest" one would
+     * restore or relink content the operator never selected. */
+    const SIB_CHAT = 'p4-sibling-selection-chat';
+    const siblingPackages = {
+      a: { dir: SIB_CHAT + '.h2ochat', snap: 'snap_p4_sibling_a' },
+      b: { dir: SIB_CHAT + '.g' + 'b'.repeat(64) + '.h2ochat', snap: 'snap_p4_sibling_b' },
+    };
+    for (const info of Object.values(siblingPackages)) {
+      generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.dir), SIB_CHAT, info.snap);
+    }
+
     // wire globals + load real modules
     const mockInvoke = (cmd, a) => {
       const j = (p) => path.join(appDir, String(p || ''));
@@ -807,6 +821,22 @@ async function runHarness() {
     const relinkOldSnapshotStillExists = !!db.prepare('SELECT id FROM snapshots WHERE id=?').get(RELINK_OLD_SNAP);
     const relinkOldTurnCount = countTurnsFor(RELINK_OLD_SNAP);
 
+    /* Proofs 11–13: same chat, two packages, explicit path each time. */
+    const sibRel = (info) => 'archive/packages/' + info.dir;
+    const wSib = writes.length;
+    const sibling = {};
+    for (const key of ['a', 'b']) {
+      const info = siblingPackages[key];
+      sibling[key] = {
+        dir: info.dir,
+        expectedSnap: info.snap,
+        importDry: await importer.dryRunImportPackage({ packagePath: sibRel(info) }),
+        restoreDry: await restore.dryRunRestorePackage({ packagePath: sibRel(info) }),
+        relinkDry: await relink.dryRunRelinkPackage({ packagePath: sibRel(info), targetChatId: RELINK_TARGET }),
+      };
+    }
+    const siblingWrites = writes.length - wSib;
+
     const readyFilesAfter = dirSig(readyDir);
     const srcChatSigAfter = rowSig('chats', SRC_CHAT), srcSnapSigAfter = rowSig('snapshots', SRC_SNAP);
     const liveAfter = fs.existsSync(LIVE_DB) ? fs.statSync(LIVE_DB) : null;
@@ -816,6 +846,7 @@ async function runHarness() {
 
     return {
       ok: true,
+      sibling: Object.assign({ chat: SIB_CHAT, writes: siblingWrites }, sibling),
       pkg: { readyChat: RDY_CHAT, readySnap: RDY_SNAP, srcChat: SRC_CHAT, srcSnap: SRC_SNAP, srcMsgs: SRC_MSGS },
       inspect: { status: insp.status, ok: insp.ok, contentHashOk: insp.checks && insp.checks.contentHashOk, blockers: insp.blockers },
       v3Relink: {
@@ -1481,6 +1512,64 @@ check('[K.4.3] K.4.3 relink evidence exists and records PASSED harness proof', (
   assert.match(k43, /snapshot-belongs-to-other-chat/i);
   assert.match(k43, /old snapshot/i);
   assert.match(k43, /live Desktop DB/i);
+});
+
+/* ── M05 Phase 4 — explicit generation selection (proofs 11, 12, 13) ─────── */
+check('[P4.11] Import binds to the exact selected source generation, not a sibling', () => {
+  const s = H.sibling;
+  for (const key of ['a', 'b']) {
+    const got = s[key].importDry;
+    const id = (got && got.identity) || {};
+    assert.equal(id.snapshotId, s[key].expectedSnap,
+      `import of ${s[key].dir} resolved identity from a sibling package`);
+  }
+  // The two siblings must not be conflated: distinct source identity each time.
+  assert.notEqual(s.a.importDry.identity.snapshotId, s.b.importDry.identity.snapshotId);
+  assert.notEqual(s.a.importDry.identity.contentHash, s.b.importDry.identity.contentHash,
+    'both siblings reported the same contentHash — identity is not per-package');
+});
+
+check('[P4.12] Restore uses the exact explicit path and never auto-selects a sibling', () => {
+  const s = H.sibling;
+  for (const key of ['a', 'b']) {
+    const got = s[key].restoreDry;
+    assert.equal(got.packageDirName, s[key].dir, `restore retargeted ${s[key].dir}`);
+    assert.equal(got.identity.snapshotId, s[key].expectedSnap,
+      `restore of ${s[key].dir} resolved a sibling's snapshot`);
+  }
+  assert.notEqual(s.a.restoreDry.identity.snapshotId, s.b.restoreDry.identity.snapshotId);
+});
+
+check('[P4.13] Relink uses the exact explicit path and never auto-selects a sibling', () => {
+  const s = H.sibling;
+  for (const key of ['a', 'b']) {
+    const got = s[key].relinkDry;
+    assert.equal(got.packageDirName, s[key].dir, `relink retargeted ${s[key].dir}`);
+    assert.equal(got.identity.originalSnapshotId, s[key].expectedSnap,
+      `relink of ${s[key].dir} resolved a sibling's snapshot`);
+  }
+  assert.notEqual(s.a.relinkDry.identity.originalSnapshotId, s.b.relinkDry.identity.originalSnapshotId);
+});
+
+check('[P4.11-13] sibling dry-runs stayed non-mutating', () => {
+  assert.equal(H.sibling.writes, 0, 'a dry-run wrote to the store');
+});
+
+check('[P4.12-13] explicit-selection flows cannot enumerate sibling packages', () => {
+  /* The behavioural proofs above show these flows bind to the path handed in.
+   * This closes the door structurally: a flow that cannot list the packages
+   * directory cannot grow a "pick the latest sibling" rule later. */
+  for (const rel of [
+    IMPORTER_REL,
+    'src-surfaces-base/studio/ingestion/saved-chat-archive-restore.studio.js',
+    'src-surfaces-base/studio/ingestion/saved-chat-archive-relink.studio.js',
+  ]) {
+    const code = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+    for (const token of ['readDir', 'read_dir', 'readdir']) {
+      assert.ok(!code.includes(token), rel + ' enumerates the packages directory: ' + token);
+    }
+  }
 });
 
 console.log('');
