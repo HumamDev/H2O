@@ -181,6 +181,7 @@
     offCompleteTurnIndexState: null,
     offMountTransitions: null,
     offStaleWatchdog: null,
+    completeIndexAnchorsBootstrapped: false,
 
     lastActiveTurnId: '',
     lastActiveBtnId: '',
@@ -1681,8 +1682,15 @@
     }
   }
 
-  function MINI_completeIndexDescriptor(request = {}) {
-    const records = MINI_completeIndexRecords();
+  /* `records` may be supplied by a caller that already owns the complete
+     logical set for this pass. Deriving it here once per descriptor turned a
+     single bind pass into one complete-index/status derivation per logical
+     record — the O(N) amplification behind the measured storm. The default
+     stays identical for every single-descriptor caller. */
+  function MINI_completeIndexDescriptor(request = {}, providedRecords = null) {
+    const records = Array.isArray(providedRecords) && providedRecords.length
+      ? providedRecords
+      : MINI_completeIndexRecords();
     if (!records.length) return null;
     const turn = request?.turn || null;
     const normalizeQId = (value) => String(value || '').replace(/^conversation-turn-/, '').replace(/^turn:/, '').trim();
@@ -1825,10 +1833,77 @@
         qId: record?.qId,
         turnId: record?.turnId,
         turn: record,
-      });
+      }, records);
       if (descriptor) MINI_resolveCompleteIndexMounted(descriptor, record?.noAnswer ? 'question' : 'answer');
     }
     return completeIndexMountedAnchors.size;
+  }
+
+  /* Anchor maintenance driven by MountRegistry deltas.
+     A full rebind walks every logical record and probes the document for each
+     one that is not mounted; running it on every user-scroll rAF is the O(N)
+     amplification this replaces. A mount transition already names exactly
+     which identities changed, so only those turns are re-resolved, and the
+     work is bounded by the transition batch instead of the logical set.
+     Every transition kind resolves the same way on purpose:
+     MINI_resolveCompleteIndexMounted rebinds the turn to whatever element is
+     currently mounted for it and deletes the binding when nothing is, so
+     mounted/replaced establish or update it, unmounted drops it (including a
+     disconnected element that would otherwise survive), and a route reset
+     clears every incompatible binding before the batch is applied. */
+  function MINI_applyMountTransitions(payload) {
+    if (!MINI_completeIndexNavigationEnabled()) {
+      completeIndexMountedAnchors.clear();
+      return 0;
+    }
+    const transitions = Array.isArray(payload?.transitions) ? payload.transitions : [];
+    if (!transitions.length) return 0;
+    if (transitions.some((entry) => entry?.type === 'route-reset')) {
+      completeIndexMountedAnchors.clear();
+    }
+    const records = MINI_completeIndexRecords();
+    if (!records.length) return 0;
+    const recordById = new Map();
+    for (const record of records) {
+      const ids = [
+        record?.qId,
+        record?.primaryAId,
+        ...(Array.isArray(record?.answerVariants) ? record.answerVariants : []),
+        ...(Array.isArray(record?.answerIds) ? record.answerIds : []),
+      ];
+      for (const raw of ids) {
+        const id = normalizeNavId(raw);
+        if (id && !recordById.has(id)) recordById.set(id, record);
+      }
+    }
+    const touched = new Set();
+    for (const entry of transitions) {
+      const record = recordById.get(normalizeNavId(entry?.id));
+      const qId = String(record?.qId || '').trim();
+      if (!qId || touched.has(qId)) continue;
+      touched.add(qId);
+      const descriptor = MINI_completeIndexDescriptor({
+        qId: record.qId,
+        turnId: record.turnId,
+        turn: record,
+      }, records);
+      if (descriptor) MINI_resolveCompleteIndexMounted(descriptor, record?.noAnswer ? 'question' : 'answer');
+    }
+    return touched.size;
+  }
+
+  /* Does this frame still owe a full anchor bootstrap?
+     Without a MountRegistry there are no mount deltas to consume, so every
+     frame must reconcile exactly as before. With one, a single pass per index
+     generation establishes the bindings and MINI_applyMountTransitions keeps
+     them current, so the answer is yes once and then no — which is what takes
+     the O(N) rebind out of the steady-state scroll path. Lifecycle events
+     (route change, complete-index state) clear the flag to re-arm it. */
+  function MINI_claimCompleteIndexAnchorBootstrap() {
+    if (!MINI_mountRegistry()) return true;
+    if (S.completeIndexAnchorsBootstrapped) return false;
+    S.completeIndexAnchorsBootstrapped = true;
+    return true;
   }
 
   function MINI_completeIndexScrollRoot() {
@@ -3969,11 +4044,15 @@
     if (!S.running) return;
     // Anchor binding rebuilds the complete-index projection status once per
     // record and probes the document for every unmounted one, so it is far too
-    // expensive to repeat on each frame of our own programmatic navigation —
-    // and pointless there, because the coordinator resolves its target itself.
-    // User scrolling still reconciles exactly as before, and the first settled
-    // frame after navigation releases mmProgram and rebinds.
-    if (!S.mmProgram) { try { MINI_bindCompleteIndexMountedAnchors(); } catch {} }
+    // expensive to repeat on any frame — during our own programmatic
+    // navigation it is also pointless, because the coordinator resolves its
+    // target itself. With the MountRegistry present the steady state is
+    // maintained from mount transitions (MINI_applyMountTransitions), so this
+    // frame path only needs to establish the initial binding once per index
+    // generation; lifecycle events below re-arm that bootstrap. Without a
+    // registry there are no deltas to consume, so the legacy per-frame
+    // reconciliation is preserved exactly as the fallback.
+    if (!S.mmProgram) { if (MINI_claimCompleteIndexAnchorBootstrap()) { try { MINI_bindCompleteIndexMountedAnchors(); } catch {} } }
     if (S.scrollSyncDisabled) return;
     if (S.mmUser || S.mmProgram) return;
     const scanTick0 = Number(S.perfFullScanTick || 0);
@@ -5171,10 +5250,15 @@
         if (event?.detail?.enabled !== true) {
           completeIndexNavigationCoordinator.cancel('gate-disabled', 'cancelled');
           completeIndexMountedAnchors.clear();
+          S.completeIndexAnchorsBootstrapped = false;
           return;
         }
         MINI_bindActiveScrollRoot('complete-index-state:scroll-root-bind');
-        try { MINI_bindCompleteIndexMountedAnchors(); } catch {}
+        S.completeIndexAnchorsBootstrapped = false;
+        try {
+          MINI_bindCompleteIndexMountedAnchors();
+          S.completeIndexAnchorsBootstrapped = true;
+        } catch {}
         scheduleSyncActive('complete-index-state');
       }, { passive: true });
     }
@@ -5186,8 +5270,9 @@
          mmProgram/mmUser guards, so programmatic navigation stays exempt. */
       const mounts = MINI_mountRegistry();
       if (mounts && typeof mounts.onTransitions === 'function') {
-        S.offMountTransitions = mounts.onTransitions('minimap-engine', () => {
+        S.offMountTransitions = mounts.onTransitions('minimap-engine', (payload) => {
           if (!S.running) return;
+          try { MINI_applyMountTransitions(payload); } catch {}
           scheduleSyncActive('mount-transition');
         });
       }
@@ -5198,6 +5283,8 @@
       if (!S.running) return;
       completeIndexNavigationCoordinator.cancel('route-changed', 'stale-route-discarded');
       completeIndexMountedAnchors.clear();
+      // A new route needs its own bounded bootstrap before deltas maintain it.
+      S.completeIndexAnchorsBootstrapped = false;
       MINI_clearActiveScrollRoot();
       resetVisibleAnswersObserver();
       MINI_bindActiveScrollRoot(`${tag}:scroll-root-bind`);

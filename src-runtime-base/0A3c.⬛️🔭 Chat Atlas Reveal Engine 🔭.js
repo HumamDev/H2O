@@ -156,9 +156,27 @@
     const fail = (reason, candidates = 0) => Object.freeze({
       ok: false, reason, element: null, candidateCount: candidates,
     });
+    // "Every mounted turn" is exactly what the Observer Hub's MountRegistry
+    // owns, so the proof reads the mounted set directly instead of sweeping
+    // the whole document for it. This is the same claim, measured over the
+    // same turns, at a cost bounded by the mounted set — the container
+    // resolution ran on a status-read path and was sweeping the document
+    // several times per user-scroll frame. The document query remains the
+    // fallback when the registry is unavailable.
     let sections = [];
     try {
-      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null;
+      if (mounts && typeof mounts.all === 'function') {
+        const seen = new Set();
+        for (const record of mounts.all() || []) {
+          const shell = record?.shell?.isConnected === true ? record.shell : null;
+          if (!shell || seen.has(shell)) continue;
+          seen.add(shell);
+          sections.push(shell);
+        }
+      } else {
+        sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+      }
     } catch { return fail('reveal-container-query-failed'); }
     if (!sections.length) return fail('reveal-container-no-mounted-turns');
     const governing = new Map();

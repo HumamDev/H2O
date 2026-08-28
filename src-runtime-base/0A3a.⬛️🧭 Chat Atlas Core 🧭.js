@@ -8019,13 +8019,60 @@
   }
 
   // The mounted native path, read once, compared against the effective branch.
+  /* The native mounted path is, by definition, the CURRENTLY MOUNTED set —
+     which the Observer Hub's MountRegistry already owns as the single writer
+     of identity->element bindings. Reading it there replaces a whole-document
+     `[data-testid^="conversation-turn-"]` sweep with an iteration bounded by
+     the mounted set (measured: ~4-30 mounted against 37 logical), which is the
+     accepted performance invariant. Returns null — never an empty array — when
+     the registry is unavailable, so callers keep their legitimate document
+     fallback rather than silently reading an empty path. */
+  function chatAtlasMountedTurnSections() {
+    let mounts = null;
+    try { mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null; } catch { mounts = null; }
+    if (!mounts || typeof mounts.all !== 'function') return null;
+    let records = [];
+    try { records = mounts.all() || []; } catch { return null; }
+    const seen = new Set();
+    const sections = [];
+    for (const record of records) {
+      const shell = record?.shell?.isConnected === true ? record.shell : null;
+      if (!shell || seen.has(shell)) continue;
+      seen.add(shell);
+      sections.push(shell);
+    }
+    // Registry order is binding order; the path readers below depend on
+    // DOCUMENT order to carry an open question forward to its answer.
+    // 4 === Node.DOCUMENT_POSITION_FOLLOWING, spelled numerically so the
+    // comparison holds in sandboxes without the Node global.
+    sections.sort((a, b) => ((a.compareDocumentPosition(b) & 4) ? -1 : 1));
+    return sections;
+  }
+
+  function chatAtlasNativePathSections() {
+    const mounted = chatAtlasMountedTurnSections();
+    if (mounted) return mounted;
+    try {
+      return Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
+    } catch { return []; }
+  }
+
+  // One lookup built per derivation replaces a linear turns.find() inside the
+  // mounted loop.
+  function chatAtlasTurnsByQId(turns) {
+    const byQId = new Map();
+    for (const turn of Array.isArray(turns) ? turns : []) {
+      const qId = chatAtlasCompleteIndexIdentity(turn?.qId);
+      if (qId && !byQId.has(qId)) byQId.set(qId, turn);
+    }
+    return byQId;
+  }
+
   function chatAtlasMapMountedNativePath() {
     const index = getEffectivePresentationIndex();
     const turns = Array.isArray(index?.turns) ? index.turns : [];
-    let sections = [];
-    try {
-      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
-    } catch { sections = []; }
+    const sections = chatAtlasNativePathSections();
+    const turnsByQId = chatAtlasTurnsByQId(turns);
     // A turn's question and answer may share one container or occupy two
     // consecutive ones. Carry the open row forward so the answer is read — and
     // its pager located — under either host topology.
@@ -8040,7 +8087,7 @@
       const mountedAId = chatAtlasCompleteIndexIdentity(aEl?.getAttribute?.('data-message-id')) || '';
       const pagers = chatAtlasNativeVariantPagers(section);
       if (mountedQId) {
-        const turn = turns.find((entry) => chatAtlasCompleteIndexIdentity(entry?.qId) === mountedQId) || null;
+        const turn = turnsByQId.get(mountedQId) || null;
         open = {
           section,
           answerSection: section,
@@ -8091,7 +8138,46 @@
   // effective path holds exactly one selected root-to-leaf route, and Ledger and
   // MiniMap hold exactly that route — never the alternatives. The nested branch
   // choices live in the separate selection plan, not in any linear surface.
+  /* getCompleteTurnIndexProjectionStatus() is read as a cheap status by many
+     consumers, but it spread these diagnostics in unconditionally, so every
+     read paid for two native-path derivations and a per-section pager scan
+     (measured on this branch: 18.2 status reads, 55.9 whole-document sweeps
+     and 160.8 subtree scans per user-scroll frame at 37 logical / 4 mounted).
+     The diagnostics themselves are a pure function of state that changes on
+     lifecycle boundaries, not on reads: the mounted set (registry revision),
+     the route/authority generation, the effective path identity, and the
+     acquisition graph capture. Keying the derivation on exactly those makes a
+     status read free between boundaries while never serving DOM state that
+     has since moved. Without a MountRegistry the key cannot see mount churn,
+     so that path deliberately bypasses the cache and behaves as before. */
+  const chatAtlasNativeDiagnosticsCache = { key: '', value: null };
+
+  function chatAtlasNativeDiagnosticsCacheKey() {
+    let mounts = null;
+    try { mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts || null; } catch { mounts = null; }
+    if (!mounts || typeof mounts.rev !== 'function') return '';
+    let rev = -1;
+    let size = -1;
+    try { rev = Number(mounts.rev() || 0); size = Number(mounts.size() || 0); } catch { return ''; }
+    const index = getEffectivePresentationIndex();
+    return [
+      rev,
+      size,
+      String(completeTurnIndexAuthorityState.chatId || ''),
+      String(completeTurnIndexAuthorityState.routeKey || ''),
+      Number(completeTurnIndexAuthorityState.generation || 0),
+      String(index?.sourceFingerprint || ''),
+      Array.isArray(index?.turns) ? index.turns.length : 0,
+      String(selectedPathAcquisitionState.graph?.captureIdentity || ''),
+      String(completeTurnIndexAuthorityState.nativeConvergenceState?.phase || ''),
+    ].join('|');
+  }
+
   function chatAtlasNativeBranchPlanDiagnostics() {
+    const cacheKey = chatAtlasNativeDiagnosticsCacheKey();
+    if (cacheKey && chatAtlasNativeDiagnosticsCache.key === cacheKey && chatAtlasNativeDiagnosticsCache.value) {
+      return chatAtlasNativeDiagnosticsCache.value;
+    }
     const out = {
       graphNodeCount: 0,
       effectivePathTurnCount: 0,
@@ -8146,6 +8232,10 @@
       out.nativeBranchPlanRegenerationPointCount = plan.points
         .filter((p) => p.kind === 'assistant-regeneration').length;
     } catch {}
+    if (cacheKey) {
+      chatAtlasNativeDiagnosticsCache.key = cacheKey;
+      chatAtlasNativeDiagnosticsCache.value = out;
+    }
     return out;
   }
 
@@ -8162,10 +8252,8 @@
       ? targetTurns
       : (Array.isArray(index?.turns) ? index.turns : []);
     if (!turns.length) return null;
-    let sections = [];
-    try {
-      sections = Array.from(D.querySelectorAll('[data-testid^="conversation-turn-"]'));
-    } catch { return null; }
+    const sections = chatAtlasNativePathSections();
+    const turnsByQId = chatAtlasTurnsByQId(turns);
     let lastOnBranchOrder = 0;
     // The turn whose answer has not been read yet. It stays open across one
     // container boundary so a host that splits question and answer into
@@ -8179,7 +8267,7 @@
       const mountedQId = chatAtlasCompleteIndexIdentity(qEl?.getAttribute?.('data-message-id'));
       const mountedAId = chatAtlasCompleteIndexIdentity(aEl?.getAttribute?.('data-message-id')) || '';
       if (mountedQId) {
-        const onBranch = turns.find((turn) => chatAtlasCompleteIndexIdentity(turn?.qId) === mountedQId);
+        const onBranch = turnsByQId.get(mountedQId) || null;
         if (!onBranch) {
           // Disagreement: the branch turn this position should carry is the
           // one after the nearest preceding mounted question that IS on it.
