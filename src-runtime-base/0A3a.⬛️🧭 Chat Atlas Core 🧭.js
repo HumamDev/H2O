@@ -10033,7 +10033,12 @@
       compiledDefault: COMPLETE_TURN_INDEX_COMPILED_DEFAULT,
       persistedOptInSupported: true,
       activationSource: completeTurnIndexAuthorityState.activationSource,
-      status: completeTurnIndexAuthorityState.status,
+      // With the gate off there is no projection to be idle about; reporting
+      // the retained internal status made a disabled runtime look merely
+      // quiet. Enabled runtimes still report their real status verbatim.
+      status: completeTurnIndexAuthorityState.enabled
+        ? completeTurnIndexAuthorityState.status
+        : 'disabled',
       authoritative: chatAtlasCompleteIndexAuthorityActive(),
       chatId: completeTurnIndexAuthorityState.chatId,
       routeGeneration: completeTurnIndexAuthorityState.generation,
@@ -10944,10 +10949,16 @@
       completeTurnIndexAuthorityState.preferenceResolution = 'stored-disabled';
       return { enabled: false, resolution: 'stored-disabled' };
     }
+    // Diagnostic accuracy: both branches below resolve to the COMPILED
+    // DEFAULT, which has been enabled since the logical authority became the
+    // default. Labelling them '...-disabled' described the opposite of what
+    // was returned, so a reader saw `enabled: true` beside a resolution that
+    // claimed the feature was off. The label now names the resolved outcome;
+    // the resolution itself is unchanged.
     completeTurnIndexAuthorityState.preferenceStoredValue = raw == null ? null : 'invalid';
     completeTurnIndexAuthorityState.preferenceResolution = raw == null
-      ? 'compiled-default-disabled'
-      : 'malformed-disabled';
+      ? (COMPLETE_TURN_INDEX_COMPILED_DEFAULT ? 'compiled-default-enabled' : 'compiled-default-disabled')
+      : (COMPLETE_TURN_INDEX_COMPILED_DEFAULT ? 'malformed-compiled-default-enabled' : 'malformed-disabled');
     return { enabled: COMPLETE_TURN_INDEX_COMPILED_DEFAULT, resolution: completeTurnIndexAuthorityState.preferenceResolution };
   }
 
@@ -10955,11 +10966,17 @@
     const resolved = chatAtlasResolveCompleteIndexProjectionPreference();
     completeTurnIndexAuthorityState.bootApplyCount += 1;
     if (resolved.enabled) completeTurnIndexAuthorityState.bootActivationCount += 1;
+    // A compiled-default activation is not a persisted-preference boot. The
+    // source now distinguishes stored enable / stored disable / compiled
+    // default enable / compiled default disable, so activation provenance can
+    // be read without inferring it from the enabled flag.
+    const storedPreference = resolved.resolution === 'stored-enabled'
+      || resolved.resolution === 'stored-disabled';
     return chatAtlasApplyCompleteIndexProjectionEnabled(
       resolved.enabled === true,
-      resolved.enabled
-        ? 'persisted-preference-boot'
-        : (resolved.resolution === 'stored-disabled' ? 'persisted-preference-boot-disabled' : 'compiled-default-boot'),
+      storedPreference
+        ? (resolved.enabled ? 'persisted-preference-boot' : 'persisted-preference-boot-disabled')
+        : (resolved.enabled ? 'compiled-default-boot' : 'compiled-default-boot-disabled'),
     );
   }
 
