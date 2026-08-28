@@ -413,6 +413,9 @@ fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
     if crate::archive_durable_write::RESERVED_COMPONENT_PREFIXES
         .iter()
         .any(|prefix| lowered.starts_with(&prefix.to_ascii_lowercase()))
+        || crate::archive_durable_write::RESERVED_EXACT_COMPONENTS
+            .iter()
+            .any(|exact| lowered == exact.to_ascii_lowercase())
     {
         return Err("generation-chat-id-reserved-namespace");
     }

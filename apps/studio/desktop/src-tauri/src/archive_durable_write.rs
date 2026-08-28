@@ -99,6 +99,45 @@ pub(crate) const GENERATION_STAGING_PREFIX: &str = ".h2o-genstage-";
 /// reserving a name and minting one are different jobs, and §R requires the
 /// reservation to be a shared list rather than a side effect of the generator.
 pub(crate) const RESERVED_COMPONENT_PREFIXES: &[&str] = &[TEMP_PREFIX, GENERATION_STAGING_PREFIX];
+
+/// M06 T1.2: the instance-presence lock component. REFERENCED from T1.1 rather
+/// than restated, so the reservation can never drift from the file the lock
+/// authority actually creates.
+pub(crate) const ARCHIVE_LOCK_COMPONENT: &str = crate::archive_instance_lock::ARCHIVE_LOCK_NAME;
+
+/// M06 T1.2: the quarantine namespace of reclamation contract §J, reserved NOW
+/// so no caller-controlled path can occupy or collide with the identity before
+/// P3 implements quarantine. T1.2 reserves the IDENTITY ONLY — nothing here
+/// renames, quarantines, purges or deletes anything.
+pub(crate) const RECLAIM_NAMESPACE_COMPONENT: &str = ".h2o-reclaim";
+
+/// Reserved EXACT path components, deliberately separate from the prefix list.
+///
+/// These are single identities, not families. Putting them in
+/// `RESERVED_COMPONENT_PREFIXES` would reserve every name that merely BEGINS
+/// the same way -- `.h2o-archive.lock.bak`, `.h2o-reclaimed-notes` -- which
+/// reserves more of the namespace than the architecture requires. The staging
+/// prefixes are genuinely prefix-shaped because they mint `<prefix><unique>`
+/// names; these two do not.
+///
+/// Reserving the exact component `.h2o-reclaim` also covers everything beneath
+/// it: admission validates EVERY component, so `.h2o-reclaim/run-1/x` is
+/// refused on its first component. No separate subtree rule is needed.
+pub(crate) const RESERVED_EXACT_COMPONENTS: &[&str] =
+    &[ARCHIVE_LOCK_COMPONENT, RECLAIM_NAMESPACE_COMPONENT];
+
+/// The single canonical reservation predicate. One authority consumed by every
+/// trusted module, rather than a second parallel reserved-name implementation.
+///
+/// Case-sensitive, matching the existing durable-write admission semantics
+/// exactly; the publisher applies its own ASCII-case-insensitive belt-and-
+/// braces on top, as it already did for the prefix list.
+pub(crate) fn is_reserved_component(text: &str) -> bool {
+    RESERVED_COMPONENT_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+        || RESERVED_EXACT_COMPONENTS.iter().any(|exact| *exact == text)
+}
 const TEMP_SUFFIX: &str = ".tmp";
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -289,13 +328,11 @@ fn validated_components(relative: &str) -> Result<Vec<Vec<u8>>, &'static str> {
         match component {
             Component::Normal(part) => {
                 let text = part.to_str().ok_or("durable-write-path-invalid")?;
-                // Reject every reserved staging prefix so a caller can never
-                // target another operation's private artifact — this
-                // operation's temp, or the M05 generation publisher's staging.
-                if RESERVED_COMPONENT_PREFIXES
-                    .iter()
-                    .any(|prefix| text.starts_with(prefix))
-                {
+                // Reject every reserved component so a caller can never target
+                // another operation's private artifact — this operation's temp,
+                // the M05 generation publisher's staging, or (M06 T1.2) the
+                // instance-presence lock and the reserved quarantine namespace.
+                if is_reserved_component(text) {
                     return Err("durable-write-path-reserved");
                 }
                 out.push(text.as_bytes().to_vec());
@@ -1485,6 +1522,75 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    /// The reservation must be EXACT for the two M06 identities and PREFIX for
+    /// the staging families -- and each must stay in its own shape. A prefix
+    /// reservation for `.h2o-archive.lock` would silently seize unrelated
+    /// neighbouring names; an exact reservation for `.h2o-durable-` would let
+    /// every minted staging name through.
+    #[test]
+    fn m06_identities_reserve_exact_components_not_prefix_families() {
+        // Exact identities are reserved.
+        assert!(is_reserved_component(".h2o-archive.lock"));
+        assert!(is_reserved_component(".h2o-reclaim"));
+
+        // ...and do NOT over-reserve names that merely begin the same way.
+        for neighbour in [
+            ".h2o-archive.lock.bak",
+            ".h2o-archive.locked",
+            ".h2o-reclaimed",
+            ".h2o-reclaim-notes",
+        ] {
+            assert!(
+                !is_reserved_component(neighbour),
+                "{neighbour} must NOT be reserved: exact-component authority, \
+                 not a prefix family"
+            );
+        }
+
+        // The staging families stay prefix-shaped, because they mint
+        // `<prefix><unique>` names.
+        assert!(is_reserved_component(".h2o-durable-1-0.tmp"));
+        assert!(is_reserved_component(".h2o-genstage-0011"));
+
+        // Ordinary archive content is untouched by the reservation.
+        for ordinary in ["packages", "assets", "chat.g0.h2ochat", "sha256-ab"] {
+            assert!(!is_reserved_component(ordinary), "{ordinary}");
+        }
+    }
+
+    /// The reserved lock component must never drift from the file T1.1 creates.
+    #[test]
+    fn the_reserved_lock_component_is_the_one_t11_actually_creates() {
+        assert_eq!(
+            ARCHIVE_LOCK_COMPONENT,
+            crate::archive_instance_lock::ARCHIVE_LOCK_NAME,
+            "reservation and lock authority must share ONE literal"
+        );
+    }
+
+    /// Neither reserved identity can be classified as a CAS object: the CAS
+    /// shape is exactly `assets/<aa>/sha256-<64 lowercase hex>`.
+    #[test]
+    fn reserved_identities_can_never_be_cas_objects() {
+        for reserved in RESERVED_EXACT_COMPONENTS {
+            for shape in [
+                vec![reserved.as_bytes().to_vec()],
+                vec![CAS_DIR.as_bytes().to_vec(), reserved.as_bytes().to_vec()],
+                vec![
+                    CAS_DIR.as_bytes().to_vec(),
+                    b"ab".to_vec(),
+                    reserved.as_bytes().to_vec(),
+                ],
+            ] {
+                assert_eq!(
+                    assert_cas_blob_shape(&shape).err(),
+                    Some("durable-write-path-outside-cas"),
+                    "{reserved} must never satisfy the CAS blob shape"
+                );
+            }
+        }
+    }
+
     #[test]
     fn rejects_traversal_absolute_and_malformed_destinations() {
         let (base, root) = scratch_root("reject");
@@ -1495,6 +1601,14 @@ mod tests {
             ("./assets/x", "durable-write-path-invalid"),
             ("with\0nul", "durable-write-path-invalid"),
             (".h2o-durable-1-0.tmp", "durable-write-path-reserved"),
+            // M06 T1.2 reserved identities, and the preserved M05 staging one.
+            (".h2o-archive.lock", "durable-write-path-reserved"),
+            (".h2o-reclaim", "durable-write-path-reserved"),
+            // A reserved EXACT component also seals everything beneath it,
+            // because every component is validated independently.
+            (".h2o-reclaim/run-1/receipt.json", "durable-write-path-reserved"),
+            ("assets/.h2o-reclaim/x", "durable-write-path-reserved"),
+            (".h2o-genstage-1/snapshot.json", "durable-write-path-reserved"),
         ];
         for (relative, expected) in cases {
             let result = durable_write_within_root(&root, relative, b"x").expect("call");

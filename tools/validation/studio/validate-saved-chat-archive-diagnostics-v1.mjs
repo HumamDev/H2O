@@ -348,6 +348,12 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
     { name: 'chat_diag_bad_asset.h2ochat', isDirectory: true },
     { name: 'not_a_package', isDirectory: true },
     { name: 'loose.txt', isFile: true },
+    /* M06 T1.2: reserved infrastructure identities. They live at the archive
+       ROOT, not under packages, and read-dir is scoped to packages only -- so
+       these entries are a deliberately hostile placement, proving discovery
+       excludes them even if they somehow appear here. */
+    { name: '.h2o-archive.lock', isFile: true },
+    { name: '.h2o-reclaim', isDirectory: true },
   ];
 
   async function invoke(cmd, args) {
@@ -457,7 +463,8 @@ function loadModule(fixture) {
 const moduleSource = readRepo(MODULE_REL);
 const studioHtml = readRepo(STUDIO_HTML_REL);
 const packStudio = readRepo(PACK_STUDIO_REL);
-const capability = JSON.parse(readRepo(CAPABILITY_REL));
+const capabilityRaw = readRepo(CAPABILITY_REL);
+const capability = JSON.parse(capabilityRaw);
 
 console.log('[saved-chat-archive-diagnostics-v1] static checks');
 
@@ -650,6 +657,52 @@ check('capability grants narrow read-dir under AppLocalData archive/packages', (
   }
 });
 
+check('M06 T1.2 renderer archive mutation authority remains exactly zero', () => {
+  const granted = capability.permissions.map((entry) => entry.identifier).sort();
+  /* Every mutation-shaped fs permission must be ABSENT from the archive
+     capability. M06 adds trusted Rust authority only; it never widens the
+     renderer. */
+  for (const forbidden of [
+    'fs:allow-remove',
+    'fs:allow-rename',
+    'fs:allow-write-file',
+    'fs:allow-write-text-file',
+    'fs:allow-mkdir',
+    'fs:allow-copy-file',
+    'fs:allow-truncate',
+  ]) {
+    assert.ok(!granted.includes(forbidden), `${forbidden} must not be granted under archive/**`);
+  }
+  /* Deliberately structural, NOT a raw-text ban: the capability description
+     legitimately narrates that fs:allow-write-file and fs:allow-mkdir were
+     REMOVED at the M05 G1 cutover, and Tauri grants only what appears in
+     `permissions`. Banning the strings would force deleting accurate history. */
+  /* And the grant set is exactly the read/metadata quartet. */
+  assert.deepEqual(granted, [
+    'fs:allow-exists',
+    'fs:allow-lstat',
+    'fs:allow-read-dir',
+    'fs:allow-read-file',
+  ]);
+});
+
+check('M06 T1.2 introduces no renderer-visible reclamation command or path-shaped API', () => {
+  /* T1.2 reserves identities only. No destructive or path-shaped M06 command
+     may be reachable from the renderer. */
+  const forbiddenTokens = [
+    'h2o_archive_reclaim',
+    'h2o_archive_quarantine',
+    'h2o_archive_purge',
+    'h2o_archive_delete',
+    'h2o_archive_gc',
+  ];
+  const libRs = readRepo('apps/studio/desktop/src-tauri/src/lib.rs');
+  for (const token of forbiddenTokens) {
+    assert.ok(!libRs.includes(token), `${token} must not be registered in lib.rs`);
+    assert.ok(!capabilityRaw.includes(token), `${token} must not appear in the archive capability`);
+  }
+});
+
 console.log('[saved-chat-archive-diagnostics-v1] fixture checks');
 
 await checkAsync('APIs register in Tauri VM context', async () => {
@@ -686,6 +739,26 @@ await checkAsync('missing archive root returns empty warning without blocker', a
   assert.equal(result.blockers.length, 0);
   assert.ok(result.warnings.some((issue) => issue.code === 'archive-packages-root-missing'));
   assert.equal(result.packages.length, 0);
+});
+
+await checkAsync('M06 T1.2 reserved identities are never classified as saved-chat packages', async () => {
+  const fixture = createFixtureFs();
+  const ingestion = loadModule(fixture);
+  const result = await ingestion.listSavedChatArchivePackagesV1({ limit: 20 });
+  for (const reserved of ['.h2o-archive.lock', '.h2o-reclaim']) {
+    assert.ok(
+      !result.packages.some((pkg) => pkg.packageDirName === reserved),
+      `${reserved} must never be classified as a saved-chat package`,
+    );
+    assert.ok(
+      !JSON.stringify(result.packages).includes(reserved),
+      `${reserved} must not appear anywhere in package inventory`,
+    );
+  }
+  /* The inventory still finds the real packages, so this proves exclusion
+     rather than a broken listing. */
+  assert.equal(result.packages.length, 4);
+  assert.equal(fixture.mutationCalls.length, 0);
 });
 
 await checkAsync('inventory lists package folders and warns on non-package entries', async () => {
