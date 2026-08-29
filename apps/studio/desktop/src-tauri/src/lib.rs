@@ -84,6 +84,11 @@ pub mod archive_reclaim_execute;
 /// authority, because occupant action dwells.
 pub mod archive_occupant_quarantine;
 
+/// M06 T3.5 — stale quarantine convergence. DORMANT: registers no command and
+/// is unreachable from the renderer. Acts only on PRIOR runs, through typed
+/// run/item structure and the T3.1 confined purge.
+pub mod archive_reclaim_recovery;
+
 /// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
 /// the trusted engine; owns no authority and mutates nothing.
 pub mod archive_reclamation_preview;

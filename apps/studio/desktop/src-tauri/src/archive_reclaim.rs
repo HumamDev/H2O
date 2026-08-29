@@ -77,6 +77,14 @@ pub mod codes {
     pub const RESIDUE_NOT_RESERVED: &str = "reclaim-residue-source-not-reserved";
     /// T3.3: the named CAS shard could not be opened as a rename source.
     pub const SHARD_UNAVAILABLE: &str = "reclaim-shard-unavailable";
+    /// T3.5: an entry inside the reclaim root is not a recognizable run
+    /// namespace. Reported and left ALONE, never purged.
+    pub const RUN_UNRECOGNIZED: &str = "reclaim-run-unrecognized";
+    /// T3.5: a `run-` shaped entry that is not a real directory — a symlink or
+    /// a file. `O_NOFOLLOW` refused to traverse it, so it is not a run.
+    pub const RUN_NOT_A_DIRECTORY: &str = "reclaim-run-not-a-directory";
+    /// T3.5: the reclaim root itself could not be enumerated.
+    pub const RECLAIM_ROOT_UNREADABLE: &str = "reclaim-root-unreadable";
 }
 
 /// What a quarantined item was, for later evidence.
@@ -260,6 +268,159 @@ fn open_reclaim_root_within(
         .open_child_nofollow(name)
         .map_err(|_| codes::ROOT_UNAVAILABLE.to_string())?;
     Ok(ReclaimRoot { dir })
+}
+
+/// Opens the quarantine namespace WITHOUT creating it.
+///
+/// The recovery pass runs before a governed run has decided it will act, and a
+/// truthful no-op must leave no `.h2o-reclaim` behind. `Ok(None)` therefore
+/// means "there is no quarantine namespace", which is an absence this function
+/// proved rather than one it manufactured.
+pub(crate) fn open_reclaim_root_if_present(
+    _exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+) -> Result<Option<ReclaimRoot>, String> {
+    let root = match confined::Dir::open_existing_nofollow(archive_root) {
+        Ok(dir) => dir,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(codes::ROOT_UNAVAILABLE.to_string()),
+    };
+    match root.open_child_nofollow(RECLAIM_NAMESPACE_COMPONENT.as_bytes()) {
+        Ok(dir) => Ok(Some(ReclaimRoot { dir })),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(codes::ROOT_UNAVAILABLE.to_string()),
+    }
+}
+
+/// What the reclaim root holds, as TYPED run identities.
+///
+/// A caller cannot get a run out of here as a string: only names that survive
+/// `QuarantineRunId::parse` AND are real non-symlink directories become runs.
+/// Everything else is reported so it stays visible, and is never actionable.
+pub struct RunListing {
+    pub runs: Vec<QuarantineRunId>,
+    /// Present, visible, and not a recognizable run. Evidence, never a target.
+    pub unrecognized: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+/// One recognized quarantine item, as a TYPED component.
+pub struct ItemListing {
+    pub items: Vec<QuarantineComponent>,
+    pub unrecognized: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+impl ReclaimRoot {
+    /// Enumerates recognizable run namespaces, deterministically.
+    ///
+    /// The reserved `receipts` sibling is skipped by identity, not by luck:
+    /// `QuarantineRunId::parse` refuses it outright, and it carries no `run-`
+    /// prefix either. Evidence is therefore unreachable from any recovery that
+    /// walks this listing.
+    pub fn run_ids(&self, _exclusive: &ExclusiveOwnership<'_>) -> RunListing {
+        let mut out = RunListing {
+            runs: vec![],
+            unrecognized: vec![],
+            blockers: vec![],
+        };
+        let names = match self.dir.read_entry_names() {
+            Ok(names) => names,
+            Err(_) => {
+                out.blockers.push(codes::RECLAIM_ROOT_UNREADABLE.to_string());
+                return out;
+            }
+        };
+        for raw in names {
+            let Ok(name) = std::str::from_utf8(&raw).map(str::to_string) else {
+                out.blockers.push(codes::RUN_UNRECOGNIZED.to_string());
+                continue;
+            };
+            // The reserved evidence sibling: known, and deliberately not a run.
+            if name == RECEIPTS_NAMESPACE {
+                continue;
+            }
+            let Some(id) = name.strip_prefix(RUN_PREFIX) else {
+                out.unrecognized.push(name);
+                continue;
+            };
+            let Ok(run) = QuarantineRunId::parse(id) else {
+                out.unrecognized.push(name);
+                continue;
+            };
+            // It must BE a directory. A symlink here is refused, not followed.
+            match self.dir.stat_child_nofollow(&raw) {
+                Ok(Some(st)) if !confined::is_symlink(&st) && is_dir(&st) => out.runs.push(run),
+                Ok(Some(_)) => {
+                    out.unrecognized.push(name);
+                    out.blockers.push(codes::RUN_NOT_A_DIRECTORY.to_string());
+                }
+                // Raced away between listing and stat: nothing to recover.
+                Ok(None) => {}
+                Err(_) => {
+                    out.unrecognized.push(name);
+                    out.blockers.push(codes::RUN_UNREADABLE.to_string());
+                }
+            }
+        }
+        out.runs.sort_by(|a, b| a.component().cmp(b.component()));
+        out.unrecognized.sort();
+        out.blockers.sort();
+        out.blockers.dedup();
+        out
+    }
+
+    /// Opens an EXISTING run namespace. Open-only: unlike `create_run` this
+    /// creates nothing, so recovery cannot manufacture the run it then acts on.
+    pub fn open_run(
+        &self,
+        _exclusive: &ExclusiveOwnership<'_>,
+        run: &QuarantineRunId,
+    ) -> Result<Option<RunDir>, String> {
+        let name = run.component().as_bytes();
+        match self.dir.open_child_nofollow(name) {
+            Ok(dir) => Ok(Some(RunDir { dir })),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(codes::RUN_UNREADABLE.to_string()),
+        }
+    }
+}
+
+impl RunDir {
+    /// Enumerates the run's items as validated components, deterministically.
+    ///
+    /// A name that cannot be a `QuarantineComponent` is reported and left in
+    /// place: the purge primitive cannot express it, so it is not a refused
+    /// target but an inexpressible one.
+    pub fn item_names(&self, _exclusive: &ExclusiveOwnership<'_>) -> ItemListing {
+        let mut out = ItemListing {
+            items: vec![],
+            unrecognized: vec![],
+            blockers: vec![],
+        };
+        let names = match self.dir.read_entry_names() {
+            Ok(names) => names,
+            Err(_) => {
+                out.blockers.push(codes::RUN_UNREADABLE.to_string());
+                return out;
+            }
+        };
+        for raw in names {
+            let Ok(name) = std::str::from_utf8(&raw).map(str::to_string) else {
+                out.blockers.push(codes::ITEM_UNREADABLE.to_string());
+                continue;
+            };
+            match QuarantineComponent::parse(&name) {
+                Ok(component) if component.as_str() == name => out.items.push(component),
+                // Trimmed or refused: the identity on disk is not the identity
+                // the purge primitive would address, so it is not addressed.
+                _ => out.unrecognized.push(name),
+            }
+        }
+        out.items.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        out.unrecognized.sort();
+        out
+    }
 }
 
 /// Test-only seam for disposable archive roots. Compiled out of production
@@ -731,6 +892,118 @@ fn purge_tree(dir: &confined::Dir, out: &mut PurgeOutcome, depth: usize) {
             Err(_) => out.fail(codes::ITEM_UNREADABLE),
         }
     }
+}
+
+/// M06 T3.5 — deterministic PROCESS-CRASH injection for the convergence matrix.
+///
+/// TEST-ONLY, and shaped like the existing fault seam: in a release build `hit`
+/// is an empty inlined function with no state, no env lookup and no branch, so
+/// the shipped path is byte-for-byte the real one. There is no production crash
+/// switch and no production environment-variable behaviour.
+///
+/// It differs from `fault` in kind, not degree. A fault makes a step RETURN an
+/// error, which proves the in-process failure policy. This aborts the process
+/// at that exact window, which is the only way to prove what a real crash
+/// leaves on disk and that the OS — not any cleanup code of ours — releases the
+/// archive lock. One shared seam serves the generation, staging, occupant and
+/// recovery paths so their crash windows cannot drift apart.
+pub(crate) mod crash {
+    /// Every window where a crash would be dangerous if the ordering were wrong.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Point {
+        AfterPlanDurableBeforeRename,
+        AfterRenameBeforeNamespaceDurable,
+        AfterNamespaceDurableBeforeReceipt,
+        AfterReceiptBeforePurge,
+        AfterPurgeBeforePurgeReceipt,
+        BetweenGenerationItems,
+        AfterGenerationStageBeforeStaging,
+        AfterResidueRenameBeforeNamespaceDurable,
+        AfterResidueNamespaceDurableBeforeReceipt,
+        AfterResidueReceiptBeforePurge,
+        BetweenStagingItems,
+        AfterOccupantPlanDurableBeforeRename,
+        AfterOccupantRenameBeforeNamespaceDurable,
+        AfterOccupantNamespaceDurableBeforeReceipt,
+        AfterRecoveryPurgeBeforeReceipt,
+    }
+
+    #[cfg(test)]
+    impl Point {
+        /// The wire name a child test process is given. Parsing is TOTAL: an
+        /// unknown name arms nothing rather than guessing a window.
+        pub fn parse(text: &str) -> Option<Point> {
+            Some(match text {
+                "plan-before-rename" => Point::AfterPlanDurableBeforeRename,
+                "rename-before-durable" => Point::AfterRenameBeforeNamespaceDurable,
+                "durable-before-receipt" => Point::AfterNamespaceDurableBeforeReceipt,
+                "receipt-before-purge" => Point::AfterReceiptBeforePurge,
+                "purge-before-receipt" => Point::AfterPurgeBeforePurgeReceipt,
+                "between-generations" => Point::BetweenGenerationItems,
+                "generations-before-staging" => Point::AfterGenerationStageBeforeStaging,
+                "residue-rename-before-durable" => Point::AfterResidueRenameBeforeNamespaceDurable,
+                "residue-durable-before-receipt" => {
+                    Point::AfterResidueNamespaceDurableBeforeReceipt
+                }
+                "residue-receipt-before-purge" => Point::AfterResidueReceiptBeforePurge,
+                "between-staging" => Point::BetweenStagingItems,
+                "occupant-plan-before-rename" => Point::AfterOccupantPlanDurableBeforeRename,
+                "occupant-rename-before-durable" => {
+                    Point::AfterOccupantRenameBeforeNamespaceDurable
+                }
+                "occupant-durable-before-receipt" => {
+                    Point::AfterOccupantNamespaceDurableBeforeReceipt
+                }
+                "recovery-purge-before-receipt" => Point::AfterRecoveryPurgeBeforeReceipt,
+                _ => return None,
+            })
+        }
+    }
+
+    #[cfg(test)]
+    thread_local! {
+        /// (window, how many arrivals to let through first).
+        static ARMED: std::cell::RefCell<Option<(Point, u32)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Arms ONE crash. `skip` lets a test land on the second or later arrival at
+    /// the same window, which is how "between two items" is expressed without a
+    /// second hook.
+    #[cfg(test)]
+    pub(crate) fn arm(point: Point, skip: u32) {
+        ARMED.with(|a| *a.borrow_mut() = Some((point, skip)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear() {
+        ARMED.with(|a| *a.borrow_mut() = None);
+    }
+
+    /// Aborts the PROCESS. Deliberately `abort` and not `exit`: no destructor,
+    /// no unwinding, no flush — nothing of ours gets a chance to tidy up, which
+    /// is what makes the surviving state a genuine crash landing.
+    #[cfg(test)]
+    pub(crate) fn hit(point: Point) {
+        let fire = ARMED.with(|a| match a.borrow_mut().as_mut() {
+            Some((armed, remaining)) if *armed == point => {
+                if *remaining == 0 {
+                    true
+                } else {
+                    *remaining -= 1;
+                    false
+                }
+            }
+            _ => false,
+        });
+        if fire {
+            std::process::abort();
+        }
+    }
+
+    #[cfg(not(test))]
+    #[inline(always)]
+    pub(crate) fn hit(_point: Point) {}
 }
 
 #[cfg(test)]

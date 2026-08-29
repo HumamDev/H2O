@@ -2498,16 +2498,19 @@ fn the_durability_barrier_is_unconditional_for_both_residue_families() {
     assert!(selection.contains("(ResidueFamily::GenerationStaging, _, Some(dir)) => dir"));
 }
 
-/// M06 T3.4 dwell, proven from the side that could break it: a LATER
-/// generation and staging run does not opportunistically purge an occupant
-/// quarantine left by an earlier run.
+/// M06 T3.5 dwell + convergence, proven from the side that exercises both: a
+/// LATER governed run converges an occupant quarantine left by an earlier run,
+/// and consumes nothing else.
 ///
-/// The prior quarantine is planted directly rather than produced by the
-/// occupant action, so this also covers the state a previous process leaves
-/// behind. Stale-run convergence belongs to the crash and recovery task; until
-/// then the correct behaviour is to leave it strictly alone.
+/// This is the second half of one-run dwell. T3.4 proved the acting run never
+/// purges its own occupant; T3.5 owns the other side — a subsequent manual run
+/// may, because its recovery pass runs before it has a namespace of its own, so
+/// everything it can see belongs to a previous run by construction. No clock
+/// participates. The prior quarantine is planted directly rather than produced
+/// by the occupant action, so this also covers the state a crashed process
+/// leaves behind.
 #[test]
-fn a_later_run_never_purges_a_prior_occupant_quarantine() {
+fn a_later_run_converges_a_prior_occupant_quarantine() {
     let root = scratch("dwell");
     let hashes = five(&root, "chat_a");
     plant_temp(&root, "ab", ".h2o-durable-3-0.tmp", b"residue");
@@ -2541,15 +2544,941 @@ fn a_later_run_never_purges_a_prior_occupant_quarantine() {
     assert_eq!(outcome.residue.durable_temp_purged, 1);
     assert!(!root.join("packages").join(&staging).exists());
 
-    // And the prior occupant quarantine is byte-identical.
-    assert_eq!(census(&prior), prior_before, "the dwelling occupant is untouched");
-    assert!(held.join("nested").join("x").exists());
+    // The prior occupant quarantine converged, through the T3.1 confined purge.
+    assert_eq!(outcome.recovered, 1, "the stale occupant was recovered");
+    assert!(!held.exists(), "the dwelling occupant converged on the LATER run");
+    assert!(!held.join("nested").join("x").exists());
+    assert!(prior.is_dir(), "the run namespace itself is left as evidence");
+    assert!(!prior_before.is_empty(), "the fixture really held physical state");
+
+    // Evidence is never consumed: the receipts sibling survives intact and
+    // gains exactly one recovery record.
     let receipts_after = census(&root.join(".h2o-reclaim").join("receipts"));
     assert!(
         receipts_before.iter().all(|e| receipts_after.contains(e)),
         "no receipt was pruned"
     );
+    let recovery: Vec<&(String, String)> = receipts_after
+        .iter()
+        .filter(|(n, _)| n.contains("recovery"))
+        .collect();
+    assert_eq!(recovery.len(), 1, "exactly one recovery record: {receipts_after:?}");
 
     let _ = ex.release();
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+// ── M06 T3.5 — real-process crash / convergence matrix ─────────────────────
+
+use crate::archive_reclaim::crash;
+
+/// Marker the child writes ONLY if it ran to completion without crashing.
+/// Its ABSENCE is the anti-vacuity proof that the injected window was reached.
+const NO_CRASH_MARKER: &str = "H2O_T35_REACHED_END";
+
+/// Child-process entry point. Establishes real archive participation, takes
+/// real exclusive ownership, arms ONE crash window and runs a real governed
+/// destructive path — then aborts inside it.
+///
+/// Environment variables are read HERE, inside a `#[cfg(test)] #[ignore]`
+/// helper that never exists in a release build. No production code path reads
+/// an environment variable.
+#[test]
+#[ignore]
+fn helper_crash_child() {
+    let Ok(root) = std::env::var("H2O_T35_ROOT") else { return };
+    let root = PathBuf::from(root);
+    let mode = std::env::var("H2O_T35_MODE").unwrap_or_else(|_| "run".to_string());
+    let skip: u32 = std::env::var("H2O_T35_SKIP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let point = std::env::var("H2O_T35_POINT")
+        .ok()
+        .and_then(|t| crash::Point::parse(&t));
+
+    let state = ArchiveInstanceState::default();
+    state.ensure_presence(&root).expect("shared presence");
+    let ex = state.try_acquire_exclusive().expect("exclusive ownership");
+    if let Some(p) = point {
+        crash::arm(p, skip);
+    }
+
+    if mode == "occupant" {
+        let chat = std::env::var("H2O_T35_CHAT").unwrap_or_default();
+        let name = std::env::var("H2O_T35_NAME").unwrap_or_default();
+        let _ = crate::archive_occupant_quarantine::quarantine_internal_for_test(
+            &ex,
+            &root,
+            true,
+            &crate::archive_occupant_quarantine::OccupantRequest {
+                chat_id: chat,
+                occupant_name: name,
+            },
+        );
+    } else {
+        let chat = std::env::var("H2O_T35_CHAT").unwrap_or_default();
+        let hash = std::env::var("H2O_T35_HASH").unwrap_or_default();
+        let _ = run_internal(&ex, &root, true, &request(&chat, "ok", &hash), &db(vec![]));
+    }
+    let _ = ex.release();
+    // Only reached when the window was NOT hit.
+    std::fs::write(root.join(NO_CRASH_MARKER), b"1").ok();
+}
+
+/// Spawns the child and returns true when it genuinely died at the window.
+fn crash_child(root: &Path, mode: &str, point: &str, skip: u32, env: &[(&str, &str)]) -> bool {
+    let exe = std::env::current_exe().expect("test binary");
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("archive_reclaim_execute::tests::helper_crash_child")
+        .arg("--exact")
+        .arg("--include-ignored")
+        .arg("--test-threads=1")
+        .env("H2O_T35_ROOT", root)
+        .env("H2O_T35_MODE", mode)
+        .env("H2O_T35_POINT", point)
+        .env("H2O_T35_SKIP", skip.to_string())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let status = command.status().expect("spawn crash child");
+    let reached_end = root.join(NO_CRASH_MARKER).exists();
+    // ANTI-VACUITY: the child must have died, not merely returned.
+    !status.success() && !reached_end
+}
+
+/// Every `*.h2ochat` occupant is a COMPLETE package or is absent. This is the
+/// crash invariant: the canonical namespace never holds a half-deleted entry.
+fn canonical_entries_are_whole(root: &Path) -> Result<usize, String> {
+    let mut whole = 0;
+    let entries = match std::fs::read_dir(root.join("packages")) {
+        Ok(it) => it,
+        Err(_) => return Ok(0),
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".h2ochat") {
+            continue;
+        }
+        let dir = entry.path();
+        if !dir.is_dir() {
+            return Err(format!("{name} is not a directory"));
+        }
+        for member in ["manifest.json", "snapshot.json", "chat.md", "chat.html"] {
+            if !dir.join(member).exists() {
+                return Err(format!("{name} is half-deleted: {member} missing"));
+            }
+        }
+        whole += 1;
+    }
+    Ok(whole)
+}
+
+fn cas_census(root: &Path) -> Vec<(String, String)> {
+    census(&root.join("assets"))
+        .into_iter()
+        .filter(|(n, _)| n.contains("sha256-"))
+        .collect()
+}
+
+/// The shared crash fixture: five generations for one chat (two beyond the
+/// K=3 floor), both residue families, and referenced plus
+/// observed-unreferenced canonical CAS bodies.
+fn crash_fixture(tag: &str) -> (PathBuf, String, String) {
+    let root = scratch(tag);
+    let hashes = five(&root, "chat_a");
+    let staging = orphan_staging(&root, "chat_b");
+    plant_temp(&root, "ab", ".h2o-durable-5-0.tmp", b"residue");
+    plant_temp(&root, "ab", &format!("sha256-{}", "ab".repeat(32)), b"referenced");
+    plant_temp(&root, "cd", &format!("sha256-{}", "cd".repeat(32)), b"observed-unreferenced");
+    (root, hashes[4].clone(), staging)
+}
+
+/// One matrix row: crash at a window in a real process, verify the crash
+/// invariant on what survived, then converge and prove idempotence.
+struct RowResult {
+    crashed: bool,
+    whole_before: usize,
+    recovered: usize,
+    converged_state: RunState,
+    idempotent: bool,
+    cas_identical: bool,
+    lock_reacquired: bool,
+}
+
+fn crash_row(tag: &str, point: &str, skip: u32) -> RowResult {
+    let (root, hash, _staging) = crash_fixture(tag);
+    let cas_before = cas_census(&root);
+
+    let crashed = crash_child(
+        &root,
+        "run",
+        point,
+        skip,
+        &[("H2O_T35_CHAT", "chat_a"), ("H2O_T35_HASH", &hash)],
+    );
+
+    // The crash invariant, on exactly what the dead process left behind.
+    let whole_before = canonical_entries_are_whole(&root).expect("no half-deleted canonical entry");
+    let cas_after_crash = cas_census(&root);
+
+    // The OS released the archive lock: no cleanup of ours ran.
+    let owner = Owner::acquire(&root);
+    let lock_reacquired = owner.state.try_acquire_exclusive().is_ok();
+    let ex = owner.exclusive();
+
+    // Convergence: recovery plus a fresh governed run.
+    let first = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+    let after_first = census(&root);
+    // A second pass must make no material change.
+    let second = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+    let idempotent = census(&root) == after_first && second.recovered == 0;
+
+    let cas_identical = cas_after_crash == cas_before && cas_census(&root) == cas_before;
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+
+    RowResult {
+        crashed,
+        whole_before,
+        recovered: first.recovered,
+        converged_state: first.state,
+        idempotent,
+        cas_identical,
+        lock_reacquired,
+    }
+}
+
+/// THE CRASH / CONVERGENCE MATRIX — generation and staging windows, each in a
+/// genuinely separate process that dies inside the window.
+///
+/// For every row: the child really crashed; the canonical namespace holds no
+/// half-deleted entry; every canonical CAS body is byte-identical; the OS — not
+/// any cleanup of ours — released the archive lock; a later governed run
+/// converges; and a second run makes no further material change.
+#[test]
+fn the_generation_and_staging_crash_matrix_converges() {
+    let rows: &[(&str, &str, u32)] = &[
+        // 1. after plan durable, before the first canonical rename.
+        ("m1", "plan-before-rename", 0),
+        // 2. after canonical rename, before namespace durability.
+        ("m2", "rename-before-durable", 0),
+        // 3. after namespace durability, before the quarantine receipt.
+        ("m3", "durable-before-receipt", 0),
+        // 4. after the quarantine receipt, before the purge.
+        ("m4", "receipt-before-purge", 0),
+        // 5. after the purge, before the purge receipt.
+        ("m5", "purge-before-receipt", 0),
+        // 6. between two generation items.
+        ("m6", "between-generations", 0),
+        // 7. generation stage complete, before the first staging rename.
+        ("m7", "generations-before-staging", 0),
+        // 8a-8d. every staging window, and between two staging items.
+        ("m8a", "residue-rename-before-durable", 0),
+        ("m8b", "residue-durable-before-receipt", 0),
+        ("m8c", "residue-receipt-before-purge", 0),
+        ("m8d", "between-staging", 0),
+        // Second occurrence of a window, i.e. the second item of a stage.
+        ("m9", "rename-before-durable", 1),
+    ];
+
+    for (tag, point, skip) in rows {
+        let r = crash_row(tag, point, *skip);
+        assert!(r.crashed, "[{tag}] the child must genuinely die at {point}");
+        assert!(
+            r.whole_before >= 3,
+            "[{tag}] the K=3 floor survived the crash: {}",
+            r.whole_before
+        );
+        assert!(r.cas_identical, "[{tag}] canonical CAS changed");
+        assert!(r.lock_reacquired, "[{tag}] the OS did not release the archive lock");
+        assert!(
+            matches!(r.converged_state, RunState::Complete | RunState::NoOp),
+            "[{tag}] the later run did not converge: {:?}",
+            r.converged_state
+        );
+        assert!(r.idempotent, "[{tag}] a second run made further material change");
+    }
+}
+
+/// Rows 1-5 again, but proving the recovery pass actually had stale state to
+/// converge in the windows where the crash left quarantine behind.
+///
+/// Anti-vacuity for the matrix above: without this, "converged" could mean
+/// "there was nothing to do".
+#[test]
+fn crash_windows_after_a_rename_leave_stale_quarantine_that_recovery_converges() {
+    for (tag, point) in [
+        ("s1", "rename-before-durable"),
+        ("s2", "durable-before-receipt"),
+        ("s3", "receipt-before-purge"),
+    ] {
+        let (root, hash, _) = crash_fixture(tag);
+        let cas_before = cas_census(&root);
+        assert!(
+            crash_child(&root, "run", point, 0, &[("H2O_T35_CHAT", "chat_a"), ("H2O_T35_HASH", &hash)]),
+            "[{tag}] child must crash"
+        );
+
+        // The crash landed AFTER a rename: quarantine physically holds an item.
+        let reclaim = root.join(".h2o-reclaim");
+        assert!(reclaim.is_dir(), "[{tag}] a run namespace survived the crash");
+        let stale: Vec<PathBuf> = std::fs::read_dir(&reclaim)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.file_name().unwrap() != "receipts")
+            .collect();
+        assert_eq!(stale.len(), 1, "[{tag}] exactly one crashed run: {stale:?}");
+        let items: Vec<String> = std::fs::read_dir(&stale[0])
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(items.len(), 1, "[{tag}] a complete renamed entry: {items:?}");
+        // Complete, not half-copied.
+        for member in ["manifest.json", "snapshot.json", "chat.md", "chat.html"] {
+            assert!(
+                stale[0].join(&items[0]).join(member).exists(),
+                "[{tag}] the quarantined entry is incomplete"
+            );
+        }
+        assert_eq!(canonical_entries_are_whole(&root).unwrap(), 4, "[{tag}] one left canonical");
+
+        // Convergence really recovers that item.
+        let owner = Owner::acquire(&root);
+        let ex = owner.exclusive();
+        let converged = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+        assert_eq!(converged.recovered, 1, "[{tag}] the stale item was converged");
+        assert!(!stale[0].join(&items[0]).exists(), "[{tag}] and is physically gone");
+        assert_eq!(cas_census(&root), cas_before, "[{tag}] CAS untouched");
+
+        let again = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+        assert_eq!(again.recovered, 0, "[{tag}] repeated recovery is idempotent");
+
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+}
+
+/// OCCUPANT crash windows, plus the second half of one-run dwell: the crashed
+/// run's occupant is preserved, and a LATER governed run converges it.
+#[test]
+fn the_occupant_crash_matrix_converges_on_a_later_run() {
+    for (tag, point, expect_quarantined) in [
+        // 9. plan durable, before the occupant rename.
+        ("o1", "occupant-plan-before-rename", false),
+        // 10. rename succeeded, before namespace durability.
+        ("o2", "occupant-rename-before-durable", true),
+        // 11. namespace durable, before the receipt.
+        ("o3", "occupant-durable-before-receipt", true),
+    ] {
+        let root = scratch(tag);
+        const WHEN: &str = "2027-01-01T00:00:00.000Z";
+        let name = plant_corrupt_occupant(&root, "chat_bad", WHEN);
+        publish(&root, "chat_keep", "2027-01-02T00:00:00.000Z");
+        plant_temp(&root, "ab", &format!("sha256-{}", "ab".repeat(32)), b"referenced");
+        let cas_before = cas_census(&root);
+
+        assert!(
+            crash_child(&root, "occupant", point, 0,
+                &[("H2O_T35_CHAT", "chat_bad"), ("H2O_T35_NAME", &name)]),
+            "[{tag}] child must crash"
+        );
+
+        let canonical = root.join("packages").join(&name);
+        if expect_quarantined {
+            assert!(!canonical.exists(), "[{tag}] the occupant left canonical space");
+            let reclaim = root.join(".h2o-reclaim");
+            let runs: Vec<PathBuf> = std::fs::read_dir(&reclaim)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .filter(|p| p.file_name().unwrap() != "receipts")
+                .collect();
+            assert_eq!(runs.len(), 1, "[{tag}]");
+            assert!(
+                runs[0].join(format!("occupant.{name}")).is_dir(),
+                "[{tag}] a COMPLETE quarantined occupant survived the crash"
+            );
+        } else {
+            assert!(canonical.exists(), "[{tag}] nothing was renamed before the crash");
+        }
+        assert!(canonical_entries_are_whole(&root).is_ok(), "[{tag}] no half-deleted entry");
+
+        // A LATER governed run converges it. No clock takes part: the run's
+        // recovery pass simply precedes its own namespace.
+        let owner = Owner::acquire(&root);
+        assert!(owner.state.try_acquire_exclusive().is_ok(), "[{tag}] OS released the lock");
+        let ex = owner.exclusive();
+        let later = run(&root, &ex, &db(vec![]), &request("chat_keep", "ok", "deadbeef"));
+        if expect_quarantined {
+            assert_eq!(later.recovered, 1, "[{tag}] the prior occupant converged");
+        }
+        let after = census(&root);
+        let again = run(&root, &ex, &db(vec![]), &request("chat_keep", "ok", "deadbeef"));
+        assert_eq!(again.recovered, 0, "[{tag}] idempotent");
+        assert_eq!(census(&root), after, "[{tag}] no further material change");
+        assert_eq!(cas_census(&root), cas_before, "[{tag}] CAS untouched");
+
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+}
+
+/// A corrupt occupant sitting at a canonical generation destination.
+fn plant_corrupt_occupant(root: &Path, chat: &str, saved_at: &str) -> String {
+    let hashes = publish_named(root, chat, saved_at);
+    std::fs::write(root.join("packages").join(&hashes).join("manifest.json"), b"{ nope").unwrap();
+    hashes
+}
+
+/// Publishes and returns the canonical basename the publisher chose.
+fn publish_named(root: &Path, chat: &str, saved_at: &str) -> String {
+    let before: std::collections::BTreeSet<String> = pkg_names(root).into_iter().collect();
+    publish(root, chat, saved_at);
+    pkg_names(root)
+        .into_iter()
+        .find(|n| !before.contains(n))
+        .expect("a new generation")
+}
+
+/// Row 18: process termination while holding ExclusiveOwnership. The OS
+/// releases it; no manual lock cleanup exists anywhere.
+#[test]
+fn a_crashed_process_releases_the_archive_lock_to_the_next_one() {
+    let (root, hash, _) = crash_fixture("lockrelease");
+
+    // Control: participation works before.
+    assert!(child_can_participate(&root), "precondition");
+
+    assert!(
+        crash_child(&root, "run", "rename-before-durable", 0,
+            &[("H2O_T35_CHAT", "chat_a"), ("H2O_T35_HASH", &hash)]),
+        "the child must die while holding exclusive ownership"
+    );
+
+    // No cleanup of ours ran; the kernel dropped the flock with the process.
+    assert!(
+        child_can_participate(&root),
+        "a separate process must be able to participate after the crash"
+    );
+    let owner = Owner::acquire(&root);
+    let ex = owner.state.try_acquire_exclusive().expect("exclusive is reacquirable");
+    let converged = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+    assert_eq!(converged.recovered, 1);
+    assert!(matches!(converged.state, RunState::Complete | RunState::NoOp));
+
+    // Nothing in the destructive core removes or repairs the lock file itself.
+    for source in [
+        include_str!("../archive_reclaim.rs"),
+        include_str!("../archive_reclaim_execute.rs"),
+        include_str!("../archive_occupant_quarantine.rs"),
+        include_str!("../archive_reclaim_recovery.rs"),
+    ] {
+        let code: String = source
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for forbidden in ["ARCHIVE_LOCK_NAME", "force_unlock", ".h2o-archive.lock"] {
+            assert!(!code.contains(forbidden), "no manual lock cleanup: {forbidden}");
+        }
+    }
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// Rows 13-17: the RUN / EVIDENCE landing states, and what recovery makes of
+/// each. Evidence is never consumed, and an unattributable entry blocks its own
+/// run without touching anything.
+#[test]
+fn the_evidence_landing_states_are_classified_and_never_consumed() {
+    // 13. a plan exists and nothing was acted: the crash landed before the
+    //     first rename, so there is no run directory to converge at all.
+    let (root, hash, _) = crash_fixture("e13");
+    assert!(crash_child(&root, "run", "plan-before-rename", 0,
+        &[("H2O_T35_CHAT", "chat_a"), ("H2O_T35_HASH", &hash)]));
+    let receipts: Vec<String> = std::fs::read_dir(root.join(".h2o-reclaim").join("receipts"))
+        .unwrap().map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect();
+    assert_eq!(receipts.len(), 1, "the durable plan, and only the plan: {receipts:?}");
+    assert!(receipts[0].ends_with(".plan.json"));
+    let runs: Vec<PathBuf> = std::fs::read_dir(root.join(".h2o-reclaim")).unwrap()
+        .map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap() != "receipts").collect();
+    assert!(runs.is_empty(), "no run namespace was created: {runs:?}");
+    assert_eq!(canonical_entries_are_whole(&root).unwrap(), 5, "nothing left canonical space");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let out = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+    assert_eq!(out.recovered, 0, "there was nothing stale to converge");
+    assert_eq!(out.purged, 2, "and the fresh run proceeded normally");
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+
+    // 15. a purge completed and its receipt did not: the quarantine entry is
+    //     already absent, so convergence is a no-op rather than an error.
+    let (root, hash, _) = crash_fixture("e15");
+    assert!(crash_child(&root, "run", "purge-before-receipt", 0,
+        &[("H2O_T35_CHAT", "chat_a"), ("H2O_T35_HASH", &hash)]));
+    let runs: Vec<PathBuf> = std::fs::read_dir(root.join(".h2o-reclaim")).unwrap()
+        .map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap() != "receipts").collect();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(
+        std::fs::read_dir(&runs[0]).unwrap().count(),
+        0,
+        "the item was purged before the crash"
+    );
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let out = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hash));
+    assert_eq!(out.recovered, 0, "an empty run needs no convergence");
+    assert!(matches!(out.state, RunState::Complete | RunState::NoOp), "{:?}", out.blockers);
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+
+    // 16. a malformed receipt beside a recognized run. Receipts live in the
+    //     reserved sibling, which recovery never walks, so it cannot be
+    //     consumed and cannot mislead the pass.
+    let root = scratch("e16");
+    let hashes = five(&root, "chat_a");
+    std::fs::create_dir_all(root.join(".h2o-reclaim").join("run-aa01")).unwrap();
+    std::fs::create_dir_all(
+        root.join(".h2o-reclaim").join("run-aa01").join("chat_z.gab.h2ochat"),
+    ).unwrap();
+    let stale_item = root.join(".h2o-reclaim").join("run-aa01")
+        .join(format!("chat_z.g{}.h2ochat", "ab".repeat(32)));
+    std::fs::create_dir_all(&stale_item).unwrap();
+    std::fs::remove_dir_all(root.join(".h2o-reclaim").join("run-aa01").join("chat_z.gab.h2ochat")).unwrap();
+    std::fs::create_dir_all(root.join(".h2o-reclaim").join("receipts")).unwrap();
+    std::fs::write(root.join(".h2o-reclaim").join("receipts").join("garbage.json"), b"{{{ not json").unwrap();
+    std::fs::write(root.join(".h2o-reclaim").join("receipts").join("run-zz.orphan.json"), b"[]").unwrap();
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let out = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+    assert_eq!(out.recovered, 1, "the run converged despite the malformed receipts");
+    assert!(!stale_item.exists());
+    assert!(root.join(".h2o-reclaim").join("receipts").join("garbage.json").exists(),
+        "a malformed receipt is never consumed");
+    assert!(root.join(".h2o-reclaim").join("receipts").join("run-zz.orphan.json").exists());
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+
+    // 17. a recognized run holding an entry no committed grammar names: the
+    //     whole governed run refuses, and nothing is touched.
+    let root = scratch("e17");
+    let hashes = five(&root, "chat_a");
+    std::fs::create_dir_all(root.join(".h2o-reclaim").join("run-bb01").join("mystery")).unwrap();
+    let owner = Owner::acquire(&root);
+    let before = census(&root);
+    let ex = owner.exclusive();
+    let out = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+    assert_eq!(out.state, RunState::Refused, "an unconverged archive blocks fresh work");
+    assert!(out.blockers.contains(&codes::RECOVERY_INCOMPLETE.to_string()));
+    assert!(out.blockers.contains(
+        &crate::archive_reclaim_recovery::codes::ITEM_UNATTRIBUTABLE.to_string()));
+    assert_eq!(out.purged, 0);
+    assert_eq!(census(&root), before, "not one byte changed");
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// AC-M06-11 — EVIDENCE COMPLETENESS. Every physically acted item is
+/// explainable by durable evidence plus surviving quarantine, with nothing left
+/// over on either side.
+#[test]
+fn every_physically_acted_item_is_accounted_for_by_evidence() {
+    let root = scratch("accounting");
+    let hashes = five(&root, "chat_a");
+    let staging = orphan_staging(&root, "chat_b");
+    plant_temp(&root, "ab", ".h2o-durable-4-0.tmp", b"residue");
+    // A crashed prior run, so recovery has something to account for too.
+    let stale = root.join(".h2o-reclaim").join("run-aa01")
+        .join(format!("chat_old.g{}.h2ochat", "cd".repeat(32)));
+    std::fs::create_dir_all(&stale).unwrap();
+    /* Every canonical namespace a destructive stage can act on: the packages
+       directory AND each CAS shard, where durable-temp residue lives. */
+    let canonical_names = |root: &Path| -> std::collections::BTreeSet<String> {
+        let mut all: std::collections::BTreeSet<String> =
+            pkg_names(root).into_iter().collect();
+        if let Ok(shards) = std::fs::read_dir(root.join("assets")) {
+            for shard in shards.flatten() {
+                if let Ok(entries) = std::fs::read_dir(shard.path()) {
+                    for e in entries.flatten() {
+                        all.insert(e.file_name().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        all
+    };
+    let packages_before = canonical_names(&root);
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+
+    // 1. What PHYSICALLY left the canonical namespace.
+    let packages_after = canonical_names(&root);
+    let mut physically_acted: Vec<String> =
+        packages_before.difference(&packages_after).cloned().collect();
+    physically_acted.sort();
+    assert!(!physically_acted.is_empty(), "anti-vacuity: the run really acted");
+
+    // 2. What the EVIDENCE says was acted.
+    let mut evidenced: Vec<String> = vec![];
+    let mut recovered_by_evidence = 0usize;
+    for entry in std::fs::read_dir(root.join(".h2o-reclaim").join("receipts")).unwrap() {
+        let path = entry.unwrap().path();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).expect("evidence parses");
+        match value["kind"].as_str() {
+            Some("generation") if value["action"] == "purged" => {
+                evidenced.push(
+                    value["canonicalPath"].as_str().unwrap()
+                        .rsplit('/').next().unwrap().to_string(),
+                );
+            }
+            Some("staging") if value["action"] == "purged" => {
+                evidenced.push(
+                    value["archivePath"].as_str().unwrap()
+                        .rsplit('/').next().unwrap().to_string(),
+                );
+            }
+            _ => {
+                if value["stages"] == serde_json::json!(["stale-quarantine-recovery"]) {
+                    recovered_by_evidence += value["recovery"]["purged"].as_u64().unwrap() as usize;
+                }
+            }
+        }
+    }
+    evidenced.sort();
+    evidenced.dedup();
+
+    // 3. What SURVIVES in quarantine and therefore needs no purge receipt.
+    let mut surviving = 0usize;
+    for entry in std::fs::read_dir(root.join(".h2o-reclaim")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap() == "receipts" {
+            continue;
+        }
+        surviving += std::fs::read_dir(&path).unwrap().count();
+    }
+
+    // THE ACCOUNTING: every item that physically left canonical space is
+    // explained, and every explanation names something that really left.
+    assert_eq!(
+        physically_acted, evidenced,
+        "evidence and physical state must account for each other exactly"
+    );
+    assert_eq!(outcome.purged + outcome.residue.generation_staging_purged
+        + outcome.residue.durable_temp_purged, evidenced.len(),
+        "the reported counts match the receipts");
+    assert_eq!(recovered_by_evidence, outcome.recovered, "recovery is accounted for too");
+    assert_eq!(outcome.recovered, 1, "and it really recovered the crashed run");
+    assert_eq!(surviving, 0, "nothing is left unexplained in quarantine");
+    assert!(!root.join("packages").join(&staging).exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// A hostile renderer request, from a deterministic corpus.
+struct Hostile {
+    label: &'static str,
+    status: &'static str,
+    /// How the content hash is supplied. Applied to the newest hash.
+    hash: fn(&str) -> String,
+    scope: Option<Vec<String>>,
+    include_projection: bool,
+    duplicate: bool,
+}
+
+fn hostile_corpus(newest_a: &str, newest_b: &str) -> Vec<(Hostile, PreviewRequest)> {
+    let scopes: Vec<(&'static str, Option<Vec<String>>)> = vec![
+        ("all-chats", None),
+        ("narrow", Some(vec!["chat_a".to_string()])),
+        ("other-chat", Some(vec!["chat_b".to_string()])),
+        ("both", Some(vec!["chat_a".to_string(), "chat_b".to_string()])),
+        ("unknown-chat", Some(vec!["chat_absent".to_string()])),
+    ];
+    let hashes: Vec<(&'static str, fn(&str) -> String)> = vec![
+        ("witnessed", |h| h.to_string()),
+        ("malformed", |_| "NOT-A-HASH".to_string()),
+        ("empty", |_| String::new()),
+        ("unwitnessed", |_| "ab".repeat(32)),
+        ("uppercase", |h| h.to_uppercase()),
+        ("truncated", |h| h.chars().take(16).collect()),
+    ];
+    let statuses = ["ok", "stale", "unusable", "", "OK", "error"];
+
+    let mut out = vec![];
+    for (si, (scope_label, scope)) in scopes.iter().enumerate() {
+        for (hi, (hash_label, hash)) in hashes.iter().enumerate() {
+            let status = statuses[(si + hi) % statuses.len()];
+            for &include in &[true, false] {
+                for &duplicate in &[false, true] {
+                    let mut projections = vec![];
+                    if include {
+                        projections.push(ProjectionInput {
+                            chat_id: "chat_a".to_string(),
+                            status: status.to_string(),
+                            content_hash: hash(newest_a),
+                        });
+                        projections.push(ProjectionInput {
+                            chat_id: "chat_b".to_string(),
+                            status: status.to_string(),
+                            content_hash: hash(newest_b),
+                        });
+                        if duplicate {
+                            projections.push(ProjectionInput {
+                                chat_id: "chat_a".to_string(),
+                                status: "ok".to_string(),
+                                content_hash: hash(newest_a),
+                            });
+                        }
+                        projections.reverse();
+                    }
+                    out.push((
+                        Hostile {
+                            label: scope_label,
+                            status,
+                            hash: *hash,
+                            scope: scope.clone(),
+                            include_projection: include,
+                            duplicate,
+                        },
+                        PreviewRequest { chat_scope: scope.clone(), projections },
+                    ));
+                    let _ = hash_label;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// AC-M06-01 — FLOOR INVARIANCE under a hostile renderer corpus.
+///
+/// No combination of missing, failed, malformed, unwitnessed, duplicated,
+/// reordered or out-of-scope renderer input may reduce the structural
+/// protection: the newest package overall, the newest K=3 of a live family, a
+/// legacy package and a non-VALID occupant all survive every single one.
+#[test]
+fn no_hostile_renderer_input_can_reduce_the_structural_floor() {
+    let mut acted_at_least_once = false;
+    let mut cases = 0usize;
+
+    for (hostile, request) in hostile_corpus("seed", "seed") {
+        let root = scratch(&format!("floor-{cases}"));
+        let a = five(&root, "chat_a");
+        let b: Vec<String> = (1..=4)
+            .map(|d| publish(&root, "chat_b", &format!("2026-02-0{d}T00:00:00.000Z")))
+            .collect();
+        // A legacy package and a corrupt occupant, both structurally protected.
+        // `publish` returns a content hash; the LEGACY fixture needs the
+        // basename the publisher actually chose.
+        let legacy_src = publish_named(&root, "chat_leg", "2026-03-01T00:00:00.000Z");
+        std::fs::rename(
+            root.join("packages").join(&legacy_src),
+            root.join("packages").join("chat_leg.h2ochat"),
+        ).unwrap();
+        let corrupt = format!("chat_corrupt.g{}.h2ochat", "ef".repeat(32));
+        std::fs::create_dir_all(root.join("packages").join(&corrupt)).unwrap();
+        std::fs::write(root.join("packages").join(&corrupt).join("manifest.json"), b"{ no").unwrap();
+
+        // Rebuild the request against THIS root's real hashes.
+        let request = PreviewRequest {
+            chat_scope: hostile.scope.clone(),
+            projections: if hostile.include_projection {
+                let mut p = vec![
+                    ProjectionInput { chat_id: "chat_a".into(), status: hostile.status.into(),
+                        content_hash: (hostile.hash)(&a[4]) },
+                    ProjectionInput { chat_id: "chat_b".into(), status: hostile.status.into(),
+                        content_hash: (hostile.hash)(&b[3]) },
+                ];
+                if hostile.duplicate {
+                    p.push(ProjectionInput { chat_id: "chat_a".into(), status: "ok".into(),
+                        content_hash: (hostile.hash)(&a[4]) });
+                }
+                p.reverse();
+                p
+            } else {
+                vec![]
+            },
+        };
+
+        let owner = Owner::acquire(&root);
+        let ex = owner.exclusive();
+        let outcome = run(&root, &ex, &db(vec![]), &request);
+        if outcome.purged > 0 {
+            acted_at_least_once = true;
+        }
+
+        let survivors = pkg_names(&root);
+        let label = format!("{}/{}/{}", hostile.label, hostile.status, hostile.include_projection);
+        // The newest package of each chat, always.
+        for (chat, newest) in [("chat_a", &a[4]), ("chat_b", &b[3])] {
+            assert!(
+                survivors.iter().any(|n| n.contains(newest)),
+                "[{label}] the newest {chat} generation was acted on"
+            );
+        }
+        // K=3 per chat, always.
+        for chat in ["chat_a", "chat_b"] {
+            let kept = survivors.iter().filter(|n| n.starts_with(&format!("{chat}.g"))).count();
+            assert!(kept >= 3, "[{label}] {chat} fell below the K=3 floor: {kept}");
+        }
+        // Legacy and the non-VALID occupant, always.
+        assert!(survivors.contains(&"chat_leg.h2ochat".to_string()), "[{label}] legacy acted");
+        assert!(survivors.contains(&corrupt), "[{label}] a non-VALID occupant was acted on");
+
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        cases += 1;
+    }
+
+    assert!(cases >= 100, "the corpus is substantial: {cases}");
+    assert!(
+        acted_at_least_once,
+        "ANTI-VACUITY: at least one corpus case must genuinely act, or the floor \
+         proof passes because nothing ever happened"
+    );
+}
+
+/// AC-M06-07 — MONOTONICITY on the full execute-facing result. Removing
+/// renderer information can only shrink what is acted on, never grow it.
+#[test]
+fn removing_renderer_information_never_grows_the_acted_set() {
+    fn acted(tag: &str, build: impl Fn(&str, &str) -> PreviewRequest) -> (usize, Vec<String>) {
+        let root = scratch(tag);
+        let a = five(&root, "chat_a");
+        let b: Vec<String> = (1..=4)
+            .map(|d| publish(&root, "chat_b", &format!("2026-02-0{d}T00:00:00.000Z")))
+            .collect();
+        let owner = Owner::acquire(&root);
+        let ex = owner.exclusive();
+        let outcome = run(&root, &ex, &db(vec![]), &build(&a[4], &b[3]));
+        let mut names: Vec<String> = outcome
+            .acted
+            .iter()
+            .map(|i| i.canonical_path.rsplit('/').next().unwrap().to_string())
+            .collect();
+        names.sort();
+        let purged = outcome.purged;
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+        (purged, names)
+    }
+
+    let full = |a: &str, b: &str| PreviewRequest {
+        chat_scope: None,
+        projections: vec![
+            ProjectionInput { chat_id: "chat_a".into(), status: "ok".into(), content_hash: a.into() },
+            ProjectionInput { chat_id: "chat_b".into(), status: "ok".into(), content_hash: b.into() },
+        ],
+    };
+    let (full_purged, full_set) = acted("mono-full", full);
+    assert!(full_purged > 0, "ANTI-VACUITY: the positive control must really act");
+
+    // Every degradation of that same request, against identical trusted state.
+    let degradations: Vec<(&str, fn(&str, &str) -> PreviewRequest)> = vec![
+        ("one-chat-dropped", |a, _| PreviewRequest {
+            chat_scope: None,
+            projections: vec![ProjectionInput {
+                chat_id: "chat_a".into(), status: "ok".into(), content_hash: a.into() }],
+        }),
+        ("all-dropped", |_, _| PreviewRequest { chat_scope: None, projections: vec![] }),
+        ("status-failed", |a, b| PreviewRequest {
+            chat_scope: None,
+            projections: vec![
+                ProjectionInput { chat_id: "chat_a".into(), status: "unusable".into(), content_hash: a.into() },
+                ProjectionInput { chat_id: "chat_b".into(), status: "unusable".into(), content_hash: b.into() },
+            ],
+        }),
+        ("hash-corrupted", |_, _| PreviewRequest {
+            chat_scope: None,
+            projections: vec![
+                ProjectionInput { chat_id: "chat_a".into(), status: "ok".into(), content_hash: "zz".into() },
+                ProjectionInput { chat_id: "chat_b".into(), status: "ok".into(), content_hash: "zz".into() },
+            ],
+        }),
+        ("scope-narrowed", |a, _| PreviewRequest {
+            chat_scope: Some(vec!["chat_a".into()]),
+            projections: vec![ProjectionInput {
+                chat_id: "chat_a".into(), status: "ok".into(), content_hash: a.into() }],
+        }),
+    ];
+    for (label, build) in degradations {
+        let (purged, set) = acted(&format!("mono-{label}"), build);
+        assert!(
+            purged <= full_purged,
+            "[{label}] losing renderer information increased the acted count"
+        );
+        assert!(
+            set.iter().all(|n| full_set.contains(n)),
+            "[{label}] losing renderer information acted on something new: {set:?}"
+        );
+    }
+}
+
+/// AC-M06-08 — the trusted DB probe stays fail-closed, and every provenance and
+/// writing-state class blocks execution.
+#[test]
+fn every_db_protection_class_blocks_execution_and_probe_failure_blocks_all() {
+    use crate::archive_db_probe::{DbProbeCounts, GenerationProtection, ProtectionSource};
+
+    let sources = [
+        ProtectionSource::StrandedWriting,
+        ProtectionSource::Import,
+        ProtectionSource::Restore,
+        ProtectionSource::Relink,
+    ];
+    for source in sources {
+        let root = scratch("dbclass");
+        let hashes = five(&root, "chat_a");
+        let owner = Owner::acquire(&root);
+        let ex = owner.exclusive();
+        // Protect the two generations a clean run would otherwise act on.
+        let protections: Vec<GenerationProtection> = hashes[..2]
+            .iter()
+            .map(|h| GenerationProtection {
+                chat_id: "chat_a".to_string(),
+                content_hash: h.clone(),
+                source,
+            })
+            .collect();
+        let outcome = run(&root, &ex, &db(protections), &request("chat_a", "ok", &hashes[4]));
+        assert_eq!(outcome.purged, 0, "{source:?} did not protect");
+        assert_eq!(pkg_names(&root).len(), 5, "{source:?}: every generation survives");
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    // Probe failure: zero destructive action, whatever the probe managed to say.
+    for (label, probe) in [
+        ("incomplete-empty", crate::archive_db_probe::DbProbeResult {
+            complete: false, blockers: vec!["db-unavailable".into()], cas_roots: vec![],
+            generation_protections: vec![], counts: DbProbeCounts::default() }),
+        ("incomplete-with-facts", crate::archive_db_probe::DbProbeResult {
+            complete: false, blockers: vec!["db-busy".into()], cas_roots: vec![],
+            generation_protections: vec![GenerationProtection {
+                chat_id: "chat_a".into(), content_hash: "ab".repeat(32),
+                source: ProtectionSource::Import }],
+            counts: DbProbeCounts::default() }),
+    ] {
+        let root = scratch("dbfail");
+        let hashes = five(&root, "chat_a");
+        let owner = Owner::acquire(&root);
+        let before = census(&root);
+        let ex = owner.exclusive();
+        let outcome = run(&root, &ex, &probe, &request("chat_a", "ok", &hashes[4]));
+        assert_eq!(outcome.state, RunState::Refused, "[{label}] probe failure must refuse");
+        assert_eq!(outcome.purged, 0);
+        assert_eq!(census(&root), before, "[{label}] zero destructive action");
+        let _ = ex.release();
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
 }

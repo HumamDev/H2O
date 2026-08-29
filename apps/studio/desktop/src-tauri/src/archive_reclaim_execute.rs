@@ -64,6 +64,7 @@
 
 use crate::archive_db_probe::DbProbeResult;
 use crate::archive_durable_write::confined;
+use crate::archive_reclaim::crash;
 use crate::archive_instance_lock::ExclusiveOwnership;
 use crate::archive_reclaim::{
     purge_quarantined_item, quarantine_generation, quarantine_residue, QuarantineComponent,
@@ -114,6 +115,9 @@ pub mod codes {
     pub const RESIDUE_IDENTITY_INVALID: &str = "execute-residue-identity-invalid";
     pub const RESIDUE_SHARD_UNAVAILABLE: &str = "execute-residue-shard-unavailable";
     pub const RESIDUE_PURGE_FAILED: &str = "execute-residue-purge-failed";
+    /// T3.5: stale quarantine from a previous run did not converge, so this run
+    /// refuses to layer fresh deletions on top of an unresolved contradiction.
+    pub const RECOVERY_INCOMPLETE: &str = "execute-recovery-incomplete";
 }
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +208,9 @@ pub struct RunOutcome {
     /// are reported, never acted on — including on a no-op run, so "nothing was
     /// reclaimable" and "nothing looked like residue" stay distinguishable.
     pub residue_indeterminate: usize,
+    /// T3.5: stale quarantine entries from PREVIOUS runs this run converged.
+    /// Detail lives in the recovery record on disk.
+    pub recovered: usize,
 }
 
 impl RunOutcome {
@@ -221,6 +228,7 @@ impl RunOutcome {
             residue_acted: vec![],
             residue: ResidueCounts::default(),
             residue_indeterminate: 0,
+            recovered: 0,
         }
     }
 }
@@ -489,6 +497,22 @@ fn run_internal(
         return RunOutcome::refused(codes::PUBLISHER_SESSIONS_ACTIVE);
     }
 
+    // ── Stale quarantine convergence, BEFORE this run has a namespace ────────
+    // Every run visible to this pass is a PREVIOUS run by construction: the
+    // fresh run id is not minted until further down, so the current run cannot
+    // be seen, let alone consumed. That is what implements occupant one-run
+    // dwell without any clock.
+    let recovery = crate::archive_reclaim_recovery::recover_and_record(exclusive, archive_root);
+    if !recovery.may_proceed() {
+        // An unconverged archive is not a base for fresh destructive work.
+        let mut refused = RunOutcome::refused(codes::RECOVERY_INCOMPLETE);
+        refused.blockers.extend(recovery.blockers.iter().cloned());
+        refused.blockers.sort();
+        refused.blockers.dedup();
+        refused.recovered = recovery.purged;
+        return refused;
+    }
+
     // ── RECOMPUTED HERE, under exclusive ownership ───────────────────────────
     // Not accepted from a caller: a previous Preview's scan or plan is never
     // execution authority, and a stale candidate must be able to come back
@@ -580,6 +604,7 @@ fn run_internal(
             residue_acted: vec![],
             residue: ResidueCounts::default(),
             residue_indeterminate: residue.indeterminate.len(),
+            recovered: recovery.purged,
         };
     }
 
@@ -619,6 +644,7 @@ fn run_internal(
         return refused;
     }
     trace::record(trace::Event::PlanDurable);
+    crash::hit(crash::Point::AfterPlanDurableBeforeRename);
     pause::wait_if_armed();
     if fault::armed(fault::Point::AfterPlanDurableBeforeRename) {
         // The evidence is durable but the run stops before touching anything
@@ -662,6 +688,7 @@ fn run_internal(
         residue_acted: vec![],
         residue: ResidueCounts::default(),
         residue_indeterminate: residue.indeterminate.len(),
+        recovered: recovery.purged,
     };
 
     for candidate in &candidates {
@@ -717,6 +744,7 @@ fn run_internal(
             }
         }
         outcome.quarantined += 1;
+        crash::hit(crash::Point::AfterRenameBeforeNamespaceDurable);
 
         // ── The namespace transition must be DURABLE before anything claims it
         //    happened, and before the item is purged. Atomic is not durable.
@@ -736,6 +764,7 @@ fn run_internal(
             break;
         }
         trace::record(trace::Event::QuarantineNamespaceDurable);
+        crash::hit(crash::Point::AfterNamespaceDurableBeforeReceipt);
 
         // ── Quarantine receipt DURABLE before any purge ──────────────────────
         let qname = QuarantineComponent::parse(&format!(
@@ -766,6 +795,7 @@ fn run_internal(
             break;
         }
         trace::record(trace::Event::QuarantineReceiptDurable);
+        crash::hit(crash::Point::AfterReceiptBeforePurge);
 
         // ── Same-run purge, through the T3.1 confined primitive only ─────────
         let bare_id = run_id.component().trim_start_matches("run-").to_string();
@@ -798,6 +828,7 @@ fn run_internal(
         if purge.converged {
             acted.purged = true;
             outcome.purged += 1;
+            crash::hit(crash::Point::AfterPurgeBeforePurgeReceipt);
         } else {
             // Logical deletion already happened; the canonical package is NOT
             // restored. The physical residue stays contained for recovery.
@@ -835,6 +866,7 @@ fn run_internal(
         }
         trace::record(trace::Event::PurgeReceiptDurable);
         outcome.acted.push(acted);
+        crash::hit(crash::Point::BetweenGenerationItems);
     }
 
     // ── Stage two: staging/temp residue ─────────────────────────────────────
@@ -842,6 +874,7 @@ fn run_internal(
     // material generation failure means the run already met a contradiction, so
     // it does not go on to delete anything else.
     if outcome.state == RunState::Complete {
+        crash::hit(crash::Point::AfterGenerationStageBeforeStaging);
         run_residue_stage(
             exclusive,
             archive_root,
@@ -965,6 +998,7 @@ fn run_residue_stage(
             }
         }
         outcome.residue.record(acted.family, true, false);
+        crash::hit(crash::Point::AfterResidueRenameBeforeNamespaceDurable);
 
         // ── Namespace transition DURABLE before any claim or purge ──────────
         // Source is whichever canonical namespace the entry left: the packages
@@ -987,6 +1021,7 @@ fn run_residue_stage(
             break;
         }
         trace::record(trace::Event::ResidueNamespaceDurable);
+        crash::hit(crash::Point::AfterResidueNamespaceDurableBeforeReceipt);
 
         // ── Quarantine receipt DURABLE before any purge ─────────────────────
         let qname = QuarantineComponent::parse(&format!(
@@ -1015,6 +1050,7 @@ fn run_residue_stage(
             break;
         }
         trace::record(trace::Event::ResidueReceiptDurable);
+        crash::hit(crash::Point::AfterResidueReceiptBeforePurge);
 
         // ── Same-run purge, through the T3.1 confined primitive only ────────
         let quarantine_target =
@@ -1078,6 +1114,7 @@ fn run_residue_stage(
         }
         trace::record(trace::Event::ResiduePurgeReceiptDurable);
         outcome.residue_acted.push(acted);
+        crash::hit(crash::Point::BetweenStagingItems);
     }
 }
 

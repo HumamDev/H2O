@@ -856,6 +856,9 @@ fn the_reclaim_root_is_derived_only_beneath_a_trusted_archive_root() {
             "open_packages_dir".to_string(),
             "open_reclaim_root_for_run".to_string(),
             "open_reclaim_root_for_test".to_string(),
+            /* T3.5 adds a NON-CREATING open, so a clean recovery pass over an
+               archive with no quarantine namespace manufactures nothing. */
+            "open_reclaim_root_if_present".to_string(),
             "open_reclaim_root_within".to_string(),
         ],
         "only the known confinement seams may touch a filesystem path"

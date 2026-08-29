@@ -57,7 +57,7 @@
 use crate::archive_package_scan::{
     IndeterminateReason, NameShape, OccupantClass, PackageScan, PACKAGE_SUFFIX,
 };
-use crate::archive_reclaim::{QuarantineComponent, QuarantineRunId};
+use crate::archive_reclaim::{crash, QuarantineComponent, QuarantineRunId};
 use crate::archive_reclaim_execute::{RUN_SCHEMA, RUN_SCHEMA_VERSION};
 use crate::archive_instance_lock::ExclusiveOwnership;
 
@@ -548,6 +548,7 @@ fn quarantine_internal(
         return outcome;
     }
     trace::record(trace::Event::PlanDurable);
+    crash::hit(crash::Point::AfterOccupantPlanDurableBeforeRename);
 
     let run_dir = match reclaim.create_run(exclusive, &run_id) {
         Ok(dir) => dir,
@@ -571,7 +572,10 @@ fn quarantine_internal(
     match crate::archive_reclaim::quarantine_occupant(
         exclusive, &packages, &run_dir, &source, &target,
     ) {
-        Ok(true) => outcome.quarantined = true,
+        Ok(true) => {
+            outcome.quarantined = true;
+            crash::hit(crash::Point::AfterOccupantRenameBeforeNamespaceDurable);
+        }
         Ok(false) => {
             outcome.blockers.push(codes::QUARANTINE_COLLISION.to_string());
             return outcome;
@@ -600,6 +604,7 @@ fn quarantine_internal(
         return outcome;
     }
     trace::record(trace::Event::QuarantineNamespaceDurable);
+    crash::hit(crash::Point::AfterOccupantNamespaceDurableBeforeReceipt);
 
     // ── Quarantine receipt DURABLE ───────────────────────────────────────────
     let durable = if fault::armed(fault::Point::AfterRenameBeforeReceipt) {
@@ -626,6 +631,19 @@ fn quarantine_internal(
     // There is no purge call, no purge receipt and no next-run sweep here.
     outcome.state = OccupantState::Quarantined;
     outcome
+}
+
+/// Test-only seam letting the T3.5 crash matrix drive the real occupant
+/// sequence from a child process. Compiled out of production entirely, so it
+/// adds no shipped surface; the private sequence itself is unchanged.
+#[cfg(test)]
+pub(crate) fn quarantine_internal_for_test(
+    exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+    publisher_sessions_empty: bool,
+    request: &OccupantRequest,
+) -> OccupantOutcome {
+    quarantine_internal(exclusive, archive_root, publisher_sessions_empty, request)
 }
 
 /// Deterministic fault injection for the occupant ordering proofs.
