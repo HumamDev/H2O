@@ -75,6 +75,10 @@ pub mod archive_durable_write;
 /// data already inside `archive/.h2o-reclaim`. G02 remains the activation gate.
 pub mod archive_reclaim;
 
+/// M06 T3.2 — generation reclamation execution under full preflight. DORMANT:
+/// registers no command and is unreachable from the renderer.
+pub mod archive_reclaim_execute;
+
 /// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
 /// the trusted engine; owns no authority and mutates nothing.
 pub mod archive_reclamation_preview;

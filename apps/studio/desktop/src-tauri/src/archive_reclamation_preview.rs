@@ -119,7 +119,7 @@ pub struct PreviewResult {
 /// Validates the renderer request and converts it into T2.2's enabling-only
 /// inputs. Refuses rather than truncating, and refuses duplicates so no
 /// ordering of the payload can change the outcome.
-fn admit_request(
+pub(crate) fn admit_request(
     request: &PreviewRequest,
 ) -> Result<(BTreeMap<String, ProjectionVerdict>, Option<BTreeSet<String>>), String> {
     if request.projections.len() > MAX_PREVIEW_INPUTS {

@@ -647,15 +647,74 @@ fn the_reclaim_root_is_derived_only_beneath_a_trusted_archive_root() {
         }
     }
     owners.sort();
+    /* The permitted set. T3.2 added two more seams, both crate-internal and
+       both deriving a descriptor from a trusted archive root:
+       `open_reclaim_root_for_run` and `open_packages_dir`. The latter is a
+       RENAME SOURCE only — no operation consuming it can unlink. A new
+       path-taking API of any other name still fails here. */
     assert_eq!(
         owners,
         vec![
+            "open_packages_dir".to_string(),
+            "open_reclaim_root_for_run".to_string(),
             "open_reclaim_root_for_test".to_string(),
-            "open_reclaim_root_within".to_string()
+            "open_reclaim_root_within".to_string(),
         ],
-        "only the two confinement seams may touch a filesystem path"
+        "only the known confinement seams may touch a filesystem path"
     );
+    /* None of them is publicly reachable, and the DESTRUCTIVE primitives take
+       no path at all. */
+    for seam in ["open_reclaim_root_within", "open_reclaim_root_for_run", "open_packages_dir"] {
+        assert!(
+            !source.contains(&format!("pub fn {seam}")),
+            "{seam} must not be publicly reachable"
+        );
+    }
+    for destructive in ["pub fn purge_quarantined_item", "pub fn quarantine_generation"] {
+        let at = source.find(destructive).expect(destructive);
+        let sig = &source[at..at + source[at..].find(" -> ").unwrap()];
+        assert!(!sig.contains("Path"), "{destructive} must not accept a path");
+    }
     assert!(path_fns.contains(&"open_reclaim_root".to_string()));
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// The durability primitive synchronizes BOTH directories of the namespace
+/// transition.
+///
+/// Whether an fsync truly reached the platter is not observable from userspace
+/// without a real crash, so this proves the property that IS observable: both
+/// descriptors are synchronized, and dropping either is caught.
+#[test]
+fn the_quarantine_transition_synchronizes_both_directories() {
+    let source = include_str!("../archive_reclaim.rs");
+    let at = source
+        .find("pub fn durable_quarantine_transition")
+        .expect("durability primitive");
+    let body = &source[at..at + source[at..].find("\n}").unwrap()];
+    assert!(body.contains("run.dir\n        .sync()"), "the destination is synchronized");
+    assert!(body.contains("packages\n        .sync()"), "the source is synchronized");
+    assert_eq!(body.matches(".sync()").count(), 2, "exactly two directory syncs");
+    /* Both failures are reported as the same fail-closed code. */
+    assert_eq!(body.matches("QUARANTINE_NOT_DURABLE").count(), 2);
+
+    // And it really runs against a disposable archive.
+    let root = scratch("nsdur");
+    std::fs::create_dir_all(root.join("packages")).unwrap();
+    let owner = ArchiveInstanceState::default();
+    owner.ensure_presence(&root).expect("shared");
+    let ex = owner.try_acquire_exclusive().expect("exclusive");
+    let reclaim = open_reclaim_root_for_run(&ex, &root).expect("reclaim");
+    let run = reclaim
+        .create_run(&ex, &QuarantineRunId::parse("dur").unwrap())
+        .expect("run");
+    let packages = open_packages_dir(&ex, &root).expect("packages");
+    assert!(
+        durable_quarantine_transition(&ex, &packages, &run).is_ok(),
+        "the transition synchronizes cleanly on a healthy archive"
+    );
 
     let _ = ex.release();
     let _ = std::fs::remove_dir_all(root.parent().unwrap());

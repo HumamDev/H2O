@@ -23,6 +23,12 @@
 //! with `O_NOFOLLOW`, so a symlink planted inside quarantine can have its own
 //! entry removed but can never be traversed.
 
+// DORMANT until G02: nothing in production calls this destructive authority
+// yet, so the compiler correctly reports it as unused. The attribute records
+// that dormancy deliberately rather than leaving build noise; it is removed
+// when the activation task wires a caller.
+#![allow(dead_code)]
+
 use crate::archive_durable_write::{confined, RECLAIM_NAMESPACE_COMPONENT};
 use crate::archive_instance_lock::ExclusiveOwnership;
 
@@ -46,6 +52,15 @@ pub mod codes {
     pub const RUN_ID_EMPTY: &str = "reclaim-run-id-empty";
     pub const RUN_ID_PREFIXED: &str = "reclaim-run-id-already-prefixed";
     pub const RUN_ID_CHARSET: &str = "reclaim-run-id-charset";
+    pub const RUN_CREATE_FAILED: &str = "reclaim-run-create-failed";
+    pub const RECEIPTS_UNAVAILABLE: &str = "reclaim-receipts-unavailable";
+    pub const RECEIPT_EXISTS: &str = "reclaim-receipt-exists";
+    pub const EVIDENCE_WRITE_FAILED: &str = "reclaim-evidence-write-failed";
+    pub const EVIDENCE_NOT_DURABLE: &str = "reclaim-evidence-not-durable";
+    pub const QUARANTINE_RENAME_FAILED: &str = "reclaim-quarantine-rename-failed";
+    pub const QUARANTINE_NOT_DURABLE: &str = "reclaim-quarantine-not-durable";
+    pub const QUARANTINE_UNSUPPORTED_PLATFORM: &str =
+        "reclaim-quarantine-unsupported-platform";
     pub const ROOT_UNAVAILABLE: &str = "reclaim-root-unavailable";
     pub const RUN_UNREADABLE: &str = "reclaim-run-unreadable";
     pub const ITEM_UNREADABLE: &str = "reclaim-item-unreadable";
@@ -254,6 +269,202 @@ pub(crate) fn open_reclaim_root_for_test(
 /// opens nothing and resolves no path.
 fn is_dir(st: &libc::stat) -> bool {
     (st.st_mode & libc::S_IFMT) == libc::S_IFDIR
+}
+
+/// The reclaim namespace for an execution run, derived from a trusted archive
+/// root. Crate-internal: the only production caller is the T3.2 execution
+/// authority, which itself derives the root from the canonical app authority.
+pub(crate) fn open_reclaim_root_for_run(
+    exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+) -> Result<ReclaimRoot, String> {
+    open_reclaim_root_within(exclusive, archive_root)
+}
+
+/// Opens the canonical packages directory as the RENAME SOURCE.
+///
+/// Read/rename-source only: possessing this descriptor grants no delete
+/// authority, because the only operation that consumes it is the atomic
+/// non-replacing move into quarantine. Nothing here can unlink a package.
+pub(crate) fn open_packages_dir(
+    _exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+) -> Result<confined::Dir, String> {
+    let root = confined::Dir::open_existing_nofollow(archive_root)
+        .map_err(|_| codes::ROOT_UNAVAILABLE.to_string())?;
+    root.open_child_nofollow(b"packages")
+        .map_err(|_| codes::ROOT_UNAVAILABLE.to_string())
+}
+
+/// A run directory inside quarantine: `<reclaim>/run-<id>/`.
+///
+/// Opaque, and obtainable only from `ReclaimRoot::create_run`, so a run
+/// destination cannot be named by a caller.
+pub struct RunDir {
+    dir: confined::Dir,
+}
+
+impl ReclaimRoot {
+    /// Creates `run-<id>` and returns its descriptor. Create-only: an existing
+    /// run directory is refused rather than reused, so two runs can never share
+    /// a namespace.
+    pub fn create_run(
+        &self,
+        _exclusive: &ExclusiveOwnership<'_>,
+        run: &QuarantineRunId,
+    ) -> Result<RunDir, String> {
+        let name = run.component().as_bytes();
+        self.dir
+            .mkdir_child_exclusive(name)
+            .map_err(|_| codes::RUN_CREATE_FAILED.to_string())?;
+        let dir = self
+            .dir
+            .open_child_nofollow(name)
+            .map_err(|_| codes::RUN_UNREADABLE.to_string())?;
+        self.dir
+            .sync()
+            .map_err(|_| codes::EVIDENCE_NOT_DURABLE.to_string())?;
+        Ok(RunDir { dir })
+    }
+
+    /// Opens (creating if absent) the reserved receipts sibling.
+    pub fn receipts_dir(&self, _exclusive: &ExclusiveOwnership<'_>) -> Result<ReceiptsDir, String> {
+        let name = RECEIPTS_NAMESPACE.as_bytes();
+        self.dir
+            .mkdir_child(name)
+            .map_err(|_| codes::RECEIPTS_UNAVAILABLE.to_string())?;
+        let dir = self
+            .dir
+            .open_child_nofollow(name)
+            .map_err(|_| codes::RECEIPTS_UNAVAILABLE.to_string())?;
+        Ok(ReceiptsDir { dir })
+    }
+}
+
+/// The reserved evidence namespace: `<reclaim>/receipts/`.
+pub struct ReceiptsDir {
+    dir: confined::Dir,
+}
+
+impl ReceiptsDir {
+    /// Writes one evidence record CREATE-ONLY and makes it durable before
+    /// returning, together with the directory entry.
+    ///
+    /// An existing name is refused: evidence is never replaced, so a colliding
+    /// run cannot silently overwrite another run's audit trail.
+    pub fn write_durable(
+        &self,
+        _exclusive: &ExclusiveOwnership<'_>,
+        name: &QuarantineComponent,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        use std::io::Write;
+        let mut file = self
+            .dir
+            .create_new_child(name.as_str().as_bytes())
+            .map_err(|err| {
+                if err.kind() == std::io::ErrorKind::AlreadyExists {
+                    codes::RECEIPT_EXISTS.to_string()
+                } else {
+                    codes::EVIDENCE_WRITE_FAILED.to_string()
+                }
+            })?;
+        file.write_all(bytes)
+            .map_err(|_| codes::EVIDENCE_WRITE_FAILED.to_string())?;
+        // The record, then the directory entry that names it.
+        file.sync_all()
+            .map_err(|_| codes::EVIDENCE_NOT_DURABLE.to_string())?;
+        self.dir
+            .sync()
+            .map_err(|_| codes::EVIDENCE_NOT_DURABLE.to_string())?;
+        Ok(())
+    }
+}
+
+/// Atomically moves a verified generation OUT of the canonical packages
+/// directory and into a run quarantine, without ever replacing an existing
+/// quarantine entry.
+///
+/// This is the only path by which a canonical package may leave
+/// `archive/packages`, and it is one `renameatx_np(RENAME_EXCL)` — never a
+/// copy-then-unlink, and never a replacing rename. Both endpoints are
+/// descriptor-relative; no path is constructed or followed.
+///
+/// Returns `Ok(false)` when the destination already exists, so a collision
+/// fails closed instead of overwriting evidence.
+#[cfg(target_os = "macos")]
+pub fn quarantine_generation(
+    _exclusive: &ExclusiveOwnership<'_>,
+    packages: &confined::Dir,
+    run: &RunDir,
+    source: &QuarantineComponent,
+    item: &QuarantineComponent,
+) -> Result<bool, String> {
+    let from = std::ffi::CString::new(source.as_str())
+        .map_err(|_| codes::COMPONENT_SEPARATOR.to_string())?;
+    let to = std::ffi::CString::new(item.as_str())
+        .map_err(|_| codes::COMPONENT_SEPARATOR.to_string())?;
+    let rc = unsafe {
+        libc::renameatx_np(
+            packages.as_raw_fd(),
+            from.as_ptr(),
+            run.dir.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::EEXIST) {
+            return Ok(false);
+        }
+        return Err(codes::QUARANTINE_RENAME_FAILED.to_string());
+    }
+    Ok(true)
+}
+
+/// Makes a completed quarantine rename DURABLE.
+///
+/// `renameatx_np` is atomic but not durable: after it returns, a crash can
+/// still leave the directory entries unwritten. The namespace transition spans
+/// TWO directories — the source loses an entry and the destination gains one —
+/// so both must be synchronized before anything may claim the move survived a
+/// crash boundary, and before the item is purged.
+///
+/// The run directory's own entry inside `.h2o-reclaim` was already made durable
+/// by `create_run`, so a crash cannot leave a quarantined item parented by a
+/// directory that does not exist.
+///
+/// Both handles are the descriptors already held for the move; nothing is
+/// reopened and no path is resolved.
+pub fn durable_quarantine_transition(
+    _exclusive: &ExclusiveOwnership<'_>,
+    packages: &confined::Dir,
+    run: &RunDir,
+) -> Result<(), String> {
+    // Destination first: the entry that must exist after a crash.
+    run.dir
+        .sync()
+        .map_err(|_| codes::QUARANTINE_NOT_DURABLE.to_string())?;
+    // Then the source, whose entry removal must not be lost.
+    packages
+        .sync()
+        .map_err(|_| codes::QUARANTINE_NOT_DURABLE.to_string())?;
+    Ok(())
+}
+
+/// Non-macOS: fail closed. A plain `renameat` would silently REPLACE an
+/// existing quarantine entry, and no weaker guarantee is acceptable for the
+/// only operation that removes a canonical package.
+#[cfg(not(target_os = "macos"))]
+pub fn quarantine_generation(
+    _exclusive: &ExclusiveOwnership<'_>,
+    _packages: &confined::Dir,
+    _run: &RunDir,
+    _source: &QuarantineComponent,
+    _item: &QuarantineComponent,
+) -> Result<bool, String> {
+    Err(codes::QUARANTINE_UNSUPPORTED_PLATFORM.to_string())
 }
 
 /// The outcome of one bounded purge. Partial failure is reported, never
