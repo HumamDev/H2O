@@ -2497,3 +2497,59 @@ fn the_durability_barrier_is_unconditional_for_both_residue_families() {
     assert!(selection.contains("(ResidueFamily::DurableTemp, Some(dir), _) => dir"));
     assert!(selection.contains("(ResidueFamily::GenerationStaging, _, Some(dir)) => dir"));
 }
+
+/// M06 T3.4 dwell, proven from the side that could break it: a LATER
+/// generation and staging run does not opportunistically purge an occupant
+/// quarantine left by an earlier run.
+///
+/// The prior quarantine is planted directly rather than produced by the
+/// occupant action, so this also covers the state a previous process leaves
+/// behind. Stale-run convergence belongs to the crash and recovery task; until
+/// then the correct behaviour is to leave it strictly alone.
+#[test]
+fn a_later_run_never_purges_a_prior_occupant_quarantine() {
+    let root = scratch("dwell");
+    let hashes = five(&root, "chat_a");
+    plant_temp(&root, "ab", ".h2o-durable-3-0.tmp", b"residue");
+    let staging = orphan_staging(&root, "chat_b");
+
+    // A prior occupant quarantine, with its receipt.
+    let prior = root.join(".h2o-reclaim").join("run-prior01");
+    let held = prior.join("occupant.chat_x.gdeadbeef.h2ochat");
+    std::fs::create_dir_all(held.join("nested")).unwrap();
+    std::fs::write(held.join("manifest.json"), b"{ corrupt").unwrap();
+    std::fs::write(held.join("nested").join("x"), b"deep").unwrap();
+    std::fs::create_dir_all(root.join(".h2o-reclaim").join("receipts")).unwrap();
+    std::fs::write(
+        root.join(".h2o-reclaim")
+            .join("receipts")
+            .join("run-prior01.occupant.chat_x.gdeadbeef.h2ochat.occupant-quarantined.json"),
+        br#"{"kind":"occupant","purged":false,"dwell":"one-run"}"#,
+    )
+    .unwrap();
+    let prior_before = census(&prior);
+    let receipts_before = census(&root.join(".h2o-reclaim").join("receipts"));
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+
+    // The later run really did act, so this is not a vacuous survival.
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.purged, 2);
+    assert_eq!(outcome.residue.generation_staging_purged, 1);
+    assert_eq!(outcome.residue.durable_temp_purged, 1);
+    assert!(!root.join("packages").join(&staging).exists());
+
+    // And the prior occupant quarantine is byte-identical.
+    assert_eq!(census(&prior), prior_before, "the dwelling occupant is untouched");
+    assert!(held.join("nested").join("x").exists());
+    let receipts_after = census(&root.join(".h2o-reclaim").join("receipts"));
+    assert!(
+        receipts_before.iter().all(|e| receipts_after.contains(e)),
+        "no receipt was pruned"
+    );
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}

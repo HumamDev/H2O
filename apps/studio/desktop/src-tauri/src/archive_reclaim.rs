@@ -482,6 +482,31 @@ pub fn quarantine_residue(
     quarantine_into_run(source_dir, run, source, item)
 }
 
+/// M06 T3.4 — atomically moves a proven non-VALID generation-path OCCUPANT out
+/// of the canonical packages directory and into a run quarantine.
+///
+/// The same `RENAME_EXCL` move the generation and residue paths use; a separate
+/// named entry point only so evidence semantics stay distinct and so the T3.2
+/// generation call graph keeps its own pins.
+///
+/// Deliberately WITHOUT the reserved-name guard `quarantine_residue` carries:
+/// an occupant is a canonical generation-path name, which is by definition not
+/// a reserved component. Eligibility for this move is established upstream by
+/// re-classification under exclusive ownership — a valid generation, a legacy
+/// package and reserved infrastructure are all refused there.
+///
+/// This move is quarantine ONLY. Occupant quarantine dwells (§J), so nothing
+/// here or in its caller purges what it moved.
+pub fn quarantine_occupant(
+    _exclusive: &ExclusiveOwnership<'_>,
+    packages: &confined::Dir,
+    run: &RunDir,
+    source: &QuarantineComponent,
+    item: &QuarantineComponent,
+) -> Result<bool, String> {
+    quarantine_into_run(packages, run, source, item)
+}
+
 /// Opens one canonical CAS shard as a rename SOURCE for durable-temp residue.
 ///
 /// Read/rename-source only, exactly like `open_packages_dir`: holding this

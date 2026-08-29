@@ -235,7 +235,7 @@ impl RunOutcome {
 /// A run id is namespace and evidence identity ONLY. No wall clock is involved
 /// and nothing derives deletion authority from its ordering. The caller cannot
 /// supply one.
-fn generate_run_id() -> Result<QuarantineRunId, String> {
+pub(crate) fn generate_run_id() -> Result<QuarantineRunId, String> {
     let mut buf = [0u8; 16];
     let rc = unsafe { libc::getentropy(buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
     if rc != 0 {

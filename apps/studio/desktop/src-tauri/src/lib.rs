@@ -79,6 +79,11 @@ pub mod archive_reclaim;
 /// registers no command and is unreachable from the renderer.
 pub mod archive_reclaim_execute;
 
+/// M06 T3.4 — governed occupant quarantine. DORMANT: registers no command and
+/// is unreachable from the renderer. Quarantine only — it holds no purge
+/// authority, because occupant action dwells.
+pub mod archive_occupant_quarantine;
+
 /// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
 /// the trusted engine; owns no authority and mutates nothing.
 pub mod archive_reclamation_preview;

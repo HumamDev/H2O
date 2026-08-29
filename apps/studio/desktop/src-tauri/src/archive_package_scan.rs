@@ -182,8 +182,12 @@ impl PackageScan {
 }
 
 /// The shape a name claims. Claims only — verification decides the truth.
+///
+/// Crate-visible so M06 T3.4 can ask THIS parser whether an operator-named
+/// occupant is generation-path shaped, instead of restating the grammar. A
+/// visibility seam only: nothing about the parse changed.
 #[derive(Debug, PartialEq, Eq)]
-enum NameShape {
+pub(crate) enum NameShape {
     Generation { chat_id: String, content_hash: String },
     Legacy { chat_id: String },
     Reserved,
@@ -192,7 +196,7 @@ enum NameShape {
 
 /// Inverse of the publisher's `generation_basename`. A test pins the round trip
 /// so the two cannot drift apart.
-fn name_shape(name: &str) -> NameShape {
+pub(crate) fn name_shape(name: &str) -> NameShape {
     if crate::archive_durable_write::is_reserved_component(name) {
         return NameShape::Reserved;
     }
