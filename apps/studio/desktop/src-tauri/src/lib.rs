@@ -70,6 +70,11 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T3.1 — quarantine namespace and confined purge primitive. DORMANT:
+/// registers no command, is unreachable from the renderer, and can only remove
+/// data already inside `archive/.h2o-reclaim`. G02 remains the activation gate.
+pub mod archive_reclaim;
+
 /// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
 /// the trusted engine; owns no authority and mutates nothing.
 pub mod archive_reclamation_preview;
