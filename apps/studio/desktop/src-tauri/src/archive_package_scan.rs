@@ -60,7 +60,51 @@ pub enum IndeterminateReason {
     UnexpectedOutcome,
 }
 
-/// How the verified in-content `snapshot.savedAt` came out, via T1.5.
+/// The package construction family, as the publisher's own version-triple gate
+/// established it.
+///
+/// Grounded in source, not inferred: the live writer is
+/// `buildSavedChatPackageV1`, which emits V1 or V2 from the SAME builder
+/// depending on content — V2 exactly when inline `data:image` assets were
+/// extracted (`isV2 = !!materialized.changed`), V1 otherwise. Both are
+/// therefore produced by the current live writer. `buildSavedChatPackageV3`
+/// exists but is called from no live path while live-v3 remains OFF, and the
+/// trusted verifier admits v1 and v2 only.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConstructionFamily {
+    /// schemaVersion 1, no payloadVersion, no assets.
+    V1,
+    /// schemaVersion 2 + payloadVersion 2 + assets.
+    V2,
+    /// The v3 family. Source-grounded, NOT speculative: `buildSavedChatPackageV3`
+    /// exists in the package projector but is called from no live path while
+    /// live-v3 remains OFF, and the trusted verifier refuses schemaVersion 3.
+    ///
+    /// No verified on-disk package can carry this family today — `verified_package`
+    /// only ever produces V1 or V2. It exists so the format-stale protection is
+    /// real and testable rather than latent, and so activating v3 later is a
+    /// reviewable change to `is_live_writer_family` alone.
+    V3,
+}
+
+impl ConstructionFamily {
+    /// True when this family is one the CURRENT live writer produces. Both
+    /// admitted families are live today; this predicate exists so the
+    /// distinction is explicit rather than assumed, and so activating another
+    /// family later is a one-line, reviewable change.
+    pub fn is_live_writer_family(self) -> bool {
+        match self {
+            // `buildSavedChatPackageV1` emits BOTH: V2 when inline assets were
+            // extracted, V1 otherwise. One writer, content-conditional output.
+            ConstructionFamily::V1 | ConstructionFamily::V2 => true,
+            // Live-v3 is OFF; no live path constructs it.
+            ConstructionFamily::V3 => false,
+        }
+    }
+}
+
+/// How the verified in-content `savedAt` came out, via T1.5.
 ///
 /// Validity and orderability are different things: a package can verify
 /// perfectly and still be unorderable. No synthetic timestamp is ever
@@ -80,10 +124,8 @@ pub struct VerifiedPackage {
     /// RECOMPUTED by the publisher's verifier from the stored bytes. Bare
     /// lowercase hex, normalized through the existing archive helper.
     pub content_hash: String,
-    /// The construction family the manifest declares, as the publisher's own
-    /// version-triple gate established it. v1 and v2 are the only families the
-    /// live writer admits.
-    pub payload_v2: bool,
+    /// The construction family the publisher's version-triple gate established.
+    pub construction_family: ConstructionFamily,
     pub order: OrderFact,
     /// Package-side CAS references from the VERIFIED manifest: sorted,
     /// deduplicated, normalized. Read-only evidence for later orphan analysis.
@@ -238,7 +280,11 @@ fn verified_package(
     Ok(VerifiedPackage {
         chat_id: verified.manifest.chat_id.clone(),
         content_hash,
-        payload_v2: verified.manifest.payload_v2,
+        construction_family: if verified.manifest.payload_v2 {
+            ConstructionFamily::V2
+        } else {
+            ConstructionFamily::V1
+        },
         order,
         asset_shas,
     })

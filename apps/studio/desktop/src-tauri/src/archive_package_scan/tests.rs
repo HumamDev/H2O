@@ -143,7 +143,10 @@ fn real_published_packages_verify_with_trusted_facts_and_asset_references() {
         OccupantClass::VerifiedGeneration(p) => {
             assert_eq!(p.chat_id, "chat_one");
             assert_eq!(p.content_hash, hash_v1);
-            assert!(!p.payload_v2, "v1 family");
+            assert_eq!(p.construction_family, ConstructionFamily::V1);
+            // The verifier admits v1/v2 only, so a disk can never yield V3.
+            assert_ne!(p.construction_family, ConstructionFamily::V3);
+            assert!(p.construction_family.is_live_writer_family());
             assert_eq!(
                 p.order,
                 OrderFact::Orderable { saved_at: "2026-03-01T00:00:00.000Z".into() }
@@ -157,7 +160,8 @@ fn real_published_packages_verify_with_trusted_facts_and_asset_references() {
     let v2 = find(&scan, &format!("chat_two.g{hash_v2}.h2ochat"));
     match &v2.class {
         OccupantClass::VerifiedGeneration(p) => {
-            assert!(p.payload_v2, "v2 family");
+            assert_eq!(p.construction_family, ConstructionFamily::V2);
+            assert!(p.construction_family.is_live_writer_family());
             // (M) verified manifest asset references, sorted and deduplicated.
             assert_eq!(p.asset_shas, shas);
             assert_eq!(p.asset_shas.len(), 2);

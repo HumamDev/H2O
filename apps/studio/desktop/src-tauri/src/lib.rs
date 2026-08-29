@@ -70,6 +70,14 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T2.2 — trusted READ-ONLY canonical CAS inventory, for read-only orphan
+/// analysis. Observes only; no CAS mutation authority exists.
+pub mod archive_cas_scan;
+
+/// M06 T2.2 — READ-ONLY retention computation and plan model. Pure: no
+/// filesystem, no database, no clock, no command, and nothing executable.
+pub mod archive_retention_plan;
+
 /// M06 T2.1 — trusted READ-ONLY enumerate / verify / classify over the
 /// canonical package namespace. Registers no command and mutates nothing.
 pub mod archive_package_scan;
