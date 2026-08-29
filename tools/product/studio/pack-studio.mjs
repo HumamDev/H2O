@@ -250,6 +250,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Read-only Saved Chat Archive Health UI shell (Phase C6.1). Renders C5
   // diagnostics into Settings -> Diagnostics via the injected read-only API; no
   // mutation/repair/import/sync/Chrome. Shows Desktop-only message when absent.
+  "ingestion/saved-chat-reclamation-ui.studio.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an
@@ -1387,6 +1388,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-restore.studio.js",
   "ingestion/saved-chat-archive-relink.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
+  "ingestion/saved-chat-reclamation-ui.studio.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an

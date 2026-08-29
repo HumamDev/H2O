@@ -439,6 +439,366 @@ check('renderArchiveHealthCard is safe when no DOM is present (no crash, returns
   assert.equal(out, null, 'must no-op without a document');
 });
 
+/* ── M06 T2.4 — New UI storage/reclamation overview, Analyze only ───────── */
+
+const RECLAIM_REL = 'src-surfaces-base/studio/ingestion/saved-chat-reclamation-ui.studio.js';
+const reclaimSrc = readRepo(RECLAIM_REL);
+const reclaimCode = stripComments(reclaimSrc);
+
+function loadReclamationApi(documentStub) {
+  const global = { window: undefined, document: documentStub };
+  global.window = global;
+  const context = vm.createContext(global);
+  vm.runInContext(reclaimSrc, context, { filename: RECLAIM_REL });
+  return context.H2O.Studio.reclamationUi;
+}
+
+/* A minimal DOM stub: elements record textContent and children, and nothing
+   can execute. Any markup that survived escaping would be visible as text. */
+function domStub() {
+  const created = [];
+  function make(tag) {
+    const node = {
+      tagName: String(tag).toUpperCase(),
+      textContent: '',
+      children: [],
+      attrs: {},
+      disabled: false,
+      listeners: {},
+      appendChild(child) { this.children.push(child); return child; },
+      setAttribute(k, v) { this.attrs[k] = v; },
+      getAttribute(k) { return this.attrs[k]; },
+      addEventListener(name, fn) { this.listeners[name] = fn; },
+    };
+    created.push(node);
+    return node;
+  }
+  return { document: { createElement: make }, created };
+}
+
+function flatten(node, out = []) {
+  out.push(node);
+  (node.children || []).forEach((c) => flatten(c, out));
+  return out;
+}
+function allText(node) {
+  return flatten(node).map((n) => n.textContent || '').join('\n');
+}
+
+const PREVIEW_FIXTURE = {
+  schema: 'h2o.m06.reclamationPreview',
+  schemaVersion: 1,
+  sources: {
+    packageScanComplete: true, packageScanBlockers: [],
+    dbProbeComplete: true, dbProbeBlockers: [],
+    casInventoryComplete: true, casInventoryBlockers: [],
+  },
+  plan: {
+    complete: true, retentionFloor: 3, blockers: [],
+    totals: { occupants: 3, protected: 2, candidates: 1, excluded: 0, chatsInScope: 1 },
+    decisions: [
+      { path: 'archive/packages/c.g11.h2ochat', name: 'c.g11.h2ochat', chatId: 'c',
+        decision: 'protected', reasons: ['stranded-writing', 'import-provenance', 'retention-floor'] },
+      { path: 'archive/packages/c.g22.h2ochat', name: 'c.g22.h2ochat', chatId: 'c',
+        decision: 'candidate', evidence: { savedAt: '2026-01-01T00:00:00.000Z', familyRank: 4 } },
+      { path: 'archive/packages/c.g33.h2ochat', name: 'c.g33.h2ochat', chatId: 'c',
+        decision: 'excluded', reason: 'indeterminate' },
+    ],
+    cas: { complete: true, observed: ['aa', 'bb'], referenced: ['aa'], observedUnreferenced: ['bb'], incompleteReasons: [] },
+  },
+};
+
+const DIAGNOSTICS_FIXTURE = {
+  packages: [{ chatId: 'c' }, { chatId: 'c' }],
+  residue: {
+    complete: true, count: 2,
+    entries: [
+      { name: '.h2o-genstage-00ff01', path: 'archive/packages/.h2o-genstage-00ff01', kind: 'generation-staging' },
+      { name: '.h2o-durable-7-0.tmp', path: 'archive/assets/ab/.h2o-durable-7-0.tmp', kind: 'durable-temp' },
+    ],
+    unscanned: [],
+  },
+};
+
+check('T2.4 New UI only — reclamation module is loaded and packed, no Legacy surface', () => {
+  assert.ok(studioHtml.includes('./ingestion/saved-chat-reclamation-ui.studio.js'), 'studio.html must load the module');
+  assert.ok(pack.includes('ingestion/saved-chat-reclamation-ui.studio.js'), 'pack-studio must include the module');
+  const helperCode = stripComments(helperSrc);
+  assert.ok(helperCode.includes('H2O.Studio.reclamationUi'),
+    'the New UI health card must resolve the reclamation API in code');
+  assert.ok(helperCode.includes('mountReclamationCard(container)'),
+    'the New UI health card must actually mount the card');
+  const legacyDirs = ['src-surfaces-base/legacy', 'src-runtime-base'];
+  for (const dir of legacyDirs) {
+    const abs = path.join(REPO_ROOT, dir);
+    if (!fs.existsSync(abs)) continue;
+    const hits = [];
+    (function walk(d) {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(js|mjs|html)$/.test(entry.name)) {
+          const text = fs.readFileSync(full, 'utf8');
+          if (text.includes('h2o_archive_reclamation_preview') || text.includes('mountReclamationCard')) hits.push(full);
+        }
+      }
+    })(abs);
+    assert.deepEqual(hits, [], `M06 UI must not appear under ${dir}`);
+  }
+});
+
+check('T2.4 Analyze is the ONLY action — no destructive control exists', () => {
+  for (const forbidden of [
+    'Reclaim', 'reclaim(', 'Execute', 'Delete', 'Remove', 'Purge', 'Quarantine',
+    'casCollect', 'cas_collect', 'collectible', 'coming soon',
+    'h2o_archive_reclaim', 'h2o_archive_execute',
+    'h2o_archive_delete', 'h2o_archive_purge', 'h2o_archive_quarantine',
+  ]) {
+    assert.ok(!reclaimCode.includes(forbidden), `no destructive surface: ${forbidden}`);
+  }
+  const actions = reclaimCode.match(/data-h2o-action', '([^']+)'/g) || [];
+  assert.deepEqual(actions, ["data-h2o-action', 'analyze-archive'"], 'exactly one action');
+  assert.equal((reclaimCode.match(/createElement\('button'\)/g) || []).length, 0, 'buttons are created through the helper only');
+  assert.equal((reclaimCode.match(/el\('button'/g) || []).length, 1, 'exactly one button exists');
+});
+
+check('T2.4 no automatic Analyze — no mount call, timer, interval or polling', () => {
+  for (const forbidden of ['setInterval', 'setTimeout', 'requestIdleCallback', 'requestAnimationFrame', 'DOMContentLoaded']) {
+    assert.ok(!reclaimCode.includes(forbidden), `no background scheduling: ${forbidden}`);
+  }
+  /* analyze() must be reachable only from the click listener and the returned API. */
+  assert.ok(reclaimCode.includes("button.addEventListener('click'"), 'analyze is click-driven');
+  const mountBody = reclaimCode.slice(reclaimCode.indexOf('function mountReclamationCard'));
+  const beforeListener = mountBody
+    .slice(0, mountBody.indexOf('addEventListener'))
+    /* drop the declaration itself; only a CALL during mount is the hazard */
+    .replace(/async function analyze\(\)/g, 'async function __decl__');
+  assert.ok(!/\banalyze\(\)/.test(beforeListener), 'analyze must not be CALLED during mount');
+});
+
+check('T2.4 no second projection/contentHash/retention implementation', () => {
+  for (const forbidden of ['sha256', 'Sha256', 'digest', 'contentHash =', 'K =', 'retentionFloor =', 'buildSavedChatPackage']) {
+    assert.ok(!reclaimCode.includes(forbidden), `must not reimplement: ${forbidden}`);
+  }
+  assert.ok(reclaimCode.includes('probeCurrentSavedChatProjectionV1'), 'must reuse the existing projection producer');
+  assert.ok(reclaimCode.includes('diagnoseSavedChatArchiveV1'), 'must reuse the composed T1.3 diagnostics');
+  assert.ok(reclaimCode.includes("'h2o_archive_reclamation_preview'"), 'must call the trusted Preview command');
+});
+
+check('T2.4 no truncation, no persistence, no unsanitized markup', () => {
+  for (const forbidden of ['.slice(0, 500', 'slice(0,500', '.slice(0, 10000', 'limit: 500', 'localStorage', 'sessionStorage', 'innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write']) {
+    assert.ok(!reclaimCode.includes(forbidden), `forbidden: ${forbidden}`);
+  }
+  assert.ok(reclaimCode.includes('textContent'), 'returned data is rendered as text');
+});
+
+check('T2.4 request contract carries no path, floor or force', () => {
+  const req = reclaimCode.slice(reclaimCode.indexOf('invoke(PREVIEW_COMMAND'), reclaimCode.indexOf('invoke(PREVIEW_COMMAND') + 200);
+  assert.ok(req.includes('projections'), 'projections are sent');
+  for (const forbidden of ['path', 'root', 'floor', 'force', 'k:', 'retention', 'candidate']) {
+    assert.ok(!req.toLowerCase().includes(forbidden), `request must not carry ${forbidden}`);
+  }
+});
+
+check('T2.4 overview model is derived only from the trusted Preview', () => {
+  const api = loadReclamationApi(domStub().document);
+  const o = api.formatPreviewOverview(PREVIEW_FIXTURE);
+  assert.equal(o.schema, 'h2o.m06.reclamationPreview');
+  assert.equal(o.complete, true);
+  assert.equal(o.state, 'eligible');
+  assert.equal(o.retentionFloor, 3);
+  assert.equal(o.totals.candidates, 1);
+  assert.equal(o.totals.protected, 2);
+  assert.equal(o.cas.observedUnreferenced.length, 1);
+
+  /* Blockers must make an INCOMPLETE analysis visibly different from a
+     complete zero-candidate one. */
+  const blocked = JSON.parse(JSON.stringify(PREVIEW_FIXTURE));
+  blocked.plan.complete = false;
+  blocked.plan.blockers = ['plan-package-scan-incomplete'];
+  blocked.plan.totals.candidates = 0;
+  blocked.sources.packageScanComplete = false;
+  const b = api.formatPreviewOverview(blocked);
+  assert.equal(b.state, 'incomplete');
+  assert.notEqual(b.state, 'clean', 'incomplete must not read as clean');
+  assert.deepEqual(b.blockers, ['plan-package-scan-incomplete']);
+
+  const clean = JSON.parse(JSON.stringify(PREVIEW_FIXTURE));
+  clean.plan.totals.candidates = 0;
+  assert.equal(api.formatPreviewOverview(clean).state, 'clean');
+});
+
+check('T2.4 every protection reason survives presentation', () => {
+  const api = loadReclamationApi(domStub().document);
+  const rows = api.formatDecisionRows(PREVIEW_FIXTURE);
+  const protectedRow = rows.find((r) => r.decision === 'protected');
+  assert.deepEqual(protectedRow.reasons, ['stranded-writing', 'import-provenance', 'retention-floor']);
+  assert.equal(rows.find((r) => r.decision === 'candidate').savedAt, '2026-01-01T00:00:00.000Z');
+  assert.equal(rows.find((r) => r.decision === 'excluded').exclusionReason, 'indeterminate');
+  /* Deterministic ordering by trusted identity. */
+  assert.deepEqual(rows.map((r) => r.path), rows.map((r) => r.path).slice().sort());
+});
+
+check('T2.4 residue uses the COMPLETE T1.3 authority, not durable-temp alone', () => {
+  const api = loadReclamationApi(domStub().document);
+  const r = api.formatResidueOverview(DIAGNOSTICS_FIXTURE);
+  assert.equal(r.count, 2, 'both residue families are counted');
+  assert.equal(r.kinds['generation-staging'], 1, 'generation staging residue present');
+  assert.equal(r.kinds['durable-temp'], 1, 'durable-temp residue present');
+  assert.deepEqual(r.entries.map((e) => e.path).sort(), [
+    'archive/assets/ab/.h2o-durable-7-0.tmp',
+    'archive/packages/.h2o-genstage-00ff01',
+  ], 'exact archive-relative paths are preserved');
+  /* The durable-temp command alone must never be treated as the residue total. */
+  assert.ok(!reclaimCode.includes('h2o_archive_durable_temp_residue'),
+    'the card must not call the durable-temp probe as its residue authority');
+
+  const partial = JSON.parse(JSON.stringify(DIAGNOSTICS_FIXTURE));
+  partial.residue.complete = false;
+  partial.residue.count = 0;
+  partial.residue.entries = [];
+  partial.residue.unscanned = [{ root: 'archive/assets', family: '.h2o-durable-*.tmp', reason: 'probe-failed' }];
+  const p = api.formatResidueOverview(partial);
+  assert.equal(p.complete, false, 'incomplete residue cannot read as an authoritative zero');
+  assert.equal(p.unscanned.length, 1);
+});
+
+await checkAsync('T2.4 one Analyze click = one Preview invocation, none on mount', async () => {
+  const stub = domStub();
+  const api = loadReclamationApi(stub.document);
+  const calls = [];
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => DIAGNOSTICS_FIXTURE,
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async (cmd, args) => { calls.push({ cmd, args }); return PREVIEW_FIXTURE; },
+  });
+  assert.equal(calls.length, 0, 'mounting must not invoke Preview');
+
+  await handle.analyze();
+  assert.equal(calls.length, 1, 'exactly one invocation per Analyze');
+  assert.equal(calls[0].cmd, 'h2o_archive_reclamation_preview');
+  assert.deepEqual(Object.keys(calls[0].args.request), ['projections']);
+  assert.equal(calls[0].args.request.projections.length, 1, 'one unique chat, deduplicated');
+  assert.equal(handle.getState().state, 'eligible');
+
+  const text = allText(container);
+  assert.ok(text.includes('Read-only'), 'the surface states it is read-only');
+  /* "Storage & reclamation" is the SUBJECT, and "Nothing is deleted, renamed or
+     moved" is the read-only promise — both must be allowed. What must never
+     appear is wording that OFFERS or CLAIMS a destructive act. The absence of a
+     destructive control itself is pinned structurally above. */
+  for (const forbidden of [
+    /safe to delete/i, /\bcollectible\b/i, /\bdeletable\b/i, /\breclaimable\b/i,
+    /\bpurge\b/i, /\bquarantine\b/i, /were deleted/i, /has been deleted/i,
+    /delete now/i, /reclaim now/i, /\bReclaim\b/,
+  ]) {
+    assert.ok(!forbidden.test(text), `no destructive offer rendered: ${forbidden}`);
+  }
+  /* And the read-only promise is actually present. */
+  assert.ok(/Nothing is deleted, renamed or moved/i.test(text), 'the read-only promise is shown');
+  assert.ok(/Analysis only/i.test(text), 'CAS is labelled analysis only');
+});
+
+await checkAsync('T2.4 in-flight guard: rapid Analyze cannot double-invoke or overwrite', async () => {
+  const stub = domStub();
+  const api = loadReclamationApi(stub.document);
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => { await gate; return DIAGNOSTICS_FIXTURE; },
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => { calls += 1; return PREVIEW_FIXTURE; },
+  });
+  const first = handle.analyze();
+  const second = handle.analyze();
+  /* Release BEFORE awaiting: without an in-flight guard both calls would
+     proceed and this must fail on the count, not hang. */
+  release();
+  const [, secondResult] = await Promise.all([first, second]);
+  assert.equal(calls, 1, 'only one Preview invocation occurred');
+  assert.equal(secondResult, null, 'a second concurrent Analyze is refused');
+});
+
+await checkAsync('T2.4 failed projection cannot imply a candidate, and errors stay honest', async () => {
+  const stub = domStub();
+  const api = loadReclamationApi(stub.document);
+  let sent = null;
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => DIAGNOSTICS_FIXTURE,
+    probeProjection: async () => { throw new Error('probe exploded'); },
+    invoke: async (_cmd, args) => { sent = args; return { ...PREVIEW_FIXTURE, plan: { ...PREVIEW_FIXTURE.plan, totals: { ...PREVIEW_FIXTURE.plan.totals, candidates: 0 } } }; },
+  });
+  await handle.analyze();
+  assert.equal(sent.request.projections[0].status, 'probe-failed', 'a failed probe is reported honestly');
+  assert.notEqual(sent.request.projections[0].status, 'ok', 'never synthesized as ok');
+  assert.equal(sent.request.projections[0].contentHash, '', 'no substituted hash');
+
+  /* A command error must not render as an authoritative empty plan. */
+  const stub2 = domStub();
+  const api2 = loadReclamationApi(stub2.document);
+  const container2 = stub2.document.createElement('div');
+  const handle2 = api2.mountReclamationCard(container2, {
+    diagnose: async () => DIAGNOSTICS_FIXTURE,
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => { throw new Error('preview-request-too-large'); },
+  });
+  await handle2.analyze();
+  assert.equal(handle2.getState().state, 'error');
+  const text = allText(container2);
+  assert.ok(text.includes('preview-request-too-large'), 'the exact refusal is surfaced');
+  assert.ok(!/Nothing is currently eligible/.test(text), 'an error must not look like a clean result');
+});
+
+await checkAsync('T2.4 returned strings render as text, never markup', async () => {
+  const stub = domStub();
+  const api = loadReclamationApi(stub.document);
+  const hostile = '<img src=x onerror="alert(1)">';
+  const evil = JSON.parse(JSON.stringify(PREVIEW_FIXTURE));
+  evil.plan.blockers = [hostile];
+  evil.plan.complete = false;
+  evil.plan.decisions[0].path = hostile;
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => ({ packages: [{ chatId: 'c' }], residue: { complete: true, count: 1, entries: [{ path: hostile, name: hostile, kind: 'generation-staging' }], unscanned: [] } }),
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => evil,
+  });
+  await handle.analyze();
+  const nodes = flatten(container);
+  assert.ok(nodes.some((n) => (n.textContent || '').includes(hostile)), 'the hostile string is present as TEXT');
+  for (const n of nodes) {
+    assert.equal(n.innerHTML, undefined, 'no node received innerHTML');
+  }
+});
+
+await checkAsync('T2.4 empty archive renders a truthful complete-empty state', async () => {
+  const stub = domStub();
+  const api = loadReclamationApi(stub.document);
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => ({ packages: [], residue: { complete: true, count: 0, entries: [], unscanned: [] } }),
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => ({
+      schema: 'h2o.m06.reclamationPreview', schemaVersion: 1,
+      sources: { packageScanComplete: true, packageScanBlockers: [], dbProbeComplete: true, dbProbeBlockers: [], casInventoryComplete: true, casInventoryBlockers: [] },
+      plan: { complete: true, retentionFloor: 3, blockers: [], totals: { occupants: 0, protected: 0, candidates: 0, excluded: 0, chatsInScope: 0 }, decisions: [], cas: { complete: true, observed: [], referenced: [], observedUnreferenced: [], incompleteReasons: [] } },
+    }),
+  });
+  await handle.analyze();
+  assert.equal(handle.getState().state, 'clean');
+  assert.ok(allText(container).includes('Analysis complete'), 'a complete empty result says so');
+});
+
+check('T2.4 preview result is never persisted', () => {
+  for (const forbidden of ['localStorage', 'sessionStorage', 'indexedDB', 'writeTextFile', 'plugin:fs|', 'preferences', 'receipt', '.h2o-reclaim']) {
+    assert.ok(!reclaimCode.includes(forbidden), `must not persist via ${forbidden}`);
+  }
+});
+
 console.log('');
 if (FAIL.length) {
   console.error(`[archive-health-ui] ${FAIL.length} failed, ${PASS.length} passed`);
