@@ -1171,21 +1171,49 @@ fn occupant_evidence_is_self_announcing_within_schema_v2() {
 /// (AN)(AO)(22)(23) dormant and unregistered: no command, no handler arm, no
 /// renderer route, and no renderer archive mutation authority.
 #[test]
-fn the_occupant_action_is_dormant_and_unregistered() {
+fn exactly_one_approved_occupant_command_is_registered() {
     let code = module_code();
-    assert!(
-        !code.contains("#[tauri::command]"),
-        "no occupant command may exist"
+    /* P4: G02 passed, so this module owns EXACTLY ONE command, and it forwards
+       an IDENTITY and nothing else. */
+    assert_eq!(
+        code.matches("#[tauri::command]").count(),
+        1,
+        "exactly one activated command"
     );
+    let src = include_str!("../archive_occupant_quarantine.rs");
+    let at = src.find("pub async fn h2o_archive_occupant_quarantine").expect("the command");
+    let sig = &src[at..at + src[at..].find(") -> ").unwrap()];
+    assert!(sig.contains("app: tauri::AppHandle") && sig.contains("request: OccupantRequest"));
+    for forbidden in ["Path", "root", "run_id", "String", "force", "classification"] {
+        assert!(!sig.contains(forbidden), "the command must not accept {forbidden}");
+    }
+    /* A pure forwarder: it re-derives nothing and decides nothing. */
+    let body = &src[at..at + src[at..].find("\n}").unwrap()];
+    assert!(body.contains("execute_occupant_quarantine(&app, &request)"));
+    for forbidden in [
+        "scan_packages_within", "name_shape", "quarantine_occupant", "purge_",
+        "archive_root(", "eligible(",
+    ] {
+        assert!(!body.contains(forbidden), "the command must not reimplement {forbidden}");
+    }
 
     let lib = include_str!("../lib.rs");
     assert!(lib.contains("pub mod archive_occupant_quarantine;"), "compiled");
-    assert!(
-        !lib.contains("archive_occupant_quarantine::"),
-        "declared but registered in no handler arm"
+    assert_eq!(
+        lib.matches("archive_occupant_quarantine::h2o_archive_occupant_quarantine").count(),
+        2,
+        "registered in BOTH handler variants, and only as the approved command"
     );
+    assert_eq!(
+        lib.matches("archive_occupant_quarantine::").count(),
+        2,
+        "no other item of this module is reachable from a handler"
+    );
+    /* Spelled past the approved name; every other destructive spelling stays
+       absent, and the private sequence is never reachable directly. */
     for forbidden in [
-        "h2o_archive_occupant", "h2o_archive_quarantine", "h2o_archive_reclaim",
+        "h2o_archive_occupant_purge", "h2o_archive_quarantine",
+        "h2o_archive_reclaim_", "h2o_archive_delete",
         "execute_occupant_quarantine", "quarantine_internal",
     ] {
         assert!(!lib.contains(forbidden), "{forbidden} must not be registered");
@@ -1238,9 +1266,47 @@ fn the_occupant_action_is_dormant_and_unregistered() {
             &tail[start..start + tail[start..].find('\'').expect("closing quote")]
         })
         .collect();
-    assert_eq!(actions, vec!["analyze-archive"], "Analyze is the ONLY control");
-    for forbidden in ["occupant", "quarantine", "reclaim", "purge", "delete"] {
-        assert!(!ui.to_lowercase().contains(&format!("'{forbidden}")), "no destructive UI: {forbidden}");
+    /* P4: G02 passed, so the card legitimately offers the two approved
+       destructive actions. Narrowed from "Analyze is the only control" to the
+       EXACT approved set — a third action, or a CAS-destructive one, fails. */
+    let mut actions = actions;
+    actions.sort();
+    assert_eq!(
+        actions,
+        vec!["analyze-archive", "quarantine-occupant", "reclaim-archive"],
+        "exactly the G02-approved control set"
+    );
+    /* Only the two approved commands are invocable from the New UI. */
+    let mut ui_commands: Vec<&str> = ui
+        .match_indices("h2o_archive_")
+        .map(|(at, _)| {
+            let tail = &ui[at..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(tail.len());
+            &tail[..end]
+        })
+        .collect();
+    ui_commands.sort();
+    ui_commands.dedup();
+    assert_eq!(
+        ui_commands,
+        vec![
+            "h2o_archive_occupant_quarantine",
+            "h2o_archive_reclamation_execute",
+            "h2o_archive_reclamation_preview",
+        ],
+        "no third command is reachable from the New UI"
+    );
+    /* Spelled past the two approved names, which the exact set above already
+       pins. What must stay absent from the New UI is every OTHER destructive
+       route — raw purge, stale recovery and anything CAS-destructive. */
+    for forbidden in [
+        "h2o_archive_purge", "h2o_archive_delete", "h2o_archive_recover",
+        "h2o_archive_stale", "h2o_archive_collect", "h2o_archive_cas_reclaim",
+        "purge_quarantined_item", "purge_run", "purge_all",
+    ] {
+        assert!(!ui.contains(forbidden), "no destructive route in the UI: {forbidden}");
     }
 }
 
@@ -1331,4 +1397,139 @@ fn the_namespace_durability_barrier_is_unconditional() {
     let barrier = src.find("let namespace_durable").unwrap();
     let receipt = src.find("let durable = if fault::armed").unwrap();
     assert!(rename < barrier && barrier < receipt, "rename → durable → receipt");
+}
+
+/// M06 P4 T4.1 — the ACTIVATED occupant command's request marshaling.
+///
+/// The renderer sends `{ chatId, occupantName }` and nothing else can land: an
+/// injected path, run id, destination or forced classification deserializes to
+/// exactly the identity-only request.
+#[test]
+fn the_activated_occupant_request_is_identity_only_over_the_wire() {
+    let clean: OccupantRequest =
+        serde_json::from_str(r#"{"chatId":"chat_a","occupantName":"chat_a.gab.h2ochat"}"#)
+            .expect("the approved payload deserializes");
+    let hostile: OccupantRequest = serde_json::from_str(
+        r#"{"chatId":"chat_a","occupantName":"chat_a.gab.h2ochat",
+            "path":"/etc/passwd","archiveRoot":"/","runId":"run-evil",
+            "quarantineDestination":"occupant.x","classification":"corrupt",
+            "force":true,"casSha":"sha256-aa"}"#,
+    )
+    .expect("extra keys are ignored, not fatal");
+    assert_eq!(clean, hostile, "no injected field can reach the trusted sequence");
+    assert_eq!(clean.chat_id, "chat_a");
+    assert_eq!(clean.occupant_name, "chat_a.gab.h2ochat");
+
+    /* And the wire spelling is the camelCase the New UI actually sends. */
+    assert!(serde_json::from_str::<OccupantRequest>(
+        r#"{"chat_id":"chat_a","occupant_name":"x.h2ochat"}"#
+    )
+    .is_err(), "snake_case is not the wire contract");
+}
+
+/// M06 P4 T4.1 — the remedy hint on the REAL pipeline.
+///
+/// The Preview contract tests use synthesized classifications; this one damages
+/// genuinely published packages, runs the real `scan_packages_within` and the
+/// real planner, and asserts the serialized envelope the renderer receives. It
+/// is what proves the synthetic reasons match what the classifier actually
+/// produces — and that the hint appears on exactly the rows T3.4 would accept.
+#[test]
+fn the_real_pipeline_hints_exactly_the_occupants_the_command_accepts() {
+    let root = scratch("hint-e2e");
+    // The four governed remedy states, each from a real published generation.
+    let corrupt = plant_corrupt(&root, "chat_c", "2026-01-01T00:00:00.000Z");
+    let partial = plant_partial(&root, "chat_p", "2026-01-02T00:00:00.000Z");
+    let foreign_name = format!("chat_f.g{}.h2ochat", "ab".repeat(32));
+    let mismatch = plant_foreign(&root, "chat_f", "2026-01-03T00:00:00.000Z", &foreign_name);
+    let elsewhere = root.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let unreadable = plant_symlink(&root, &format!("chat_u.g{}.h2ochat", "cd".repeat(32)), &elsewhere);
+    // And everything that must be offered nothing.
+    let valid = publish(&root, "chat_ok", "2026-01-04T00:00:00.000Z");
+    let legacy_src = publish(&root, "chat_leg", "2026-01-05T00:00:00.000Z");
+    std::fs::rename(
+        root.join("packages").join(&legacy_src),
+        root.join("packages").join("chat_leg.h2ochat"),
+    ).unwrap();
+    let broken_legacy = "chat_broken.h2ochat";
+    std::fs::create_dir_all(root.join("packages").join(broken_legacy)).unwrap();
+    std::fs::write(root.join("packages").join(broken_legacy).join("manifest.json"), b"{").unwrap();
+    std::fs::write(root.join("packages").join("notes.txt"), b"x").unwrap();
+    std::fs::create_dir_all(root.join("packages").join(".h2o-genstage-aa01")).unwrap();
+
+    // The REAL trusted pipeline, exactly as the Preview command runs it.
+    let preview = crate::archive_reclamation_preview::preview_from_parts(
+        &scan_packages_within(&root),
+        &crate::archive_db_probe::DbProbeResult {
+            complete: true, blockers: vec![], cas_roots: vec![],
+            generation_protections: vec![],
+            counts: crate::archive_db_probe::DbProbeCounts::default(),
+        },
+        &crate::archive_cas_scan::CasInventory {
+            complete: true, observed: vec![], foreign: vec![], blockers: vec![],
+        },
+        &crate::archive_reclamation_preview::PreviewRequest {
+            chat_scope: None,
+            projections: vec![],
+        },
+    )
+    .expect("an envelope");
+    let value = serde_json::to_value(&preview).expect("serializes");
+    let decisions = value["plan"]["decisions"].as_array().expect("decisions");
+
+    let hint_of = |name: &str| -> Option<serde_json::Value> {
+        decisions
+            .iter()
+            .find(|d| d["name"] == name)
+            .unwrap_or_else(|| panic!("row {name} present"))
+            .get("occupant_remedy")
+            .cloned()
+    };
+
+    // HINTED: exactly the four governed states, with the parsed chat identity.
+    for (name, chat) in [
+        (&corrupt, "chat_c"),
+        (&partial, "chat_p"),
+        (&mismatch, "chat_f"),
+        (&unreadable, "chat_u"),
+    ] {
+        let hint = hint_of(name).unwrap_or_else(|| panic!("{name} must be hinted"));
+        assert_eq!(hint, serde_json::json!({ "chat_id": chat }), "{name}");
+    }
+
+    // NOT HINTED: everything else the archive holds.
+    for name in [
+        valid.as_str(), "chat_leg.h2ochat", broken_legacy, "notes.txt", ".h2o-genstage-aa01",
+    ] {
+        assert_eq!(hint_of(name), None, "{name} must NOT be hinted");
+    }
+
+    /* THE JOIN THAT MATTERS: the hint set and the set the destructive command
+       actually accepts are the same set. Anything hinted is accepted; anything
+       accepted is hinted. */
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    for row in decisions {
+        let name = row["name"].as_str().unwrap();
+        let hinted = row.get("occupant_remedy").is_some();
+        let chat = row
+            .get("occupant_remedy")
+            .and_then(|h| h["chat_id"].as_str())
+            .unwrap_or("chat_unknown");
+        let outcome = quarantine_internal(&ex, &root, true, &request(chat, name));
+        let accepted = outcome.state == OccupantState::Quarantined;
+        assert_eq!(
+            hinted, accepted,
+            "[{name}] hint says {hinted} but the trusted command says {accepted} ({:?})",
+            outcome.blockers
+        );
+        if accepted {
+            /* Quarantined, never purged: one-run dwell is intact. */
+            assert!(outcome.quarantined && !outcome.purged);
+        }
+    }
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

@@ -248,13 +248,10 @@ fn admit(request: &OccupantRequest) -> Result<(String, String), String> {
 /// ENTRY; the atomic rename never dereferences it, so whatever it pointed at is
 /// untouched.
 fn eligible(reason: &IndeterminateReason) -> bool {
-    match reason {
-        IndeterminateReason::Corrupt
-        | IndeterminateReason::Partial
-        | IndeterminateReason::IdentityMismatch
-        | IndeterminateReason::Unreadable => true,
-        IndeterminateReason::NotAPackageName | IndeterminateReason::UnexpectedOutcome => false,
-    }
+    // ONE authority, beside the classifier that produces the reasons. The
+    // read-only Preview hint asks the same question of the same function, so
+    // what the operator is offered and what this action accepts cannot drift.
+    reason.is_occupant_remedy_class()
 }
 
 fn classification_of(reason: &IndeterminateReason) -> String {
@@ -631,6 +628,24 @@ fn quarantine_internal(
     // There is no purge call, no purge receipt and no next-run sweep here.
     outcome.state = OccupantState::Quarantined;
     outcome
+}
+
+/// M06 P4 T4.1 — the ACTIVATED governed occupant-quarantine command.
+///
+/// G02 passed, so this authority is reachable. It forwards the identity — a
+/// chat id and an occupant basename — and nothing else; no path, no root, no
+/// run id, no quarantine destination, no classification and no force flag is
+/// expressible. The trusted sequence re-derives the canonical source through
+/// the T2.1 parser and RE-CLASSIFIES it under exclusive ownership, so a target
+/// an operator saw as corrupt but which now verifies is refused.
+///
+/// Quarantine only: the run that moves an occupant never purges it.
+#[tauri::command]
+pub async fn h2o_archive_occupant_quarantine(
+    app: tauri::AppHandle,
+    request: OccupantRequest,
+) -> OccupantOutcome {
+    execute_occupant_quarantine(&app, &request)
 }
 
 /// Test-only seam letting the T3.5 crash matrix drive the real occupant

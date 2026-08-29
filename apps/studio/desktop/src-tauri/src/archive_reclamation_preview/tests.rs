@@ -445,3 +445,209 @@ fn only_a_read_only_preview_command_is_registered() {
     // One canonical root authority feeds both scans.
     assert_eq!(code.matches("archive_durable_write::archive_root").count(), 1);
 }
+
+// ── M06 P4 T4.1 — the trusted occupant-remedy display contract ─────────────
+
+fn indeterminate(name: &str, reason: IndeterminateReason) -> ClassifiedOccupant {
+    ClassifiedOccupant {
+        path: format!("archive/packages/{name}"),
+        name: name.to_string(),
+        class: OccupantClass::Indeterminate { reason },
+    }
+}
+
+fn reserved(name: &str) -> ClassifiedOccupant {
+    ClassifiedOccupant {
+        path: format!("archive/packages/{name}"),
+        name: name.to_string(),
+        class: OccupantClass::ReservedInfrastructure,
+    }
+}
+
+/// The serialized hint for one occupant name, straight out of the Preview
+/// envelope the renderer actually receives.
+fn remedy_hint(occupants: Vec<ClassifiedOccupant>, name: &str) -> Option<serde_json::Value> {
+    let preview = preview_from_parts(
+        &scan(occupants),
+        &db(vec![], vec![]),
+        &cas(vec![]),
+        &request(&[]),
+    )
+    .expect("an envelope");
+    let value = serde_json::to_value(&preview).expect("serializes");
+    let row = value["plan"]["decisions"]
+        .as_array()
+        .expect("decisions")
+        .iter()
+        .find(|d| d["name"] == name)
+        .unwrap_or_else(|| panic!("row {name} is present"))
+        .clone();
+    row.get("occupant_remedy").cloned()
+}
+
+/// (1)(2)(3)(4) every governed remedy state on a GENERATION path carries the
+/// hint, with the chat identity the canonical parser proved.
+#[test]
+fn every_governed_remedy_state_on_a_generation_path_carries_the_hint() {
+    let name = format!("chat_a.g{}.h2ochat", hash(9));
+    for reason in [
+        IndeterminateReason::Corrupt,
+        IndeterminateReason::Partial,
+        IndeterminateReason::Unreadable,
+        IndeterminateReason::IdentityMismatch,
+    ] {
+        let hint = remedy_hint(vec![indeterminate(&name, reason.clone())], &name)
+            .unwrap_or_else(|| panic!("{reason:?} must carry the hint"));
+        assert_eq!(
+            hint,
+            serde_json::json!({ "chat_id": "chat_a" }),
+            "{reason:?} must carry ONLY the trusted chat identity"
+        );
+    }
+}
+
+/// (5)(6)(7)(9) every other state is offered nothing, and the field is OMITTED
+/// rather than sent as null — so no other row's payload changed at all.
+#[test]
+fn no_other_occupant_state_receives_the_remedy_hint() {
+    let cases: Vec<(&str, ClassifiedOccupant)> = vec![
+        // (5) a damaged LEGACY package classifies identically to a damaged
+        //     generation, and must still be offered nothing.
+        ("legacy-corrupt", indeterminate("chat_leg.h2ochat", IndeterminateReason::Corrupt)),
+        ("legacy-partial", indeterminate("chat_leg.h2ochat", IndeterminateReason::Partial)),
+        ("legacy-unreadable", indeterminate("chat_leg.h2ochat", IndeterminateReason::Unreadable)),
+        // (6) a foreign name.
+        ("foreign", indeterminate("notes.txt", IndeterminateReason::NotAPackageName)),
+        ("foreign-dir", indeterminate("random-dir", IndeterminateReason::NotAPackageName)),
+        // (9) a state this scan does not model: fail closed.
+        (
+            "unexpected",
+            indeterminate(&format!("chat_a.g{}.h2ochat", hash(9)), IndeterminateReason::UnexpectedOutcome),
+        ),
+        // NotAPackageName can never legitimately pair with a generation name,
+        // but if it ever did the reason alone must still refuse it.
+        (
+            "generation-not-a-package-name",
+            indeterminate(&format!("chat_a.g{}.h2ochat", hash(9)), IndeterminateReason::NotAPackageName),
+        ),
+        // (7) reserved infrastructure and residue.
+        ("reserved", reserved(".h2o-genstage-aa01")),
+        ("residue-temp", reserved(".h2o-durable-1-0.tmp")),
+        ("reclaim-root", reserved(".h2o-reclaim")),
+    ];
+    for (label, occupant) in cases {
+        let name = occupant.name.clone();
+        assert_eq!(
+            remedy_hint(vec![occupant], &name),
+            None,
+            "[{label}] must receive no remedy hint, and the field must be omitted"
+        );
+    }
+}
+
+/// (8) a VerifiedGeneration produces no remedy hint on any of its rows —
+/// candidate, protected or out-of-scope alike.
+#[test]
+fn a_verified_generation_never_carries_a_remedy_hint() {
+    let preview = preview_from_parts(
+        &scan(five("chat_a")),
+        &db(vec![], vec![]),
+        &cas(vec![]),
+        &request(&[("chat_a", "ok", &hash(5))]),
+    )
+    .expect("an envelope");
+    let value = serde_json::to_value(&preview).unwrap();
+    let decisions = value["plan"]["decisions"].as_array().unwrap();
+    assert!(decisions.len() >= 5, "the fixture really produced rows");
+    let mut saw_candidate = false;
+    for row in decisions {
+        assert!(
+            row.get("occupant_remedy").is_none(),
+            "a verified generation row carried a hint: {row}"
+        );
+        if row["decision"] == "candidate" {
+            saw_candidate = true;
+        }
+    }
+    assert!(saw_candidate, "anti-vacuity: the fixture really produced a candidate");
+
+    // Out-of-scope rows are verified packages too, and equally never offered.
+    let scoped = PreviewRequest {
+        chat_scope: Some(vec!["chat_other".to_string()]),
+        projections: vec![],
+    };
+    let value = serde_json::to_value(
+        &preview_from_parts(&scan(five("chat_a")), &db(vec![], vec![]), &cas(vec![]), &scoped)
+            .expect("an envelope"),
+    )
+    .unwrap();
+    let decisions = value["plan"]["decisions"].as_array().unwrap();
+    assert!(decisions.iter().any(|d| d["reason"] == "out-of-scope"), "anti-vacuity");
+    assert!(decisions.iter().all(|d| d.get("occupant_remedy").is_none()));
+}
+
+/// (10) the hint identity comes ONLY from the canonical basename parser, never
+/// from a manifest or snapshot — which for this occupant class are damaged,
+/// unreadable, or actively disagree with the name.
+#[test]
+fn the_hint_identity_comes_from_the_canonical_basename_never_the_content() {
+    /* An IdentityMismatch occupant VERIFIES: its manifest names one chat while
+       the basename names another. The hint must follow the BASENAME. */
+    let stored_as = format!("chat_named_by_filename.g{}.h2ochat", hash(7));
+    let hint = remedy_hint(
+        vec![indeterminate(&stored_as, IndeterminateReason::IdentityMismatch)],
+        &stored_as,
+    )
+    .expect("the hint is present");
+    assert_eq!(hint["chat_id"], "chat_named_by_filename");
+
+    /* A chat id containing `.g` cannot shadow the generation marker: the
+       canonical parser splits at the LAST one, and the hint inherits that. */
+    let tricky = format!("chat.g_weird.g{}.h2ochat", hash(3));
+    let hint = remedy_hint(vec![indeterminate(&tricky, IndeterminateReason::Corrupt)], &tricky)
+        .expect("the hint is present");
+    assert_eq!(hint["chat_id"], "chat.g_weird", "the canonical parser decides, not a naive split");
+
+    /* And the row's own chat_id/content_hash stay empty for this class, so the
+       hint is the ONLY identity a renderer could use. */
+    let preview = preview_from_parts(
+        &scan(vec![indeterminate(&tricky, IndeterminateReason::Corrupt)]),
+        &db(vec![], vec![]),
+        &cas(vec![]),
+        &request(&[]),
+    )
+    .unwrap();
+    let value = serde_json::to_value(&preview).unwrap();
+    let row = &value["plan"]["decisions"][0];
+    assert_eq!(row["chat_id"], "");
+    assert_eq!(row["content_hash"], "");
+    assert_eq!(row["decision"], "excluded");
+    assert_eq!(row["reason"], "indeterminate");
+}
+
+/// The hint is DISPLAY metadata: it carries an identity and nothing else.
+#[test]
+fn the_remedy_hint_carries_no_authority_beyond_identity() {
+    let name = format!("chat_a.g{}.h2ochat", hash(9));
+    let hint = remedy_hint(vec![indeterminate(&name, IndeterminateReason::Corrupt)], &name).unwrap();
+    let keys: Vec<&String> = hint.as_object().unwrap().keys().collect();
+    assert_eq!(keys, vec!["chat_id"], "exactly one field");
+    let raw = hint.to_string();
+    for forbidden in [
+        "path", "run", "force", "candidate", "plan", "quarantine", "sha256",
+        "classification", "reason", "destination",
+    ] {
+        assert!(!raw.contains(forbidden), "the hint must not carry {forbidden}");
+    }
+    /* And the eligibility rule has ONE owner, shared with the destructive path. */
+    let plan_src = include_str!("../archive_retention_plan.rs");
+    assert!(plan_src.contains("reason.is_occupant_remedy_class()"));
+    let occupant_src = include_str!("../archive_occupant_quarantine.rs");
+    assert!(occupant_src.contains("reason.is_occupant_remedy_class()"));
+    for src in [plan_src, occupant_src] {
+        assert!(
+            !src.contains("IndeterminateReason::Corrupt\n        | IndeterminateReason::Partial"),
+            "the four-state rule must not be restated outside its owner"
+        );
+    }
+}

@@ -2576,6 +2576,8 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_abort,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
+            archive_reclaim_execute::h2o_archive_reclamation_execute,
+            archive_occupant_quarantine::h2o_archive_occupant_quarantine,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2612,7 +2614,9 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
             archive_residue_probe::h2o_archive_durable_temp_residue,
-            archive_reclamation_preview::h2o_archive_reclamation_preview
+            archive_reclamation_preview::h2o_archive_reclamation_preview,
+            archive_reclaim_execute::h2o_archive_reclamation_execute,
+            archive_occupant_quarantine::h2o_archive_occupant_quarantine
         ]
     };
 }

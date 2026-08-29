@@ -34,13 +34,34 @@
   H2O.Studio = H2O.Studio || {};
   if (H2O.Studio.reclamationUi && H2O.Studio.reclamationUi.__installed) return;
 
-  var MODULE_VERSION = '0.1.0-m06-p2-t2.4';
+  var MODULE_VERSION = '0.2.0-m06-p4-t4.1';
   var PREVIEW_COMMAND = 'h2o_archive_reclamation_preview';
   var PREVIEW_SCHEMA = 'h2o.m06.reclamationPreview';
+  /* M06 P4 T4.1 — the two commands Human Decision Authority approved at G02.
+   * There is deliberately no third: stale-quarantine recovery is an internal
+   * stage of the reclamation run, not a control, and canonical CAS has no
+   * destructive command at all. */
+  var EXECUTE_COMMAND = 'h2o_archive_reclamation_execute';
+  var OCCUPANT_COMMAND = 'h2o_archive_occupant_quarantine';
+  /* This surface owns NO package-name grammar. Whether a row is the governed
+   * operator-remedy occupant class, and what chat identity addresses it, are
+   * both decided trusted-side and arrive on the Analyze row as
+   * `occupant_remedy`. The renderer never parses a basename. */
 
   var TEXT = {
+    reclaimButton: 'Reclaim…',
+    reclaimNeedsAnalyze: 'Run Analyze first.',
+    reclaimRunning: 'Reclaiming…',
+    reclaimHeading: 'Reclamation result',
+    occupantButton: 'Quarantine occupant…',
+    occupantHeading: 'Occupant result',
+    /* Quarantine is not deletion. One-run dwell means the occupant is still
+     * physically present, and the operator is told exactly that. */
+    occupantQuarantined: 'Quarantined and preserved in the archive quarantine. '
+      + 'It is not deleted; a later reclamation run may clear it.',
     title: 'Storage & reclamation',
-    subtitle: 'Read-only analysis. Nothing is deleted, renamed or moved.',
+    subtitle: 'Analyze is read-only. Reclaim removes eligible generations and residue, '
+      + 'and always re-checks the archive before acting.',
     idle: 'Analyze the archive to see what is protected and what is currently eligible under the retention policy.',
     loading: 'Analyzing archive…',
     unavailable: 'Archive analysis is available in Desktop Studio only.',
@@ -49,8 +70,9 @@
     incomplete: 'This analysis is incomplete. The results below are not authoritative.',
     completeEmpty: 'Analysis complete. Nothing is currently eligible under the retention policy.',
     noPackages: 'No saved chat packages found yet.',
-    candidateNote: 'Eligible means the read-only engine currently considers it within policy. Nothing has been removed.',
-    casNote: 'Analysis only. M06 does not remove content-addressed objects.',
+    candidateNote: 'Eligible means the engine currently considers it within policy. '
+      + 'Nothing has been removed by this analysis.',
+    casNote: 'Analysis only. Reclaim never removes content-addressed objects.',
     residueIncomplete: 'Residue enumeration was incomplete, so this is not a complete residue count.',
   };
 
@@ -193,6 +215,15 @@
         exclusionReason: cleanString(d.reason),
         savedAt: cleanString(evidence.savedAt),
         familyRank: evidence.familyRank,
+        /* Trusted display fact, passed through verbatim. Present only when the
+         * trusted engine established this row is a generation-path occupant in
+         * the governed remedy class, and it carries the identity the command
+         * needs. Absent means: offer nothing. */
+        occupantRemedy: (function () {
+          var hint = safeObject(d.occupant_remedy);
+          var chatId = cleanString(hint.chat_id);
+          return chatId ? { chatId: chatId } : null;
+        }()),
       };
     }).sort(function (a, b) {
       if (a.path === b.path) return 0;
@@ -223,7 +254,7 @@
     };
   }
 
-  function renderInto(container, overview, rows, residue) {
+  function renderInto(container, overview, rows, residue, remedyRows, onOccupant) {
     container.textContent = '';
     var sub = el('div', TEXT.subtitle, 'opacity:.75;margin-bottom:8px');
     container.appendChild(sub);
@@ -303,9 +334,84 @@
       var why = row.reasons.length ? row.reasons.join(', ') : row.exclusionReason;
       if (why) line.appendChild(el('span', '  ' + why));
       if (row.savedAt) line.appendChild(el('span', '  ' + row.savedAt));
+      /* The governed occupant remedy, offered ONLY on rows the trusted plan
+       * excluded as indeterminate at a generation path. */
+      if (typeof onOccupant === 'function'
+        && asArray(remedyRows).some(function (r) { return r.name === row.name; })) {
+        var action = el('button', TEXT.occupantButton);
+        action.setAttribute('type', 'button');
+        action.setAttribute('data-h2o-action', 'quarantine-occupant');
+        action.setAttribute('data-h2o-occupant', row.name);
+        /* The whole trusted row is handed on, so the identity used to address
+         * the command is the one the trusted parser proved. */
+        action.addEventListener('click', function () { onOccupant(row); });
+        line.appendChild(action);
+      }
       details.appendChild(line);
     });
     container.appendChild(details);
+  }
+
+  /* The trusted run outcome, read as it is emitted. `RunOutcome` serializes
+   * with Rust field names; `OccupantOutcome` carries `rename_all = camelCase`.
+   * Both spellings are accepted for the few fields shown, so neither type's
+   * committed serialization has to change to be displayed.
+   *
+   * Nothing here infers filesystem state: every number and every state comes
+   * from the trusted result, and an unknown state is shown verbatim rather
+   * than collapsed into a friendlier word. */
+  function formatRunOutcome(outcome) {
+    var o = safeObject(outcome);
+    var residue = safeObject(o.residue);
+    function num(a, b) {
+      var v = typeof o[a] === 'number' ? o[a] : o[b];
+      return typeof v === 'number' ? v : 0;
+    }
+    return {
+      state: cleanString(o.state),
+      runId: cleanString(o.run_id !== undefined ? o.run_id : o.runId),
+      quarantined: num('quarantined', 'quarantined'),
+      purged: num('purged', 'purged'),
+      recovered: num('recovered', 'recovered'),
+      residueQuarantined:
+        (residue.generation_staging_quarantined || residue.generationStagingQuarantined || 0)
+        + (residue.durable_temp_quarantined || residue.durableTempQuarantined || 0),
+      residuePurged:
+        (residue.generation_staging_purged || residue.generationStagingPurged || 0)
+        + (residue.durable_temp_purged || residue.durableTempPurged || 0),
+      blockers: asArray(o.blockers).map(cleanString).filter(Boolean),
+    };
+  }
+
+  function formatOccupantOutcome(outcome) {
+    var o = safeObject(outcome);
+    return {
+      state: cleanString(o.state),
+      occupantName: cleanString(o.occupantName !== undefined ? o.occupantName : o.occupant_name),
+      classification: cleanString(o.classification),
+      quarantined: o.quarantined === true,
+      purged: o.purged === true,
+      dwell: cleanString(o.dwell),
+      blockers: asArray(o.blockers).map(cleanString).filter(Boolean),
+    };
+  }
+
+  /* Which displayed rows may be offered the governed occupant remedy.
+   *
+   * Exactly those the TRUSTED engine marked, and nothing else. A VALID
+   * generation, a legacy package, reserved infrastructure, staging or temp
+   * residue and any foreign basename simply arrive without the hint. There is
+   * no filename fallback: no hint, no control. And this remains convenience —
+   * the trusted command re-derives and re-classifies before acting. */
+  function occupantRemedyRows(rows) {
+    return asArray(rows).filter(function (row) {
+      return !!safeObject(safeObject(row).occupantRemedy).chatId;
+    });
+  }
+
+  /* The chat identity the TRUSTED parser proved, carried on the row. */
+  function chatIdOfOccupant(row) {
+    return cleanString(safeObject(safeObject(row).occupantRemedy).chatId);
   }
 
   function mountReclamationCard(container, options) {
@@ -319,6 +425,12 @@
       ? opts.probeProjection
       : ingestion.probeCurrentSavedChatProjectionV1;
     var invoke = typeof opts.invoke === 'function' ? opts.invoke : getInvoke();
+    /* The repository's established New-UI destructive guard is `window.confirm`
+     * (Library Organization Modals uses it for every delete). Reused rather
+     * than inventing a second modal framework; injectable for tests. */
+    var confirmAction = typeof opts.confirm === 'function'
+      ? opts.confirm
+      : function (message) { return typeof global.confirm === 'function' ? global.confirm(message) : false; };
 
     var card = global.document.createElement('section');
     card.setAttribute('data-h2o-card', 'saved-chat-reclamation');
@@ -328,14 +440,30 @@
     var button = el('button', TEXT.analyzeButton);
     button.setAttribute('type', 'button');
     button.setAttribute('data-h2o-action', 'analyze-archive');
+    var reclaim = el('button', TEXT.reclaimButton);
+    reclaim.setAttribute('type', 'button');
+    reclaim.setAttribute('data-h2o-action', 'reclaim-archive');
+    /* Disabled until a successful, authoritative Analyze. Analyze never runs
+     * this: there is no auto-execute, no timer and no idle callback. */
+    reclaim.disabled = true;
+    reclaim.title = TEXT.reclaimNeedsAnalyze;
+    var result = el('div', '');
     card.appendChild(button);
+    card.appendChild(reclaim);
     card.appendChild(body);
+    card.appendChild(result);
     container.appendChild(card);
 
     if (typeof diagnose !== 'function' || typeof probe !== 'function' || !invoke) {
       body.textContent = TEXT.unavailable;
       button.disabled = true;
-      return { analyze: function () { return Promise.resolve(null); }, getState: function () { return { state: 'unavailable' }; } };
+      reclaim.disabled = true;
+      return {
+        analyze: function () { return Promise.resolve(null); },
+        execute: function () { return Promise.resolve(null); },
+        quarantineOccupant: function () { return Promise.resolve(null); },
+        getState: function () { return { state: 'unavailable' }; },
+      };
     }
 
     /* One Analyze in flight at a time, and a monotonic token so a slow earlier
@@ -343,13 +471,27 @@
     var inFlight = false;
     var latestToken = 0;
     var state = { state: 'idle', preview: null };
+    /* The ENABLING request the last successful Analyze used. Execute resends
+     * exactly this: the same chat scope and projection assertions, never the
+     * candidate list, never a path, never a plan. */
+    var enablingRequest = null;
+    var executing = false;
+
+    function disarm(reason) {
+      enablingRequest = null;
+      reclaim.disabled = true;
+      reclaim.title = reason || TEXT.reclaimNeedsAnalyze;
+    }
 
     async function analyze() {
-      if (inFlight) return null;
+      if (inFlight || executing) return null;
       inFlight = true;
       latestToken += 1;
       var token = latestToken;
       button.disabled = true;
+      /* A new Analyze replaces any previous confirmation state. */
+      disarm();
+      result.textContent = '';
       body.textContent = TEXT.loading;
       state = { state: 'loading', preview: null };
       try {
@@ -357,13 +499,23 @@
         var chatIds = chatIdsFromDiagnostics(diagnostics);
         var projections = await collectProjections(chatIds, probe);
         /* Exactly the bounded T2.3 contract. No path, no floor, no force. */
-        var preview = await invoke(PREVIEW_COMMAND, { request: { projections: projections } });
+        var request = { projections: projections };
+        var preview = await invoke(PREVIEW_COMMAND, { request: request });
         if (token !== latestToken) return null;
         var overview = formatPreviewOverview(preview);
         var rows = formatDecisionRows(preview);
         var residue = formatResidueOverview(diagnostics);
-        renderInto(body, overview, rows, residue);
+        renderInto(body, overview, rows, residue, occupantRemedyRows(rows), quarantineOccupant);
         state = { state: overview.state, preview: preview };
+        /* Reclaim is armed ONLY by an Analyze that completed authoritatively.
+         * An incomplete analysis is not permission to delete. */
+        if (overview.complete === true) {
+          enablingRequest = request;
+          reclaim.disabled = false;
+          reclaim.title = '';
+        } else {
+          disarm(TEXT.reclaimNeedsAnalyze);
+        }
         return preview;
       } catch (err) {
         if (token !== latestToken) return null;
@@ -371,6 +523,8 @@
         body.appendChild(el('div', TEXT.error, 'color:#f85149'));
         body.appendChild(el('div', String((err && err.message) || err), 'opacity:.8'));
         state = { state: 'error', preview: null };
+        /* A failed Analyze disables Reclaim. */
+        disarm();
         return null;
       } finally {
         if (token === latestToken) {
@@ -380,9 +534,123 @@
       }
     }
 
+    function renderRunResult(outcome) {
+      var view = formatRunOutcome(outcome);
+      result.textContent = '';
+      result.appendChild(el('h4', TEXT.reclaimHeading));
+      /* The trusted state vocabulary, verbatim. `refused`, `partial`, `no-op`
+       * and `complete` are DIFFERENT answers and are never collapsed into a
+       * generic success. */
+      result.appendChild(el('div', 'state: ' + (view.state || 'unknown')));
+      result.appendChild(el('div',
+        'generations quarantined ' + view.quarantined + ', purged ' + view.purged));
+      result.appendChild(el('div',
+        'residue quarantined ' + view.residueQuarantined + ', purged ' + view.residuePurged));
+      result.appendChild(el('div', 'stale entries recovered ' + view.recovered));
+      if (view.runId) result.appendChild(el('div', 'run ' + view.runId));
+      view.blockers.forEach(function (blocker) {
+        result.appendChild(el('div', 'blocker: ' + blocker, 'color:#f85149'));
+      });
+      return view;
+    }
+
+    async function execute() {
+      if (executing || inFlight || !enablingRequest) return null;
+      var overview = formatPreviewOverview(safeObject(state).preview);
+      var confirmed = confirmAction(
+        'Reclaim archive storage?\n\n'
+        + overview.totals.candidates + ' generation(s) eligible, '
+        + overview.totals.protected + ' protected, '
+        + overview.totals.occupants + ' occupant(s) reviewed.\n\n'
+        + 'The trusted side re-checks everything before acting; this analysis is context only.'
+      );
+      if (!confirmed) return null;
+
+      executing = true;
+      /* The confirmation is CONSUMED. A second run needs a new Analyze, and no
+       * second request can be launched from this control while one is in
+       * flight. */
+      var request = enablingRequest;
+      disarm();
+      button.disabled = true;
+      result.textContent = TEXT.reclaimRunning;
+      try {
+        var outcome = await invoke(EXECUTE_COMMAND, { request: request });
+        return renderRunResult(outcome);
+      } catch (err) {
+        result.textContent = '';
+        result.appendChild(el('div', TEXT.error, 'color:#f85149'));
+        result.appendChild(el('div', String((err && err.message) || err), 'opacity:.8'));
+        return null;
+      } finally {
+        executing = false;
+        button.disabled = false;
+      }
+    }
+
+    async function quarantineOccupant(row) {
+      if (executing || inFlight) return null;
+      /* BOTH halves come from the trusted Analyze row: the basename it returned
+       * and the chat identity its canonical parser proved. Nothing is derived
+       * here, and a row without the trusted hint is not actionable at all. */
+      var trusted = safeObject(row);
+      var occupantName = cleanString(trusted.name);
+      var chatId = chatIdOfOccupant(trusted);
+      if (!occupantName || !chatId) return null;
+      var confirmed = confirmAction(
+        'Quarantine this occupant?\n\n' + occupantName + '\n\n'
+        + 'It is moved out of the way and PRESERVED, not deleted. '
+        + 'The trusted side re-checks it first and refuses if it is valid.'
+      );
+      if (!confirmed) return null;
+
+      executing = true;
+      button.disabled = true;
+      result.textContent = TEXT.reclaimRunning;
+      try {
+        /* IDENTITY ONLY. No path, no run id, no destination, no classification. */
+        var outcome = await invoke(OCCUPANT_COMMAND, {
+          request: { chatId: chatId, occupantName: occupantName },
+        });
+        var view = formatOccupantOutcome(outcome);
+        result.textContent = '';
+        result.appendChild(el('h4', TEXT.occupantHeading));
+        result.appendChild(el('div', occupantName, 'font-family:monospace;font-size:11px'));
+        result.appendChild(el('div', 'state: ' + (view.state || 'unknown')));
+        if (view.state === 'quarantined') {
+          /* Never "deleted": one-run dwell means it is still there. */
+          result.appendChild(el('div', TEXT.occupantQuarantined));
+          if (view.classification) {
+            result.appendChild(el('div', 'classified: ' + view.classification));
+          }
+        }
+        view.blockers.forEach(function (blocker) {
+          result.appendChild(el('div', 'blocker: ' + blocker, 'color:#f85149'));
+        });
+        /* The displayed analysis is now stale with respect to the archive. */
+        disarm();
+        return view;
+      } catch (err) {
+        result.textContent = '';
+        result.appendChild(el('div', TEXT.error, 'color:#f85149'));
+        result.appendChild(el('div', String((err && err.message) || err), 'opacity:.8'));
+        return null;
+      } finally {
+        executing = false;
+        button.disabled = false;
+      }
+    }
+
     button.addEventListener('click', function () { analyze(); });
-    /* NO analyze on mount, no timer, no interval, no polling. */
-    return { analyze: analyze, getState: function () { return state; } };
+    reclaim.addEventListener('click', function () { execute(); });
+    /* NO analyze on mount, no auto-execute, no timer, no interval, no polling. */
+    return {
+      analyze: analyze,
+      execute: execute,
+      quarantineOccupant: quarantineOccupant,
+      getState: function () { return state; },
+      canReclaim: function () { return reclaim.disabled === false; },
+    };
   }
 
   H2O.Studio.reclamationUi = {
@@ -390,7 +658,13 @@
     __version: MODULE_VERSION,
     PREVIEW_COMMAND: PREVIEW_COMMAND,
     PREVIEW_SCHEMA: PREVIEW_SCHEMA,
+    EXECUTE_COMMAND: EXECUTE_COMMAND,
+    OCCUPANT_COMMAND: OCCUPANT_COMMAND,
     mountReclamationCard: mountReclamationCard,
+    formatRunOutcome: formatRunOutcome,
+    formatOccupantOutcome: formatOccupantOutcome,
+    occupantRemedyRows: occupantRemedyRows,
+    chatIdOfOccupant: chatIdOfOccupant,
     formatPreviewOverview: formatPreviewOverview,
     formatDecisionRows: formatDecisionRows,
     formatResidueOverview: formatResidueOverview,

@@ -1244,16 +1244,51 @@ fn the_execution_core_is_dormant_and_owns_no_primitive() {
         .filter(|l| !l.starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    /* Scanned in CODE: the module doc comment legitimately states that no
-       command exists, and banning that text would ban the documentation. */
-    assert!(!module_code.contains("#[tauri::command]"), "no execution command may exist");
+    /* P4: G02 passed, so this module owns EXACTLY ONE command — the approved
+       reclamation execute — and that command is a pure forwarder. A second
+       command here, or a command with any planning of its own, fails. */
+    assert_eq!(
+        module_code.matches("#[tauri::command]").count(),
+        1,
+        "exactly one activated command"
+    );
+    let at = source.find("pub async fn h2o_archive_reclamation_execute").expect("the command");
+    let sig = &source[at..at + source[at..].find(") -> ").unwrap()];
+    assert!(sig.contains("app: tauri::AppHandle") && sig.contains("request: PreviewRequest"));
+    for forbidden in ["Path", "root", "run_id", "plan", "candidates", "force", "String"] {
+        assert!(!sig.contains(forbidden), "the command must not accept {forbidden}");
+    }
+    /* The body forwards and does nothing else: no planning, no classification,
+       no residue enumeration, no DB logic, no quarantine, no purge. */
+    let body = &source[at..at + source[at..].find("\n}").unwrap()];
+    assert!(body.contains("execute_generation_reclamation(&app, &request)"));
+    for forbidden in [
+        "scan_packages_within", "scan_cas_within", "scan_trusted_residue_within",
+        "probe_protection_facts", "retention_plan::plan", "quarantine_",
+        "purge_", "recover_", "archive_root(",
+    ] {
+        assert!(!body.contains(forbidden), "the command must not reimplement {forbidden}");
+    }
 
     let lib = include_str!("../lib.rs");
     assert!(lib.contains("pub mod archive_reclaim_execute;"), "compiled");
-    assert!(!lib.contains("archive_reclaim_execute::"), "not registered in any handler");
+    assert_eq!(
+        lib.matches("archive_reclaim_execute::h2o_archive_reclamation_execute").count(),
+        2,
+        "registered in BOTH handler variants, and only as the approved command"
+    );
+    assert_eq!(
+        lib.matches("archive_reclaim_execute::").count(),
+        2,
+        "no other item of this module is reachable from a handler"
+    );
+    /* Spelled past the approved name: `h2o_archive_reclamation_execute` is now
+       legitimately registered, so a bare "h2o_archive_reclaim" prefix would ban
+       the very command G02 authorized. What must stay absent is every OTHER
+       destructive spelling. */
     for forbidden in [
-        "h2o_archive_reclaim", "h2o_archive_execute", "h2o_archive_purge",
-        "h2o_archive_quarantine", "h2o_archive_delete",
+        "h2o_archive_reclaim_", "h2o_archive_execute", "h2o_archive_purge",
+        "h2o_archive_delete", "h2o_archive_recover", "h2o_archive_stale",
     ] {
         assert!(!lib.contains(forbidden), "{forbidden} must not be registered");
     }
@@ -2247,15 +2282,26 @@ fn the_complete_plan_is_durable_before_the_first_rename_of_either_stage() {
 /// (AI)(AJ) T3.3 stays dormant: no command, no invoke-handler arm, no renderer
 /// route, and the capability and UI surfaces carry no destructive grant.
 #[test]
-fn staging_reclamation_is_unregistered_and_no_ui_reaches_it() {
+fn staging_reclamation_has_no_command_of_its_own() {
     let lib = include_str!("../lib.rs");
+    /* P4: staging/temp reclamation gained NO renderer authority of its own. It
+       is reachable only as a stage inside the one approved reclamation
+       command, exactly as reviewed. */
     for forbidden in [
-        "archive_reclaim_execute::", "run_residue_stage", "scan_trusted_residue_within",
-        "h2o_archive_staging", "h2o_archive_residue_reclaim", "h2o_archive_reclaim",
+        "run_residue_stage", "scan_trusted_residue_within",
+        "h2o_archive_staging", "h2o_archive_residue_reclaim",
+        "h2o_archive_reclaim_", "h2o_archive_temp", "h2o_archive_genstage",
     ] {
         assert!(!lib.contains(forbidden), "{forbidden} must not be registered");
     }
-    assert!(lib.contains("pub mod archive_reclaim_execute;"), "compiled but dormant");
+    assert!(lib.contains("pub mod archive_reclaim_execute;"), "compiled");
+    let src = include_str!("../archive_reclaim_execute.rs");
+    let at = src.find("pub async fn h2o_archive_reclamation_execute").unwrap();
+    let body = &src[at..at + src[at..].find("\n}").unwrap()];
+    assert!(
+        !body.contains("residue") && !body.contains("staging"),
+        "the command names no stage; the sequence owns the stages"
+    );
 
     /* Renderer archive mutation authority is still EMPTY. Scoped to grants
        that actually reach `$APPLOCALDATA/archive`: `archive-export.json`
@@ -2311,18 +2357,51 @@ fn staging_reclamation_is_unregistered_and_no_ui_reaches_it() {
             &tail[start..start + tail[start..].find('\'').expect("closing quote")]
         })
         .collect();
-    assert_eq!(actions, vec!["analyze-archive"], "Analyze is the ONLY control");
-    for forbidden in [
-        "reclaim-archive", "purge", "quarantine", "delete", "genstage",
-        "durable-temp", "residue-reclaim",
-    ] {
+    /* P4: G02 passed, so the card legitimately offers the two approved
+       destructive actions. Narrowed from "Analyze is the only control" to the
+       EXACT approved set — a third action, or a CAS-destructive one, fails. */
+    let mut actions = actions;
+    actions.sort();
+    assert_eq!(
+        actions,
+        vec!["analyze-archive", "quarantine-occupant", "reclaim-archive"],
+        "exactly the G02-approved control set"
+    );
+    /* Only the two approved commands are invocable from the New UI. */
+    let mut ui_commands: Vec<&str> = ui
+        .match_indices("h2o_archive_")
+        .map(|(at, _)| {
+            let tail = &ui[at..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(tail.len());
+            &tail[..end]
+        })
+        .collect();
+    ui_commands.sort();
+    ui_commands.dedup();
+    assert_eq!(
+        ui_commands,
+        vec![
+            "h2o_archive_occupant_quarantine",
+            "h2o_archive_reclamation_execute",
+            "h2o_archive_reclamation_preview",
+        ],
+        "no third command is reachable from the New UI"
+    );
+    /* Staging/temp reclamation gained NO control of its own. The exact action
+       set above already pins that; these are the spellings that would mean a
+       separate residue control had appeared. */
+    for forbidden in ["genstage", "durable-temp", "residue-reclaim", "purge", "stale"] {
         assert!(
             !actions.iter().any(|a| a.contains(forbidden)),
-            "no destructive UI action: {forbidden}"
+            "staging/temp must have no control of its own: {forbidden}"
         );
     }
-    // And nothing in the surface names a destructive command.
-    for forbidden in ["h2o_archive_reclaim", "h2o_archive_staging", "h2o_archive_purge"] {
+    for forbidden in [
+        "h2o_archive_staging", "h2o_archive_purge", "h2o_archive_recover",
+        "h2o_archive_residue", "purge_quarantined_item",
+    ] {
         assert!(!ui.contains(forbidden), "no destructive invoke: {forbidden}");
     }
 }
@@ -3481,4 +3560,44 @@ fn every_db_protection_class_blocks_execution_and_probe_failure_blocks_all() {
         let _ = ex.release();
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
+}
+
+/// M06 P4 T4.1 — the ACTIVATED command's request marshaling.
+///
+/// The renderer can send whatever JSON it likes; what matters is that no field
+/// beyond the approved enabling inputs can reach the trusted sequence. Extra
+/// keys are inert because `PreviewRequest` has nowhere to put them, so an
+/// injected path, plan, run id or force flag deserializes to exactly the same
+/// request as if it had never been sent.
+#[test]
+fn the_activated_request_cannot_smuggle_authority_through_extra_fields() {
+    let clean: PreviewRequest = serde_json::from_str(
+        r#"{"chatScope":["chat_a"],"projections":[{"chatId":"chat_a","status":"ok","contentHash":"ab"}]}"#,
+    )
+    .expect("the approved payload deserializes");
+
+    let hostile: PreviewRequest = serde_json::from_str(
+        r#"{"chatScope":["chat_a"],"projections":[{"chatId":"chat_a","status":"ok","contentHash":"ab"}],
+            "path":"/etc/passwd","archiveRoot":"/","packages":"/tmp","runId":"run-evil",
+            "candidates":["chat_a.gaa.h2ochat"],"plan":{"decisions":[]},"retentionK":0,
+            "force":true,"unsafe":true,"casSha":"sha256-aa","staleRun":"run-1",
+            "quarantineTarget":"occupant.x"}"#,
+    )
+    .expect("extra keys are ignored, not fatal");
+
+    assert_eq!(clean.chat_scope, hostile.chat_scope);
+    assert_eq!(clean.projections.len(), hostile.projections.len());
+    assert_eq!(clean.projections[0].chat_id, hostile.projections[0].chat_id);
+    assert_eq!(clean.projections[0].content_hash, hostile.projections[0].content_hash);
+
+    /* Structurally: the request type declares EXACTLY the two enabling inputs,
+       so there is no field an injected value could have landed in. */
+    let decl = {
+        let src = include_str!("../archive_reclamation_preview.rs");
+        let at = src.find("pub struct PreviewRequest {").unwrap();
+        &src[at..at + src[at..].find("\n}").unwrap()]
+    };
+    let fields = &decl[decl.find('{').unwrap()..];
+    assert_eq!(fields.matches("pub ").count(), 2, "exactly two request fields");
+    assert!(fields.contains("chat_scope") && fields.contains("projections"));
 }

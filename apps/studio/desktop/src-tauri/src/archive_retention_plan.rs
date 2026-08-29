@@ -147,6 +147,29 @@ pub enum Decision {
     Excluded { reason: ExclusionReason },
 }
 
+/// DISPLAY-ONLY evidence that a row is the governed operator-remedy occupant
+/// class, carrying the one identity the New UI needs to address it.
+///
+/// This is NOT destructive authority. Its presence lets an operator be OFFERED
+/// the governed occupant action; it grants nothing. The command still acquires
+/// exclusive ownership, proves the publisher registry empty, re-derives the
+/// canonical target and re-classifies it from scratch, and refuses a target
+/// that has since become VALID. A stale Preview may therefore show an action
+/// the trusted command then declines, which is the correct outcome.
+///
+/// It exists because the Preview otherwise collapses every indeterminate
+/// occupant into one row: a damaged generation, a damaged legacy package and a
+/// foreign filename are indistinguishable in it. Without this the renderer
+/// would have to re-derive `<chatId>.g<hex>.h2ochat` itself and become a second
+/// owner of canonical package-name grammar.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct OccupantRemedyHint {
+    /// The chat identity the CANONICAL basename parser proved. Never taken from
+    /// a corrupt manifest or snapshot — for this occupant class neither is
+    /// trustworthy, and often neither is even readable.
+    pub chat_id: String,
+}
+
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct GenerationDecision {
     /// Trusted archive-relative identity. Never a renderer-supplied path.
@@ -156,6 +179,10 @@ pub struct GenerationDecision {
     pub content_hash: String,
     #[serde(flatten)]
     pub decision: Decision,
+    /// Present ONLY on a generation-path occupant in the governed remedy class.
+    /// Omitted entirely otherwise, so every other row's payload is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occupant_remedy: Option<OccupantRemedyHint>,
 }
 
 /// READ-ONLY CAS analysis. M06 removed physical CAS reclamation (§H), so this
@@ -294,11 +321,27 @@ pub fn plan_with_floor(
                 decision: Decision::Excluded {
                     reason: ExclusionReason::ReservedInfrastructure,
                 },
+                // Reserved infrastructure is never an operator remedy target.
+                occupant_remedy: None,
             }),
-            OccupantClass::Indeterminate { .. } => {
+            OccupantClass::Indeterminate { reason } => {
                 // An occupant we could not classify may hold CAS references we
                 // cannot see, so the reference view is no longer complete.
                 cas_reference_evidence_incomplete = true;
+                /* The display hint needs BOTH halves, from the two existing
+                   trusted authorities: the canonical T2.1 name parser must call
+                   this a generation path AND yield its chat identity, and the
+                   fresh classification must be in the governed remedy class.
+                   Either alone is not enough — a damaged LEGACY package
+                   classifies identically, and a foreign name parses to nothing. */
+                let occupant_remedy = match crate::archive_package_scan::name_shape(&occupant.name) {
+                    crate::archive_package_scan::NameShape::Generation { chat_id, .. }
+                        if reason.is_occupant_remedy_class() =>
+                    {
+                        Some(OccupantRemedyHint { chat_id })
+                    }
+                    _ => None,
+                };
                 decisions.push(GenerationDecision {
                     path: occupant.path.clone(),
                     name: occupant.name.clone(),
@@ -307,6 +350,7 @@ pub fn plan_with_floor(
                     decision: Decision::Excluded {
                         reason: ExclusionReason::Indeterminate,
                     },
+                    occupant_remedy,
                 });
             }
             OccupantClass::LegacyPackage(pkg) | OccupantClass::VerifiedGeneration(pkg) => {
@@ -348,6 +392,8 @@ pub fn plan_with_floor(
                 name: entry.name.clone(),
                 chat_id: entry.chat_id.clone(),
                 content_hash: entry.content_hash.clone(),
+                // A VERIFIED package out of scope: never a remedy target.
+                occupant_remedy: None,
                 decision: Decision::Excluded {
                     reason: ExclusionReason::OutOfScope,
                 },
@@ -467,6 +513,8 @@ pub fn plan_with_floor(
             chat_id: entry.chat_id.clone(),
             content_hash: entry.content_hash.clone(),
             decision,
+            // Verified generations and legacy packages are never remedy targets.
+            occupant_remedy: None,
         });
     }
 

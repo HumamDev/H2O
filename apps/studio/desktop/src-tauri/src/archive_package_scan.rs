@@ -60,6 +60,34 @@ pub enum IndeterminateReason {
     UnexpectedOutcome,
 }
 
+impl IndeterminateReason {
+    /// Is this the governed AC-M06-10 operator-remedy class?
+    ///
+    /// The contract names exactly four states a damaged generation-path
+    /// occupant may be remedied in — corrupt, partial, foreign (identity
+    /// mismatch) and unreadable. The other two fail closed: `NotAPackageName`
+    /// is not a package at all, and `UnexpectedOutcome` is a state this scan
+    /// does not model, so neither may widen a destructive remedy.
+    ///
+    /// This is the SINGLE authority for that rule. It lives beside the
+    /// classifier that produces the reasons, so the trusted occupant action and
+    /// the read-only Preview hint cannot drift apart by each keeping a private
+    /// copy of the same four-state match.
+    ///
+    /// Being in this class is NOT permission to act. It answers a
+    /// classification question; the destructive path additionally re-derives
+    /// and re-classifies its target under exclusive ownership.
+    pub fn is_occupant_remedy_class(&self) -> bool {
+        match self {
+            IndeterminateReason::Corrupt
+            | IndeterminateReason::Partial
+            | IndeterminateReason::IdentityMismatch
+            | IndeterminateReason::Unreadable => true,
+            IndeterminateReason::NotAPackageName | IndeterminateReason::UnexpectedOutcome => false,
+        }
+    }
+}
+
 /// The package construction family, as the publisher's own version-triple gate
 /// established it.
 ///

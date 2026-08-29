@@ -547,19 +547,42 @@ check('T2.4 New UI only — reclamation module is loaded and packed, no Legacy s
   }
 });
 
-check('T2.4 Analyze is the ONLY action — no destructive control exists', () => {
+/* P4 T4.1: G02 passed, so this card legitimately offers the two approved
+   destructive actions. The assertion is not deleted — it is narrowed from
+   "no destructive control" to "EXACTLY the approved destructive controls",
+   which is the stronger statement now that any exist. */
+check('T4.1 exactly the two G02-approved actions exist — nothing else', () => {
+  /* The SET of actions is the safety property; their order in the file is not. */
+  const actions = [...reclaimCode.matchAll(/data-h2o-action', '([^']+)'/g)]
+    .map((m) => m[1])
+    .sort();
+  assert.deepEqual(
+    actions,
+    ['analyze-archive', 'quarantine-occupant', 'reclaim-archive'],
+    'exactly Analyze, Reclaim and the governed occupant remedy',
+  );
+  /* Only the two approved commands are invocable from this surface. */
+  const commands = [...reclaimCode.matchAll(/'(h2o_archive_[a-z_]+)'/g)].map((m) => m[1]).sort();
+  assert.deepEqual(
+    [...new Set(commands)],
+    [
+      'h2o_archive_occupant_quarantine',
+      'h2o_archive_reclamation_execute',
+      'h2o_archive_reclamation_preview',
+    ],
+    'no third command is reachable from the New UI',
+  );
+  /* Still absent: raw purge, stale recovery and every CAS destructive verb. */
   for (const forbidden of [
-    'Reclaim', 'reclaim(', 'Execute', 'Delete', 'Remove', 'Purge', 'Quarantine',
-    'casCollect', 'cas_collect', 'collectible', 'coming soon',
-    'h2o_archive_reclaim', 'h2o_archive_execute',
-    'h2o_archive_delete', 'h2o_archive_purge', 'h2o_archive_quarantine',
+    'h2o_archive_purge', 'h2o_archive_delete', 'h2o_archive_recover',
+    'h2o_archive_stale', 'h2o_archive_collect', 'h2o_archive_cas',
+    'purge_run', 'purge_all', 'purge_quarantined_item',
+    'casCollect', 'cas_collect', 'collectible',
   ]) {
     assert.ok(!reclaimCode.includes(forbidden), `no destructive surface: ${forbidden}`);
   }
-  const actions = reclaimCode.match(/data-h2o-action', '([^']+)'/g) || [];
-  assert.deepEqual(actions, ["data-h2o-action', 'analyze-archive'"], 'exactly one action');
   assert.equal((reclaimCode.match(/createElement\('button'\)/g) || []).length, 0, 'buttons are created through the helper only');
-  assert.equal((reclaimCode.match(/el\('button'/g) || []).length, 1, 'exactly one button exists');
+  assert.equal((reclaimCode.match(/el\('button'/g) || []).length, 3, 'exactly three buttons exist');
 });
 
 check('T2.4 no automatic Analyze — no mount call, timer, interval or polling', () => {
@@ -592,12 +615,21 @@ check('T2.4 no truncation, no persistence, no unsanitized markup', () => {
   assert.ok(reclaimCode.includes('textContent'), 'returned data is rendered as text');
 });
 
-check('T2.4 request contract carries no path, floor or force', () => {
-  const req = reclaimCode.slice(reclaimCode.indexOf('invoke(PREVIEW_COMMAND'), reclaimCode.indexOf('invoke(PREVIEW_COMMAND') + 200);
-  assert.ok(req.includes('projections'), 'projections are sent');
-  for (const forbidden of ['path', 'root', 'floor', 'force', 'k:', 'retention', 'candidate']) {
-    assert.ok(!req.toLowerCase().includes(forbidden), `request must not carry ${forbidden}`);
+check('T4.1 every request contract carries no path, floor, force or candidate', () => {
+  /* Preview AND the two activated commands, checked the same way. */
+  for (const site of ['invoke(PREVIEW_COMMAND', 'invoke(EXECUTE_COMMAND', 'invoke(OCCUPANT_COMMAND']) {
+    const at = reclaimCode.indexOf(site);
+    assert.ok(at > 0, `${site} is invoked`);
+    const req = reclaimCode.slice(at, at + 220).toLowerCase();
+    for (const forbidden of ['path', 'root', 'floor', 'force', 'k:', 'retention', 'candidate', 'run_id', 'runid']) {
+      assert.ok(!req.includes(forbidden), `${site} must not carry ${forbidden}`);
+    }
   }
+  /* Execute resends the SAME enabling request Analyze used — never the plan. */
+  const exec = reclaimCode.slice(reclaimCode.indexOf('async function execute()'));
+  assert.ok(exec.includes('var request = enablingRequest;'), 'execute reuses the enabling request');
+  assert.ok(!/decisions|plan\.|preview\.plan/.test(exec.slice(0, exec.indexOf('invoke(EXECUTE_COMMAND'))),
+    'no part of the analysis plan is sent as authority');
 });
 
 check('T2.4 overview model is derived only from the trusted Preview', () => {
@@ -688,16 +720,21 @@ await checkAsync('T2.4 one Analyze click = one Preview invocation, none on mount
      moved" is the read-only promise — both must be allowed. What must never
      appear is wording that OFFERS or CLAIMS a destructive act. The absence of a
      destructive control itself is pinned structurally above. */
+  /* P4: a Reclaim control legitimately renders. What must still never appear
+     is wording that CLAIMS a deletion the run did not perform, or that offers
+     a CAS reclamation which does not exist. */
   for (const forbidden of [
-    /safe to delete/i, /\bcollectible\b/i, /\bdeletable\b/i, /\breclaimable\b/i,
-    /\bpurge\b/i, /\bquarantine\b/i, /were deleted/i, /has been deleted/i,
-    /delete now/i, /reclaim now/i, /\bReclaim\b/,
+    /safe to delete/i, /\bcollectible\b/i, /\bdeletable\b/i,
+    /were deleted/i, /has been deleted/i, /delete now/i,
+    /reclaim cas/i, /purge cas/i, /collect orphan/i,
   ]) {
-    assert.ok(!forbidden.test(text), `no destructive offer rendered: ${forbidden}`);
+    assert.ok(!forbidden.test(text), `no dishonest or CAS-destructive offer: ${forbidden}`);
   }
-  /* And the read-only promise is actually present. */
-  assert.ok(/Nothing is deleted, renamed or moved/i.test(text), 'the read-only promise is shown');
+  /* Analyze itself is still read-only, and says so; CAS is still analysis only. */
+  assert.ok(/Analyze is read-only/i.test(text), 'Analyze is labelled read-only');
   assert.ok(/Analysis only/i.test(text), 'CAS is labelled analysis only');
+  /* Reclaim exists but is NOT armed by mounting or by a failed analysis. */
+  assert.equal(handle.canReclaim(), true, 'a complete Analyze arms Reclaim');
 });
 
 await checkAsync('T2.4 in-flight guard: rapid Analyze cannot double-invoke or overwrite', async () => {

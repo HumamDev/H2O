@@ -118,6 +118,8 @@ pub mod codes {
     /// T3.5: stale quarantine from a previous run did not converge, so this run
     /// refuses to layer fresh deletions on top of an unresolved contradiction.
     pub const RECOVERY_INCOMPLETE: &str = "execute-recovery-incomplete";
+    /// T4.1: the activated command's blocking task did not return a result.
+    pub const EXECUTE_TASK_FAILED: &str = "execute-task-failed";
 }
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1115,6 +1117,51 @@ fn run_residue_stage(
         trace::record(trace::Event::ResiduePurgeReceiptDurable);
         outcome.residue_acted.push(acted);
         crash::hit(crash::Point::BetweenStagingItems);
+    }
+}
+
+/// M06 P4 T4.1 — the ACTIVATED governed reclamation command.
+///
+/// G02 passed, so this authority is reachable. The command is deliberately the
+/// thinnest possible shell: it forwards the same bounded, enabling-only request
+/// the read-only Preview already accepts and returns the trusted outcome
+/// verbatim. It derives no path, plans no retention, classifies nothing,
+/// enumerates no residue, consults no database, quarantines nothing, recovers
+/// nothing and purges nothing — every one of those decisions stays inside the
+/// reviewed sequence below.
+///
+/// The renderer cannot hand in authority. There is no run id, no candidate
+/// list, no plan, no destructive target, no retention override and no force
+/// flag, because `PreviewRequest` expresses none of them. A Preview the
+/// operator looked at a moment ago is CONTEXT, never a plan: this reacquires
+/// exclusive ownership and recomputes the package scan, the DB protections, the
+/// CAS inventory, the residue scan and the whole retention plan underneath it,
+/// so a candidate that has since become protected is left alone.
+///
+/// A domain-level refusal is reported INSIDE the outcome as a state plus
+/// blockers, never as a command error, so the operator sees why.
+///
+/// The sequence runs on a blocking thread of the app's own runtime. That is
+/// runtime affinity, not policy: exclusive ownership is a non-`Send`
+/// `RwLockWriteGuard` and T3.2 deliberately HOLDS it across the trusted DB
+/// probe's await, so the whole destructive window is covered by one
+/// acquisition. Moving the probe out from under the guard would make the future
+/// `Send` and would also break that reviewed property, so the guard stays put
+/// and the future is confined to a single thread instead. Nothing about the
+/// ordering, the preconditions or the recomputation changes.
+#[tauri::command]
+pub async fn h2o_archive_reclamation_execute(
+    app: tauri::AppHandle,
+    request: PreviewRequest,
+) -> RunOutcome {
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(execute_generation_reclamation(&app, &request))
+    });
+    match handle.await {
+        Ok(outcome) => outcome,
+        // The trusted sequence never unwinds; a join failure means the task
+        // died, which is reported as a refusal rather than a silent success.
+        Err(_) => RunOutcome::refused(codes::EXECUTE_TASK_FAILED),
     }
 }
 

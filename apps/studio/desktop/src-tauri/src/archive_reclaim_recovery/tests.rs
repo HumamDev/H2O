@@ -509,15 +509,70 @@ fn no_m06_module_holds_a_cas_destructive_route() {
     }
 }
 
-/// AC-M06-13 — DORMANCY at final P3 HEAD. Not one destructive authority is
-/// registered: not generation execute, not staging, not occupant, not recovery.
+/// AC-M06-13 — GATE ORDERING, now transitioned. This is the authoritative
+/// command-vocabulary pin, and it is an EXACT SET, not a token-absence check.
+///
+/// Before G02 it asserted that not one destructive authority was registered.
+/// Human Decision Authority passed G02, so it now asserts the other half of the
+/// same rule: exactly the two approved destructive commands are reachable, and
+/// nothing else became reachable with them. A third destructive command, a
+/// recovery command, a raw purge command or a CAS command all fail here — as
+/// does dropping one of the two, or registering in only one build variant.
 #[test]
-fn the_whole_destructive_core_is_unregistered_at_final_p3_head() {
+fn exactly_the_two_g02_approved_destructive_commands_are_registered() {
     let lib = include_str!("../lib.rs");
-    for module in [
-        "archive_reclaim", "archive_reclaim_execute", "archive_occupant_quarantine",
-        "archive_reclaim_recovery",
+
+    /* THE EXACT ARCHIVE COMMAND SET. Anything added or removed fails. */
+    let mut registered: Vec<&str> = vec![];
+    let mut rest = lib;
+    while let Some(at) = rest.find("h2o_archive_") {
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        registered.push(&tail[..end]);
+        rest = &tail[end..];
+    }
+    registered.sort();
+    registered.dedup();
+    assert_eq!(
+        registered,
+        vec![
+            "h2o_archive_cas_repair_write",
+            "h2o_archive_durable_temp_residue",
+            "h2o_archive_durable_write",
+            "h2o_archive_generation_abort",
+            "h2o_archive_generation_begin",
+            "h2o_archive_generation_commit",
+            "h2o_archive_generation_write_member",
+            // ── The two G02-approved destructive commands ──
+            "h2o_archive_occupant_quarantine",
+            "h2o_archive_reclamation_execute",
+            // ──────────────────────────────────────────────
+            "h2o_archive_reclamation_preview",
+        ],
+        "the archive command vocabulary is exactly the G02-approved set"
+    );
+    assert_eq!(registered.len(), 10, "eight pre-G02 commands plus exactly two");
+
+    /* BOTH invoke-handler variants. A command registered in only the debug or
+       only the release macro would ship a different surface than it was
+       reviewed with. */
+    for command in [
+        "archive_reclaim_execute::h2o_archive_reclamation_execute",
+        "archive_occupant_quarantine::h2o_archive_occupant_quarantine",
     ] {
+        assert_eq!(
+            lib.matches(command).count(),
+            2,
+            "{command} must be registered in BOTH handler variants"
+        );
+    }
+    assert_eq!(lib.matches("macro_rules! h2o_studio_invoke_handler").count(), 2);
+
+    /* NOT approved by G02, and therefore still unreachable: stale recovery has
+       no command of its own, and no raw primitive or CAS authority appears. */
+    for module in ["archive_reclaim", "archive_reclaim_recovery"] {
         assert!(lib.contains(&format!("pub mod {module};")), "{module} compiled");
         assert!(
             !lib.contains(&format!("{module}::")),
@@ -525,28 +580,28 @@ fn the_whole_destructive_core_is_unregistered_at_final_p3_head() {
         );
     }
     for forbidden in [
-        "h2o_archive_reclaim", "h2o_archive_execute", "h2o_archive_purge",
-        "h2o_archive_quarantine", "h2o_archive_delete", "h2o_archive_occupant",
-        "h2o_archive_recover", "h2o_archive_staging",
+        "h2o_archive_purge", "h2o_archive_delete", "h2o_archive_recover",
+        "h2o_archive_staging", "h2o_archive_stale", "h2o_archive_collect",
+        "h2o_archive_cas_reclaim", "h2o_archive_cas_purge",
+        "purge_quarantined_item", "quarantine_occupant", "quarantine_residue",
+        "recover_and_record", "recover_stale_quarantine", "run_residue_stage",
         "execute_generation_reclamation", "execute_occupant_quarantine",
-        "recover_and_record", "run_residue_stage",
     ] {
         assert!(!lib.contains(forbidden), "{forbidden} must not be registered");
     }
-    // No destructive module declares a command, in code.
+
+    /* Each destructive module declares AT MOST its own approved command. */
     for (name, source) in M06_MODULES {
-        if *name == "archive_residue_probe" || *name == "archive_reclamation_preview" {
-            // These own the T1.3 / T2.3 READ-ONLY commands.
-            continue;
-        }
-        assert!(
-            !code_of(source).contains("#[tauri::command]"),
-            "[{name}] declares a command"
-        );
-    }
-    // The two registered M06 commands are read-only by name and by module.
-    for command in ["h2o_archive_durable_temp_residue", "h2o_archive_reclamation_preview"] {
-        assert!(lib.contains(command), "{command} is the read-only surface");
+        let commands = code_of(source).matches("#[tauri::command]").count();
+        let expected = match *name {
+            // The two G02-approved destructive commands.
+            "archive_reclaim_execute" | "archive_occupant_quarantine" => 1,
+            // The T1.3 / T2.3 READ-ONLY commands.
+            "archive_residue_probe" | "archive_reclamation_preview" => 1,
+            // Everything else, including recovery and the raw purge authority.
+            _ => 0,
+        };
+        assert_eq!(commands, expected, "[{name}] declares {commands} commands");
     }
 }
 
@@ -594,12 +649,47 @@ fn the_renderer_surface_remains_read_only_and_analyze_only() {
             &tail[start..start + tail[start..].find('\'').expect("closing quote")]
         })
         .collect();
-    assert_eq!(actions, vec!["analyze-archive"], "Analyze is the ONLY control");
+    /* P4: G02 passed, so the card legitimately offers the two approved
+       destructive actions. Narrowed from "Analyze is the only control" to the
+       EXACT approved set — a third action, or a CAS-destructive one, fails. */
+    let mut actions = actions;
+    actions.sort();
+    assert_eq!(
+        actions,
+        vec!["analyze-archive", "quarantine-occupant", "reclaim-archive"],
+        "exactly the G02-approved control set"
+    );
+    /* Only the two approved commands are invocable from the New UI. */
+    let mut ui_commands: Vec<&str> = ui
+        .match_indices("h2o_archive_")
+        .map(|(at, _)| {
+            let tail = &ui[at..];
+            let end = tail
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(tail.len());
+            &tail[..end]
+        })
+        .collect();
+    ui_commands.sort();
+    ui_commands.dedup();
+    assert_eq!(
+        ui_commands,
+        vec![
+            "h2o_archive_occupant_quarantine",
+            "h2o_archive_reclamation_execute",
+            "h2o_archive_reclamation_preview",
+        ],
+        "no third command is reachable from the New UI"
+    );
+    /* Spelled past the two approved names, which the exact set above already
+       pins. What must stay absent from the New UI is every OTHER destructive
+       route — raw purge, stale recovery and anything CAS-destructive. */
     for forbidden in [
-        "h2o_archive_reclaim", "h2o_archive_occupant", "h2o_archive_recover",
-        "h2o_archive_purge", "h2o_archive_execute",
+        "h2o_archive_purge", "h2o_archive_delete", "h2o_archive_recover",
+        "h2o_archive_stale", "h2o_archive_collect", "h2o_archive_cas_reclaim",
+        "purge_quarantined_item", "purge_run", "purge_all",
     ] {
-        assert!(!ui.contains(forbidden), "no destructive invoke in the UI: {forbidden}");
+        assert!(!ui.contains(forbidden), "no destructive route in the UI: {forbidden}");
     }
 }
 
@@ -662,4 +752,58 @@ fn a_real_purge_failure_stops_recovery_before_the_next_item() {
     std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     let _ = ex.release();
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (attack 18) RECOVERY TAKES NO CALLER-SELECTED TARGET.
+///
+/// Activation made the governed run reachable, and recovery runs inside it. The
+/// renderer must therefore be unable to steer which run is converged: no run
+/// id, no path, no scope and no request type may reach this module at all.
+#[test]
+fn recovery_accepts_no_renderer_selected_run_or_request() {
+    let src = include_str!("../archive_reclaim_recovery.rs");
+    for entry in ["pub(crate) fn recover_stale_quarantine(", "pub(crate) fn recover_and_record("] {
+        let at = src.find(entry).unwrap_or_else(|| panic!("{entry} exists"));
+        let sig = &src[at..at + src[at..].find(") -> ").unwrap()];
+        assert!(sig.contains("exclusive: &ExclusiveOwnership"), "{entry} requires the capability");
+        assert!(sig.contains("archive_root: &std::path::Path"), "{entry} takes the trusted root");
+        /* Exactly two parameters, and neither is caller-selectable content. */
+        assert_eq!(sig.matches(": ").count(), 2, "{entry} takes exactly two parameters");
+        for forbidden in [
+            "request", "PreviewRequest", "OccupantRequest", "run_id", "RunId",
+            "target", "scope", "chat_", "Vec<", "String",
+        ] {
+            assert!(!sig.contains(forbidden), "{entry} must not accept {forbidden}");
+        }
+    }
+    /* And the module body never reaches a renderer value either. */
+    let code = code_of(src);
+    for forbidden in [
+        "PreviewRequest", "OccupantRequest", "request.", "chat_scope",
+        "projections", "admit_request",
+    ] {
+        assert!(!code.contains(forbidden), "recovery must not consult {forbidden}");
+    }
+    /* EXACTLY two crate-visible entry points. A third one taking a caller
+       value would be a new steering seam, so its existence fails here. */
+    let entries: Vec<&str> = code
+        .match_indices("pub(crate) fn ")
+        .map(|(at, _)| {
+            let tail = &code[at + "pub(crate) fn ".len()..];
+            &tail[..tail.find('(').unwrap_or(0)]
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec!["recover_stale_quarantine", "record_recovery", "recover_and_record"],
+        "no additional recovery entry point exists"
+    );
+
+    /* The governed run calls it with its OWN derived root and nothing else. */
+    let execute = code_of(include_str!("../archive_reclaim_execute.rs"));
+    assert!(
+        execute.contains("recover_and_record(exclusive, archive_root)"),
+        "the run passes only the capability and its own derived root"
+    );
+    assert_eq!(execute.matches("recover_and_record").count(), 1, "one call site");
 }
