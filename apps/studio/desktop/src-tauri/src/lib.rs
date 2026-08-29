@@ -70,6 +70,10 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
+/// the trusted engine; owns no authority and mutates nothing.
+pub mod archive_reclamation_preview;
+
 /// M06 T2.2 — trusted READ-ONLY canonical CAS inventory, for read-only orphan
 /// analysis. Observes only; no CAS mutation authority exists.
 pub mod archive_cas_scan;
@@ -2552,6 +2556,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
             archive_residue_probe::h2o_archive_durable_temp_residue,
+            archive_reclamation_preview::h2o_archive_reclamation_preview,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2587,7 +2592,8 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
-            archive_residue_probe::h2o_archive_durable_temp_residue
+            archive_residue_probe::h2o_archive_durable_temp_residue,
+            archive_reclamation_preview::h2o_archive_reclamation_preview
         ]
     };
 }
