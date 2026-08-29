@@ -76,7 +76,9 @@ meta/notes/COMMIT_QUEUE.txt
 /.env.*
 
 # Local assistant workflow and scratch material (not for repo)
-.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/launch.json
 s-files/
 CLAUDE.md
 "CLAUDE 2.md"

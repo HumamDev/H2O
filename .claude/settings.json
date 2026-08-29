@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node tools/validation/identity/run-identity-release-gate.mjs)",
+      "Bash(node tools/loader/validate-loader-order.mjs)",
+      "Bash(node tools/product/extensions/chatgpt/chrome/build-chrome-live-extension.mjs)"
+    ]
+  }
+}

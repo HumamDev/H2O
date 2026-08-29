@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cockpit-pro-site (Vite dev)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/site", "run", "dev"],
+      "port": 5173
+    },
+    {
+      "name": "studio-mobile (Expo / Metro)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/studio/mobile", "run", "start"],
+      "port": 8081
+    },
+    {
+      "name": "studio-mobile (Expo Web)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/studio/mobile", "run", "web"],
+      "port": 8081
+    },
+    {
+      "name": "studio-mobile (Expo iOS run + Metro)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/studio/mobile", "run", "ios"],
+      "port": 8081
+    },
+    {
+      "name": "studio-mobile (Expo Android run + Metro)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/studio/mobile", "run", "android"],
+      "port": 8081
+    }
+  ]
+}
