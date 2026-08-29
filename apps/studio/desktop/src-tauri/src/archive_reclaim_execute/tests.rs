@@ -2,7 +2,7 @@ use super::*;
 use crate::archive_cas_scan::CasInventory;
 use crate::archive_db_probe::{DbProbeCounts, GenerationProtection, ProtectionSource};
 use crate::archive_durable_write::sha256_hex;
-use crate::archive_generation_publish::{begin, commit, write_member, Member, Publisher};
+use crate::archive_generation_publish::{abort, begin, commit, write_member, Member, Publisher};
 use crate::archive_instance_lock::{ArchiveInstanceState, ExclusiveOwnership};
 use crate::archive_package_scan::scan_packages_within;
 use crate::archive_reclamation_preview::ProjectionInput;
@@ -136,6 +136,35 @@ fn run_with_registry(
     sessions_empty: bool,
 ) -> RunOutcome {
     run_internal(ex, root, sessions_empty, req, d)
+}
+
+/// Splits Rust source into identifier tokens, so an age/time ban can be
+/// exact. A substring scan cannot be: `age` lives inside `package`, and
+/// `age_` inside `package_scan`, which this code says legitimately.
+fn identifier_tokens(code: &str) -> std::collections::BTreeSet<String> {
+    code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every identifier that would give residue a time, age or wall-clock
+/// authority. AC-M06-06: neither filesystem timestamps nor wall-clock age are
+/// deletion authority anywhere.
+const TIME_AUTHORITY_IDENTIFIERS: &[&str] = &[
+    "st_mtime", "st_ctime", "st_birthtime", "st_atime", "st_mtimespec",
+    "SystemTime", "Instant", "UNIX_EPOCH", "elapsed", "modified", "created",
+    "age", "max_age", "min_age", "older_than", "newer_than", "stale_after",
+    "dwell", "now", "timestamp", "duration_since",
+];
+
+/// The mid-run pause is a PROCESS-global gate, so the tests that arm it must
+/// not overlap. `cargo test` runs cases on many threads; this serializes the
+/// pause users without weakening what either of them proves.
+static PAUSE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn pause_guard() -> std::sync::MutexGuard<'static, ()> {
+    PAUSE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn pkg_names(root: &Path) -> Vec<String> {
@@ -407,10 +436,16 @@ fn every_protection_class_prevents_action_at_execution_time() {
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
-/// (AB)(AC) staging/temp residue and canonical CAS are untouched by a real
-/// generation run.
+/// (AE)(AF) canonical CAS survives a real run that reclaims BOTH residue
+/// families out of the very same shard.
+///
+/// This was T3.2's "bystanders survive" case. T3.3 deliberately changes half of
+/// it: staging and durable-temp residue are now this task's targets, so the
+/// assertion that matters is the one that did NOT change — every canonical
+/// `sha256-` body is byte and name identical afterwards, including the one the
+/// read-only analysis calls observed-unreferenced.
 #[test]
-fn staging_residue_and_canonical_cas_survive_a_generation_run() {
+fn canonical_cas_survives_a_run_that_reclaims_both_residue_families() {
     let root = scratch("bystanders");
     let hashes = five(&root, "chat_a");
     let owner = Owner::acquire(&root);
@@ -427,21 +462,30 @@ fn staging_residue_and_canonical_cas_survive_a_generation_run() {
     std::fs::write(shard.join(&referenced), b"referenced-body").unwrap();
     std::fs::create_dir_all(root.join("assets").join("cd")).unwrap();
     std::fs::write(root.join("assets").join("cd").join(&unreferenced), b"unreferenced-body").unwrap();
-    let assets_before = census(&root.join("assets"));
-    let staging_before = census(&root.join("packages").join(".h2o-genstage-00ff01"));
+    let cas_before: Vec<(String, String)> = census(&root.join("assets"))
+        .into_iter()
+        .filter(|(n, _)| n.contains("sha256-") || !n.contains('.'))
+        .collect();
 
     let ex = owner.exclusive();
     let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
     assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
-    assert_eq!(outcome.purged, 2, "the run really did act");
+    assert_eq!(outcome.purged, 2, "the generation stage really did act");
 
-    assert_eq!(census(&root.join("assets")), assets_before, "ALL CAS bodies byte-identical");
-    assert_eq!(
-        census(&root.join("packages").join(".h2o-genstage-00ff01")),
-        staging_before,
-        "generation staging residue untouched"
-    );
-    assert!(shard.join(".h2o-durable-7-0.tmp").exists(), "durable temp residue untouched");
+    // (AE)(AF) every canonical body, referenced or not, is untouched.
+    let cas_after: Vec<(String, String)> = census(&root.join("assets"))
+        .into_iter()
+        .filter(|(n, _)| n.contains("sha256-") || !n.contains('.'))
+        .collect();
+    assert_eq!(cas_after, cas_before, "ALL CAS bodies byte and name identical");
+    assert!(shard.join(&referenced).exists());
+    assert!(root.join("assets").join("cd").join(&unreferenced).exists());
+
+    // And the residue in the same shard IS reclaimed, through quarantine.
+    assert_eq!(outcome.residue.generation_staging_purged, 1);
+    assert_eq!(outcome.residue.durable_temp_purged, 1);
+    assert!(!root.join("packages").join(".h2o-genstage-00ff01").exists());
+    assert!(!shard.join(".h2o-durable-7-0.tmp").exists());
 
     let _ = ex.release();
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
@@ -912,6 +956,7 @@ fn a_real_second_process_cannot_participate_mid_run() {
         "precondition: participation is possible before the exclusive window"
     );
 
+    let _serial = pause_guard();
     let (reached, release) = pause::arm();
     let root_for_run = root.clone();
     let hash = hashes[4].clone();
@@ -1243,9 +1288,1212 @@ fn the_execution_core_is_dormant_and_owns_no_primitive() {
         code.contains("referenced_cas_objects"),
         "read-only CAS analysis appears as evidence only"
     );
-    // Only the Generation kind is used in this task.
+    // T3.3 adds exactly one kind: staging/temp residue. Occupant action is a
+    // later task and must not appear.
     assert!(code.contains("QuarantineKind::Generation"));
-    for forbidden in ["QuarantineKind::StagingTemp", "QuarantineKind::Occupant"] {
-        assert!(!code.contains(forbidden), "T3.2 must act only on generations: {forbidden}");
+    assert!(code.contains("QuarantineKind::StagingTemp"));
+    assert!(
+        !code.contains("QuarantineKind::Occupant"),
+        "occupant action belongs to a later task"
+    );
+    for forbidden in ["Occupant", "corrupt_occupant"] {
+        assert!(!code.contains(forbidden), "no occupant action in T3.3: {forbidden}");
     }
+    // (AL) no stale-run or receipt cleanup was smuggled in.
+    for forbidden in ["purge_run", "purge_all", "purge_receipts", "RECEIPTS_NAMESPACE"] {
+        assert!(!code.contains(forbidden), "stale-run convergence is a later task: {forbidden}");
+    }
+    // (AK) no time, age or wall-clock deletion authority anywhere.
+    let tokens = identifier_tokens(&code);
+    for forbidden in TIME_AUTHORITY_IDENTIFIERS {
+        assert!(!tokens.contains(*forbidden), "no time authority: {forbidden}");
+    }
+    // (AG) residue leaves canonical space ONLY by quarantine rename.
+    assert!(code.contains("quarantine_residue("), "residue moves via the T3.1 primitive");
+    for forbidden in ["unlink_child", "unlink(", "purge_tree"] {
+        assert!(!code.contains(forbidden), "no direct canonical removal: {forbidden}");
+    }
+}
+
+// ── M06 T3.3 — staging / temp reclamation ──────────────────────────────────
+
+/// A GENUINE abandoned staging tree, produced by the real publisher's `begin`
+/// and then orphaned by dropping the publisher without commit or abort.
+///
+/// The in-memory registry goes with the publisher; the staging directory the
+/// real publisher created stays on disk. That is exactly what a killed or
+/// crashed instance leaves behind, so the fixture is source-grounded rather
+/// than a hand-made empty directory.
+fn orphan_staging(root: &Path, chat: &str) -> String {
+    let before: std::collections::BTreeSet<String> = pkg_names(root).into_iter().collect();
+    let publisher = Publisher::new(root.to_path_buf());
+    let begun = begin(&publisher, chat);
+    assert!(begun.ok, "begin refused: {:?}", begun.blockers);
+    assert!(write_member(&publisher, begun.token, Member::Snapshot, br#"{"partial":true}"#).ok);
+    drop(publisher);
+    let mut fresh: Vec<String> = pkg_names(root)
+        .into_iter()
+        .filter(|n| !before.contains(n))
+        .collect();
+    assert_eq!(fresh.len(), 1, "exactly one new staging entry: {fresh:?}");
+    let name = fresh.pop().unwrap();
+    assert!(name.starts_with(".h2o-genstage-"), "{name}");
+    assert!(root.join("packages").join(&name).is_dir(), "a real staging directory");
+    name
+}
+
+fn plant_temp(root: &Path, shard: &str, name: &str, bytes: &[u8]) -> PathBuf {
+    let dir = root.join("assets").join(shard);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+/// The residue actions a run reports, as `family|archive-path`.
+fn residue_ids(outcome: &RunOutcome) -> Vec<String> {
+    outcome
+        .residue_acted
+        .iter()
+        .map(|r| format!("{}|{}", r.family.kind(), r.archive_path))
+        .collect()
+}
+
+fn receipt_names(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join(".h2o-reclaim").join("receipts"))
+        .map(|it| it.map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn receipt_json(root: &Path, name: &str) -> serde_json::Value {
+    let bytes =
+        std::fs::read(root.join(".h2o-reclaim").join("receipts").join(name)).expect("receipt");
+    serde_json::from_slice(&bytes).expect("receipt json")
+}
+
+/// (N)(J)(S)(T)(U)(Z)(AC)(AD)(AG) one run, one exclusive window, one run id,
+/// one evidence set: a real generation candidate, a real orphaned staging tree,
+/// two durable temps, a canonical CAS body and a foreign occupant.
+#[test]
+fn a_mixed_run_acts_on_generations_then_both_residue_families() {
+    let root = scratch("mixed");
+    let hashes = five(&root, "chat_a");
+    let staging = orphan_staging(&root, "chat_b");
+    plant_temp(&root, "ab", ".h2o-durable-11-0.tmp", b"temp-a");
+    plant_temp(&root, "cd", ".h2o-durable-11-0.tmp", b"temp-b");
+    let body = format!("sha256-{}", "ab".repeat(32));
+    plant_temp(&root, "ab", &body, b"canonical-cas-body");
+    // (AD) a foreign occupant and a legacy package: never staging targets.
+    std::fs::write(root.join("packages").join("corrupt.h2ochat"), b"junk").unwrap();
+    std::fs::create_dir_all(root.join("packages").join("chat_legacy.h2ochat")).unwrap();
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    trace::reset();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.schema_version, 2, "the extended run format");
+    // Generations follow the existing T3.2 semantics: K=3 leaves two acted.
+    assert_eq!(outcome.quarantined, 2);
+    assert_eq!(outcome.purged, 2);
+    // Both residue families, under the same run.
+    assert_eq!(
+        residue_ids(&outcome),
+        vec![
+            format!("generation-staging|archive/packages/{staging}"),
+            "durable-temp|archive/assets/ab/.h2o-durable-11-0.tmp".to_string(),
+            "durable-temp|archive/assets/cd/.h2o-durable-11-0.tmp".to_string(),
+        ]
+    );
+    assert_eq!(outcome.residue.generation_staging_quarantined, 1);
+    assert_eq!(outcome.residue.generation_staging_purged, 1);
+    assert_eq!(outcome.residue.durable_temp_quarantined, 2);
+    assert_eq!(outcome.residue.durable_temp_purged, 2);
+    assert!(outcome.residue_acted.iter().all(|r| r.quarantined && r.purged));
+    assert_eq!(outcome.residue_indeterminate, 0);
+
+    // (S)(T)(U) the required per-item order, for the generation stage and then
+    // BOTH residue families, strictly.
+    let events = trace::taken();
+    let first_rename = events.iter().position(|e| *e == trace::Event::FirstRename).unwrap();
+    let plan_durable = events.iter().position(|e| *e == trace::Event::PlanDurable).unwrap();
+    assert!(plan_durable < first_rename, "plan durable precedes the first rename");
+    let residue_events: Vec<trace::Event> = events
+        .iter()
+        .copied()
+        .filter(|e| {
+            matches!(
+                e,
+                trace::Event::ResidueRename
+                    | trace::Event::ResidueNamespaceDurable
+                    | trace::Event::ResidueReceiptDurable
+                    | trace::Event::ResiduePurge
+                    | trace::Event::ResiduePurgeReceiptDurable
+            )
+        })
+        .collect();
+    assert_eq!(
+        residue_events,
+        [
+            trace::Event::ResidueRename,
+            trace::Event::ResidueNamespaceDurable,
+            trace::Event::ResidueReceiptDurable,
+            trace::Event::ResiduePurge,
+            trace::Event::ResiduePurgeReceiptDurable,
+        ]
+        .repeat(3),
+        "namespace durability precedes the receipt, and the receipt precedes the purge"
+    );
+    // The whole staging stage is after the whole generation stage.
+    let last_gen = events
+        .iter()
+        .rposition(|e| *e == trace::Event::PurgeReceiptDurable)
+        .unwrap();
+    let first_res = events.iter().position(|e| *e == trace::Event::ResidueRename).unwrap();
+    assert!(last_gen < first_res, "generations first, then residue");
+
+    // Physical state.
+    assert!(!root.join("packages").join(&staging).exists());
+    assert!(!root.join("assets").join("ab").join(".h2o-durable-11-0.tmp").exists());
+    assert!(!root.join("assets").join("cd").join(".h2o-durable-11-0.tmp").exists());
+    assert!(root.join("assets").join("ab").join(&body).exists(), "CAS untouched");
+    assert_eq!(
+        std::fs::read(root.join("assets").join("ab").join(&body)).unwrap(),
+        b"canonical-cas-body"
+    );
+    // (AC)(AD) the surviving canonical packages: three floor-protected
+    // generations, the legacy package and the foreign occupant.
+    let survivors = pkg_names(&root);
+    assert_eq!(survivors.len(), 5, "{survivors:?}");
+    assert!(survivors.contains(&"corrupt.h2ochat".to_string()));
+    assert!(survivors.contains(&"chat_legacy.h2ochat".to_string()));
+    assert_eq!(survivors.iter().filter(|n| n.contains(".g")).count(), 3);
+
+    // (Z) one run id across every receipt, with the right subtype and identity.
+    let run_id = outcome.run_id.clone().unwrap();
+    let receipts = receipt_names(&root);
+    assert!(receipts.iter().all(|n| n.starts_with(&run_id)), "{receipts:?}");
+    assert_eq!(
+        receipts.iter().filter(|n| n.contains("residue-quarantined")).count(),
+        3
+    );
+    assert_eq!(receipts.iter().filter(|n| n.contains("residue-purged")).count(), 3);
+    let staged_receipt = receipts
+        .iter()
+        .find(|n| n.contains("genstage") && n.contains("residue-purged"))
+        .expect("a generation-staging purge receipt");
+    let value = receipt_json(&root, staged_receipt);
+    assert_eq!(value["schemaVersion"], 2);
+    assert_eq!(value["kind"], "staging");
+    assert_eq!(value["subtype"], "generation-staging");
+    assert_eq!(value["action"], "purged");
+    assert_eq!(value["archivePath"], format!("archive/packages/{staging}"));
+    assert_eq!(value["purged"], true);
+    let temp_receipt = receipts
+        .iter()
+        .find(|n| n.contains("durtmp.cd") && n.contains("residue-purged"))
+        .expect("a durable-temp purge receipt");
+    let value = receipt_json(&root, temp_receipt);
+    assert_eq!(value["subtype"], "durable-temp");
+    assert_eq!(value["archivePath"], "archive/assets/cd/.h2o-durable-11-0.tmp");
+    // No chat content, no absolute host path anywhere in the evidence.
+    for name in &receipts {
+        let raw = String::from_utf8(
+            std::fs::read(root.join(".h2o-reclaim").join("receipts").join(name)).unwrap(),
+        )
+        .unwrap();
+        assert!(!raw.contains(root.to_str().unwrap()), "absolute host path in {name}");
+        assert!(!raw.contains("body-2026"), "chat content in {name}");
+    }
+
+    // No hidden second run: exactly one run directory, and it is this one.
+    let mut runs: Vec<String> = std::fs::read_dir(root.join(".h2o-reclaim"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|n| n != "receipts")
+        .collect();
+    runs.sort();
+    assert_eq!(runs, vec![run_id]);
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (M)(L) a staging-only run: zero generation candidates, real residue, and the
+/// complete plan is durable BEFORE the first staging rename. This is the
+/// anti-vacuity case for plan durability.
+#[test]
+fn a_staging_only_run_acts_with_zero_generation_candidates() {
+    let root = scratch("stagingonly");
+    // No packages directory at all: only durable-temp residue exists.
+    plant_temp(&root, "ab", ".h2o-durable-2-0.tmp", b"residue");
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    trace::reset();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.quarantined, 0, "no generation action was fabricated");
+    assert_eq!(outcome.purged, 0);
+    assert!(outcome.acted.is_empty());
+    assert_eq!(outcome.residue.durable_temp_purged, 1);
+    assert_eq!(outcome.residue.generation_staging_purged, 0);
+
+    let events = trace::taken();
+    assert_eq!(
+        events.iter().position(|e| *e == trace::Event::PlanDurable),
+        Some(0),
+        "plan durability is the first recorded step"
+    );
+    assert!(
+        !events.contains(&trace::Event::FirstRename),
+        "no generation rename happened"
+    );
+    let first_staging = events
+        .iter()
+        .position(|e| *e == trace::Event::ResidueRename)
+        .expect("a staging rename happened");
+    assert!(
+        events.iter().position(|e| *e == trace::Event::PlanDurable).unwrap() < first_staging,
+        "PLAN_DURABLE precedes FIRST_STAGING_RENAME with zero generation candidates"
+    );
+
+    // One run id and one evidence set.
+    let run_id = outcome.run_id.clone().unwrap();
+    let receipts = receipt_names(&root);
+    assert!(receipts.iter().all(|n| n.starts_with(&run_id)));
+    let plan = receipt_json(&root, &format!("{run_id}.plan.json"));
+    assert_eq!(plan["stages"], serde_json::json!(["staging-temp"]));
+    assert_eq!(plan["residue"]["actions"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["candidates"].as_array().unwrap().len(), 0);
+    assert!(!root.join("assets").join("ab").join(".h2o-durable-2-0.tmp").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (O) generation-only preservation: with ZERO residue the run behaves exactly
+/// as the pre-T3.3 generation execution did, plus the additive stage evidence.
+#[test]
+fn generation_only_behaviour_is_preserved_when_no_residue_exists() {
+    let root = scratch("genonly");
+    let hashes = five(&root, "chat_a");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    trace::reset();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+
+    // Exactly the T3.2 result.
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.quarantined, 2);
+    assert_eq!(outcome.purged, 2);
+    assert_eq!(outcome.retention_floor, 3);
+    assert_eq!(outcome.acted.len(), 2);
+    assert!(outcome.acted.iter().all(|a| a.quarantined && a.purged));
+    assert_eq!(pkg_names(&root).len(), 3, "the K=3 floor survives");
+    assert_eq!(
+        trace::taken(),
+        vec![
+            trace::Event::PlanDurable,
+            trace::Event::FirstRename,
+            trace::Event::QuarantineNamespaceDurable,
+            trace::Event::QuarantineReceiptDurable,
+            trace::Event::Purge,
+            trace::Event::PurgeReceiptDurable,
+            trace::Event::FirstRename,
+            trace::Event::QuarantineNamespaceDurable,
+            trace::Event::QuarantineReceiptDurable,
+            trace::Event::Purge,
+            trace::Event::PurgeReceiptDurable,
+        ],
+        "no residue step is recorded, and no generation step changed"
+    );
+    // Additive only: the residue fields are present and empty.
+    assert!(outcome.residue_acted.is_empty());
+    assert_eq!(outcome.residue, ResidueCounts::default());
+    assert_eq!(outcome.residue_indeterminate, 0);
+    let run_id = outcome.run_id.clone().unwrap();
+    let plan = receipt_json(&root, &format!("{run_id}.plan.json"));
+    assert_eq!(plan["stages"], serde_json::json!(["generation"]));
+    assert_eq!(plan["residue"]["actions"].as_array().unwrap().len(), 0);
+    assert_eq!(plan["residue"]["sourceComplete"], true);
+    // Every generation-stage receipt is exactly the T3.2 shape.
+    let quarantined = receipt_names(&root)
+        .into_iter()
+        .find(|n| n.contains("quarantined") && !n.contains("residue"))
+        .expect("a generation quarantine receipt");
+    let value = receipt_json(&root, &quarantined);
+    assert_eq!(value["kind"], "generation");
+    assert_eq!(value["chatId"], "chat_a");
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (D)(mutant 2) an incomplete residue authority is NEVER read as empty, and it
+/// does not buy an independent generation stage either: ZERO destructive
+/// mutation for the whole run, refused before the run namespace exists.
+#[test]
+fn an_incomplete_residue_authority_performs_zero_destructive_mutation() {
+    let root = scratch("residueblind");
+    let hashes = five(&root, "chat_a");
+    // A shard standing behind a symlink: O_NOFOLLOW cannot look inside it.
+    let elsewhere = root.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join(".h2o-durable-1-0.tmp"), b"hidden").unwrap();
+    std::fs::create_dir_all(root.join("assets")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("assets").join("ab")).unwrap();
+
+    let owner = Owner::acquire(&root);
+    let before = census(&root);
+    let ex = owner.exclusive();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+
+    assert_eq!(outcome.state, RunState::Refused);
+    assert!(outcome.blockers.contains(&codes::RESIDUE_NOT_AUTHORITATIVE.to_string()));
+    assert!(outcome.run_id.is_none(), "no run namespace was created");
+    assert_eq!(outcome.quarantined, 0);
+    assert_eq!(outcome.purged, 0);
+    assert_eq!(outcome.residue, ResidueCounts::default());
+    assert_eq!(census(&root), before, "not one byte changed, in EITHER stage");
+    assert!(!root.join(".h2o-reclaim").exists());
+    assert!(elsewhere.join(".h2o-durable-1-0.tmp").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (I)(mutant 7) an in-flight publisher session refuses the WHOLE run before
+/// any action, and its staging tree is left completely alone.
+#[test]
+fn an_in_flight_publisher_session_refuses_the_staging_stage_too() {
+    let root = scratch("livesession");
+    plant_temp(&root, "ab", ".h2o-durable-6-0.tmp", b"residue");
+
+    // A genuine live session, held open across the refusal.
+    let publisher = Publisher::new(root.to_path_buf());
+    let begun = begin(&publisher, "chat_live");
+    assert!(begun.ok, "{:?}", begun.blockers);
+    assert!(write_member(&publisher, begun.token, Member::Snapshot, br#"{"live":true}"#).ok);
+    assert!(!publisher.sessions_empty(), "the registry really is occupied");
+    let live_staging: Vec<String> = pkg_names(&root)
+        .into_iter()
+        .filter(|n| n.starts_with(".h2o-genstage-"))
+        .collect();
+    assert_eq!(live_staging.len(), 1);
+
+    let owner = Owner::acquire(&root);
+    let before = census(&root);
+    let ex = owner.exclusive();
+    let outcome = run_with_registry(
+        &root,
+        &ex,
+        &db(vec![]),
+        &request("chat_a", "ok", "deadbeef"),
+        publisher.sessions_empty(),
+    );
+
+    assert_eq!(outcome.state, RunState::Refused);
+    assert_eq!(outcome.blockers, vec![codes::PUBLISHER_SESSIONS_ACTIVE.to_string()]);
+    assert!(outcome.run_id.is_none());
+    assert!(outcome.residue_acted.is_empty(), "no staging receipt, no staging action");
+    assert_eq!(census(&root), before, "the live staging tree is intact");
+    assert!(!root.join(".h2o-reclaim").exists(), "no reclaim root from a refusal");
+    assert!(root.join("assets").join("ab").join(".h2o-durable-6-0.tmp").exists());
+    // The session was never terminated as part of the refusal.
+    assert!(!publisher.sessions_empty(), "the registry still contains the session");
+    assert!(root.join("packages").join(&live_staging[0]).is_dir());
+
+    // Only now, as cleanup, is the session ended.
+    assert!(abort(&publisher, begun.token).ok);
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (K) a trusted durable write cannot overlap the exclusive staging/temp
+/// window. Proven at the REAL production gate every mutating command passes
+/// through — `enter_mutation_recovering` — not by reading source comments, and
+/// without inventing a second lock.
+#[test]
+fn a_trusted_durable_write_cannot_overlap_the_exclusive_staging_window() {
+    use crate::archive_instance_lock::enter_mutation_recovering;
+
+    let root = scratch("dwexcl");
+    plant_temp(&root, "ab", ".h2o-durable-4-0.tmp", b"residue");
+
+    let state = std::sync::Arc::new(ArchiveInstanceState::default());
+    state.record_startup_attempt(&root);
+    state.ensure_presence(&root).expect("shared presence");
+
+    // Control: the production gate admits a trusted mutation right now.
+    assert!(
+        enter_mutation_recovering(&state, Some(&root)).is_ok(),
+        "precondition: trusted mutation is possible before the run"
+    );
+
+    let _serial = pause_guard();
+    let (reached, release) = pause::arm();
+    let run_state = state.clone();
+    let run_root = root.clone();
+    let handle = std::thread::spawn(move || {
+        let ex = run_state.try_acquire_exclusive().expect("exclusive");
+        let outcome = run_internal(
+            &ex,
+            &run_root,
+            true,
+            &request("chat_a", "ok", "deadbeef"),
+            &db(vec![]),
+        );
+        let _ = ex.release();
+        outcome
+    });
+    reached
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the run reached its exclusive window");
+
+    // Mid-run: the same authority is refused, retryably.
+    let refused = enter_mutation_recovering(&state, Some(&root));
+    assert_eq!(
+        refused.err().as_deref(),
+        Some(crate::archive_instance_lock::codes::MUTATION_GATE_BUSY),
+        "a concurrent trusted write must be refused while the run owns exclusive"
+    );
+    assert!(
+        crate::archive_instance_lock::is_retryable_environmental(
+            crate::archive_instance_lock::codes::MUTATION_GATE_BUSY
+        ),
+        "and refused with the established retryable behavior, not a hard error"
+    );
+
+    let _ = release.send(());
+    let outcome = handle.join().expect("run thread");
+    pause::clear();
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.residue.durable_temp_purged, 1);
+
+    // After release, trusted mutation is possible again.
+    assert!(enter_mutation_recovering(&state, Some(&root)).is_ok());
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// AC-M06-09 eviction equivalence: reclaiming a genuine orphaned staging tree
+/// removes abandoned staging state and nothing else. No committed generation
+/// moves, no publisher session is terminated, and publication still works
+/// afterwards with identical semantics.
+#[test]
+fn reclaiming_orphaned_staging_is_not_a_publication_change() {
+    let root = scratch("evict");
+    let before_hash = publish(&root, "chat_a", "2026-01-01T00:00:00.000Z");
+    let staging = orphan_staging(&root, "chat_b");
+    let published_before: Vec<String> = pkg_names(&root)
+        .into_iter()
+        .filter(|n| n.ends_with(".h2ochat"))
+        .collect();
+    assert_eq!(published_before.len(), 1);
+    let package_census = census(&root.join("packages").join(&published_before[0]));
+
+    // The preconditions the safety argument rests on, asserted rather than
+    // assumed: exclusive held, registry empty, target in a staging namespace.
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let registry_probe = Publisher::new(root.to_path_buf());
+    assert!(registry_probe.sessions_empty(), "no publisher session is in flight");
+    assert!(staging.starts_with(".h2o-genstage-"));
+    assert!(crate::archive_durable_write::is_reserved_component(&staging));
+
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &before_hash));
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.residue.generation_staging_purged, 1);
+
+    // No committed generation moved, byte for byte.
+    assert_eq!(
+        pkg_names(&root)
+            .into_iter()
+            .filter(|n| n.ends_with(".h2ochat"))
+            .collect::<Vec<_>>(),
+        published_before,
+        "no canonical publication was touched"
+    );
+    assert_eq!(census(&root.join("packages").join(&published_before[0])), package_census);
+    assert!(outcome.acted.is_empty(), "the generation stage acted on nothing");
+    assert!(!root.join("packages").join(&staging).exists());
+    let _ = ex.release();
+
+    // Publication semantics are unchanged afterwards: a new generation
+    // publishes normally through the real publisher.
+    let after_hash = publish(&root, "chat_c", "2026-02-02T00:00:00.000Z");
+    assert_eq!(after_hash.len(), 64);
+    assert_eq!(
+        pkg_names(&root)
+            .into_iter()
+            .filter(|n| n.ends_with(".h2ochat"))
+            .count(),
+        2
+    );
+    assert!(
+        !pkg_names(&root).iter().any(|n| n.starts_with(".h2o-genstage-")),
+        "the new publication left no staging residue of its own"
+    );
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (V)(mutant 12) a deterministic namespace-durability failure after a staging
+/// rename: no purge, no later action, never Complete.
+#[test]
+fn a_staging_namespace_durability_failure_stops_the_run_without_purging() {
+    let root = scratch("resdur");
+    plant_temp(&root, "ab", ".h2o-durable-1-0.tmp", b"first");
+    plant_temp(&root, "cd", ".h2o-durable-1-0.tmp", b"second");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+
+    trace::reset();
+    fault::arm(fault::Point::AfterResidueRenameBeforeNamespaceDurability);
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+    fault::clear();
+
+    assert_eq!(outcome.state, RunState::Partial, "never Complete");
+    assert_eq!(outcome.residue_acted.len(), 1, "the run stopped at the first item");
+    assert!(outcome.residue_acted[0].quarantined);
+    assert!(!outcome.residue_acted[0].purged);
+    assert_eq!(
+        outcome.residue_acted[0].blocker.as_deref(),
+        Some(crate::archive_reclaim::codes::QUARANTINE_NOT_DURABLE)
+    );
+    assert_eq!(outcome.residue.durable_temp_purged, 0);
+
+    let events = trace::taken();
+    assert!(events.contains(&trace::Event::ResidueRename));
+    assert!(!events.contains(&trace::Event::ResidueNamespaceDurable));
+    assert!(!events.contains(&trace::Event::ResiduePurge), "no purge, ever");
+
+    // The item remains quarantined and observable; the second is untouched.
+    let run_id = outcome.run_id.clone().unwrap();
+    let quarantined: Vec<String> = std::fs::read_dir(root.join(".h2o-reclaim").join(&run_id))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(quarantined, vec!["durtmp.ab..h2o-durable-1-0.tmp".to_string()]);
+    assert!(root.join("assets").join("cd").join(".h2o-durable-1-0.tmp").exists());
+    assert!(receipt_names(&root).iter().all(|n| !n.contains("residue")));
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (W)(mutant 13)(mutant 14) a deterministic staging-receipt failure prevents
+/// the purge and every later action.
+#[test]
+fn a_failed_staging_receipt_stops_the_run_without_purging() {
+    let root = scratch("resreceipt");
+    plant_temp(&root, "ab", ".h2o-durable-1-0.tmp", b"first");
+    plant_temp(&root, "cd", ".h2o-durable-1-0.tmp", b"second");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+
+    trace::reset();
+    fault::arm(fault::Point::AfterResidueRenameBeforeReceipt);
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+    fault::clear();
+
+    assert_eq!(outcome.state, RunState::Partial);
+    assert_eq!(outcome.residue_acted.len(), 1);
+    assert!(outcome.residue_acted[0].quarantined && !outcome.residue_acted[0].purged);
+    assert!(outcome.blockers.contains(&codes::EVIDENCE_FAILED.to_string()));
+
+    let events = trace::taken();
+    assert!(events.contains(&trace::Event::ResidueNamespaceDurable), "the move was durable");
+    assert!(!events.contains(&trace::Event::ResidueReceiptDurable), "the receipt was not");
+    assert!(!events.contains(&trace::Event::ResiduePurge), "so nothing was purged");
+
+    let run_id = outcome.run_id.clone().unwrap();
+    assert!(root
+        .join(".h2o-reclaim")
+        .join(&run_id)
+        .join("durtmp.ab..h2o-durable-1-0.tmp")
+        .exists());
+    assert!(root.join("assets").join("cd").join(".h2o-durable-1-0.tmp").exists());
+    assert!(!receipt_names(&root).iter().any(|n| n.contains("residue")));
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (X)(mutant 15) a deterministic staging-purge failure stops later actions and
+/// reports honestly: the canonical source is NOT restored, and the surviving
+/// quarantine stays for recovery.
+#[test]
+fn a_staging_purge_failure_stops_later_actions_honestly() {
+    let root = scratch("respurge");
+    plant_temp(&root, "ab", ".h2o-durable-1-0.tmp", b"first");
+    plant_temp(&root, "cd", ".h2o-durable-1-0.tmp", b"second");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+
+    fault::arm(fault::Point::ResiduePurgeFails);
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+    fault::clear();
+
+    assert_eq!(outcome.state, RunState::Partial);
+    assert_eq!(outcome.residue_acted.len(), 1);
+    assert!(outcome.residue_acted[0].quarantined);
+    assert!(!outcome.residue_acted[0].purged);
+    assert_eq!(
+        outcome.residue_acted[0].blocker.as_deref(),
+        Some(codes::RESIDUE_PURGE_FAILED)
+    );
+    assert_eq!(outcome.residue.durable_temp_quarantined, 1);
+    assert_eq!(outcome.residue.durable_temp_purged, 0);
+
+    // Logical removal already happened and is NOT undone.
+    assert!(!root.join("assets").join("ab").join(".h2o-durable-1-0.tmp").exists());
+    let run_id = outcome.run_id.clone().unwrap();
+    assert!(root
+        .join(".h2o-reclaim")
+        .join(&run_id)
+        .join("durtmp.ab..h2o-durable-1-0.tmp")
+        .exists(), "the physical residue stays contained");
+    // The quarantine receipt exists; the purge receipt does not.
+    let receipts = receipt_names(&root);
+    assert!(receipts.iter().any(|n| n.contains("residue-quarantined")));
+    assert!(!receipts.iter().any(|n| n.contains("residue-purged")));
+    // The second item was never touched.
+    assert!(root.join("assets").join("cd").join(".h2o-durable-1-0.tmp").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (mutant 10) a material GENERATION-stage failure prevents every staging
+/// action. The run does not go on to delete something else after meeting a
+/// contradiction.
+#[test]
+fn a_generation_stage_failure_prevents_every_staging_action() {
+    let root = scratch("genfail");
+    let hashes = five(&root, "chat_a");
+    let staging = orphan_staging(&root, "chat_b");
+    plant_temp(&root, "ab", ".h2o-durable-1-0.tmp", b"residue");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+
+    trace::reset();
+    fault::arm(fault::Point::AfterRenameBeforeQuarantineReceipt);
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[4]));
+    fault::clear();
+
+    assert_eq!(outcome.state, RunState::Partial);
+    let events = trace::taken();
+    assert!(events.contains(&trace::Event::FirstRename));
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            trace::Event::ResidueRename
+                | trace::Event::ResidueNamespaceDurable
+                | trace::Event::ResidueReceiptDurable
+                | trace::Event::ResiduePurge
+                | trace::Event::ResiduePurgeReceiptDurable
+        )),
+        "not one staging step may run after a generation-stage failure"
+    );
+    assert!(outcome.residue_acted.is_empty());
+    assert_eq!(outcome.residue, ResidueCounts::default());
+    assert!(root.join("packages").join(&staging).is_dir(), "staging untouched");
+    assert!(root.join("assets").join("ab").join(".h2o-durable-1-0.tmp").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (AB) with no generation candidate and no residue, the run performs ZERO
+/// persistent mutation: no reclaim root, no run directory, no receipt.
+#[test]
+fn a_no_op_run_with_neither_generations_nor_residue_mutates_nothing() {
+    let root = scratch("t33noop");
+    let hashes: Vec<String> = (1..=3)
+        .map(|d| publish(&root, "chat_a", &format!("2026-01-0{d}T00:00:00.000Z")))
+        .collect();
+    // Name-matching entries of the WRONG type: reported, never acted on, and
+    // never enough to make a run happen.
+    std::fs::write(root.join("packages").join(".h2o-genstage-notadir"), b"x").unwrap();
+    let owner = Owner::acquire(&root);
+    let before = census(&root);
+    let ex = owner.exclusive();
+
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", &hashes[2]));
+
+    assert_eq!(outcome.state, RunState::NoOp);
+    assert!(outcome.run_id.is_none());
+    assert!(outcome.blockers.is_empty());
+    assert!(outcome.residue_acted.is_empty());
+    assert_eq!(outcome.residue, ResidueCounts::default());
+    assert_eq!(outcome.residue_indeterminate, 1, "reported, not acted on");
+    assert_eq!(census(&root), before, "no-op means no mutation at all");
+    assert!(!root.join(".h2o-reclaim").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (R)(mutant 18) two DISTINCT durable temps can legitimately share a basename
+/// across shards. The quarantine identity keeps them apart, and a basename-only
+/// identity would not — which the second half of this test demonstrates rather
+/// than asserts.
+#[test]
+fn two_durable_temps_with_one_basename_get_distinct_quarantine_identities() {
+    let root = scratch("collide");
+    plant_temp(&root, "ab", ".h2o-durable-77-0.tmp", b"first");
+    plant_temp(&root, "cd", ".h2o-durable-77-0.tmp", b"second");
+
+    let scan = crate::archive_residue_probe::scan_trusted_residue_within(&root);
+    assert_eq!(scan.items.len(), 2);
+    assert_eq!(scan.items[0].name(), scan.items[1].name(), "one basename");
+    let a = residue_target_component(&scan.items[0]).unwrap();
+    let b = residue_target_component(&scan.items[1]).unwrap();
+    assert_ne!(a, b, "the shard is part of the identity");
+    assert_eq!(a.as_str(), "durtmp.ab..h2o-durable-77-0.tmp");
+    assert_eq!(b.as_str(), "durtmp.cd..h2o-durable-77-0.tmp");
+    /* The mutant's identity — family plus basename — maps both to one name. */
+    assert_eq!(
+        format!("durtmp.{}", scan.items[0].name()),
+        format!("durtmp.{}", scan.items[1].name()),
+        "a basename-only identity really does collide"
+    );
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(outcome.residue.durable_temp_purged, 2, "BOTH were reclaimed");
+    let receipts = receipt_names(&root);
+    assert!(receipts.iter().any(|n| n.contains("durtmp.ab.")));
+    assert!(receipts.iter().any(|n| n.contains("durtmp.cd.")));
+    assert!(!root.join("assets").join("ab").join(".h2o-durable-77-0.tmp").exists());
+    assert!(!root.join("assets").join("cd").join(".h2o-durable-77-0.tmp").exists());
+
+    // And had the identities collided, the second move would have been REFUSED
+    // rather than overwriting the first: RENAME_EXCL, not a replacing rename.
+    let reclaim = crate::archive_reclaim::open_reclaim_root_for_run(&ex, &root).unwrap();
+    let collide_run = crate::archive_reclaim::QuarantineRunId::parse("collide").unwrap();
+    let run_dir = reclaim.create_run(&ex, &collide_run).unwrap();
+    plant_temp(&root, "ab", ".h2o-durable-88-0.tmp", b"x");
+    plant_temp(&root, "cd", ".h2o-durable-88-0.tmp", b"y");
+    let shared = QuarantineComponent::parse("durtmp..h2o-durable-88-0.tmp").unwrap();
+    let name = QuarantineComponent::parse(".h2o-durable-88-0.tmp").unwrap();
+    let ab = crate::archive_reclaim::open_cas_shard_dir(&ex, &root, "ab").unwrap();
+    let cd = crate::archive_reclaim::open_cas_shard_dir(&ex, &root, "cd").unwrap();
+    assert_eq!(quarantine_residue(&ex, &ab, &run_dir, &name, &shared), Ok(true));
+    assert_eq!(
+        quarantine_residue(&ex, &cd, &run_dir, &name, &shared),
+        Ok(false),
+        "a colliding destination fails closed instead of overwriting"
+    );
+    assert_eq!(
+        std::fs::read(root.join(".h2o-reclaim").join("run-collide").join(shared.as_str())).unwrap(),
+        b"x",
+        "the first item was never replaced"
+    );
+    assert!(root.join("assets").join("cd").join(".h2o-durable-88-0.tmp").exists());
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (AA) staging action order is a stable trusted identity sort, not filesystem
+/// enumeration order: two equivalent archives built in opposite orders plan and
+/// act identically.
+#[test]
+fn staging_action_order_is_deterministic_across_archives() {
+    fn build(tag: &str, reverse: bool) -> (PathBuf, Vec<String>) {
+        let root = scratch(tag);
+        let mut shards = vec!["01", "ab", "cd", "ef", "fe"];
+        let mut stages = vec!["aa01", "aa02", "aa03"];
+        if reverse {
+            shards.reverse();
+            stages.reverse();
+        }
+        std::fs::create_dir_all(root.join("packages")).unwrap();
+        for st in stages {
+            std::fs::create_dir_all(root.join("packages").join(format!(".h2o-genstage-{st}")))
+                .unwrap();
+        }
+        for sh in shards {
+            plant_temp(&root, sh, ".h2o-durable-3-0.tmp", b"t");
+        }
+        let owner = Owner::acquire(&root);
+        let ex = owner.exclusive();
+        let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+        assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+        let ids = residue_ids(&outcome);
+        let _ = ex.release();
+        (root, ids)
+    }
+    let (forward_root, forward) = build("order-f", false);
+    let (reverse_root, reverse) = build("order-r", true);
+    assert_eq!(forward, reverse, "insertion order must not reach action order");
+    assert_eq!(
+        forward,
+        vec![
+            "generation-staging|archive/packages/.h2o-genstage-aa01",
+            "generation-staging|archive/packages/.h2o-genstage-aa02",
+            "generation-staging|archive/packages/.h2o-genstage-aa03",
+            "durable-temp|archive/assets/01/.h2o-durable-3-0.tmp",
+            "durable-temp|archive/assets/ab/.h2o-durable-3-0.tmp",
+            "durable-temp|archive/assets/cd/.h2o-durable-3-0.tmp",
+            "durable-temp|archive/assets/ef/.h2o-durable-3-0.tmp",
+            "durable-temp|archive/assets/fe/.h2o-durable-3-0.tmp",
+        ]
+    );
+    let _ = std::fs::remove_dir_all(forward_root.parent().unwrap());
+    let _ = std::fs::remove_dir_all(reverse_root.parent().unwrap());
+}
+
+/// (C)(AH)(mutant 1)(mutant 21) the destructive staging authority is
+/// trusted-side only: the request names nothing, and no renderer inventory
+/// reaches it.
+#[test]
+fn the_staging_stage_takes_no_renderer_inventory_path_or_target() {
+    // The ONLY caller-controlled input is the bounded enabling request, whose
+    // fields are exactly chat scope and per-chat projection verdict.
+    let preview = include_str!("../archive_reclamation_preview.rs");
+    let at = preview.find("pub struct PreviewRequest").unwrap();
+    let decl = &preview[at..at + preview[at..].find("\n}").unwrap()];
+    for forbidden in [
+        "residue", "staging", "genstage", "durable", "shard", "temp", "run_id",
+        "target", "path", "quarantine", "item",
+    ] {
+        assert!(!decl.contains(forbidden), "the request must not carry {forbidden}");
+    }
+
+    let code: String = include_str!("../archive_reclaim_execute.rs")
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    /* The residue set comes from ONE authority: the trusted scan. */
+    assert_eq!(
+        code.matches("scan_trusted_residue_within(").count(),
+        1,
+        "one trusted residue authority, recomputed here"
+    );
+    for forbidden in [
+        "diagnoseSavedChatArchive", "saved-chat-reclamation-ui", "packagesInventory",
+        "inventory", "renderer_residue", "ProjectionInput { chat_id: ",
+    ] {
+        assert!(!code.contains(forbidden), "renderer inventory is not authority: {forbidden}");
+    }
+    /* And the scan is invoked with the run's own derived archive root — no
+       caller path type reaches it. */
+    let at = code.find("scan_trusted_residue_within(").unwrap();
+    assert!(code[at..at + 60].contains("(archive_root)"));
+
+    /* (mutant 8) the scan runs INSIDE the exclusive window: it is called from
+       the private sequence that requires the capability by type, after the
+       registry precondition, and nothing in the production wrapper scans. */
+    let src = include_str!("../archive_reclaim_execute.rs");
+    let seq = src.find("fn run_internal(").unwrap();
+    let wrapper = src.find("pub(crate) async fn execute_generation_reclamation").unwrap();
+    let wrapper_body = &src[wrapper..seq];
+    assert!(!wrapper_body.contains("scan_trusted_residue_within"));
+    let body = &src[seq..];
+    let scan_at = body.find("scan_trusted_residue_within").unwrap();
+    let registry_at = body.find("if !publisher_sessions_empty").unwrap();
+    assert!(registry_at < scan_at, "the registry precondition precedes the scan");
+    assert!(
+        src[seq..seq + 400].contains("exclusive: &crate::archive_instance_lock::ExclusiveOwnership"),
+        "the sequence holding the scan requires exclusive ownership by type"
+    );
+}
+
+/// (L)(mutant 9) the COMPLETE action set — generations and both residue
+/// families — is in the durable pre-mutation record, and that record is written
+/// before any rename in either stage.
+#[test]
+fn the_complete_plan_is_durable_before_the_first_rename_of_either_stage() {
+    let src = include_str!("../archive_reclaim_execute.rs");
+    let seq = src.find("fn run_internal(").unwrap();
+    let body = &src[seq..];
+
+    let actions_built = body.find("let mut residue_actions").expect("actions derived");
+    let plan_written = body.find("&plan_evidence(").expect("plan evidence written");
+    let first_gen_rename = body.find("quarantine_generation(exclusive").expect("generation move");
+    let staging_stage = body.find("run_residue_stage(").expect("staging stage");
+    assert!(actions_built < plan_written, "the actions exist before the record");
+    assert!(plan_written < first_gen_rename, "PLAN_DURABLE precedes the generation rename");
+    assert!(plan_written < staging_stage, "PLAN_DURABLE precedes the staging stage");
+
+    // The record really carries them.
+    let at = src.find("fn plan_evidence(").unwrap();
+    let evidence = &src[at..at + src[at..].find("\nfn residue_evidence").unwrap()];
+    for required in [
+        "\"residue\"", "sourceComplete", "sourceBlockers", "indeterminate",
+        "\"actions\"", "archivePath", "quarantineItem", "\"family\"",
+    ] {
+        assert!(evidence.contains(required), "the plan must record {required}");
+    }
+    // (mutant 24) and nothing time-shaped is recorded as authority.
+    let tokens = identifier_tokens(evidence);
+    for forbidden in TIME_AUTHORITY_IDENTIFIERS {
+        assert!(!tokens.contains(*forbidden), "no time authority in the plan: {forbidden}");
+    }
+}
+
+/// (AI)(AJ) T3.3 stays dormant: no command, no invoke-handler arm, no renderer
+/// route, and the capability and UI surfaces carry no destructive grant.
+#[test]
+fn staging_reclamation_is_unregistered_and_no_ui_reaches_it() {
+    let lib = include_str!("../lib.rs");
+    for forbidden in [
+        "archive_reclaim_execute::", "run_residue_stage", "scan_trusted_residue_within",
+        "h2o_archive_staging", "h2o_archive_residue_reclaim", "h2o_archive_reclaim",
+    ] {
+        assert!(!lib.contains(forbidden), "{forbidden} must not be registered");
+    }
+    assert!(lib.contains("pub mod archive_reclaim_execute;"), "compiled but dormant");
+
+    /* Renderer archive mutation authority is still EMPTY. Scoped to grants
+       that actually reach `$APPLOCALDATA/archive`: `archive-export.json`
+       legitimately holds an `fs:allow-mkdir` for `$HOME/H2O Studio Exports`,
+       which is M04 export authority over a different tree, and banning the
+       token outright would fail on unrelated capability rather than on archive
+       mutation. Every archive-reaching grant must be read-only. */
+    const ARCHIVE_READ_ONLY: &[&str] = &[
+        "fs:allow-exists",
+        "fs:allow-read-file",
+        "fs:allow-read-text-file",
+        "fs:allow-lstat",
+        "fs:allow-read-dir",
+    ];
+    let mut archive_grants: Vec<String> = vec![];
+    for capability in [
+        include_str!("../../capabilities/archive-cas.json"),
+        include_str!("../../capabilities/archive-export.json"),
+        include_str!("../../capabilities/default.json"),
+    ] {
+        let value: serde_json::Value = serde_json::from_str(capability).expect("capability json");
+        let Some(entries) = value["permissions"].as_array() else {
+            continue;
+        };
+        for entry in entries {
+            let Some(identifier) = entry["identifier"].as_str() else {
+                continue;
+            };
+            let paths = serde_json::to_string(&entry["allow"]).unwrap_or_default();
+            if !paths.contains("$APPLOCALDATA/archive") {
+                continue;
+            }
+            archive_grants.push(identifier.to_string());
+            assert!(
+                ARCHIVE_READ_ONLY.contains(&identifier),
+                "{identifier} grants the renderer non-read authority over the archive"
+            );
+        }
+    }
+    assert!(!archive_grants.is_empty(), "the archive grants were actually inspected");
+
+    // The New UI reclamation surface: Analyze only, no destructive control.
+    let ui = include_str!(
+        "../../../../../../src-surfaces-base/studio/ingestion/saved-chat-reclamation-ui.studio.js"
+    );
+    /* The surface declares its actions with `setAttribute('data-h2o-action',
+       '<name>')`, so the action set is exactly the values passed there. */
+    let actions: Vec<&str> = ui
+        .match_indices("'data-h2o-action'")
+        .map(|(at, _)| {
+            let tail = &ui[at..];
+            let start = tail.find(", '").expect("an action value") + 3;
+            &tail[start..start + tail[start..].find('\'').expect("closing quote")]
+        })
+        .collect();
+    assert_eq!(actions, vec!["analyze-archive"], "Analyze is the ONLY control");
+    for forbidden in [
+        "reclaim-archive", "purge", "quarantine", "delete", "genstage",
+        "durable-temp", "residue-reclaim",
+    ] {
+        assert!(
+            !actions.iter().any(|a| a.contains(forbidden)),
+            "no destructive UI action: {forbidden}"
+        );
+    }
+    // And nothing in the surface names a destructive command.
+    for forbidden in ["h2o_archive_reclaim", "h2o_archive_staging", "h2o_archive_purge"] {
+        assert!(!ui.contains(forbidden), "no destructive invoke: {forbidden}");
+    }
+}
+
+/// (C)(mutant 1) MONOTONICITY FOR RESIDUE: renderer input is enabling-only, so
+/// it can narrow what a run does but must NEVER add a destructive target. The
+/// scope here nominates a published generation, a staging name that does not
+/// exist and a canonical CAS body; the trusted scan still decides alone.
+#[test]
+fn renderer_scope_can_never_add_a_residue_target() {
+    let root = scratch("nominate");
+    let hash = publish(&root, "chat_a", "2026-01-01T00:00:00.000Z");
+    let published = pkg_names(&root)
+        .into_iter()
+        .find(|n| n.ends_with(".h2ochat"))
+        .expect("a published generation");
+    std::fs::create_dir_all(root.join("packages").join(".h2o-genstage-real01")).unwrap();
+    plant_temp(&root, "ab", ".h2o-durable-5-0.tmp", b"t");
+    let body = format!("sha256-{}", "ab".repeat(32));
+    plant_temp(&root, "ab", &body, b"canonical-cas-body");
+    let published_census = census(&root.join("packages").join(&published));
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let nominated = PreviewRequest {
+        chat_scope: Some(vec![
+            "chat_a".to_string(),
+            published.clone(),
+            ".h2o-genstage-victim".to_string(),
+            body.clone(),
+        ]),
+        projections: vec![ProjectionInput {
+            chat_id: "chat_a".to_string(),
+            status: "ok".to_string(),
+            content_hash: hash.clone(),
+        }],
+    };
+    let outcome = run(&root, &ex, &db(vec![]), &nominated);
+
+    assert_eq!(outcome.state, RunState::Complete, "{:?}", outcome.blockers);
+    assert_eq!(
+        residue_ids(&outcome),
+        vec![
+            "generation-staging|archive/packages/.h2o-genstage-real01",
+            "durable-temp|archive/assets/ab/.h2o-durable-5-0.tmp",
+        ],
+        "only the trusted scan decides the residue set"
+    );
+    assert_eq!(
+        census(&root.join("packages").join(&published)),
+        published_census,
+        "the nominated generation is untouched"
+    );
+    assert_eq!(
+        std::fs::read(root.join("assets").join("ab").join(&body)).unwrap(),
+        b"canonical-cas-body",
+        "the nominated CAS body is untouched"
+    );
+    assert_eq!(outcome.residue.generation_staging_purged, 1);
+    assert_eq!(outcome.residue.durable_temp_purged, 1);
+
+    // Structural: the trusted scan result is bound immutably and nothing is
+    // ever appended to it, so there is no seam a nomination could enter by.
+    let src = include_str!("../archive_reclaim_execute.rs");
+    let body_src = &src[src.find("fn run_internal(").unwrap()..];
+    assert!(body_src
+        .contains("let residue = crate::archive_residue_probe::scan_trusted_residue_within(archive_root);"));
+    /* Spelled precisely: `let mut residue_actions` is the derived plan list and
+       legitimately mutable; what must not exist is a mutable rebinding of the
+       SCAN RESULT, or an append into it. */
+    for forbidden in [
+        "let mut residue =", "let mut residue:", "residue.items.push",
+        "residue.items.extend", "residue.items.append",
+    ] {
+        assert!(!body_src.contains(forbidden), "residue must not be widened: {forbidden}");
+    }
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (S)(mutant 16) the SAME durability barrier is on the generation-staging
+/// path, not only the durable-temp one: with the barrier forced to fail, a
+/// staging item stops the run exactly as a temp item does.
+#[test]
+fn a_generation_staging_durability_failure_stops_the_run_without_purging() {
+    let root = scratch("stagedur");
+    let staging = orphan_staging(&root, "chat_b");
+    plant_temp(&root, "ab", ".h2o-durable-1-0.tmp", b"second");
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+
+    trace::reset();
+    fault::arm(fault::Point::AfterResidueRenameBeforeNamespaceDurability);
+    let outcome = run(&root, &ex, &db(vec![]), &request("chat_a", "ok", "deadbeef"));
+    fault::clear();
+
+    assert_eq!(outcome.state, RunState::Partial);
+    assert_eq!(outcome.residue_acted.len(), 1, "stopped at the FIRST item");
+    assert_eq!(
+        outcome.residue_acted[0].family,
+        crate::archive_residue_probe::ResidueFamily::GenerationStaging,
+        "generation staging sorts first, so it is the item under test"
+    );
+    assert!(outcome.residue_acted[0].quarantined && !outcome.residue_acted[0].purged);
+    assert_eq!(
+        outcome.residue_acted[0].blocker.as_deref(),
+        Some(crate::archive_reclaim::codes::QUARANTINE_NOT_DURABLE)
+    );
+    let events = trace::taken();
+    assert!(events.contains(&trace::Event::ResidueRename));
+    assert!(!events.contains(&trace::Event::ResidueNamespaceDurable));
+    assert!(!events.contains(&trace::Event::ResiduePurge));
+
+    // The staging tree is quarantined and intact; the temp is untouched.
+    let run_id = outcome.run_id.clone().unwrap();
+    assert!(root
+        .join(".h2o-reclaim")
+        .join(&run_id)
+        .join(format!("genstage.{staging}"))
+        .is_dir());
+    assert!(!root.join("packages").join(&staging).exists());
+    assert!(root.join("assets").join("ab").join(".h2o-durable-1-0.tmp").exists());
+    assert_eq!(outcome.residue.generation_staging_purged, 0);
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (S)(T)(mutant 16)(mutant 17) the source/destination durability barrier is on
+/// the path for BOTH residue families, unconditionally.
+///
+/// Whether an fsync reached the platter is not observable from userspace
+/// without a real crash, so this proves the property that IS observable and
+/// that a family-scoped skip would violate: ONE unconditional call site, taking
+/// the family-derived source descriptor, guarded only by the deterministic
+/// fault seam and never by a family test.
+#[test]
+fn the_durability_barrier_is_unconditional_for_both_residue_families() {
+    let src = include_str!("../archive_reclaim_execute.rs");
+    let stage = &src[src.find("fn run_residue_stage(").expect("the staging stage")..];
+
+    assert_eq!(
+        stage.matches("durable_quarantine_transition(").count(),
+        1,
+        "one barrier call site serves both families"
+    );
+
+    let at = stage.find("let namespace_durable").expect("the barrier binding");
+    let end = stage[at..]
+        .find("if let Err(code) = namespace_durable")
+        .expect("its failure handling");
+    let expr = &stage[at..at + end];
+    assert!(
+        expr.contains("fault::armed(fault::Point::AfterResidueRenameBeforeNamespaceDurability)"),
+        "the only branch is the deterministic cfg(test) fault seam"
+    );
+    assert_eq!(expr.matches("if ").count(), 1, "no second condition may gate the barrier");
+    assert!(!expr.contains("else if"), "no family may skip the barrier");
+    for family in ["GenerationStaging", "DurableTemp", "ResidueFamily"] {
+        assert!(!expr.contains(family), "the barrier must not branch on {family}");
+    }
+    assert!(
+        expr.contains("exclusive, source_dir, run_dir"),
+        "and it syncs the family-derived SOURCE descriptor, not a fixed one"
+    );
+
+    /* `source_dir` really is per-family: the packages directory for generation
+       staging, the exact CAS shard for durable temp. */
+    let at = stage.find("let source_dir = match").expect("the source selection");
+    let selection = &stage[at..at + stage[at..].find("\n        };").unwrap()];
+    assert!(selection.contains("(ResidueFamily::DurableTemp, Some(dir), _) => dir"));
+    assert!(selection.contains("(ResidueFamily::GenerationStaging, _, Some(dir)) => dir"));
 }

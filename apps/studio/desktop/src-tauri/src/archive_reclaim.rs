@@ -14,8 +14,14 @@
 //! Revision 2 removed destructive CAS reclamation from M06 entirely, and
 //! withdrew both "destructive CAS collection" and "one-run CAS dwell" (§Q).
 //! Accordingly there is NO CAS destructive target here: `QuarantineKind` has no
-//! Cas/Asset/Sha variant, no path is ever built through `assets`, and a test
-//! fails if a future change adds one.
+//! Cas/Asset/Sha variant, and a test fails if a future change adds one.
+//!
+//! T3.3 does open one CAS shard, because durable-temp residue physically lives
+//! inside it. That handle is a rename SOURCE only, and it cannot reach a
+//! canonical body: `quarantine_residue` refuses any source name that is not a
+//! reserved trusted-writer component, and `sha256-<hex>` is not one. So
+//! "quarantine a CAS object" is not a refused request — no argument value
+//! expresses it.
 //!
 //! Confinement reuses the existing descriptor-relative primitives from
 //! `archive_durable_write::confined` — no second confinement implementation is
@@ -66,6 +72,11 @@ pub mod codes {
     pub const ITEM_UNREADABLE: &str = "reclaim-item-unreadable";
     pub const PURGE_FAILED: &str = "reclaim-purge-failed";
     pub const DEPTH_EXCEEDED: &str = "reclaim-purge-depth-exceeded";
+    /// T3.3: a residue quarantine was asked to move a source name that is not a
+    /// reserved trusted-writer component. The structural CAS barrier.
+    pub const RESIDUE_NOT_RESERVED: &str = "reclaim-residue-source-not-reserved";
+    /// T3.3: the named CAS shard could not be opened as a rename source.
+    pub const SHARD_UNAVAILABLE: &str = "reclaim-shard-unavailable";
 }
 
 /// What a quarantined item was, for later evidence.
@@ -400,13 +411,28 @@ pub fn quarantine_generation(
     source: &QuarantineComponent,
     item: &QuarantineComponent,
 ) -> Result<bool, String> {
+    quarantine_into_run(packages, run, source, item)
+}
+
+/// The single atomic non-replacing move into quarantine, shared by every
+/// family. One `renameatx_np(RENAME_EXCL)` and nothing else: no copy-then-
+/// unlink, no replacing rename, no second mechanism to keep in step.
+///
+/// Both endpoints are descriptor-relative; no path is constructed or followed.
+#[cfg(target_os = "macos")]
+fn quarantine_into_run(
+    source_dir: &confined::Dir,
+    run: &RunDir,
+    source: &QuarantineComponent,
+    item: &QuarantineComponent,
+) -> Result<bool, String> {
     let from = std::ffi::CString::new(source.as_str())
         .map_err(|_| codes::COMPONENT_SEPARATOR.to_string())?;
     let to = std::ffi::CString::new(item.as_str())
         .map_err(|_| codes::COMPONENT_SEPARATOR.to_string())?;
     let rc = unsafe {
         libc::renameatx_np(
-            packages.as_raw_fd(),
+            source_dir.as_raw_fd(),
             from.as_ptr(),
             run.dir.as_raw_fd(),
             to.as_ptr(),
@@ -423,6 +449,69 @@ pub fn quarantine_generation(
     Ok(true)
 }
 
+/// Non-macOS: fail closed, for the same reason the generation move does.
+#[cfg(not(target_os = "macos"))]
+fn quarantine_into_run(
+    _source_dir: &confined::Dir,
+    _run: &RunDir,
+    _source: &QuarantineComponent,
+    _item: &QuarantineComponent,
+) -> Result<bool, String> {
+    Err(codes::QUARANTINE_UNSUPPORTED_PLATFORM.to_string())
+}
+
+/// M06 T3.3 — atomically moves proven staging/temp RESIDUE into a run
+/// quarantine, through exactly the same primitive the generation move uses.
+///
+/// The structural CAS barrier lives here. The source name must be a reserved
+/// trusted-writer component under the T1.2 authority — `.h2o-genstage-*` or
+/// `.h2o-durable-*` — so a canonical `sha256-<hex>` body, a published
+/// generation and a legacy package are all refused BEFORE any syscall, whatever
+/// descriptor the caller holds. That is what makes it safe to hand this
+/// function a CAS shard as the rename source.
+pub fn quarantine_residue(
+    _exclusive: &ExclusiveOwnership<'_>,
+    source_dir: &confined::Dir,
+    run: &RunDir,
+    source: &QuarantineComponent,
+    item: &QuarantineComponent,
+) -> Result<bool, String> {
+    if !crate::archive_durable_write::is_reserved_component(source.as_str()) {
+        return Err(codes::RESIDUE_NOT_RESERVED.to_string());
+    }
+    quarantine_into_run(source_dir, run, source, item)
+}
+
+/// Opens one canonical CAS shard as a rename SOURCE for durable-temp residue.
+///
+/// Read/rename-source only, exactly like `open_packages_dir`: holding this
+/// descriptor grants no delete authority over anything inside it, because the
+/// only operation that consumes it is `quarantine_residue` and that refuses
+/// every non-reserved source name.
+pub(crate) fn open_cas_shard_dir(
+    _exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+    shard: &str,
+) -> Result<confined::Dir, String> {
+    // Re-checked at the point of use: exactly two lowercase hex digits, so no
+    // other component of the CAS root is nameable through this function.
+    if shard.len() != 2
+        || !shard
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err(codes::SHARD_UNAVAILABLE.to_string());
+    }
+    let root = confined::Dir::open_existing_nofollow(archive_root)
+        .map_err(|_| codes::ROOT_UNAVAILABLE.to_string())?;
+    let assets = root
+        .open_child_nofollow(crate::archive_durable_write::CAS_DIR.as_bytes())
+        .map_err(|_| codes::SHARD_UNAVAILABLE.to_string())?;
+    assets
+        .open_child_nofollow(shard.as_bytes())
+        .map_err(|_| codes::SHARD_UNAVAILABLE.to_string())
+}
+
 /// Makes a completed quarantine rename DURABLE.
 ///
 /// `renameatx_np` is atomic but not durable: after it returns, a crash can
@@ -430,6 +519,11 @@ pub fn quarantine_generation(
 /// TWO directories — the source loses an entry and the destination gains one —
 /// so both must be synchronized before anything may claim the move survived a
 /// crash boundary, and before the item is purged.
+///
+/// `source` is whichever canonical namespace the entry left: `archive/packages`
+/// for a generation or generation-staging move, one `archive/assets/<aa>` shard
+/// for a durable-temp move. One barrier serves both, so the two families cannot
+/// drift apart on durability.
 ///
 /// The run directory's own entry inside `.h2o-reclaim` was already made durable
 /// by `create_run`, so a crash cannot leave a quarantined item parented by a
@@ -439,7 +533,7 @@ pub fn quarantine_generation(
 /// reopened and no path is resolved.
 pub fn durable_quarantine_transition(
     _exclusive: &ExclusiveOwnership<'_>,
-    packages: &confined::Dir,
+    source: &confined::Dir,
     run: &RunDir,
 ) -> Result<(), String> {
     // Destination first: the entry that must exist after a crash.
@@ -447,7 +541,7 @@ pub fn durable_quarantine_transition(
         .sync()
         .map_err(|_| codes::QUARANTINE_NOT_DURABLE.to_string())?;
     // Then the source, whose entry removal must not be lost.
-    packages
+    source
         .sync()
         .map_err(|_| codes::QUARANTINE_NOT_DURABLE.to_string())?;
     Ok(())
@@ -459,12 +553,12 @@ pub fn durable_quarantine_transition(
 #[cfg(not(target_os = "macos"))]
 pub fn quarantine_generation(
     _exclusive: &ExclusiveOwnership<'_>,
-    _packages: &confined::Dir,
-    _run: &RunDir,
-    _source: &QuarantineComponent,
-    _item: &QuarantineComponent,
+    packages: &confined::Dir,
+    run: &RunDir,
+    source: &QuarantineComponent,
+    item: &QuarantineComponent,
 ) -> Result<bool, String> {
-    Err(codes::QUARANTINE_UNSUPPORTED_PLATFORM.to_string())
+    quarantine_into_run(packages, run, source, item)
 }
 
 /// The outcome of one bounded purge. Partial failure is reported, never

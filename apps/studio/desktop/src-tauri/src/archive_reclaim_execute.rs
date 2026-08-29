@@ -17,26 +17,44 @@
 //! Ordering is load-bearing and deliberately conservative:
 //!
 //! ```text
-//! validate request → exclusive → registry empty → recompute → plan
-//!   → run plan evidence DURABLE  ── before any canonical rename
-//!   → per candidate:
+//! validate request → exclusive → registry empty → recompute generations
+//!   → recompute BOTH residue families → complete plan
+//!   → run plan evidence DURABLE  ── before any canonical rename at all
+//!   → generation stage, per candidate:
 //!       atomic non-replacing rename out of archive/packages
+//!       → namespace transition DURABLE
 //!       → quarantine receipt DURABLE  ── before any purge
 //!       → confined purge
 //!       → purge receipt DURABLE
+//!   → staging/temp stage, only if the generation stage did not fail:
+//!       the same five steps per residue item
 //! ```
 //!
-//! The first material failure stops further canonical renames. A crash between
-//! a successful rename and its receipt leaves the item physically present in
-//! quarantine with the canonical namespace already consistent, which is
-//! recoverable; a purge before that receipt is durable would not be, so it
-//! never happens.
+//! The first material failure stops further canonical renames IN BOTH STAGES: a
+//! generation failure never lets the residue stage start, and a residue failure
+//! stops the residue items after it. A crash between a successful rename and
+//! its receipt leaves the item physically present in quarantine with the
+//! canonical namespace already consistent, which is recoverable; a purge before
+//! that receipt is durable would not be, so it never happens.
 //!
-//! Scope: GENERATIONS ONLY. Staging residue, temp residue and occupant action
-//! belong to later tasks and are untouched here. Canonical CAS is never
-//! renamed, quarantined, purged or restored — Revision 2 removed destructive
-//! CAS reclamation from M06 entirely, and `observed_unreferenced` is evidence,
-//! never an instruction.
+//! Scope: GENERATIONS plus the two established trusted-writer residue families,
+//! `.h2o-genstage-*` under `archive/packages` and `.h2o-durable-*.tmp` under
+//! `archive/assets/<aa>`. Both are enumerated TRUSTED-SIDE under the held
+//! exclusive ownership; the renderer's packages inventory can see the staging
+//! family but is never destructive authority for it. Occupant action belongs to
+//! a later task and is untouched here.
+//!
+//! Canonical CAS is never renamed, quarantined, purged or restored. The residue
+//! stage does open one CAS shard, because durable-temp residue lives inside it,
+//! but `quarantine_residue` refuses any source name that is not a reserved
+//! trusted-writer component — so a `sha256-<hex>` body is unreachable through
+//! that handle. Revision 2 removed destructive CAS reclamation from M06
+//! entirely, and `observed_unreferenced` is evidence, never an instruction.
+//!
+//! Residue identity is SHAPE plus exclusive-state proof. There is no mtime,
+//! ctime, birthtime, wall clock or "older than" anywhere: a trusted writer
+//! cannot be running while this holds exclusive ownership with an empty
+//! publisher registry, which is what makes the residue abandoned.
 
 // DORMANT until G02: nothing in production calls this destructive authority
 // yet, so the compiler correctly reports it as unused. The attribute records
@@ -45,15 +63,34 @@
 #![allow(dead_code)]
 
 use crate::archive_db_probe::DbProbeResult;
+use crate::archive_durable_write::confined;
+use crate::archive_instance_lock::ExclusiveOwnership;
 use crate::archive_reclaim::{
-    purge_quarantined_item, quarantine_generation, QuarantineComponent, QuarantineKind,
-    QuarantineRunId, QuarantineTarget,
+    purge_quarantined_item, quarantine_generation, quarantine_residue, QuarantineComponent,
+    QuarantineKind, QuarantineRunId, QuarantineTarget, ReceiptsDir, ReclaimRoot, RunDir,
 };
 use crate::archive_reclamation_preview::PreviewRequest;
+use crate::archive_residue_probe::{ResidueFamily, TrustedResidueItem, TrustedResidueScan};
 use crate::archive_retention_plan::{Decision, ReclamationPlan, RetentionInputs};
 
 pub const RUN_SCHEMA: &str = "h2o.m06.reclamationRun";
-pub const RUN_SCHEMA_VERSION: u32 = 1;
+
+/// Version 2 — T3.3 added the staging/temp stage.
+///
+/// This is a BUMP, not an additive extension, and deliberately so. The
+/// repository's stated schema-version discipline (saved-chat-package-format,
+/// "Rules") is that readers branch on the version and a reader for version N
+/// rejects N+1 cleanly rather than consuming it partially. A version-1 reader
+/// handed a version-2 run record would find every key it knows about present
+/// and well-formed, and would silently report that no residue action occurred
+/// in a run where residue WAS quarantined and purged — under-reporting
+/// destructive actions is exactly what AC-M06-11 evidence completeness exists
+/// to prevent. So the record announces that it is a different thing.
+///
+/// The bump costs nothing: `h2o.m06.reclamationRun` has no reader anywhere in
+/// the repository, and the destructive core has never been activated, so no
+/// version-1 run record exists in any archive.
+pub const RUN_SCHEMA_VERSION: u32 = 2;
 
 pub mod codes {
     pub const EXCLUSIVE_UNAVAILABLE: &str = "execute-exclusive-unavailable";
@@ -66,6 +103,17 @@ pub mod codes {
     pub const PURGE_FAILED: &str = "execute-purge-failed";
     pub const PACKAGES_UNAVAILABLE: &str = "execute-packages-unavailable";
     pub const ARCHIVE_UNAVAILABLE: &str = "execute-archive-unavailable";
+    /// T3.3: the trusted staging/temp residue enumeration could not complete.
+    /// An incomplete residue authority is NEVER read as "no residue"; the whole
+    /// run refuses before any canonical mutation, in either stage.
+    pub const RESIDUE_NOT_AUTHORITATIVE: &str = "execute-residue-not-authoritative";
+    pub const RESIDUE_QUARANTINE_FAILED: &str = "execute-residue-quarantine-failed";
+    pub const RESIDUE_QUARANTINE_COLLISION: &str = "execute-residue-quarantine-collision";
+    /// T3.3: a residue item carried a family/shard pairing the trusted scan
+    /// cannot produce, so no quarantine identity could be derived for it.
+    pub const RESIDUE_IDENTITY_INVALID: &str = "execute-residue-identity-invalid";
+    pub const RESIDUE_SHARD_UNAVAILABLE: &str = "execute-residue-shard-unavailable";
+    pub const RESIDUE_PURGE_FAILED: &str = "execute-residue-purge-failed";
 }
 
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +143,47 @@ pub struct ActedItem {
     pub blocker: Option<String>,
 }
 
+/// What actually happened to one residue item. Evidence only — a trusted
+/// archive-relative identity and the derived quarantine identity, never chat
+/// content, a renderer value or an absolute host path.
+#[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ActedResidue {
+    /// Trusted archive-relative source identity, from the residue scan.
+    pub archive_path: String,
+    pub family: ResidueFamily,
+    /// The derived, collision-safe quarantine component.
+    pub quarantine_item: String,
+    pub quarantined: bool,
+    pub purged: bool,
+    pub blocker: Option<String>,
+}
+
+/// Acted and purged counts BY FAMILY. Generation staging and durable temp are
+/// different source classes with different safety arguments, so a run reports
+/// them separately rather than as one residue total.
+#[derive(serde::Serialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResidueCounts {
+    pub generation_staging_quarantined: usize,
+    pub generation_staging_purged: usize,
+    pub durable_temp_quarantined: usize,
+    pub durable_temp_purged: usize,
+}
+
+impl ResidueCounts {
+    fn record(&mut self, family: ResidueFamily, quarantined: bool, purged: bool) {
+        match family {
+            ResidueFamily::GenerationStaging => {
+                self.generation_staging_quarantined += usize::from(quarantined);
+                self.generation_staging_purged += usize::from(purged);
+            }
+            ResidueFamily::DurableTemp => {
+                self.durable_temp_quarantined += usize::from(quarantined);
+                self.durable_temp_purged += usize::from(purged);
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct RunOutcome {
     pub schema: &'static str,
@@ -108,6 +197,13 @@ pub struct RunOutcome {
     pub acted: Vec<ActedItem>,
     pub quarantined: usize,
     pub purged: usize,
+    /// T3.3, deterministic: ordered by family then trusted archive identity.
+    pub residue_acted: Vec<ActedResidue>,
+    pub residue: ResidueCounts,
+    /// Name-matching entries that did NOT have the required trusted shape. They
+    /// are reported, never acted on — including on a no-op run, so "nothing was
+    /// reclaimable" and "nothing looked like residue" stay distinguishable.
+    pub residue_indeterminate: usize,
 }
 
 impl RunOutcome {
@@ -122,6 +218,9 @@ impl RunOutcome {
             acted: vec![],
             quarantined: 0,
             purged: 0,
+            residue_acted: vec![],
+            residue: ResidueCounts::default(),
+            residue_indeterminate: 0,
         }
     }
 }
@@ -176,14 +275,73 @@ fn fresh_candidates(plan: &ReclamationPlan) -> Vec<FreshCandidate> {
     out
 }
 
+/// One planned residue action: the TYPED trusted item, the evidence record it
+/// will produce, and its derived quarantine identity.
+///
+/// The item is carried rather than an archive-relative string, so the stage
+/// reads its shard and basename from validated trusted fields and never parses
+/// a path back apart to find them.
+struct ResidueAction<'a> {
+    item: &'a TrustedResidueItem,
+    planned: ActedResidue,
+    target: QuarantineComponent,
+}
+
+/// The quarantine identity for one residue item.
+///
+/// Deterministic, separator-free, and INJECTIVE over legitimate distinct
+/// sources — which a durable-temp basename alone is not. The durable writer
+/// mints `.h2o-durable-<pid>-<counter>.tmp` with a process-global counter, so
+/// after a pid is reused the very same basename can legitimately exist under
+/// two different CAS shards. The shard is therefore part of the identity.
+///
+/// Injectivity comes from FIXED-WIDTH leading fields, not from the separator: a
+/// family tag is one of two fixed literals and a shard is exactly two hex
+/// digits, so the split points are unambiguous even though a durable-temp name
+/// contains dots of its own.
+///
+/// ```text
+/// generation staging   genstage.<staging-name>
+/// durable temp         durtmp.<aa>.<temp-name>
+/// ```
+///
+/// Both source components were already validated by the trusted scan — bounded,
+/// printable ASCII, no separator, no whitespace for component parsing to trim —
+/// so no encoding and no second hash authority is needed. Nothing
+/// renderer-supplied reaches this, and a colliding destination would in any
+/// case be refused by `RENAME_EXCL` rather than replaced.
+fn residue_target_component(item: &TrustedResidueItem) -> Result<QuarantineComponent, String> {
+    let tag = item.family().tag();
+    let raw = match (item.family(), item.shard()) {
+        (ResidueFamily::GenerationStaging, None) => format!("{tag}.{}", item.name()),
+        (ResidueFamily::DurableTemp, Some(shard)) => format!("{tag}.{shard}.{}", item.name()),
+        // A pairing the trusted scan cannot produce.
+        _ => return Err(codes::RESIDUE_IDENTITY_INVALID.to_string()),
+    };
+    QuarantineComponent::parse(&raw)
+}
+
 /// The durable pre-mutation record. Written and fsynced BEFORE the first
 /// canonical rename; if it cannot be persisted, nothing is renamed.
-fn plan_evidence(run: &QuarantineRunId, plan: &ReclamationPlan, candidates: &[FreshCandidate]) -> Vec<u8> {
+fn plan_evidence(
+    run: &QuarantineRunId,
+    plan: &ReclamationPlan,
+    candidates: &[FreshCandidate],
+    residue: &TrustedResidueScan,
+    residue_actions: &[ResidueAction<'_>],
+) -> Vec<u8> {
+    let mut stages: Vec<&str> = vec![];
+    if !candidates.is_empty() {
+        stages.push("generation");
+    }
+    if !residue_actions.is_empty() {
+        stages.push("staging-temp");
+    }
     let value = serde_json::json!({
         "schema": RUN_SCHEMA,
         "schemaVersion": RUN_SCHEMA_VERSION,
         "runId": run.component(),
-        "stage": "generation-reclamation",
+        "stages": stages,
         "retentionFloor": plan.retention_floor,
         "planComplete": plan.complete,
         "planBlockers": plan.blockers,
@@ -203,6 +361,41 @@ fn plan_evidence(run: &QuarantineRunId, plan: &ReclamationPlan, candidates: &[Fr
                 "savedAt": c.saved_at,
             }))
             .collect::<Vec<_>>(),
+        // The complete staging/temp action set, recorded in the SAME durable
+        // pre-mutation record as the generation candidates. There is no second
+        // plan format and no second run.
+        "residue": {
+            "sourceComplete": residue.complete,
+            "sourceBlockers": residue.blockers,
+            "generationStagingFound": residue.count_of(ResidueFamily::GenerationStaging),
+            "durableTempFound": residue.count_of(ResidueFamily::DurableTemp),
+            "indeterminate": residue.indeterminate,
+            "actions": residue_actions
+                .iter()
+                .map(|a| serde_json::json!({
+                    "archivePath": a.planned.archive_path,
+                    "family": a.planned.family,
+                    "quarantineItem": a.planned.quarantine_item,
+                }))
+                .collect::<Vec<_>>(),
+        },
+    });
+    serde_json::to_vec(&value).unwrap_or_default()
+}
+
+fn residue_evidence(run: &QuarantineRunId, item: &ActedResidue, action: &str) -> Vec<u8> {
+    let value = serde_json::json!({
+        "schema": RUN_SCHEMA,
+        "schemaVersion": RUN_SCHEMA_VERSION,
+        "runId": run.component(),
+        "kind": "staging",
+        "subtype": item.family,
+        "action": action,
+        "archivePath": item.archive_path,
+        "quarantineItem": item.quarantine_item,
+        "quarantined": item.quarantined,
+        "purged": item.purged,
+        "blocker": item.blocker,
     });
     serde_json::to_vec(&value).unwrap_or_default()
 }
@@ -324,8 +517,55 @@ fn run_internal(
         return refused;
     }
 
+    // ── The other trusted residue authority, ALSO recomputed here ───────────
+    // Under the same exclusive ownership, from the filesystem, never from the
+    // renderer's packages inventory and never from a previous Preview.
+    let residue = crate::archive_residue_probe::scan_trusted_residue_within(archive_root);
+    if !residue.complete {
+        // The conservative rule the canonical contract leaves open: an
+        // incomplete residue authority is not an empty one, and it does not buy
+        // an independent generation stage either. ZERO destructive mutation for
+        // the whole run, refused before the run namespace even exists.
+        let mut refused = RunOutcome::refused(codes::RESIDUE_NOT_AUTHORITATIVE);
+        refused.blockers.extend(residue.blockers.iter().cloned());
+        refused.blockers.sort();
+        refused.blockers.dedup();
+        refused.residue_indeterminate = residue.indeterminate.len();
+        return refused;
+    }
+
     let candidates = fresh_candidates(&plan);
-    if candidates.is_empty() {
+    // Derived once, BEFORE plan durability, so the durable record names exactly
+    // the actions the run will attempt.
+    let mut residue_actions: Vec<ResidueAction<'_>> = vec![];
+    for item in &residue.items {
+        match residue_target_component(item) {
+            Ok(target) => residue_actions.push(ResidueAction {
+                item,
+                planned: ActedResidue {
+                    archive_path: item.archive_relative_path().to_string(),
+                    family: item.family(),
+                    quarantine_item: target.as_str().to_string(),
+                    quarantined: false,
+                    purged: false,
+                    blocker: None,
+                },
+                target,
+            }),
+            Err(code) => {
+                // A residue item whose identity cannot be derived is not acted
+                // on, and the run does not proceed pretending it was seen.
+                let mut refused = RunOutcome::refused(codes::RESIDUE_NOT_AUTHORITATIVE);
+                refused.blockers.push(code);
+                refused.blockers.sort();
+                refused.blockers.dedup();
+                refused.residue_indeterminate = residue.indeterminate.len();
+                return refused;
+            }
+        }
+    }
+
+    if candidates.is_empty() && residue_actions.is_empty() {
         // Truthful no-op: no reclaim namespace, no run directory, no receipt.
         return RunOutcome {
             schema: RUN_SCHEMA,
@@ -337,6 +577,9 @@ fn run_internal(
             acted: vec![],
             quarantined: 0,
             purged: 0,
+            residue_acted: vec![],
+            residue: ResidueCounts::default(),
+            residue_indeterminate: residue.indeterminate.len(),
         };
     }
 
@@ -362,7 +605,11 @@ fn run_internal(
     let plan_written = if fault::armed(fault::Point::BeforePlanDurability) {
         Err(codes::EVIDENCE_FAILED.to_string())
     } else {
-        receipts.write_durable(exclusive, &plan_name, &plan_evidence(&run_id, &plan, &candidates))
+        receipts.write_durable(
+            exclusive,
+            &plan_name,
+            &plan_evidence(&run_id, &plan, &candidates, &residue, &residue_actions),
+        )
     };
     if let Err(code) = plan_written {
         // Includes a receipt collision: refused BEFORE any mutation.
@@ -385,9 +632,21 @@ fn run_internal(
         Ok(dir) => dir,
         Err(code) => return RunOutcome::refused(&code),
     };
-    let packages = match crate::archive_reclaim::open_packages_dir(exclusive, archive_root) {
-        Ok(dir) => dir,
-        Err(_) => return RunOutcome::refused(codes::PACKAGES_UNAVAILABLE),
+    // Opened only when something under `archive/packages` will actually be
+    // addressed. A staging/temp-only run against an archive that has no
+    // packages directory at all must not be refused for a descriptor it never
+    // uses.
+    let needs_packages = !candidates.is_empty()
+        || residue_actions
+            .iter()
+            .any(|a| a.planned.family == ResidueFamily::GenerationStaging);
+    let packages = if needs_packages {
+        match crate::archive_reclaim::open_packages_dir(exclusive, archive_root) {
+            Ok(dir) => Some(dir),
+            Err(_) => return RunOutcome::refused(codes::PACKAGES_UNAVAILABLE),
+        }
+    } else {
+        None
     };
 
     let mut outcome = RunOutcome {
@@ -400,6 +659,9 @@ fn run_internal(
         acted: vec![],
         quarantined: 0,
         purged: 0,
+        residue_acted: vec![],
+        residue: ResidueCounts::default(),
+        residue_indeterminate: residue.indeterminate.len(),
     };
 
     for candidate in &candidates {
@@ -429,7 +691,15 @@ fn run_internal(
 
         // ── ONE bounded canonical mutation ───────────────────────────────────
         trace::record(trace::Event::FirstRename);
-        match quarantine_generation(exclusive, &packages, &run_dir, &source, &item) {
+        let Some(packages) = packages.as_ref() else {
+            // Unreachable: a non-empty candidate list implies the descriptor.
+            acted.blocker = Some(codes::PACKAGES_UNAVAILABLE.to_string());
+            outcome.acted.push(acted);
+            outcome.blockers.push(codes::PACKAGES_UNAVAILABLE.to_string());
+            outcome.state = RunState::Partial;
+            break;
+        };
+        match quarantine_generation(exclusive, packages, &run_dir, &source, &item) {
             Ok(true) => acted.quarantined = true,
             Ok(false) => {
                 acted.blocker = Some(codes::QUARANTINE_COLLISION.to_string());
@@ -453,7 +723,7 @@ fn run_internal(
         let namespace_durable = if fault::armed(fault::Point::AfterRenameBeforeNamespaceDurability) {
             Err(crate::archive_reclaim::codes::QUARANTINE_NOT_DURABLE.to_string())
         } else {
-            crate::archive_reclaim::durable_quarantine_transition(exclusive, &packages, &run_dir)
+            crate::archive_reclaim::durable_quarantine_transition(exclusive, packages, &run_dir)
         };
         if let Err(code) = namespace_durable {
             // The rename result is captured as observed. No purge, no later
@@ -567,9 +837,248 @@ fn run_internal(
         outcome.acted.push(acted);
     }
 
+    // ── Stage two: staging/temp residue ─────────────────────────────────────
+    // Only after the generation stage completed or had nothing to do. A
+    // material generation failure means the run already met a contradiction, so
+    // it does not go on to delete anything else.
+    if outcome.state == RunState::Complete {
+        run_residue_stage(
+            exclusive,
+            archive_root,
+            &reclaim,
+            &receipts,
+            &run_dir,
+            &run_id,
+            packages.as_ref(),
+            &residue_actions,
+            &mut outcome,
+        );
+    }
+
     outcome.blockers.sort();
     outcome.blockers.dedup();
     outcome
+}
+
+/// The staging/temp stage, under the SAME exclusive ownership, the same run id,
+/// the same run directory, the same receipt authority, the same durability
+/// barrier and the same first-material-failure policy as the generation stage
+/// above. It is an additional stage of one run, not a second GC subsystem.
+///
+/// Per item the required order is exactly the proven one:
+///
+/// ```text
+/// atomic non-replacing rename
+///   → namespace transition DURABLE
+///   → quarantine receipt DURABLE
+///   → confined purge
+///   → purge receipt DURABLE
+/// ```
+#[allow(clippy::too_many_arguments)]
+fn run_residue_stage(
+    exclusive: &ExclusiveOwnership<'_>,
+    archive_root: &std::path::Path,
+    reclaim: &ReclaimRoot,
+    receipts: &ReceiptsDir,
+    run_dir: &RunDir,
+    run_id: &QuarantineRunId,
+    packages: Option<&confined::Dir>,
+    actions: &[ResidueAction<'_>],
+    outcome: &mut RunOutcome,
+) {
+    let bare_id = run_id.component().trim_start_matches("run-").to_string();
+
+    for action in actions {
+        let target = &action.target;
+        let mut acted = action.planned.clone();
+
+        // The rename SOURCE, derived from the item's own trusted family and its
+        // validated shard component. No caller path and no renderer value
+        // participates, and no archive-relative string is parsed back apart.
+        let shard_dir = match (acted.family, action.item.shard()) {
+            (ResidueFamily::DurableTemp, Some(shard)) => {
+                match crate::archive_reclaim::open_cas_shard_dir(exclusive, archive_root, shard) {
+                    Ok(dir) => Some(dir),
+                    Err(code) => {
+                        acted.blocker = Some(code);
+                        outcome.residue_acted.push(acted);
+                        outcome
+                            .blockers
+                            .push(codes::RESIDUE_SHARD_UNAVAILABLE.to_string());
+                        outcome.state = RunState::Partial;
+                        break;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let source_dir = match (acted.family, shard_dir.as_ref(), packages) {
+            (ResidueFamily::DurableTemp, Some(dir), _) => dir,
+            (ResidueFamily::GenerationStaging, _, Some(dir)) => dir,
+            _ => {
+                acted.blocker = Some(codes::RESIDUE_SHARD_UNAVAILABLE.to_string());
+                outcome.residue_acted.push(acted);
+                outcome
+                    .blockers
+                    .push(codes::RESIDUE_SHARD_UNAVAILABLE.to_string());
+                outcome.state = RunState::Partial;
+                break;
+            }
+        };
+
+        // The source name is the trusted basename the scan proved, re-validated
+        // as a component. It is never composed from a path.
+        let source_name = match QuarantineComponent::parse(action.item.name()) {
+            Ok(name) => name,
+            Err(code) => {
+                acted.blocker = Some(code);
+                outcome.residue_acted.push(acted);
+                outcome
+                    .blockers
+                    .push(codes::RESIDUE_QUARANTINE_FAILED.to_string());
+                outcome.state = RunState::Partial;
+                break;
+            }
+        };
+
+        // ── ONE bounded canonical mutation ──────────────────────────────────
+        trace::record(trace::Event::ResidueRename);
+        match quarantine_residue(exclusive, source_dir, run_dir, &source_name, target) {
+            Ok(true) => acted.quarantined = true,
+            Ok(false) => {
+                acted.blocker = Some(codes::RESIDUE_QUARANTINE_COLLISION.to_string());
+                outcome.residue_acted.push(acted);
+                outcome
+                    .blockers
+                    .push(codes::RESIDUE_QUARANTINE_COLLISION.to_string());
+                outcome.state = RunState::Partial;
+                break;
+            }
+            Err(code) => {
+                acted.blocker = Some(code);
+                outcome.residue_acted.push(acted);
+                outcome
+                    .blockers
+                    .push(codes::RESIDUE_QUARANTINE_FAILED.to_string());
+                outcome.state = RunState::Partial;
+                break;
+            }
+        }
+        outcome.residue.record(acted.family, true, false);
+
+        // ── Namespace transition DURABLE before any claim or purge ──────────
+        // Source is whichever canonical namespace the entry left: the packages
+        // directory, or the exact CAS shard.
+        let namespace_durable =
+            if fault::armed(fault::Point::AfterResidueRenameBeforeNamespaceDurability) {
+                Err(crate::archive_reclaim::codes::QUARANTINE_NOT_DURABLE.to_string())
+            } else {
+                crate::archive_reclaim::durable_quarantine_transition(
+                    exclusive, source_dir, run_dir,
+                )
+            };
+        if let Err(code) = namespace_durable {
+            acted.blocker = Some(code);
+            outcome.residue_acted.push(acted);
+            outcome
+                .blockers
+                .push(crate::archive_reclaim::codes::QUARANTINE_NOT_DURABLE.to_string());
+            outcome.state = RunState::Partial;
+            break;
+        }
+        trace::record(trace::Event::ResidueNamespaceDurable);
+
+        // ── Quarantine receipt DURABLE before any purge ─────────────────────
+        let qname = QuarantineComponent::parse(&format!(
+            "{}.{}.residue-quarantined.json",
+            run_id.component(),
+            target.as_str()
+        ));
+        let durable = if fault::armed(fault::Point::AfterResidueRenameBeforeReceipt) {
+            Err(codes::EVIDENCE_FAILED.to_string())
+        } else {
+            match qname {
+                Ok(name) => receipts.write_durable(
+                    exclusive,
+                    &name,
+                    &residue_evidence(run_id, &acted, "quarantined"),
+                ),
+                Err(code) => Err(code),
+            }
+        };
+        if let Err(code) = durable {
+            // The item stays in quarantine, unpurged and recoverable.
+            acted.blocker = Some(code);
+            outcome.residue_acted.push(acted);
+            outcome.blockers.push(codes::EVIDENCE_FAILED.to_string());
+            outcome.state = RunState::Partial;
+            break;
+        }
+        trace::record(trace::Event::ResidueReceiptDurable);
+
+        // ── Same-run purge, through the T3.1 confined primitive only ────────
+        let quarantine_target =
+            match QuarantineTarget::parse(&bare_id, target.as_str(), QuarantineKind::StagingTemp) {
+                Ok(t) => t,
+                Err(code) => {
+                    acted.blocker = Some(code);
+                    outcome.residue_acted.push(acted);
+                    outcome.state = RunState::Partial;
+                    break;
+                }
+            };
+        trace::record(trace::Event::ResiduePurge);
+        let purge = if fault::armed(fault::Point::ResiduePurgeFails) {
+            // A purge that reached the primitive and did NOT converge, leaving
+            // the quarantined item physically behind — the state a real partial
+            // failure produces, rather than a successful purge relabelled.
+            crate::archive_reclaim::PurgeOutcome {
+                converged: false,
+                removed: 0,
+                already_absent: false,
+                blockers: vec![crate::archive_reclaim::codes::PURGE_FAILED.to_string()],
+            }
+        } else {
+            purge_quarantined_item(exclusive, reclaim, &quarantine_target)
+        };
+        if !purge.converged {
+            // Logical removal already happened; the canonical entry is NOT
+            // restored. The physical residue stays contained for recovery.
+            acted.blocker = Some(codes::RESIDUE_PURGE_FAILED.to_string());
+            outcome.blockers.extend(purge.blockers.iter().cloned());
+            outcome.residue_acted.push(acted);
+            outcome
+                .blockers
+                .push(codes::RESIDUE_PURGE_FAILED.to_string());
+            outcome.state = RunState::Partial;
+            break;
+        }
+        acted.purged = true;
+        outcome.residue.record(acted.family, false, true);
+
+        let pname = QuarantineComponent::parse(&format!(
+            "{}.{}.residue-purged.json",
+            run_id.component(),
+            target.as_str()
+        ));
+        let durable = match pname {
+            Ok(name) => receipts.write_durable(
+                exclusive,
+                &name,
+                &residue_evidence(run_id, &acted, "purged"),
+            ),
+            Err(code) => Err(code),
+        };
+        if let Err(code) = durable {
+            acted.blocker = Some(code);
+            outcome.residue_acted.push(acted);
+            outcome.blockers.push(codes::EVIDENCE_FAILED.to_string());
+            outcome.state = RunState::Partial;
+            break;
+        }
+        trace::record(trace::Event::ResiduePurgeReceiptDurable);
+        outcome.residue_acted.push(acted);
+    }
 }
 
 /// Deterministic fault injection for the destructive ordering proofs.
@@ -595,6 +1104,14 @@ pub(crate) mod fault {
         /// material purge failure" rule is provable deterministically.
         PurgeFails,
         AfterPurgeBeforePurgeReceipt,
+        /// T3.3 staging stage: the residue rename SUCCEEDED and the namespace
+        /// transition does not become durable.
+        AfterResidueRenameBeforeNamespaceDurability,
+        /// T3.3 staging stage: rename and namespace durability succeeded, and
+        /// the receipt for them does not.
+        AfterResidueRenameBeforeReceipt,
+        /// T3.3 staging stage: forces the confined purge to report failure.
+        ResiduePurgeFails,
     }
 
     #[cfg(test)]
@@ -680,6 +1197,11 @@ pub(crate) mod trace {
         QuarantineReceiptDurable,
         Purge,
         PurgeReceiptDurable,
+        ResidueRename,
+        ResidueNamespaceDurable,
+        ResidueReceiptDurable,
+        ResiduePurge,
+        ResiduePurgeReceiptDurable,
     }
 
     #[cfg(test)]

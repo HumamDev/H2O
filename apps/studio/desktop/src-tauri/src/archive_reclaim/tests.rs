@@ -297,11 +297,207 @@ fn no_cas_destructive_target_type_or_route_exists() {
         .collect::<Vec<_>>()
         .join("\n");
     for forbidden in [
-        "Cas", "CasObject", "Asset", "Sha", "\"assets\"", "CAS_DIR",
-        "archive_cas_scan", "sha256-",
+        "Cas", "CasObject", "Asset", "Sha", "archive_cas_scan", "sha256-",
     ] {
         assert!(!code.contains(forbidden), "no CAS destructive route: {forbidden}");
     }
+
+    /* T3.3 DOES reach one CAS shard, because durable-temp residue physically
+       lives inside it. Banning the token would ban the traversal; what must be
+       impossible is a canonical BODY becoming a destructive target, so the pin
+       moved from "never name the CAS" to a stronger structural statement.
+
+       1. The CAS root is named in exactly one function, and that function is a
+          rename SOURCE opener — the same shape as `open_packages_dir`. */
+    assert_eq!(code.matches("CAS_DIR").count(), 1, "one CAS traversal seam");
+    let source = include_str!("../archive_reclaim.rs");
+    let at = source.find("pub(crate) fn open_cas_shard_dir").expect("the seam");
+    let body = &source[at..at + source[at..].find("\n}").unwrap()];
+    assert!(body.contains("CAS_DIR"), "the seam is where the CAS is named");
+    for forbidden in ["unlink", "rename", "create_new_child", "mkdir"] {
+        assert!(!body.contains(forbidden), "the CAS seam must not {forbidden}");
+    }
+    /* 2. It can only ever open a SHARD: two lowercase hex digits. */
+    assert!(body.contains("shard.len() != 2"), "only a shard is nameable");
+
+    /* 3. The single operation that consumes such a descriptor refuses every
+          source name that is not a reserved trusted-writer component, and
+          `sha256-<hex>` is not one. A CAS body is therefore not a refused
+          target — it is an inexpressible one. */
+    let at = source.find("pub fn quarantine_residue").expect("the residue move");
+    let body = &source[at..at + source[at..].find("\n}").unwrap()];
+    assert!(
+        body.contains("is_reserved_component(source.as_str())"),
+        "the residue move must gate on the T1.2 reserved authority"
+    );
+    assert!(body.contains("RESIDUE_NOT_RESERVED"), "and fail closed when it is not");
+}
+
+/// (Q)(mutant 5)(mutant 19) BEHAVIORAL: holding a real CAS shard descriptor,
+/// the residue move still cannot touch a canonical body — and the durable temp
+/// beside it moves atomically.
+#[test]
+fn a_canonical_cas_body_cannot_be_quarantined_even_from_its_own_shard() {
+    let root = scratch("cas-barrier");
+    let shard_path = root.join("assets").join("ab");
+    std::fs::create_dir_all(&shard_path).unwrap();
+    let body_name = format!("sha256-{}", "ab".repeat(32));
+    std::fs::write(shard_path.join(&body_name), b"canonical-cas-body").unwrap();
+    std::fs::write(shard_path.join(".h2o-durable-9-0.tmp"), b"residue").unwrap();
+    let before = census(&root.join("assets"));
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let reclaim = open_reclaim_root_for_test(&ex, &root).unwrap();
+    let run_id = QuarantineRunId::parse("aa01").unwrap();
+    let run = reclaim.create_run(&ex, &run_id).unwrap();
+    let shard = open_cas_shard_dir(&ex, &root, "ab").unwrap();
+
+    // The attack: a real descriptor, a real body, a well-formed destination.
+    let refused = quarantine_residue(
+        &ex,
+        &shard,
+        &run,
+        &QuarantineComponent::parse(&body_name).unwrap(),
+        &QuarantineComponent::parse("durtmp.ab.stolen").unwrap(),
+    );
+    assert_eq!(refused, Err(codes::RESIDUE_NOT_RESERVED.to_string()));
+    assert_eq!(census(&root.join("assets")), before, "the CAS is byte-identical");
+
+    // The residue beside it moves, so the refusal is not a broken descriptor.
+    assert_eq!(
+        quarantine_residue(
+            &ex,
+            &shard,
+            &run,
+            &QuarantineComponent::parse(".h2o-durable-9-0.tmp").unwrap(),
+            &QuarantineComponent::parse("durtmp.ab..h2o-durable-9-0.tmp").unwrap(),
+        ),
+        Ok(true)
+    );
+    assert!(!shard_path.join(".h2o-durable-9-0.tmp").exists());
+    assert!(shard_path.join(&body_name).exists(), "the body never moved");
+    assert!(root
+        .join(".h2o-reclaim")
+        .join("run-aa01")
+        .join("durtmp.ab..h2o-durable-9-0.tmp")
+        .exists());
+
+    // A canonical generation and a legacy package are refused for the same
+    // reason: neither is a reserved trusted-writer component.
+    for canonical in ["chat_a.gaa.h2ochat", "chat_a.h2ochat", "manifest.json"] {
+        assert_eq!(
+            quarantine_residue(
+                &ex,
+                &shard,
+                &run,
+                &QuarantineComponent::parse(canonical).unwrap(),
+                &QuarantineComponent::parse("durtmp.ab.x").unwrap(),
+            ),
+            Err(codes::RESIDUE_NOT_RESERVED.to_string()),
+            "{canonical} is not residue"
+        );
+    }
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (P)(R) the generation-staging move is atomic, non-replacing, and never
+/// follows a symlink; a colliding destination fails closed.
+#[test]
+fn the_staging_move_is_atomic_non_replacing_and_confined() {
+    let root = scratch("staging-move");
+    let pkgs = root.join("packages");
+    std::fs::create_dir_all(pkgs.join(".h2o-genstage-aa01")).unwrap();
+    std::fs::write(pkgs.join(".h2o-genstage-aa01").join("snapshot.json"), b"{}").unwrap();
+    std::fs::create_dir_all(pkgs.join(".h2o-genstage-aa02")).unwrap();
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let reclaim = open_reclaim_root_for_test(&ex, &root).unwrap();
+    let run = reclaim.create_run(&ex, &QuarantineRunId::parse("bb01").unwrap()).unwrap();
+    let packages = open_packages_dir(&ex, &root).unwrap();
+
+    let dest = QuarantineComponent::parse("genstage..h2o-genstage-aa01").unwrap();
+    assert_eq!(
+        quarantine_residue(
+            &ex,
+            &packages,
+            &run,
+            &QuarantineComponent::parse(".h2o-genstage-aa01").unwrap(),
+            &dest,
+        ),
+        Ok(true)
+    );
+    let moved = root.join(".h2o-reclaim").join("run-bb01").join(dest.as_str());
+    assert!(moved.join("snapshot.json").exists(), "the whole tree moved in one step");
+    assert!(!pkgs.join(".h2o-genstage-aa01").exists(), "and left no half-deleted entry");
+
+    // (R) a second, DIFFERENT source cannot overwrite that destination.
+    assert_eq!(
+        quarantine_residue(
+            &ex,
+            &packages,
+            &run,
+            &QuarantineComponent::parse(".h2o-genstage-aa02").unwrap(),
+            &dest,
+        ),
+        Ok(false),
+        "RENAME_EXCL refuses rather than replacing"
+    );
+    assert!(moved.join("snapshot.json").exists(), "the first item is intact");
+    assert!(pkgs.join(".h2o-genstage-aa02").exists(), "the second never moved");
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// The CAS traversal seam refuses anything that is not a real shard directory.
+#[test]
+fn the_cas_shard_seam_opens_only_a_real_two_hex_shard() {
+    let root = scratch("shard-seam");
+    std::fs::create_dir_all(root.join("assets").join("ab")).unwrap();
+    let elsewhere = root.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, root.join("assets").join("cd")).unwrap();
+    std::fs::write(root.join("assets").join("ef"), b"not a directory").unwrap();
+
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    assert!(open_cas_shard_dir(&ex, &root, "ab").is_ok());
+    for bad in ["", "a", "abc", "AB", "zz", "..", ".", "../packages", "packages"] {
+        assert!(open_cas_shard_dir(&ex, &root, bad).is_err(), "{bad} is not a shard");
+    }
+    assert!(open_cas_shard_dir(&ex, &root, "cd").is_err(), "a symlinked shard is refused");
+    assert!(open_cas_shard_dir(&ex, &root, "ef").is_err(), "a non-directory is refused");
+    assert!(elsewhere.exists(), "the symlink target was never traversed");
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// (Y) purge stays idempotent for a staging-temp target, exactly as for a
+/// generation one — the crash-recovery re-run case.
+#[test]
+fn purging_an_absent_staging_target_converges_without_error() {
+    let root = scratch("staging-idempotent");
+    let canonical_before = plant_canonical(&root);
+    let owner = Owner::acquire(&root);
+    let ex = owner.exclusive();
+    let reclaim = open_reclaim_root_for_test(&ex, &root).unwrap();
+    let _ = reclaim.create_run(&ex, &QuarantineRunId::parse("cc01").unwrap()).unwrap();
+
+    let target =
+        QuarantineTarget::parse("cc01", "durtmp.ab..h2o-durable-1-0.tmp", QuarantineKind::StagingTemp)
+            .unwrap();
+    let out = purge_quarantined_item(&ex, &reclaim, &target);
+    assert!(out.converged && out.already_absent && out.removed == 0, "{out:?}");
+    assert!(out.blockers.is_empty());
+    assert_eq!(canonical_only(&census(&root)), canonical_only(&canonical_before));
+
+    let _ = ex.release();
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 /// (C)(M)(O) a nested quarantined item purges fully, and every canonical byte
@@ -647,14 +843,16 @@ fn the_reclaim_root_is_derived_only_beneath_a_trusted_archive_root() {
         }
     }
     owners.sort();
-    /* The permitted set. T3.2 added two more seams, both crate-internal and
-       both deriving a descriptor from a trusted archive root:
-       `open_reclaim_root_for_run` and `open_packages_dir`. The latter is a
-       RENAME SOURCE only — no operation consuming it can unlink. A new
-       path-taking API of any other name still fails here. */
+    /* The permitted set. T3.2 added two crate-internal seams that derive a
+       descriptor from a trusted archive root, `open_reclaim_root_for_run` and
+       `open_packages_dir`; T3.3 adds `open_cas_shard_dir`. All three are RENAME
+       SOURCES only — no operation consuming one can unlink, and the CAS opener
+       additionally cannot name anything but a two-hex shard. A new path-taking
+       API of any other name still fails here. */
     assert_eq!(
         owners,
         vec![
+            "open_cas_shard_dir".to_string(),
             "open_packages_dir".to_string(),
             "open_reclaim_root_for_run".to_string(),
             "open_reclaim_root_for_test".to_string(),
@@ -695,7 +893,10 @@ fn the_quarantine_transition_synchronizes_both_directories() {
         .expect("durability primitive");
     let body = &source[at..at + source[at..].find("\n}").unwrap()];
     assert!(body.contains("run.dir\n        .sync()"), "the destination is synchronized");
-    assert!(body.contains("packages\n        .sync()"), "the source is synchronized");
+    /* T3.3 made the source parameter family-neutral: `archive/packages` for a
+       generation or staging move, one `archive/assets/<aa>` shard for a
+       durable-temp move. ONE barrier serves both, so they cannot drift. */
+    assert!(body.contains("source\n        .sync()"), "the source is synchronized");
     assert_eq!(body.matches(".sync()").count(), 2, "exactly two directory syncs");
     /* Both failures are reported as the same fail-closed code. */
     assert_eq!(body.matches("QUARANTINE_NOT_DURABLE").count(), 2);
