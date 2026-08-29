@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// 9B2a Sidebar Title Renderer visibility-probe cost contract (Gate B RED).
+// 9B2a Sidebar Title Renderer visibility-probe cost contract (Gate B).
 //
 // The shipped 9B2a IIFE is executed whole. The harness injects measurement
 // wrappers into its lexical scope immediately before boot; production function
-// bodies remain the module under test. Two deliberately narrow contracts:
+// bodies remain the module under test. Deliberately narrow contracts require:
 //
 //   1. reject a nonmatching route before visibility/layout boundaries;
-//   2. evaluate one anchor's visibility at most once per syncSidebar pass.
-//
-// The validator is intentionally expected to exit 1 against pristine 9B2a.
+//   2. evaluate one anchor's visibility at most once per syncSidebar pass;
+//   3. ignore irrelevant and renderer-owned mutation batches before layout;
+//   4. avoid repeated cross-frame work for a stable adopted row;
+//   5. retain reconciliation for relevant native mutations and replacement.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -57,6 +58,7 @@ const REQUIRED_FUNCTIONS = [
   'isVisibleAnchor', 'approvedContainers', 'candidateFor', 'ensureStyle',
   'releaseAdoption', 'adoptCandidate', 'adoptionStillValid',
   'releaseInvalidSynchronously', 'findCandidates', 'mutationOwnedByVisual',
+  'mutationAffectsAdoption', 'mutationCanChangeCurrentRoute', 'classifyMutationBatch',
   'ensureObserver', 'scheduleRetry', 'syncSidebar', 'scheduleSync',
   'acceptSnapshot',
 ];
@@ -362,6 +364,9 @@ function buildScene(spec) {
   function createAnchor(definition) {
     const anchor = new HTMLElement('a', definition.id);
     anchor.setAttribute('href', definition.href || '/c/foreign');
+    if (definition.ariaLabelledby !== undefined) {
+      anchor.setAttribute('aria-labelledby', definition.ariaLabelledby);
+    }
     if (definition.hidden) anchor.hidden = true;
     if (definition.ariaHidden) anchor.setAttribute('aria-hidden', 'true');
     Object.assign(anchor.__css, definition.css || {});
@@ -459,10 +464,10 @@ function instrumentedProgram(variant) {
     if (__testConfig.truncate) value = value.slice(0, 1);
     return value;
   };
-  releaseInvalidSynchronously = function () {
+  releaseInvalidSynchronously = function (...args) {
     const prior = __testPhase;
     if (prior === 'outside') __testPhase = 'observer';
-    try { return __realReleaseInvalid(); }
+    try { return __realReleaseInvalid(...args); }
     finally { __testPhase = prior; }
   };
   syncSidebar = function () {
@@ -621,17 +626,19 @@ fixture('11. nav and aside discovery both participate', () => {
   eq(result.adoptions(), ['nav-match', 'aside-match'], 'nav then aside discovery order');
 });
 fixture('12. route change releases A and adopts B', () => {
-  const result = settle(spec([anchor('a', route('chat-main')), anchor('b', route('chat-b'))]));
+  const result = settle(spec([
+    anchor('a', route('chat-main'), { ariaLabelledby: 'native-a-label' }),
+    anchor('b', route('chat-b')),
+  ]));
   result.scene.setRoute(route('chat-b')); result.accept(snapshot('chat-b', { routeToken: 2 }));
   eq(result.adoptions(), ['b'], 'new exact route adopted');
+  eq(result.scene.byId.get('a').getAttribute('aria-labelledby'), 'native-a-label', 'released route restores native aria');
 });
 fixture('13. snapshot change updates the existing visual without changing selection', () => {
   const result = settle(spec([anchor('current', route())]));
   result.accept(snapshot(MAIN_CHAT, { routeToken: 1, baseTitle: 'Updated title', displayTitle: '🧪 Updated title' }));
   eq(result.adoptions(), ['current'], 'same row retained');
-  // Atlas/main lineage renders snapshot.displayTitle; the baseTitle lineage
-  // renders the title remainder. Same fixture data, lineage-correct oracle.
-  eq(result.visuals()[0].text, '🧪 Updated title', 'visual follows snapshot');
+  eq(result.visuals()[0].text, 'Updated title', '9B2a renders the base-title remainder');
 });
 fixture('14. native title node replacement releases and re-adopts', () => {
   const result = settle(spec([anchor('current', route())]));
@@ -658,6 +665,22 @@ fixture('17. dynamically hydrated matching anchor is adopted later', () => {
 });
 fixture('18. no matching route produces no adoption', () => {
   eq(settle(spec(visibleMisses(40))).adoptions(), [], 'no false adoption');
+});
+fixture('19. project-chat identity excludes direct and other-project aliases', () => {
+  const result = settle(spec([
+    anchor('direct', route()),
+    anchor('project-current', route(MAIN_CHAT, 'project-a')),
+    anchor('project-other', route(MAIN_CHAT, 'project-b')),
+  ], { route: route(MAIN_CHAT, 'project-a') }));
+  eq(result.adoptions(), ['project-current'], 'project family and project id remain exact');
+});
+fixture('20. destroy restores aria and removes the passive projection', () => {
+  const result = settle(spec([
+    anchor('current', route(), { ariaLabelledby: 'native-label native-detail' }),
+  ]));
+  result.api.destroy();
+  eq(result.scene.byId.get('current').getAttribute('aria-labelledby'), 'native-label native-detail', 'destroy restores native aria');
+  eq(result.scene.D.querySelector('[data-h2o-owner="title-sidebar-renderer"][data-h2o-title-role="visual"]'), null, 'destroy removes the visual');
 });
 
 // ── Cross-pass invalidation controls for a pass-scoped correction ─────────
@@ -701,7 +724,7 @@ control('unchanged later sync still creates a fresh pass-scoped evaluation', () 
   eq(visibilitySummary(result.metrics).total, 2, 'one fresh evaluation in each pass');
 });
 
-// ── Natural RED targets ───────────────────────────────────────────────────
+// ── Natural contract targets ──────────────────────────────────────────────
 const routeTarget = routeFilterMeasurement('natural');
 const repeatTarget = repeatMeasurement('natural');
 
@@ -718,16 +741,124 @@ contract('SIDEBAR_TITLE_VISIBILITY_MUST_RUN_AT_MOST_ONCE_PER_ANCHOR_PER_SYNC_PAS
   }
 });
 
-// Observer boundary: pristine synchronous release plus the coalesced rAF pass.
-const observerTarget = settle(spec([...visibleMatches(6), ...visibleMisses(34)]), 'natural');
-observerTarget.scene.resetCosts();
-observerTarget.emit([{ target: observerTarget.scene.containers.nav, addedNodes: [], removedNodes: [] }]);
-const observerBeforeRaf = observerTarget.metrics.visibility.length;
-observerTarget.flush();
-const observerAfterRaf = observerTarget.metrics.visibility.length;
-const observerCycleCounts = new Map();
-for (const entry of observerTarget.metrics.visibility) increment(observerCycleCounts, entry.id);
-const observerCycleRepeated = [...observerCycleCounts].filter(([, count]) => count > 1);
+const childListRecord = (target, addedNodes = [], removedNodes = []) => ({
+  type: 'childList', target, addedNodes, removedNodes,
+});
+const characterDataRecord = (target) => ({
+  type: 'characterData', target, addedNodes: [], removedNodes: [],
+});
+const attributeRecord = (target, attributeName) => ({
+  type: 'attributes', target, attributeName, addedNodes: [], removedNodes: [],
+});
+
+const irrelevantTarget = settle(spec([
+  anchor('current', route()),
+  anchor('foreign', route('foreign')),
+]), 'natural');
+irrelevantTarget.scene.resetCosts();
+irrelevantTarget.emit([characterDataRecord(irrelevantTarget.scene.byId.get('foreign-source'))]);
+irrelevantTarget.flush();
+contract('SIDEBAR_TITLE_IRRELEVANT_MUTATION_MUST_NOT_VALIDATE_OR_SCHEDULE', () => {
+  eq(irrelevantTarget.metrics.observerVisibility, 0, 'irrelevant mutation must not validate an adoption');
+  eq(irrelevantTarget.metrics.scheduleSyncCalls, 0, 'irrelevant mutation must not request reconciliation');
+  eq(irrelevantTarget.metrics.rafScheduled, 0, 'irrelevant mutation must not schedule rAF');
+  eq(irrelevantTarget.metrics.syncPasses, 0, 'irrelevant mutation must not enter syncSidebar');
+});
+
+const rendererOwnedTarget = settle(spec([anchor('current', route())]), 'natural');
+const rendererVisual = rendererOwnedTarget.scene.D.querySelector(
+  '[data-h2o-owner="title-sidebar-renderer"][data-h2o-title-role="visual"]',
+);
+const detachedRendererVisual = rendererOwnedTarget.scene.D.createElement('span');
+detachedRendererVisual.setAttribute('data-h2o-owner', 'title-sidebar-renderer');
+detachedRendererVisual.setAttribute('data-h2o-title-role', 'visual');
+rendererOwnedTarget.scene.resetCosts();
+rendererOwnedTarget.emit([childListRecord(rendererVisual.parentElement, [rendererVisual], [])]);
+rendererOwnedTarget.emit([childListRecord(rendererVisual.parentElement, [], [detachedRendererVisual])]);
+rendererOwnedTarget.flush();
+contract('SIDEBAR_TITLE_RENDERER_OWNED_CHILD_LIST_MUST_NOT_CREATE_FOLLOW_UP_CYCLE', () => {
+  eq(rendererOwnedTarget.metrics.observerVisibility, 0, 'renderer-owned insertion/removal must not validate');
+  eq(rendererOwnedTarget.metrics.scheduleSyncCalls, 0, 'renderer-owned insertion/removal must not request sync');
+  eq(rendererOwnedTarget.metrics.rafScheduled, 0, 'renderer-owned insertion/removal must not schedule rAF');
+  eq(rendererOwnedTarget.metrics.syncPasses, 0, 'renderer-owned insertion/removal must not run a pass');
+});
+
+const repeatedIrrelevantTarget = settle(spec([
+  anchor('current', route()),
+  anchor('foreign', route('foreign')),
+]), 'natural');
+const currentRouteAnchor = repeatedIrrelevantTarget.scene.byId.get('current');
+const emojiBadge = repeatedIrrelevantTarget.scene.D.createElement('span');
+emojiBadge.className = 'ho-emoji-badge';
+currentRouteAnchor.appendChild(emojiBadge);
+repeatedIrrelevantTarget.scene.resetCosts();
+for (let cycle = 0; cycle < 8; cycle += 1) {
+  repeatedIrrelevantTarget.emit([
+    characterDataRecord(repeatedIrrelevantTarget.scene.byId.get('foreign-source')),
+    attributeRecord(repeatedIrrelevantTarget.scene.byId.get('foreign'), 'style'),
+    childListRecord(currentRouteAnchor, [emojiBadge], []),
+  ]);
+  repeatedIrrelevantTarget.flush();
+}
+contract('SIDEBAR_TITLE_REPEATED_IRRELEVANT_MUTATIONS_MUST_NOT_REPROBE_STABLE_ANCHOR', () => {
+  eq(repeatedIrrelevantTarget.metrics.visibility.length, 0, 'stable anchor must not be probed across irrelevant cycles');
+  eq(repeatedIrrelevantTarget.metrics.scheduleSyncCalls, 0, 'irrelevant stream must not request sync');
+  eq(repeatedIrrelevantTarget.metrics.syncPasses, 0, 'irrelevant stream must not create later-frame passes');
+  eq(repeatedIrrelevantTarget.adoptions(), ['current'], 'stable adoption remains intact');
+});
+
+const nativeContentTarget = settle(spec([
+  anchor('current-a', route()),
+  anchor('current-b', route()),
+]), 'natural');
+nativeContentTarget.scene.resetCosts();
+nativeContentTarget.emit([
+  characterDataRecord(nativeContentTarget.scene.byId.get('current-a-source')),
+]);
+const nativeContentObserverVisibility = nativeContentTarget.metrics.observerVisibility;
+const nativeContentObserverAnchors = nativeContentTarget.metrics.visibility
+  .filter((entry) => entry.phase === 'observer')
+  .map((entry) => entry.id);
+nativeContentTarget.flush();
+control('relevant current-route native content still validates and reconciles', () => {
+  eq(nativeContentObserverVisibility, 1, 'affected adoption validated synchronously');
+  eq(nativeContentObserverAnchors, ['current-a'], 'unaffected adopted duplicate is not synchronously validated');
+  eq(nativeContentTarget.metrics.scheduleSyncCalls, 1, 'relevant content requests reconciliation');
+  eq(nativeContentTarget.metrics.syncPasses, 1, 'relevant content runs one scheduled pass');
+  eq(nativeContentTarget.adoptions(), ['current-a', 'current-b'], 'valid duplicate adoptions remain selected');
+});
+
+const candidateVisibilityTarget = settle(spec([
+  anchor('current', route(), { wrapper: 'hidden' }),
+]), 'natural');
+const candidateWrapper = candidateVisibilityTarget.scene.byId.get('current-wrapper');
+candidateVisibilityTarget.scene.resetCosts();
+candidateWrapper.hidden = false;
+candidateVisibilityTarget.emit([attributeRecord(candidateWrapper, 'hidden')]);
+candidateVisibilityTarget.flush();
+control('current-route candidate ancestor visibility still schedules adoption', () => {
+  eq(candidateVisibilityTarget.metrics.observerVisibility, 0, 'no nonexistent adoption is synchronously validated');
+  eq(candidateVisibilityTarget.metrics.scheduleSyncCalls, 1, 'candidate visibility change requests reconciliation');
+  eq(candidateVisibilityTarget.metrics.syncPasses, 1, 'candidate visibility change runs one scheduled pass');
+  eq(candidateVisibilityTarget.adoptions(), ['current'], 'newly visible current-route candidate is adopted');
+});
+
+const nativeReplacementTarget = settle(spec([anchor('current', route())]), 'natural');
+const replacedNativeSource = nativeReplacementTarget.scene.byId.get('current-source');
+const replacementNativeSource = nativeReplacementTarget.scene.replaceSource('current');
+nativeReplacementTarget.scene.resetCosts();
+nativeReplacementTarget.emit([
+  childListRecord(nativeReplacementTarget.scene.byId.get('current'), [replacementNativeSource], [replacedNativeSource]),
+]);
+const replacementBeforeRaf = nativeReplacementTarget.adoptions();
+nativeReplacementTarget.flush();
+control('native-node replacement releases synchronously and re-adopts on the justified pass', () => {
+  eq(replacementBeforeRaf, [], 'stale native source released before rAF');
+  eq(nativeReplacementTarget.metrics.scheduleSyncCalls, 1, 'replacement requests reconciliation');
+  eq(nativeReplacementTarget.metrics.syncPasses, 1, 'replacement runs one scheduled pass');
+  eq(nativeReplacementTarget.adoptions(), ['current'], 'current row re-adopted');
+  eq(nativeReplacementTarget.visuals()[0].source, 'current-source-v2', 'replacement native source adopted');
+});
 
 // ── Version-agnostic injected-defect matrix ───────────────────────────────
 const MATRIX = [];
@@ -796,11 +927,12 @@ console.log(`  repeated anchors                         = ${JSON.stringify(repea
 console.log(`  sync passes                              = ${repeatTarget.result.metrics.syncPasses}`);
 console.log(`  adoptions                                = ${JSON.stringify(repeatTarget.result.adoptions())}`);
 console.log('');
-console.log('Observer mutation-to-sync cycle:');
-console.log(`  synchronous observer visibility          = ${observerBeforeRaf}`);
-console.log(`  rAF sync visibility                      = ${observerAfterRaf - observerBeforeRaf}`);
-console.log(`  cycle total / repeated anchors           = ${observerAfterRaf} / ${JSON.stringify(observerCycleRepeated)}`);
-console.log(`  scheduleSync calls / sync passes         = ${observerTarget.metrics.scheduleSyncCalls} / ${observerTarget.metrics.syncPasses}`);
+console.log('Observer steady-state targets:');
+console.log(`  irrelevant observer visibility           = ${irrelevantTarget.metrics.observerVisibility}`);
+console.log(`  irrelevant schedule / sync passes        = ${irrelevantTarget.metrics.scheduleSyncCalls} / ${irrelevantTarget.metrics.syncPasses}`);
+console.log(`  renderer-owned visibility / schedule     = ${rendererOwnedTarget.metrics.visibility.length} / ${rendererOwnedTarget.metrics.scheduleSyncCalls}`);
+console.log(`  repeated irrelevant visibility / passes  = ${repeatedIrrelevantTarget.metrics.visibility.length} / ${repeatedIrrelevantTarget.metrics.syncPasses}`);
+console.log(`  relevant content observer / sync probes  = ${nativeContentObserverVisibility} / ${nativeContentTarget.metrics.visibility.length - nativeContentObserverVisibility}`);
 console.log('');
 console.log('Injected-fault matrix:');
 for (const row of MATRIX) console.log(`  ${row.id.padEnd(16)} C1 ${row.c1.padEnd(5)} C2 ${row.c2.padEnd(5)} nonmatch ${row.nonmatchVisibility} repeated ${row.repeated}`);
@@ -827,7 +959,7 @@ if (unsupportedSelectors.size || failedSemantic.length || failedInvalidation.len
   process.exit(2);
 }
 if (failedContracts.length) {
-  console.log('Sidebar Title Renderer visibility-probe cost: RED (expected until 9B2a is corrected)');
+  console.log('Sidebar Title Renderer visibility-probe cost: RED');
   process.exit(1);
 }
 console.log('Sidebar Title Renderer visibility-probe cost passed');
