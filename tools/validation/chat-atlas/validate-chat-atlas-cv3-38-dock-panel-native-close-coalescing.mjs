@@ -187,7 +187,7 @@ function createEnv() {
     cs: { close: 0, other: 0 },        // getComputedStyle
     op: { close: 0, other: 0 },        // offsetParent reads
     rects: { close: 0, other: 0 },     // getClientRects
-    bcr: { rail: 0, other: 0 },        // getBoundingClientRect (rail visibility probe)
+    bcr: { rail: 0, tmpl: 0, other: 0 },  // getBoundingClientRect: rail visibility probe / template sizing / other
     listenerOps: [],                   // {op:'add'|'remove', id, type, capture}
     nativeCloseAttrWrites: [],         // set/remove of data-h2o-native-close
     rafRequests: 0,                    // frame requests (rail scheduling, see below)
@@ -306,7 +306,7 @@ function createEnv() {
       return this.__isVisibleTruth() ? [this.getBoundingClientRect()] : [];
     }
     getBoundingClientRect() {
-      state.bcr[this.__mark === 'rail' ? 'rail' : 'other'] += 1;
+      state.bcr[this.__mark === 'rail' ? 'rail' : (this.__mark === 'rail-template-icon' ? 'tmpl' : 'other')] += 1;
       const r = this.__rect;
       return { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height, width: r.width, height: r.height };
     }
@@ -506,7 +506,7 @@ function createEnv() {
       state.cs.close = 0; state.cs.other = 0;
       state.op.close = 0; state.op.other = 0;
       state.rects.close = 0; state.rects.other = 0;
-      state.bcr.rail = 0; state.bcr.other = 0;
+      state.bcr.rail = 0; state.bcr.tmpl = 0; state.bcr.other = 0;
       state.rafRequests = 0;
       state.listenerOps.length = 0; state.nativeCloseAttrWrites.length = 0;
     },
@@ -524,6 +524,9 @@ function createEnv() {
     // A rail visibility probe is uniquely identified by a getBoundingClientRect
     // on the rail node - the one forced-layout read UI_DPANEL_ensureRailVisible makes.
     railProbes: () => state.bcr.rail,
+    // The template sizing read: templateIconHost.getBoundingClientRect() inside
+    // UI_DPANEL_installRailButtons, used only to size a wrapper being created.
+    templateProbes: () => state.bcr.tmpl,
     counts: () => ({
       getComputedStyle: state.cs.close, offsetParent: state.op.close, getClientRects: state.rects.close,
     }),
@@ -861,7 +864,7 @@ function addRail(env, { width = 56, height = 600 } = {}) {
   const stack = env.el('div', { cls: 'mt-(--sidebar-section-first-margin-top)' });
   const wrap = env.el('div', { attrs: { 'data-state': 'closed' } });
   const a = env.el('a', { attrs: { 'data-sidebar-item': 'true' } });
-  a.appendChild(env.el('div', { cls: 'icon' }));
+  a.appendChild(env.el('div', { cls: 'icon', mark: 'rail-template-icon' }));
   wrap.appendChild(a); stack.appendChild(wrap); rail.appendChild(stack);
   env.body.appendChild(rail);
   return { rail, stack };
@@ -1155,6 +1158,54 @@ fixture('rail first appearance is admitted even while a native close is bound', 
 
   atLeast(env.railSchedules(), 1, 'the tiny-rail appearing must schedule a pass');
   atLeast(railButtons(stack), 1, 'and the rail must be furnished');
+});
+
+// ══ TEMPLATE SIZING RECT ══════════════════════════════════════════════════
+// An admitted pass on a fully populated rail creates no wrapper, so the
+// template sizing rect it takes cannot be used for anything: existing wrappers
+// are never re-sized by that result. The rail VISIBILITY read is a different
+// thing and must stay - it is what decides the rail is usable at all.
+
+fixture('rail G: an admitted pass on a populated rail skips the template sizing rect', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                                   // furnishes every rail view
+  eq(railButtons(stack), 8, 'precondition: every required rail view exists');
+  env.reset();
+
+  addForeignRailNode(env, stack, 'populated-pass');   // relevant, so the pass is admitted
+  deliver(env);
+  env.advance(200);                                   // past the 180ms window
+  env.flushFrame();
+
+  eq(env.railProbes(), 1, 'the rail visibility read is retained on an admitted pass');
+  eq(env.templateProbes(), 0, 'but a populated rail must not pay the template sizing rect');
+  eq(railButtons(stack), 8, 'and the rail is still complete');
+});
+
+fixture('rail H: a missing wrapper still sizes from the template', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(railButtons(stack), 8, 'precondition: rail furnished');
+
+  const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[3];
+  ok(victim, 'a Dock-owned wrapper to remove');
+  const view = victim.getAttribute('data-h2o-rail-view');
+  victim.remove();                                    // foreign-shaped removal: stays relevant
+  deliver(env);
+  env.reset();
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.templateProbes(), 1, 'creating a wrapper must still read the template size');
+  eq(railButtons(stack), 8, 'the missing view is recreated');
+  ok(stack.querySelector(`div[data-cgxui-owner="dcpn"][data-h2o-rail-view="${view}"]`),
+    'and it is the same view that was removed');
 });
 
 // -- Report ----------------------------------------------------------------

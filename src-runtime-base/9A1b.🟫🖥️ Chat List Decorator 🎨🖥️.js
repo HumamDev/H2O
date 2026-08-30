@@ -1673,6 +1673,9 @@ function collectSortableMainRows() {
   const hostBottom = host.getBoundingClientRect().bottom;
   const seen = new Set();
   const seenUnits = new Set();
+  /* Phase 1 collects every read the pass needs; these units are written in
+     phase 2, after the last read. */
+  const pendingOrderWrites = [];
   const links = [...document.querySelectorAll('main a[href*="/c/"], main a[href*="/chat/"]')];
 
   links.forEach((link) => {
@@ -1694,15 +1697,25 @@ function collectSortableMainRows() {
     if (seenUnits.has(sortable.unit)) return;
 
     seenUnits.add(sortable.unit);
+    /* The expando is not a DOM write and must keep its document-order value, so
+       it is assigned here. The dataset write it mirrors is deferred: writing it
+       inside the read loop dirtied the tree that the remaining rows are then
+       measured against. */
     if (sortable.unit.__hoColorPriorityOrder == null) {
       sortable.unit.__hoColorPriorityOrder = ++hoColorPriorityOrderCounter;
-      sortable.unit.dataset.hoColorPriorityOrder = String(sortable.unit.__hoColorPriorityOrder);
+      pendingOrderWrites.push(sortable.unit);
     }
 
     const parent = sortable.parent;
     if (!groups.has(parent)) groups.set(parent, []);
     groups.get(parent).push({ row, unit: sortable.unit });
   });
+
+  /* Phase 2 - writes only, from values already read. Same units, same values,
+     same order as before; nothing is retained beyond this call. */
+  for (const unit of pendingOrderWrites) {
+    unit.dataset.hoColorPriorityOrder = String(unit.__hoColorPriorityOrder);
+  }
 
   return groups;
 }
@@ -2387,11 +2400,80 @@ function hoFlushScan() {
   scanSidebar();
 }
 
+/* Structural admission for the body observer.
+ *
+ * hoScanObserver watches document.body {childList,subtree} and was wired as
+ * `() => hoRequestScan('dom')`: the records were discarded, so every mutation
+ * anywhere in the body marked the list dirty and bought a full reconciliation
+ * pass. ChatGPT emits hundreds of such records per idle minute.
+ *
+ * A batch is relevant when it changes something a chat-list pass could find:
+ * a chat link or a decorated row entering or leaving, or structure changing
+ * inside the sidebar itself. Deliberately NOT "anything inside <main>" - the
+ * transcript and the chat list share that container, so a container test would
+ * admit exactly the traffic this is meant to refuse.
+ *
+ * Structural evidence only: tag identity, ancestry, and bounded selector
+ * lookups inside the changed subtrees. It forces no style or layout, performs
+ * no document-wide scan, keeps no state, and is a pure function of its records.
+ * The 15-second recovery watchdog is untouched and still reconciles anything a
+ * childList observer cannot see, so nothing here can strand the list.
+ */
+function hoMutationsAffectChatList(records) {
+  const CANDIDATE_SELECTORS = ['a[href*="/c/"]', 'a[href*="/chat/"]', '.ho-main-row', 'nav', 'aside'];
+
+  /* Our own stamped output cannot change what a pass would find. Per record and
+     additions only: a record that removes anything is never excluded, so the
+     list still reconciles when our own nodes are torn out. */
+  const isOwned = (n) => !!(n && n.nodeType === 1 && n.dataset
+    && (n.dataset.hoRowColorOwner === '9A1b' || n.dataset.hoHeatPillOwner === '9A1b'));
+  const ownedAdditionsOnly = (rec) => {
+    const added = rec.addedNodes || [];
+    if (!added.length || (rec.removedNodes || []).length) return false;
+    for (const n of added) if (!isOwned(n)) return false;
+    return true;
+  };
+
+  /* Sidebar structure changing at all is relevant: rows there carry no chat
+     link of their own shape until the list is built. */
+  const inSidebar = (n) => {
+    let cur = n;
+    while (cur) {
+      const tag = cur.tagName;
+      if (tag === 'NAV' || tag === 'ASIDE') return true;
+      cur = cur.parentElement || null;
+    }
+    return false;
+  };
+
+  const carries = (n) => {
+    if (!n || n.nodeType !== 1) return false;
+    for (const sel of CANDIDATE_SELECTORS) {
+      try {
+        if (n.matches?.(sel)) return true;
+        if (typeof n.querySelector === 'function' && n.querySelector(sel)) return true;
+      } catch (_) {}
+    }
+    return false;
+  };
+
+  for (const rec of records || []) {
+    if (!rec || rec.type !== 'childList') continue;
+    if (ownedAdditionsOnly(rec)) continue;
+    if (inSidebar(rec.target)) return true;
+    for (const n of rec.removedNodes || []) if (carries(n)) return true;
+    for (const n of rec.addedNodes || []) if (carries(n)) return true;
+  }
+  return false;
+}
+
 function hoActivateScanLayer() {
   if (hoScanActive) return;                  // already active -- exactly once
   hoScanActive = true;
   if (!hoScanObserver) {
-    hoScanObserver = new MutationObserver(() => hoRequestScan('dom'));
+    hoScanObserver = new MutationObserver((records) => {
+      if (hoMutationsAffectChatList(records)) hoRequestScan('dom');
+    });
     hoScanObserver.observe(document.body, { childList: true, subtree: true });
   }
   if (!hoScanRecoveryId) {

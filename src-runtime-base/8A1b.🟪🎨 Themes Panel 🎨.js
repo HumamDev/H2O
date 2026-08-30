@@ -1097,19 +1097,44 @@
   function DOM_TP_updateSidebarMoreGuard() {
     let rows = [];
     try { rows = Array.from(D.querySelectorAll(`[${ATTR_HO_SIDEBAR_TOP_MORE}="true"]`)); } catch { rows = []; }
+
+    /* Phase 1 - reads only.
+     *
+     * The guard bottom is an invariant OF THE PASS, not of the row: it depends
+     * on the sidebar and its fixed-label candidates, so recomputing it per row
+     * re-derived the same answer N times and cost a sidebar rect plus a rect
+     * and a visibility probe per candidate each time. Worse, the per-row write
+     * used to land between those reads, so every row after the first measured
+     * against a tree the previous write had just dirtied - N x M forced work
+     * for what is N + M of actual information.
+     *
+     * Computed once per sidebar per pass, in a map that lives only for this
+     * call. Nothing is retained across passes and no trigger changed. */
+    const guardBySidebar = new Map();
+    const decisions = [];
     for (const row of rows) {
       if (!DOM_TP_isEl(row)) continue;
       const sidebar = row.closest?.(`[${ATTR_HO_CHATGPT_SIDEBAR}="true"]`) || row.closest?.(SEL_CHATGPT_SIDEBAR);
       if (!DOM_TP_isEl(sidebar)) continue;
+      if (!guardBySidebar.has(sidebar)) {
+        let bottom = 0;
+        try { bottom = DOM_TP_sidebarTopGuardBottom(sidebar); } catch {}
+        guardBySidebar.set(sidebar, bottom);
+      }
+      const guardBottom = guardBySidebar.get(sidebar);
       let shouldHide = false;
       try {
         const r = row.getBoundingClientRect();
-        const guardBottom = DOM_TP_sidebarTopGuardBottom(sidebar);
         shouldHide = r.top < guardBottom && r.bottom > 0;
       } catch {}
+      decisions.push({ row, shouldHide });
+    }
+
+    /* Phase 2 - writes only, from the values already collected. */
+    for (const decision of decisions) {
       try {
-        if (shouldHide) row.setAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN, 'true');
-        else row.removeAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN);
+        if (decision.shouldHide) decision.row.setAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN, 'true');
+        else decision.row.removeAttribute(ATTR_HO_SIDEBAR_MORE_HIDDEN);
       } catch {}
     }
   }
@@ -3955,12 +3980,102 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     }
   }
 
+  /* ───────── Tiny-rail structural admission (STATE.moTinyRail only) ─────────
+   * The observer watches documentElement {childList,subtree} and used to be
+   * constructed with TIME_TP_scheduleEnsureTinyRail as its callback: the
+   * scheduler WAS the callback, so the MutationRecords were discarded and every
+   * batch in the document bought a tiny-rail pass - which then pays a rail rect
+   * and, when a wrapper must be created, a template sizing rect.
+   *
+   * These helpers are pure functions of the records the callback already
+   * receives plus the ownership stamp this module already writes. Structural
+   * evidence only: identity, connectivity, containment, and bounded selector
+   * lookups inside the changed subtrees. Never geometry, never a document-wide
+   * scan per record, never a poll. The resize, popstate, legacy-navigate and
+   * bind-time scheduling calls stay ungated, as do the guard handlers and the
+   * settings/theme apply paths.
+   */
+
+  /** @helper A record whose additions are exclusively our own stamped nodes
+   * changes nothing we could discover. Applied per record, never per batch, so
+   * a mixed batch stays relevant through whichever record is foreign. ADDITIONS
+   * ONLY: a record that removes anything is never excluded, because when the
+   * host strips the rail every removed node may be ours and the rail must still
+   * self-heal. Ownership is read from the added node ITSELF - for an insertion
+   * the record target is the host's unstamped stack. */
+  function DOM_TP_ownedAdditionsOnly(rec) {
+    const added = rec?.addedNodes || [];
+    const removed = rec?.removedNodes || [];
+    if (!added.length || removed.length) return false;
+    for (const node of added) {
+      if (!node || node.nodeType !== 1) return false;
+      if (node.getAttribute?.(ATTR_CGXUI_OWNER) !== SkID) return false;
+    }
+    return true;
+  }
+
+  /** @helper Is this node inside the tiny-rail or sidebar domain? */
+  function DOM_TP_inTinyRailDomain(node, sidebar, rail) {
+    if (!node) return false;
+    if (rail && (node === rail || rail.contains?.(node))) return true;
+    if (sidebar && (node === sidebar || sidebar.contains?.(node))) return true;
+    return false;
+  }
+
+  /** @helper Does this changed subtree carry the rail or a sidebar - appearing,
+   * being replaced, or being taken away? Bounded to the subtree in the record. */
+  function DOM_TP_carriesTinyRailCandidate(node) {
+    if (!node || node.nodeType !== 1) return false;
+    for (const sel of [SEL_TINY_RAIL, SEL_CHATGPT_SIDEBAR]) {
+      try {
+        if (node.matches?.(sel)) return true;
+        if (typeof node.querySelector === 'function' && node.querySelector(sel)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  /** @core Is this childList batch capable of invalidating the tiny rail? */
+  function DOM_TP_tinyRailInvalidated(records) {
+    // Our own wrapper leaving the document is always stale.
+    if (STATE.tinyRailWrap && STATE.tinyRailWrap.isConnected === false) return true;
+
+    let rail = null;
+    let sidebar = null;
+    try { rail = D.querySelector(SEL_TINY_RAIL); } catch {}
+    try { sidebar = D.querySelector(SEL_CHATGPT_SIDEBAR); } catch {}
+
+    for (const rec of records || []) {
+      if (!rec || rec.type !== 'childList') continue;
+      if (DOM_TP_ownedAdditionsOnly(rec)) continue;
+
+      if (DOM_TP_inTinyRailDomain(rec.target, sidebar, rail)) return true;
+
+      for (const node of rec.removedNodes || []) {
+        if (!node) continue;
+        if (node === rail || node === sidebar) return true;
+        if (rail && node.contains?.(rail)) return true;
+        if (sidebar && node.contains?.(sidebar)) return true;
+        // The rail itself being carried away: it is already gone from the
+        // document, so identity against the resolved root cannot see it.
+        if (DOM_TP_carriesTinyRailCandidate(node)) return true;
+      }
+
+      for (const node of rec.addedNodes || []) {
+        if (DOM_TP_carriesTinyRailCandidate(node)) return true;
+      }
+    }
+    return false;
+  }
+
   function UI_TP_wireTinyRailEnsure() {
     if (STATE.moTinyRail) return;
 
     TIME_TP_scheduleEnsureTinyRail();
 
-    STATE.moTinyRail = new MutationObserver(TIME_TP_scheduleEnsureTinyRail);
+    STATE.moTinyRail = new MutationObserver((records) => {
+      if (DOM_TP_tinyRailInvalidated(records)) TIME_TP_scheduleEnsureTinyRail();
+    });
     STATE.moTinyRail.observe(D.documentElement, { childList: true, subtree: true });
 
     STATE.onResize = TIME_TP_scheduleEnsureTinyRail;

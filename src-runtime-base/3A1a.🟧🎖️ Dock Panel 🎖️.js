@@ -1641,20 +1641,29 @@ function CORE_DP_bindRailDelegationOnce(){
 
     if (!templateA) return;
 
-    // Compute intended size from native icon host
-    const templateIconHost = templateA.querySelector(SEL_DPANEL.SB_TINY_ICON_HOST) || templateA;
-    const r = templateIconHost.getBoundingClientRect();
-    const railW = Math.max(18, Math.round(r.width || 24));
-    const railH = Math.max(18, Math.round(r.height || 24));
-
-    // ✅ Clean only our duplicates (never clear everything)
-    UI_DPANEL_clearRailButtons();
-
     // Ensure we have 8 items (3 real + 5 dummy)
     const items = Array.isArray(DPANEL_RAIL_ITEMS) ? DPANEL_RAIL_ITEMS.slice(0) : [];
     while (items.length < 8) items.push({ view:`dummy${items.length+1}`, title:`Dummy ${items.length+1}`, color:'#3a3a3a', dummy:true });
 
     const ownedWrapSel = `div[data-state][${ATTR_DPANEL_CGXUI_OWNER}="${SkID}"][${ATTR_DPANEL_RAIL_VIEW}]`;
+
+    // The template sizing rect is consumed only when a wrapper is CREATED -
+    // existing wrappers are never re-sized by it. On a populated rail the loop
+    // below skips every view, so that rect would be a forced layout read whose
+    // result is discarded. This test is structural only; it reads no geometry.
+    const railComplete = items.every((item) => {
+      const viewId = String(item.view || '').trim();
+      return !viewId || !!stack.querySelector(`${ownedWrapSel}[${ATTR_DPANEL_RAIL_VIEW}="${viewId}"]`);
+    });
+
+    // Compute intended size from native icon host
+    const templateIconHost = templateA.querySelector(SEL_DPANEL.SB_TINY_ICON_HOST) || templateA;
+    const r = railComplete ? null : templateIconHost.getBoundingClientRect();
+    const railW = Math.max(18, Math.round(r?.width || 24));
+    const railH = Math.max(18, Math.round(r?.height || 24));
+
+    // ✅ Clean only our duplicates (never clear everything)
+    UI_DPANEL_clearRailButtons();
 
     for (const item of items) {
       const viewId = String(item.view || '').trim();

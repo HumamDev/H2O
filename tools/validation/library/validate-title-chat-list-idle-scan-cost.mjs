@@ -173,10 +173,54 @@ function makeEnv(pathname) {
     }
   };
 
-  /* One relevant DOM change, delivered the way production sees it. */
+  /* MutationRecord nodes of the shape production actually inspects. A record
+     used to be delivered as a bare {type:'childList'}: enough while every batch
+     was treated as relevant, but not once the module classifies its records. A
+     relevant batch must really carry chat-list evidence and an irrelevant one
+     must really carry none, or neither control means anything. */
+  const recNode = ({ tag = 'div', href = null } = {}) => ({
+    nodeType: 1,
+    tagName: tag.toUpperCase(),
+    getAttribute: (n) => (n === 'href' ? href : null),
+    matches: (sel) => String(sel).split(',').map((x) => x.trim()).some((x) => {
+      if (x === tag) return true;
+      if (tag !== 'a' || href === null) return false;
+      if (x === 'a[href]') return true;
+      const m = /^a\[href\*="([^"]+)"\]$/.exec(x);
+      return !!m && String(href).includes(m[1]);
+    }),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    contains: () => false,
+    get parentNode() { return null; },
+    get parentElement() { return null; },
+  });
+  const deliverRecords = (records) => {
+    for (const o of observers) { if (o.observing && typeof o.cb === 'function') { try { o.cb(records, o); } catch {} } }
+  };
+
+  /* One relevant DOM change: a chat link enters the list. */
   const emitDomChange = (n = 1) => {
     for (let i = 0; i < n; i += 1) {
-      for (const o of observers) { if (o.observing && typeof o.cb === 'function') { try { o.cb([{ type: 'childList' }], o); } catch {} } }
+      deliverRecords([{
+        type: 'childList',
+        target: recNode({ tag: 'main' }),
+        addedNodes: [recNode({ tag: 'a', href: '/c/added-' + i })],
+        removedNodes: [],
+      }]);
+    }
+  };
+
+  /* One irrelevant DOM change: churn elsewhere in the body that cannot alter
+     what a chat-list pass would find. */
+  const emitIrrelevantDomChange = (n = 1) => {
+    for (let i = 0; i < n; i += 1) {
+      deliverRecords([{
+        type: 'childList',
+        target: recNode({ tag: 'footer' }),
+        addedNodes: [recNode({ tag: 'span' })],
+        removedNodes: [],
+      }]);
     }
   };
 
@@ -187,7 +231,7 @@ function makeEnv(pathname) {
   };
 
   return {
-    win, navigate, advance, emitDomChange, emitSemantic, runFrames,
+    win, navigate, advance, emitDomChange, emitIrrelevantDomChange, emitSemantic, runFrames,
     passes: () => scanPasses,
     resetPasses: () => { scanPasses = 0; },
     liveIntervals: () => intervals.filter((t) => t.live).length,
@@ -266,6 +310,35 @@ function assertIdleScanContract(makeSubject, tag) {
     });
     check(`${tag} / P6 resume does not stampede`, () => {
       assert.ok(s.passes() <= 4, `resume produced ${s.passes()} passes; expected a bounded reconciliation`);
+    });
+  }
+
+  // 8. ADMISSION BUDGET — broad body churn that cannot change the chat list must
+  //    not buy a full reconciliation pass. A budget, not an exact count: any
+  //    admission rule that refuses irrelevant batches satisfies it.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000);
+    s.resetPasses();
+    for (let i = 0; i < 30; i += 1) { s.emitIrrelevantDomChange(); s.advance(400); }
+    check(`${tag} / P8 irrelevant body churn buys no reconciliation pass`, () => {
+      assert.equal(s.passes(), 0,
+        `30 irrelevant body batches produced ${s.passes()} full passes; expected none`);
+    });
+  }
+
+  // 9. Anti-degeneracy for the same rule: a relevant batch must still reconcile.
+  {
+    const s = makeSubject(ELIGIBLE);
+    s.advance(2000);
+    s.resetPasses();
+    s.emitIrrelevantDomChange(10);
+    s.advance(400);
+    const afterIrrelevant = s.passes();
+    s.emitDomChange(1);
+    s.advance(500);
+    check(`${tag} / P9 a relevant batch still reconciles after irrelevant churn`, () => {
+      assert.ok(s.passes() > afterIrrelevant, 'a relevant batch must still reconcile');
     });
   }
 
@@ -397,7 +470,23 @@ const compliant = fixtureSubject((env) => {
   const activate = () => {
     if (active) return;
     active = true;
-    observer = new w.MutationObserver(() => request('dom'));
+    /* The contract now includes admission: a body batch that cannot change what
+       a chat-list pass would find must buy nothing. The reference rule is
+       structural and per record, and a batch stays relevant through whichever
+       record is relevant. */
+    const carries = (n) => {
+      if (!n || n.nodeType !== 1) return false;
+      for (const sel of ['a[href*="/c/"]', 'a[href*="/chat/"]', '.ho-main-row', 'nav', 'aside']) {
+        try { if (n.matches?.(sel) || n.querySelector?.(sel)) return true; } catch {}
+      }
+      return false;
+    };
+    const relevant = (records) => (records || []).some((r) => {
+      if (!r || r.type !== 'childList') return false;
+      if (r.target && ['NAV', 'ASIDE'].includes(r.target.tagName)) return true;
+      return [...(r.addedNodes || []), ...(r.removedNodes || [])].some(carries);
+    });
+    observer = new w.MutationObserver((records) => { if (relevant(records)) request('dom'); });
     observer.observe(w.document.body, { childList: true, subtree: true });
     watchdog = w.setInterval(() => request('recovery'), 15000);
     request('activate');

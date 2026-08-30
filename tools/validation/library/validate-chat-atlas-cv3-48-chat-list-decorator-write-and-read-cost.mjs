@@ -405,6 +405,385 @@ fixture('anti-vacuity: the harness really drives decoration and really records t
   eq(env.unsupported.size, 0, `every selector used by the product was understood: ${[...env.unsupported].join(' | ')}`);
 });
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// PHASE 2 — SCAN ADMISSION AND INTRA-PASS READ/WRITE ORDER
+//
+// Two further contracts on the same module, both about work spent without
+// changing anything. Neither touches the Phase-1 write-suppression contract
+// above, the 15-second recovery interval, or the coalescing architecture.
+//
+// B. SCAN ADMISSION
+//    hoScanObserver is wired as `new MutationObserver(() => hoRequestScan('dom'))`
+//    on document.body {childList,subtree}: the records are discarded, so every
+//    body mutation anywhere marks the list dirty and schedules a full pass. A
+//    mutation outside the chat-list/sidebar domain must request nothing.
+//
+// D. INTRA-PASS READ/WRITE ORDER
+//    collectSortableMainRows reads a rect and a computed style per row and then
+//    writes dataset.hoColorPriorityOrder on the row's sortable unit, so the next
+//    row is measured against a tree the previous write just dirtied. Every read
+//    the pass needs must happen before any write the pass owns; the returned
+//    grouping and ordering must be identical.
+
+const ADMISSION_FN = 'hoMutationsAffectChatList';   // absent on the base revision
+const admissionPresent = SOURCE.includes(`\nfunction ${ADMISSION_FN}(`);
+
+// ── Rows / admission environment ──────────────────────────────────────────
+// A second sandbox, independent of the Phase-1 one: it executes the REAL
+// collectSortableMainRows, findSortableRowUnit and scan wiring against an
+// instrumented DOM that records every forced read and every dataset write in
+// one ordered log.
+function makeRowsEnv() {
+  const log = [];
+  const counts = { rect: 0, style: 0, dsWrites: 0, domRequests: 0, otherRequests: 0 };
+  let SEQ2 = 0;
+
+  class RowEl {
+    constructor(tag = 'div') {
+      this.tagName = String(tag).toUpperCase();
+      this.nodeType = 1;
+      this.__id = ++SEQ2;
+      this.__attrs = new Map();
+      this.__cls = new Set();
+      this.children = [];
+      this.parentNode = null;
+      this.__rect = { top: 500, left: 0, width: 240, height: 40 };
+      this.__display = 'block';
+      const self = this;
+      this.__ds = {};
+      this.dataset = new Proxy(this.__ds, {
+        set: (t, k, v) => { counts.dsWrites += 1; log.push({ kind: 'write', what: `dataset.${String(k)}`, id: self.__id }); t[k] = String(v); return true; },
+        get: (t, k) => t[k],
+      });
+    }
+    get parentElement() { return this.parentNode; }
+    appendChild(n) { n.parentNode = this; this.children.push(n); return n; }
+    get classList() { const self = this; return { add: (c) => self.__cls.add(c), remove: (c) => self.__cls.delete(c), contains: (c) => self.__cls.has(c) }; }
+    setAttribute(n, v) { this.__attrs.set(String(n), String(v)); }
+    getAttribute(n) { const v = this.__attrs.get(String(n)); return v === undefined ? null : v; }
+    __desc(out = []) { for (const c of this.children) { out.push(c); c.__desc(out); } return out; }
+    matches(sel) { return matchRowSel(this, sel); }
+    closest(sel) { let n = this; while (n) { if (n instanceof RowEl && matchRowSel(n, sel)) return n; n = n.parentNode; } return null; }
+    contains(o) { let n = o; while (n) { if (n === this) return true; n = n.parentNode; } return false; }
+    querySelector(sel) { return this.__desc().find((e) => matchRowSel(e, sel)) || null; }
+    querySelectorAll(sel) { return this.__desc().filter((e) => matchRowSel(e, sel)); }
+    getBoundingClientRect() {
+      counts.rect += 1; log.push({ kind: 'read', what: 'rect', id: this.__id });
+      const r = this.__rect;
+      return { top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.top + r.height, right: r.left + r.width };
+    }
+  }
+  class RowAnchor extends RowEl { constructor() { super('a'); } }
+
+  const rowUnsupported = new Set();
+  function matchRowSel(el, sel) {
+    return String(sel).split(',').map((x) => x.trim()).filter(Boolean).some((s) => {
+      if (s === 'main') return el.tagName === 'MAIN';
+      if (s === 'nav') return el.tagName === 'NAV';
+      if (s === 'aside') return el.tagName === 'ASIDE';
+      if (s.startsWith('.')) return el.__cls.has(s.slice(1));
+      if (s === 'main a[href*="/c/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/c/') && !!el.closest('main');
+      if (s === 'main a[href*="/chat/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/chat/') && !!el.closest('main');
+      if (s === 'a[href]') return el.tagName === 'A' && el.__attrs.has('href');
+      if (s === 'a[href*="/c/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/c/');
+      if (s === 'a[href*="/chat/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/chat/');
+      rowUnsupported.add(s);
+      return false;
+    });
+  }
+
+  const documentElement = new RowEl('html');
+  const body = new RowEl('body');
+  documentElement.appendChild(body);
+
+  const doc = {
+    documentElement, body,
+    querySelector: (s) => documentElement.querySelector(s),
+    querySelectorAll: (s) => documentElement.querySelectorAll(s),
+  };
+
+  const observers = [];
+  const timers = [];
+  const sandbox = {
+    document: doc,
+    window: { getComputedStyle: (el) => { counts.style += 1; log.push({ kind: 'read', what: 'style', id: el?.__id }); return { display: el?.__display || 'block' }; } },
+    HTMLElement: RowEl, HTMLAnchorElement: RowAnchor,
+    I: { nav: { getChatIdFromHref: (h) => (String(h).match(/\/(?:c|chat)\/([\w-]+)/) || [])[1] || '' }, utils: {} },
+    // Not needed by these scenes: the host is provided explicitly, so this must
+    // never be reached. It records the call so a silent fallback cannot hide.
+    findProjectTabsHost: () => { counts.hostFallback = (counts.hostFallback || 0) + 1; return null; },
+    // Not a read source in these scenes; the unit resolves at <main>.
+    childContainsSortableChat: () => false,
+    hoColorPriorityOrderCounter: 0,
+    // Scan wiring state and the admission counter.
+    hoScanActive: false, hoScanObserver: null, hoScanRecoveryId: 0, hoScanSettleIds: [],
+    HO_SCAN_RECOVERY_MS: 15000,
+    hoRequestScan: (reason) => { if (reason === 'dom') counts.domRequests += 1; else counts.otherRequests += 1; },
+    setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearInterval: () => {}, setTimeout: (fn) => { timers.push({ fn, ms: 0 }); return timers.length; }, clearTimeout: () => {},
+    MutationObserver: class { constructor(cb) { this.cb = cb; this.on = false; observers.push(this); } observe() { this.on = true; } disconnect() { this.on = false; } takeRecords() { return []; } },
+    console: { log() {}, warn() {}, error() {}, debug() {}, info() {} },
+    Map, Set, Array, Object, String, Number, Boolean, Math, JSON, Proxy, Infinity, isNaN, parseInt,
+  };
+  sandbox.globalThis = sandbox;
+
+  const wanted = ['findSortableRowUnit', 'collectSortableMainRows', 'hoActivateScanLayer'];
+  if (admissionPresent) wanted.push(ADMISSION_FN);
+  const program = wanted.map((n) => extractFunction(n)).join('\n\n');
+  vm.runInNewContext(program, sandbox, { filename: DECORATOR_PATH });
+  for (const n of wanted) {
+    if (typeof sandbox[n] !== 'function') throw new Error(`TEST_HARNESS_BLOCKED:not-loaded:${n}`);
+  }
+
+  return {
+    sandbox, log, counts, doc, body, observers, RowEl, rowUnsupported,
+    el(tag, { cls, attrs, rect, display } = {}) {
+      const e = tag === 'a' ? new RowAnchor() : new RowEl(tag);
+      if (cls) for (const c of String(cls).split(/\s+/).filter(Boolean)) e.__cls.add(c);
+      if (attrs) for (const [k, v] of Object.entries(attrs)) e.__attrs.set(k, String(v));
+      if (rect) e.__rect = { ...e.__rect, ...rect };
+      if (display) e.__display = display;
+      return e;
+    },
+    reset() { log.length = 0; for (const k of Object.keys(counts)) counts[k] = 0; },
+    deliver(records) { for (const o of observers) if (o.on) o.cb(records, o); },
+    rec(target, { added = [], removed = [] } = {}) { return { type: 'childList', target, addedNodes: added, removedNodes: removed }; },
+    readsAfterFirstWrite() {
+      const w = log.findIndex((e) => e.kind === 'write');
+      return w < 0 ? 0 : log.slice(w).filter((e) => e.kind === 'read').length;
+    },
+  };
+}
+
+// A main chat list: the project-tabs host plus N rows, each holding a chat link.
+function buildChatList(env, { rows = 8 } = {}) {
+  const main = env.el('main');
+  const host = env.el('div', { cls: 'ho-project-tabs-host', rect: { top: 0, left: 0, width: 600, height: 40 } });
+  main.appendChild(host);
+  const built = [];
+  for (let i = 0; i < rows; i += 1) {
+    const row = env.el('div', { cls: 'ho-main-row', rect: { top: 100 + i * 44, left: 0, width: 600, height: 40 } });
+    const link = env.el('a', { attrs: { href: `/c/chat-${i}` } });
+    row.appendChild(link);
+    main.appendChild(row);
+    built.push({ row, link });
+  }
+  env.body.appendChild(main);
+  return { main, host, rows: built };
+}
+
+function buildSidebarFor(env) {
+  const nav = env.el('nav');
+  env.body.appendChild(nav);
+  return nav;
+}
+
+function activateScan(env) {
+  env.sandbox.hoActivateScanLayer();
+  env.reset();
+}
+
+// ══ RED B — scan admission ════════════════════════════════════════════════
+
+fixture('RED B: a body mutation outside the chat-list domain must not request a scan', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 4 });
+  buildSidebarFor(env);
+  activateScan(env);
+
+  const footer = env.el('footer');
+  env.body.appendChild(footer);
+  const node = env.el('div');
+  footer.appendChild(node);
+  env.deliver([env.rec(footer, { added: [node] })]);
+
+  assertions += 1;
+  assert.equal(env.counts.domRequests, 0, 'an irrelevant body mutation must request no scan');
+});
+
+fixture('RED B: many irrelevant body mutations stay free', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 4 });
+  activateScan(env);
+  const footer = env.el('footer');
+  env.body.appendChild(footer);
+
+  for (let i = 0; i < 25; i += 1) {
+    const n = env.el('span');
+    footer.appendChild(n);
+    env.deliver([env.rec(footer, { added: [n] })]);
+  }
+  assertions += 1;
+  assert.equal(env.counts.domRequests, 0, '25 irrelevant batches must request nothing');
+});
+
+fixture('control: a structural change inside main still requests a scan', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  activateScan(env);
+
+  const row = env.el('div', { cls: 'ho-main-row' });
+  row.appendChild(env.el('a', { attrs: { href: '/c/new-one' } }));
+  scene.main.appendChild(row);
+  env.deliver([env.rec(scene.main, { added: [row] })]);
+
+  assertions += 1;
+  assert.ok(env.counts.domRequests >= 1, 'a new chat row is relevant');
+});
+
+fixture('control: a structural change inside the sidebar still requests a scan', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 4 });
+  const nav = buildSidebarFor(env);
+  activateScan(env);
+
+  const item = env.el('div');
+  nav.appendChild(item);
+  env.deliver([env.rec(nav, { added: [item] })]);
+
+  assertions += 1;
+  assert.ok(env.counts.domRequests >= 1, 'a sidebar structural change is relevant');
+});
+
+fixture('control: removing a chat row still requests a scan', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  activateScan(env);
+
+  const victim = scene.rows[1].row;
+  env.deliver([env.rec(scene.main, { removed: [victim] })]);
+
+  assertions += 1;
+  assert.ok(env.counts.domRequests >= 1, 'a removed chat row is relevant');
+});
+
+fixture('control: a mixed batch is relevant even when the relevant record is last', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  activateScan(env);
+
+  const footer = env.el('footer');
+  env.body.appendChild(footer);
+  const noise = env.el('div');
+  footer.appendChild(noise);
+  const row = env.el('div', { cls: 'ho-main-row' });
+  row.appendChild(env.el('a', { attrs: { href: '/c/late' } }));
+  scene.main.appendChild(row);
+
+  env.deliver([env.rec(footer, { added: [noise] }), env.rec(scene.main, { added: [row] })]);
+  assertions += 1;
+  assert.ok(env.counts.domRequests >= 1, 'a batch stays relevant through its relevant record');
+});
+
+fixture('control: the 15-second recovery interval is untouched', () => {
+  assertions += 1;
+  assert.ok(/const HO_SCAN_RECOVERY_MS = 15000;/.test(SOURCE), 'the recovery interval value is unchanged');
+  assertions += 1;
+  assert.equal((SOURCE.match(/new MutationObserver\(/gu) || []).length, 1,
+    '9A1b still owns exactly one MutationObserver');
+});
+
+// ══ RED D — reads before dataset writes ═══════════════════════════════════
+
+fixture('RED D: every read of a collect pass happens before any write of that pass', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 8 });
+  env.reset();
+
+  const groups = env.sandbox.collectSortableMainRows();
+  assertions += 1;
+  assert.ok(groups.size >= 1, 'the pass really grouped rows');
+  assertions += 1;
+  assert.ok(env.counts.dsWrites >= 1, 'the pass really wrote order data');
+  assertions += 1;
+  assert.equal(env.readsAfterFirstWrite(), 0, 'no forced read may follow the first dataset write of the pass');
+});
+
+fixture('control: collect keeps its grouping, ordering and read-once property', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 6 });
+  env.reset();
+  const groups = env.sandbox.collectSortableMainRows();
+
+  const entries = [...groups.values()].flat();
+  assertions += 1;
+  assert.equal(entries.length, 6, 'every eligible row is collected exactly once');
+  assertions += 1;
+  assert.deepEqual(entries.map((e) => e.row), scene.rows.map((r) => r.row), 'document order is preserved');
+  const orders = entries.map((e) => Number(e.unit.dataset.hoColorPriorityOrder));
+  assertions += 1;
+  assert.deepEqual(orders, [...orders].sort((a, b) => a - b), 'order stamps ascend in document order');
+  assertions += 1;
+  assert.equal(env.counts.rect, 7, 'one host rect plus one rect per row - no row is measured twice');
+});
+
+fixture('control: an invisible row is still excluded', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  scene.rows[2].row.__display = 'none';
+  const groups = env.sandbox.collectSortableMainRows();
+  const entries = [...groups.values()].flat();
+  assertions += 1;
+  assert.equal(entries.length, 3, 'a display:none row is filtered out as before');
+});
+
+fixture('control: a zero-size row is still excluded', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  scene.rows[1].row.__rect = { top: 200, left: 0, width: 0, height: 0 };
+  const groups = env.sandbox.collectSortableMainRows();
+  const entries = [...groups.values()].flat();
+  assertions += 1;
+  assert.equal(entries.length, 3, 'a zero-size row is filtered out as before');
+});
+
+fixture('control: a row above the project-tabs host is still excluded', () => {
+  const env = makeRowsEnv();
+  const scene = buildChatList(env, { rows: 4 });
+  scene.rows[0].row.__rect = { top: -50, left: 0, width: 600, height: 40 };
+  const groups = env.sandbox.collectSortableMainRows();
+  const entries = [...groups.values()].flat();
+  assertions += 1;
+  assert.equal(entries.length, 3, 'a row above the host bottom is filtered out as before');
+});
+
+fixture('control: nothing is retained across collect passes', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 5 });
+  env.sandbox.collectSortableMainRows();
+  env.reset();
+  env.sandbox.collectSortableMainRows();
+  assertions += 1;
+  assert.equal(env.counts.rect, 6, 'the second pass re-measures the host and every row');
+});
+
+fixture('binding: the executed functions are the real 9A1b scan and collect paths', () => {
+  const collect = extractFunction('collectSortableMainRows');
+  assertions += 1;
+  assert.ok(/hoColorPriorityOrder/.test(collect), 'collect still stamps the order dataset key');
+  assertions += 1;
+  assert.ok(/getBoundingClientRect|getComputedStyle/.test(collect), 'collect still performs the real reads');
+  const activate = extractFunction('hoActivateScanLayer');
+  assertions += 1;
+  assert.ok(/new MutationObserver\(/.test(activate), 'the extracted wiring is the real body observer wiring');
+  assertions += 1;
+  assert.ok(/document\.body/.test(activate), 'and it still observes document.body');
+});
+
+fixture('anti-vacuity: the rows harness really drives what it measures', () => {
+  const env = makeRowsEnv();
+  buildChatList(env, { rows: 3 });
+  env.reset();
+  env.sandbox.collectSortableMainRows();
+  assertions += 1;
+  assert.ok(env.counts.rect >= 1 && env.counts.style >= 1, 'real reads were recorded');
+  assertions += 1;
+  assert.equal(env.counts.hostFallback || 0, 0, 'the explicit host was used, no silent fallback');
+  assertions += 1;
+  assert.equal(env.rowUnsupported.size, 0, `every selector used is supported: ${[...env.rowUnsupported].join(' | ')}`);
+});
+
 // ── Report ────────────────────────────────────────────────────────────────
 const failed = fixtures.filter((f) => !f.ok);
 for (const f of fixtures) {
