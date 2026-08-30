@@ -1395,6 +1395,45 @@ function UI_DP_nativeClose_sync() {
     return false;
   }
 
+  /** @helper Is this record nothing but Dock Panel's own additions?
+   *
+   * UI_DPANEL_installRailButtons appends its wrappers into the tiny-rail, which
+   * is inside the very domain discovery reads from - so the module's own output
+   * was re-arming the module. Those wrappers are stamped with the Dock owner
+   * marker before insertion and cannot change what native-close discovery would
+   * find, so they are excluded.
+   *
+   * Two boundaries are deliberate.
+   *
+   * ADDITIONS ONLY. A record that removes anything is never excluded. When the
+   * host strips the rail, every removed node is Dock-stamped; excluding that
+   * batch would leave the rail empty until some unrelated mutation happened to
+   * arrive. Rail self-healing depends on removals staying relevant, and this
+   * asymmetry buys it without any re-entrancy flag or new state.
+   *
+   * OWNERSHIP IS READ FROM THE ADDED NODE ITSELF. For an insertion the record
+   * target is the host's unstamped stack, so a target-based test would classify
+   * this module's own append as foreign. And "the subtree contains only stamped
+   * nodes" is deliberately NOT the rule - that would ignore removal of the
+   * native stack that happens to hold Dock wrappers.
+   *
+   * Anything unexpected - a text node, a node without the stamp - keeps the
+   * record relevant. Fail-closed.
+   */
+  function CORE_DP_isDockOwnedAdditionOnly(rec) {
+    const removed = rec.removedNodes || [];
+    if (removed.length) return false;
+
+    const added = rec.addedNodes || [];
+    if (!added.length) return false;
+
+    for (const node of added) {
+      if (!node || node.nodeType !== 1) return false;
+      if (node.getAttribute?.(ATTR_DPANEL_CGXUI_OWNER) !== SkID) return false;
+    }
+    return true;
+  }
+
   /** @core Is this childList batch capable of invalidating native-close discovery? */
   function CORE_DP_nativeCloseInvalidated(records) {
     const bound = S.nativeCloseBtn;
@@ -1407,6 +1446,11 @@ function UI_DP_nativeClose_sync() {
 
     for (const rec of records || []) {
       if (!rec || rec.type !== 'childList') continue;
+
+      // Our own stamped additions cannot change what discovery would find.
+      // Skipped per record, never per batch: a mixed batch is still relevant
+      // through whichever record is foreign, wherever it sits in the list.
+      if (CORE_DP_isDockOwnedAdditionOnly(rec)) continue;
 
       // Something happened inside the domain discovery reads from.
       if (CORE_DP_inNativeCloseDomain(rec.target, sidebar, rail, bound)) return true;
@@ -1431,6 +1475,31 @@ function UI_DP_nativeClose_sync() {
     return false;
   }
 
+  /** @helper Does this added subtree bring the tiny-rail itself into the page?
+   *
+   * The rail needs one invalidation native close does not. Native-close
+   * additions are considered only while nothing is bound, but the rail can
+   * appear at any time - and the tiny-bar is a stage-level element that is not
+   * necessarily inside the sidebar, so an in-domain target test cannot be
+   * relied on to catch it. Bounded to the added subtree; never a document-wide
+   * query, and never a poll.
+   */
+  function CORE_DP_railAppeared(records) {
+    const sel = SEL_DPANEL.SB_TINY_RAIL;
+    for (const rec of records || []) {
+      if (!rec || rec.type !== 'childList') continue;
+      if (CORE_DP_isDockOwnedAdditionOnly(rec)) continue;
+      for (const node of rec.addedNodes || []) {
+        if (!node || node.nodeType !== 1) continue;
+        try {
+          if (node.matches?.(sel)) return true;
+          if (typeof node.querySelector === 'function' && node.querySelector(sel)) return true;
+        } catch (_) {}
+      }
+    }
+    return false;
+  }
+
   /** @core Bind observers so rail buttons appear whenever the sidebar rail appears. */
   function CORE_DP_bindRailObserversOnce() {
     if (S.moRail) return;
@@ -1447,13 +1516,19 @@ function UI_DP_nativeClose_sync() {
     if (typeof MutationObserver !== 'function') return;
 
     S.moRail = new MutationObserver((records) => {
-      // The rail pass stays unconditional and is already rAF-coalesced. Native
-      // close discovery is requested only when the batch is structurally
-      // capable of invalidating it; the rail frame still collapses many
-      // same-frame requests into one pass. Explicit Dock-state callers keep
-      // calling UI_DP_nativeClose_sync() directly.
-      if (CORE_DP_nativeCloseInvalidated(records)) S.nativeCloseReq = true;
-      UI_DPANEL_scheduleRailEnsure();
+      // Both paths are now relevance-gated. The rail pass used to be scheduled
+      // for every batch, and an admitted pass in steady state writes nothing
+      // yet still pays two forced reads - the rail rect and the template
+      // sizing rect. The 180ms window could only make that waste periodic; it
+      // could not stop an irrelevant batch from arming it.
+      //
+      // The rail admits everything native close admits, plus its own first
+      // appearance. Explicit Dock-state callers keep calling
+      // UI_DP_nativeClose_sync() directly, and resize, popstate and the
+      // bind-time call below stay ungated.
+      const nativeCloseRelevant = CORE_DP_nativeCloseInvalidated(records);
+      if (nativeCloseRelevant) S.nativeCloseReq = true;
+      if (nativeCloseRelevant || CORE_DP_railAppeared(records)) UI_DPANEL_scheduleRailEnsure();
     });
     S.moRail.observe(document.documentElement, { childList: true, subtree: true });
 

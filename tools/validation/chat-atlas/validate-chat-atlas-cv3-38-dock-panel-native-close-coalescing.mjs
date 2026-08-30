@@ -190,6 +190,7 @@ function createEnv() {
     bcr: { rail: 0, other: 0 },        // getBoundingClientRect (rail visibility probe)
     listenerOps: [],                   // {op:'add'|'remove', id, type, capture}
     nativeCloseAttrWrites: [],         // set/remove of data-h2o-native-close
+    rafRequests: 0,                    // frame requests (rail scheduling, see below)
     microtasks: [], raf: [], idle: [], timers: new Map(),
     timerSeq: 0, now: 0, seq: 0, observers: [],
     // Wall clock the fixtures own. 3A1a's rail-ensure throttle reads Date.now(),
@@ -219,6 +220,12 @@ function createEnv() {
       this.dataset = {};
       this.__text = '';
     }
+    // Real elements report nodeType 1. The double omitted it, so production
+    // code that guards on element-ness the standard way saw every node as
+    // non-Element. Adding it makes the double more faithful, not more
+    // permissive: the fail-closed branch for a non-Element is still reachable
+    // by handing a record a plain object.
+    get nodeType() { return 1; }
     get parentElement() { return this.parentNode; }
     get children() { return this.childNodes.filter((n) => n instanceof MEl); }
     get isConnected() { let n = this; while (n) { if (n === documentElement) return true; n = n.parentNode; } return false; }
@@ -435,7 +442,16 @@ function createEnv() {
     location: { pathname: '/c/11111111-2222-3333-4444-555555555555', href: 'https://chatgpt.com/c/x' },
     performance: { now: () => state.now },
     MutationObserver: MMutationObserver,
-    requestAnimationFrame: (fn) => { state.raf.push(fn); return state.raf.length; },
+    // Rail scheduling is now itself relevance-gated, so a batch can be refused
+    // BEFORE it schedules rather than at the 180ms window. Geometry counters
+    // cannot see that difference - a throttled pass and an unscheduled one both
+    // read nothing - so frame requests are counted separately.
+    //
+    // 3A1a requests a frame from exactly two places: the rail path, and
+    // CORE_DP_scheduleRender, which returns early unless the Dock panel is
+    // OPEN. Every fixture below keeps the Dock closed, so a request here is a
+    // rail schedule. `railSchedulesAreFaithful()` asserts that precondition.
+    requestAnimationFrame: (fn) => { state.rafRequests += 1; state.raf.push(fn); return state.raf.length; },
     cancelAnimationFrame: () => {},
     requestIdleCallback: (fn) => { state.idle.push(fn); return state.idle.length; },
     Event: class { constructor(t) { this.type = t; } },
@@ -491,7 +507,16 @@ function createEnv() {
       state.op.close = 0; state.op.other = 0;
       state.rects.close = 0; state.rects.other = 0;
       state.bcr.rail = 0; state.bcr.other = 0;
+      state.rafRequests = 0;
       state.listenerOps.length = 0; state.nativeCloseAttrWrites.length = 0;
+    },
+    // Frame requests since the last reset. With the Dock closed this is the
+    // count of admitted rail schedules.
+    railSchedules: () => state.rafRequests,
+    railSchedulesAreFaithful() {
+      const panel = api.panelEl();
+      const openState = panel && String(panel.getAttribute('data-cgxui-state') || '');
+      return !openState || openState !== 'open';
     },
     // A discovery pass is uniquely identified by a visibility probe of the
     // native close node — DOM_DP_isVisible always reads getComputedStyle first.
@@ -844,6 +869,27 @@ function addRail(env, { width = 56, height = 600 } = {}) {
 const railButtons = (stack) =>
   stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]').length;
 
+// A Dock-owned rail wrapper, stamped the way UI_DPANEL_installRailButtons stamps
+// its own: owner marker and rail-view marker, on the node ITSELF, applied before
+// insertion. This is the shape of 3A1a's own writes into the rail.
+function addDockOwnedWrap(env, stack, view) {
+  const wrap = env.el('div', {
+    attrs: { 'data-state': 'closed', 'data-cgxui-owner': 'dcpn', 'data-h2o-rail-view': view },
+  });
+  stack.appendChild(wrap);
+  return wrap;
+}
+
+// A foreign insertion into the same rail - the 8A1b tiny-rail shape. Carries no
+// Dock owner stamp, so it must stay relevant.
+function addForeignRailNode(env, stack, mark = 'foreign') {
+  const node = env.el('div', { attrs: { 'data-state': 'closed', 'data-h2o-foreign': mark } });
+  stack.appendChild(node);
+  return node;
+}
+
+const deliver = (env) => env.flushMicrotasks();
+
 // First admitted pass: measures once and actually furnishes the rail.
 fixture('rail B: the first justified rail pass measures once and reconciles', () => {
   const env = createEnv();
@@ -891,19 +937,29 @@ fixture('rail A2: an unusable rail is not re-probed on every mutation batch eith
 });
 
 // After the window, a justified pass measures again.
+// TRIGGER REVISED, assertions unchanged. This fixture used transcript-only
+// churn to pump the second pass. Rail scheduling is now relevance-gated, so
+// transcript churn no longer reaches the rail at all - it is refused before
+// scheduling rather than at the window, which is the point of the gate. The
+// pump becomes a legitimate foreign in-rail mutation; what is asserted - that
+// the window holds inside 180ms and reopens after it - is untouched, and the
+// first assertion is now strictly stronger: it proves the THROTTLE still
+// refuses a genuinely relevant batch, independently of the new gate.
 fixture('rail C: a justified pass after the throttle window probes again', () => {
   const env = createEnv();
-  const scene = bootScene(env);
-  addRail(env);
+  bootScene(env);
+  const { stack } = addRail(env);
   env.flushMicrotasks();
   env.flushFrame();
   env.reset();
 
-  mutateUnrelated(env, scene); env.advance(5); env.flushFrame();
+  addForeignRailNode(env, stack, 'inside-window'); deliver(env);
+  env.advance(5); env.flushFrame();
   eq(env.railProbes(), 0, 'still inside the window');
 
   env.advance(200);
-  mutateUnrelated(env, scene); env.flushFrame();
+  addForeignRailNode(env, stack, 'after-window'); deliver(env);
+  env.flushFrame();
   eq(env.railProbes(), 1, 'the window reopened and the pass measured');
 });
 
@@ -947,6 +1003,158 @@ fixture('rail F: one throttle authority, admission before geometry, nothing new 
   eq((DOCK_SOURCE.match(/getBoundingClientRect\(\)/gu) || []).length, 5, 'no new geometry read sites');
   ok(!/rail[A-Za-z]*(Rect|Geom|Bounds)[A-Za-z]*\s*=/u.test(DOCK_SOURCE),
     'no cross-frame rail geometry cache introduced');
+});
+
+// == SELF-OWNED MUTATION ADMISSION =========================================
+// 3A1a writes its own stamped wrappers into the tiny-rail. Those writes land
+// inside the very domain the structural predicate treats as relevant, so the
+// module's own output re-arms native-close discovery and re-schedules the rail
+// pass. One further contract closes that:
+//
+//   a batch whose ADDED nodes are exclusively Dock-owned
+//     -> invalidates nothing, and schedules nothing
+//
+// Two boundaries are deliberate and load-bearing.
+//
+// ADDITIONS ONLY. Removal of Dock-owned wrappers stays relevant. A host React
+// pass that strips the rail removes only Dock-stamped nodes; if that batch were
+// excluded, the rail would never re-install and the Dock buttons would vanish
+// until some unrelated mutation happened to arrive. Self-healing depends on it.
+//
+// OWNERSHIP IS READ FROM THE ADDED NODE. For an insertion the record target is
+// the host's unstamped stack, so a target-based test would call 3A1a's own
+// append foreign. Equally, "the removed subtree contains only stamped nodes"
+// must NOT qualify - that would ignore removal of the native stack that happens
+// to hold Dock wrappers.
+//
+// Deliberately NOT required here: suppressing foreign in-rail work, caching the
+// rail or its geometry, observing attributes, or changing the 180ms window.
+
+fixture('self-owned: a Dock-owned-only batch invalidates nothing and schedules nothing', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                 // the one legitimate pass furnishes the rail
+  settleBinding(env, scene);
+  ok(env.railSchedulesAreFaithful(), 'precondition: Dock closed, so a frame request is a rail schedule');
+  env.reset();
+
+  // Exactly the shape of 3A1a's own re-append after host churn.
+  addDockOwnedWrap(env, stack, 'self-probe-1');
+  addDockOwnedWrap(env, stack, 'self-probe-2');
+  deliver(env);
+  env.flushFrame();
+
+  eq(env.railSchedules(), 0, 'a Dock-owned-only batch must not schedule a rail pass');
+  eq(env.discoveryPasses(), 0, 'and must not re-arm native-close discovery');
+  eq(env.railProbes(), 0, 'and must spend no rail geometry');
+});
+
+fixture('self-owned: a stable rail spends nothing across many later self-owned frames', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  const furnished = railButtons(stack);
+  env.reset();
+
+  // Well past the 180ms window each round, so the throttle is NOT what is
+  // holding the cost down - admission is.
+  for (let frame = 0; frame < 20; frame += 1) {
+    addDockOwnedWrap(env, stack, `self-frame-${frame}`);
+    mutateUnrelated(env, scene);
+    env.advance(200);
+    env.flushFrame();
+  }
+
+  eq(env.railSchedules(), 0, '20 later frames of self-owned + transcript churn schedule nothing');
+  eq(env.discoveryPasses(), 0, 'and discover nothing');
+  eq(env.railProbes(), 0, 'and measure nothing');
+  eq(railButtons(stack), furnished + 20, 'the fixture-added wrappers are still present, untouched');
+});
+
+fixture('foreign: a non-Dock insertion into the rail still schedules and revalidates', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.reset();
+
+  addForeignRailNode(env, stack, '8a1b-shape');
+  deliver(env);
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'a foreign in-rail mutation must still schedule the rail pass');
+  atLeast(env.discoveryPasses(), 1, 'and must still revalidate native close');
+});
+
+fixture('foreign removal of Dock wrappers stays relevant and the rail self-heals', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  const furnished = railButtons(stack);
+  atLeast(furnished, 1, 'precondition: the rail is furnished');
+  env.reset();
+
+  // The host strips the rail: every removed node is Dock-owned. Excluding this
+  // batch would strand the rail empty.
+  for (const wrap of stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')) {
+    wrap.remove();
+  }
+  deliver(env);
+  eq(railButtons(stack), 0, 'precondition: the host removed every Dock wrapper');
+
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'removal of Dock-owned nodes must remain relevant');
+  eq(railButtons(stack), furnished, 'and the rail must re-install itself');
+});
+
+fixture('mixed: a batch is relevant even when its only foreign record is last', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.reset();
+
+  // Dock-owned records first, the single foreign record LAST: a
+  // first-record-wins shortcut would wrongly discard the whole batch.
+  addDockOwnedWrap(env, stack, 'mixed-self-1');
+  addDockOwnedWrap(env, stack, 'mixed-self-2');
+  addForeignRailNode(env, stack, 'mixed-foreign-last');
+  deliver(env);
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'a mixed batch must stay relevant');
+  atLeast(env.discoveryPasses(), 1, 'and must still revalidate native close');
+});
+
+fixture('rail first appearance is admitted even while a native close is bound', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);        // a native close is bound before the rail exists
+  env.reset();
+
+  const { stack } = addRail(env);   // the tiny-rail appears
+  deliver(env);
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'the tiny-rail appearing must schedule a pass');
+  atLeast(railButtons(stack), 1, 'and the rail must be furnished');
 });
 
 // -- Report ----------------------------------------------------------------
