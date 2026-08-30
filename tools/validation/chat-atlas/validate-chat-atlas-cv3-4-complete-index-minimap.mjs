@@ -73,6 +73,8 @@ const instrumentedSource = replaceUnique(
     renderFromCache,
     appendTurnFromAnswerEl,
     rebuildNow,
+    scheduleRebuild,
+    resolveAnswerEl,
     bindCompleteIndexStateListener,
     unbindCompleteIndexStateListener,
     getTurnList,
@@ -220,8 +222,10 @@ class FakeDocument {
   }
   createElement(tagName) { return new FakeElement(tagName, this.counters); }
   createDocumentFragment() { return new FakeElement('fragment', this.counters); }
-  querySelector(selector) { return this.body.querySelector(selector); }
-  querySelectorAll(selector) { return this.body.querySelectorAll(selector); }
+  // Document-wide selector attempts are the cost the mounted-set gate exists
+  // to avoid, so they are counted at the one place every such attempt passes.
+  querySelector(selector) { this.counters.documentQueries += 1; return this.body.querySelector(selector); }
+  querySelectorAll(selector) { this.counters.documentQueries += 1; return this.body.querySelectorAll(selector); }
   getElementById(id) {
     return [this.documentElement, ...this.documentElement.querySelectorAll('[id]')]
       .find((node) => node.getAttribute?.('id') === String(id || '')) || null;
@@ -321,6 +325,7 @@ function createEnvironment({ records = acceptedRecords(), status = defaultStatus
     automaticCanaryExecutions: 0,
     domWrites: 0,
     scheduledRebuilds: 0,
+    documentQueries: 0,
   };
   const document = new FakeDocument(counters);
   const holder = { records: records.slice(), status: { ...status } };
@@ -408,6 +413,9 @@ function createEnvironment({ records = acceptedRecords(), status = defaultStatus
     H2O: { turnRuntime, SEL: {}, util: { getChatId: () => CHAT_ID } },
     H2O_Pagination: { getPageInfo: () => ({ enabled: false }) },
   };
+  // No Observer Hub by default: the runtime must behave exactly as it does
+  // today when the hub is absent. Fixtures that exercise the mounted-set gate
+  // install one explicitly via installMountRegistry().
   context.window = context;
   context.globalThis = context;
   context.top = context;
@@ -752,6 +760,299 @@ await fixture('no unexpected network write or read occurs', () => {
   env.api.rebuildNow('fixture-network');
   equal(env.counters.networkReads, 0);
   equal(env.counters.networkWrites, 0);
+});
+
+// ══ COMPLETE-INDEX STATE ADMISSION ════════════════════════════════════════
+// Atlas notifies on every complete-index authority publication — 22 call
+// sites, many of which (cache reads, preference resolution, reveal ticks,
+// route checks) cannot move the projection. Admission must therefore be a
+// STATE delta, not a notification count.
+//
+// The effective signature is exactly {chatId, routeGeneration, status,
+// fingerprint}. count/completeCount are derivable from the very rows the
+// fingerprint hashes; payloadUpdateTime is host revision metadata that is
+// deliberately absent from chatAtlasCompleteIndexFingerprint, so it can move
+// while the projection is byte-identical.
+//
+// Admission is observed through S.rebuildReason: scheduleRebuild writes it on
+// entry, before its in-flight guard, so it records the fact of a scheduling
+// call without depending on frame delivery.
+const SIGNATURE_FINGERPRINT = 'djb2:fixture-complete-index';
+
+function stateDetail(overrides = {}) {
+  return {
+    chatId: CHAT_ID,
+    routeGeneration: 1,
+    status: 'complete-validated',
+    fingerprint: SIGNATURE_FINGERPRINT,
+    count: 38,
+    completeCount: 38,
+    pendingCount: 0,
+    projectedCount: 38,
+    payloadUpdateTime: null,
+    fetchCount: 0,
+    cacheReadCount: 0,
+    ...overrides,
+  };
+}
+
+function bindListener(env) {
+  env.api.bindCompleteIndexStateListener();
+  const listener = env.listeners.get('evt:h2o:complete-turn-index:state')?.[0];
+  ok(listener, 'complete index state listener missing');
+  return listener;
+}
+
+const SENTINEL = 'fixture-sentinel-no-admission';
+function admitted(env) {
+  return env.api.state.rebuildReason !== SENTINEL;
+}
+
+await fixture('identical effective complete-index state admits exactly one rebuild', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  const listener = bindListener(env);
+
+  listener({ detail: stateDetail() });
+  ok(String(env.api.state.rebuildReason || '').includes('complete-index-state'),
+    'the first effective state must admit');
+
+  env.api.state.rebuildReason = SENTINEL;
+  for (let i = 0; i < 12; i += 1) listener({ detail: stateDetail() });
+  equal(admitted(env), false,
+    '12 further notifications of the SAME effective state must not schedule another rebuild');
+
+  env.api.unbindCompleteIndexStateListener();
+});
+
+await fixture('notification-only churn never admits a rebuild', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  const listener = bindListener(env);
+  listener({ detail: stateDetail() });
+
+  env.api.state.rebuildReason = SENTINEL;
+  // payloadUpdateTime, the counter fields and the derived counts move; the
+  // four signature fields do not. None of this changes the projection.
+  listener({ detail: stateDetail({ payloadUpdateTime: 1_700_000_000_001 }) });
+  listener({ detail: stateDetail({ payloadUpdateTime: 1_700_000_000_002 }) });
+  listener({ detail: stateDetail({ fetchCount: 7, cacheReadCount: 19 }) });
+  listener({ detail: stateDetail({ projectedCount: 38, pendingCount: 0 }) });
+  equal(admitted(env), false,
+    'payloadUpdateTime and counter churn must not defeat admission');
+
+  env.api.unbindCompleteIndexStateListener();
+});
+
+await fixture('each genuine signature transition still admits a rebuild', () => {
+  const transitions = [
+    ['fingerprint', { fingerprint: 'djb2:fixture-complete-index-v2' }],
+    ['status', { status: 'complete-from-host-payload' }],
+    ['routeGeneration', { routeGeneration: 2 }],
+    // Two empty conversations share a constant fingerprint, which is exactly
+    // why chatId cannot be dropped from the signature as "derivable".
+    ['chatId', { chatId: '00000000-0000-4000-8000-0000000000ff' }],
+  ];
+  for (const [label, overrides] of transitions) {
+    const env = createEnvironment({ status: completeStatus() });
+    const listener = bindListener(env);
+    listener({ detail: stateDetail() });
+    env.api.state.rebuildReason = SENTINEL;
+    listener({ detail: stateDetail(overrides) });
+    equal(admitted(env), true, `${label} change must still schedule a rebuild`);
+    env.api.unbindCompleteIndexStateListener();
+  }
+});
+
+await fixture('a signature may return to a previously seen value and still admit', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  const listener = bindListener(env);
+  listener({ detail: stateDetail() });
+  listener({ detail: stateDetail({ fingerprint: 'djb2:fixture-complete-index-v2' }) });
+
+  env.api.state.rebuildReason = SENTINEL;
+  listener({ detail: stateDetail() });
+  equal(admitted(env), true,
+    'admission compares against the LAST admitted signature, never a seen-set');
+
+  env.api.unbindCompleteIndexStateListener();
+});
+
+// ══ MOUNTED-SET GATE ══════════════════════════════════════════════════════
+// The host renders a sparse window: at 38 logical turns roughly 7 are mounted.
+// For the other ~31 the resolver pays a document-wide selector chain to
+// rediscover, every pass, that the turn is simply not rendered. The Observer
+// Hub's MountRegistry already owns "which native elements currently carry
+// which stable message identity", so an AUTHORITATIVE negative answers the
+// question without touching the document.
+//
+// Absence in an incomplete registry is never logical non-membership: the gate
+// requires a healthy, current, fully-hydrated registry AND a native message
+// id. Everything else keeps the existing five-selector fallback verbatim.
+function installMountRegistry(env, {
+  mountedIds = [],
+  degraded = false,
+  pendingShells = 0,
+  routeKey = `/c/${CHAT_ID}`,
+  present = true,
+} = {}) {
+  if (!present) {
+    delete env.context.H2O.obs;
+    return null;
+  }
+  const mounts = new Map();
+  let rev = 0;
+  for (const id of mountedIds) {
+    rev += 1;
+    const el = env.document.createElement('article');
+    el.setAttribute('data-message-author-role', 'assistant');
+    el.setAttribute('data-message-id', String(id));
+    env.document.body.appendChild(el);
+    mounts.set(String(id), { id: String(id), role: 'assistant', el, shell: el, rev });
+  }
+  const registry = {
+    get: (id) => mounts.get(String(id || '').trim()) || null,
+    has: (id) => mounts.has(String(id || '').trim()),
+    size: () => mounts.size,
+    rev: () => rev,
+    all: () => Array.from(mounts.values()),
+    onTransitions: () => () => {},
+    reconcile: () => 0,
+    capabilities: () => ({
+      conversationRoot: !degraded,
+      stableMessageIdentity: mounts.size > 0,
+      mountedRangeDiscovery: !degraded,
+      hydrationEvidence: true,
+      routeIdentity: !!routeKey,
+      mountedCount: mounts.size,
+      pendingShells,
+      rev,
+      routeKey,
+      degraded,
+    }),
+  };
+  env.context.H2O.obs = { mounts: registry };
+  return registry;
+}
+
+const MOUNTED_IDS = Array.from({ length: 7 }, (_v, i) => `fixture-product-a-${String(i + 1).padStart(2, '0')}`);
+const UNMOUNTED_ID = 'fixture-product-a-26';   // page-2 start pair, outside the window
+
+await fixture('an authoritative mounted-set negative performs no document resolution', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  installMountRegistry(env, { mountedIds: MOUNTED_IDS });
+
+  env.counters.documentQueries = 0;
+  const el = env.api.resolveAnswerEl(UNMOUNTED_ID);
+
+  equal(el, null, 'an unmounted turn still resolves to null');
+  equal(env.counters.documentQueries, 0,
+    'an authoritative negative must not sweep the document for a turn the registry knows is unmounted');
+});
+
+await fixture('every unmounted turn in the sparse window is answered without a sweep', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  installMountRegistry(env, { mountedIds: MOUNTED_IDS });
+
+  env.counters.documentQueries = 0;
+  for (let turn = 8; turn <= 38; turn += 1) {
+    env.api.resolveAnswerEl(`fixture-product-a-${String(turn).padStart(2, '0')}`);
+  }
+  equal(env.counters.documentQueries, 0,
+    '31 unmounted logical turns must cost zero document selector attempts');
+});
+
+await fixture('a mounted turn still resolves through the existing chain', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  installMountRegistry(env, { mountedIds: MOUNTED_IDS });
+
+  const el = env.api.resolveAnswerEl(MOUNTED_IDS[0]);
+  ok(el, 'a mounted turn must still resolve');
+  equal(el.getAttribute('data-message-id'), MOUNTED_IDS[0], 'and to the right element');
+});
+
+await fixture('unknown, stale and degraded registry states preserve the selector fallback', () => {
+  const cases = [
+    ['unhydrated shells present', { mountedIds: MOUNTED_IDS, pendingShells: 3 }],
+    ['hub degraded', { mountedIds: MOUNTED_IDS, degraded: true }],
+    ['route key stale', { mountedIds: MOUNTED_IDS, routeKey: '/c/some-other-conversation' }],
+    ['no route identity', { mountedIds: MOUNTED_IDS, routeKey: '' }],
+    ['registry empty', { mountedIds: [] }],
+    ['hub absent', { present: false }],
+  ];
+  for (const [label, options] of cases) {
+    const env = createEnvironment({ status: completeStatus() });
+    installMountRegistry(env, options);
+    env.counters.documentQueries = 0;
+    env.api.resolveAnswerEl(UNMOUNTED_ID);
+    ok(env.counters.documentQueries > 0,
+      `${label}: the existing document fallback must still run`);
+  }
+});
+
+await fixture('synthetic no-answer ids always keep the selector fallback', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  installMountRegistry(env, { mountedIds: MOUNTED_IDS });
+
+  // A no-answer title bar carries the H2O-minted turn: id on data-answer-id.
+  // It is never a native message id, so it is never in the MountRegistry —
+  // gating it would suppress the bar permanently.
+  const syntheticId = `turn:${'fixture-product-q-30'}`;
+  const bar = env.document.createElement('div');
+  bar.setAttribute('data-answer-id', syntheticId);
+  bar.setAttribute('data-at-no-answer', '1');
+  env.document.body.appendChild(bar);
+
+  env.counters.documentQueries = 0;
+  const el = env.api.resolveAnswerEl(syntheticId);
+  ok(env.counters.documentQueries > 0, 'a synthetic id must never be gated');
+  ok(el, 'the no-answer title bar must still resolve');
+  equal(el.getAttribute('data-answer-id'), syntheticId, 'and to the right bar');
+});
+
+// The gate is only sound because, for a NATIVE message id, the MountRegistry
+// indexes the one attribute that can carry it. The other three selectors are
+// read-only compatibility paths that nothing in src-runtime-base ever writes.
+// If that ever changes, this control fails before the gate can go wrong.
+await fixture('no runtime module writes the mirror id attributes the gate bypasses', () => {
+  const runtimeDir = path.join(ROOT, 'src-runtime-base');
+  const files = fs.readdirSync(runtimeDir).filter((name) => name.endsWith('.js'));
+  const writers = [];
+  for (const name of files) {
+    const text = fs.readFileSync(path.join(runtimeDir, name), 'utf8');
+    for (const attr of ['data-h2o-ans-id', 'data-cgxui-id']) {
+      const pattern = new RegExp(`setAttribute\\(\\s*['"\`]${attr}['"\`]`, 'u');
+      if (pattern.test(text)) writers.push(`${name}:${attr}`);
+    }
+  }
+  equal(writers, [], 'the mirror id attributes must stay read-only compatibility selectors');
+});
+
+// ══ DIVIDER DEFER ═════════════════════════════════════════════════════════
+// A logical page boundary can be unmounted (page 2 starts at logical turn 26,
+// outside the host window), so the divider parks and waits for the
+// MountRegistry transition that materialises its anchor. Page/Divider Runtime
+// already implements that park-and-re-arm. What it must NOT be subjected to is
+// unrelated complete-index notifications re-entering the whole model while the
+// boundary stays unmounted — that is polling by another name.
+await fixture('an unmounted page boundary is not polled by unrelated notifications', () => {
+  const env = createEnvironment({ status: completeStatus() });
+  installMountRegistry(env, { mountedIds: MOUNTED_IDS });
+  const listener = bindListener(env);
+
+  listener({ detail: stateDetail() });          // the one legitimate admission
+  env.api.state.rebuildReason = SENTINEL;
+  env.counters.documentQueries = 0;
+
+  for (let i = 0; i < 20; i += 1) {
+    listener({ detail: stateDetail({ payloadUpdateTime: 1_700_000_000_000 + i }) });
+  }
+  equal(admitted(env), false,
+    '20 unchanged notifications must not re-enter reconciliation while the boundary is unmounted');
+
+  env.api.resolveAnswerEl(UNMOUNTED_ID);
+  equal(env.counters.documentQueries, 0,
+    'and the parked boundary must not be re-swept for its anchor');
+
+  env.api.unbindCompleteIndexStateListener();
 });
 
 const failures = fixtures.filter((row) => !row.ok);

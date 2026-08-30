@@ -209,6 +209,10 @@ function UM_PUBLIC() {
     lastRebuildResult: null,
     completeIndexStateListenerBound: false,
     completeIndexStateListener: null,
+    // Last complete-index signature this listener actually admitted. Compared
+    // against the LAST admitted value, never a seen-set: a projection may
+    // legitimately return to an earlier state and must rebuild when it does.
+    completeIndexAdmittedSignature: null,
     completeIndexBoundaryStatus: 'disabled',
     completeIndexBoundaryRenderCount: 0,
     lastCoreProjectionChatKey: '',
@@ -9914,11 +9918,63 @@ function unbindChatPageDividerBridge() {
     return Object.assign({}, active, { syncedId: id });
   }
 
+  /** @helper Observer Hub MountRegistry, or null when the hub is absent. */
+  function mountRegistryApi() {
+    try {
+      const mounts = (TOPW?.H2O?.obs || W?.H2O?.obs)?.mounts;
+      return (mounts && typeof mounts.has === 'function' && typeof mounts.capabilities === 'function')
+        ? mounts
+        : null;
+    } catch { return null; }
+  }
+
+  /**
+   * @helper True ONLY when the MountRegistry is authoritative for current mount
+   * state and positively reports this native message id as not mounted.
+   *
+   * The host renders a sparse window, so most logical turns are unmounted and
+   * the selector chain below re-derives that same miss on every pass. The hub
+   * is the single writer of identity -> native element, so it can answer
+   * "is it worth querying the document" without touching it.
+   *
+   * Absence here is a lifecycle fact and NEVER logical membership, which Chat
+   * Atlas owns. Every uncertain state therefore falls through to the existing
+   * chain: no hub, a degraded host, a route key that is not the current one,
+   * an empty registry, or shells still pending a message id.
+   *
+   * H2O-minted ids are never registry keys - the registry indexes
+   * data-message-id only - so the `turn:` namespace, including the synthetic
+   * no-answer ids carried on data-answer-id, is never gated.
+   */
+  function mountRegistryKnowsAbsent(id) {
+    if (!id || id.startsWith('turn:')) return false;
+    const mounts = mountRegistryApi();
+    if (!mounts) return false;
+    try {
+      const caps = mounts.capabilities();
+      if (!caps) return false;
+      if (caps.degraded === true) return false;
+      if (caps.conversationRoot !== true) return false;
+      if (caps.routeIdentity !== true) return false;
+      if (caps.stableMessageIdentity !== true) return false;
+      if (Number(caps.pendingShells || 0) !== 0) return false;
+      const registryRoute = String(caps.routeKey || '');
+      let currentRoute = '';
+      try { currentRoute = String(W.location?.pathname || ''); } catch { currentRoute = ''; }
+      if (!registryRoute || !currentRoute || registryRoute !== currentRoute) return false;
+      return mounts.has(id) === false;
+    } catch { return false; }
+  }
+
   function resolveAnswerEl(target) {
     if (!target) return null;
     if (target && target.nodeType === 1) return target;
     const id = String(target || '').trim();
     if (!id) return null;
+    // Purely subtractive: this only turns a chain that was going to miss into
+    // an early null. It never selects an element, so no positive resolution
+    // changes shape.
+    if (mountRegistryKnowsAbsent(id)) return null;
     try {
       const esc = escAttr(id);
       return q(`[data-message-id="${esc}"]`) ||
@@ -10478,10 +10534,46 @@ function unbindChatPageDividerBridge() {
     return rebuildNow(reason);
   }
 
+  /**
+   * @helper The smallest state that defines a materially new MiniMap
+   * projection.
+   *
+   * `fingerprint` is Chat Atlas's djb2 over the turn identity rows themselves,
+   * so count/completeCount are derivable from it rather than independent.
+   * `chatId` is NOT redundant with it: an empty index hashes to the same
+   * constant in every conversation. `routeGeneration` keeps a stale route from
+   * leaking a same-fingerprint projection forward, and `status` carries
+   * transitions - notably the disabled gate - that the rows cannot express.
+   *
+   * `payloadUpdateTime` is deliberately excluded. It is host revision metadata
+   * used to compare host against cache; it is not part of the fingerprint, so
+   * it can move while the projected rows are identical. Including it would
+   * admit rebuilds that change nothing, which is the whole defect.
+   */
+  function completeIndexEffectiveSignature(detail, status) {
+    return [
+      String(detail?.chatId || ''),
+      String(detail?.routeGeneration ?? ''),
+      String(status || ''),
+      String(detail?.fingerprint || ''),
+    ].join(' ');
+  }
+
   function bindCompleteIndexStateListener() {
     if (S.completeIndexStateListenerBound) return true;
+    S.completeIndexAdmittedSignature = null;
     S.completeIndexStateListener = (event) => {
-      const status = String(event?.detail?.status || getCompleteIndexProjectionStatus().status || 'state');
+      const detail = event?.detail || null;
+      const status = String(detail?.status || getCompleteIndexProjectionStatus().status || 'state');
+      // Atlas notifies on every authority publication, including ones that
+      // cannot move the projection (cache reads, preference resolution, reveal
+      // ticks, route checks). Admit on the state delta, not the notification.
+      // A detail-less event carries no state evidence, so it fails open.
+      if (detail) {
+        const signature = completeIndexEffectiveSignature(detail, status);
+        if (S.completeIndexAdmittedSignature === signature) return;
+        S.completeIndexAdmittedSignature = signature;
+      }
       scheduleRebuild(`complete-index-state:${status}`);
     };
     try { W.addEventListener('evt:h2o:complete-turn-index:state', S.completeIndexStateListener); } catch {}
@@ -10494,6 +10586,7 @@ function unbindChatPageDividerBridge() {
     try { W.removeEventListener('evt:h2o:complete-turn-index:state', S.completeIndexStateListener); } catch {}
     S.completeIndexStateListener = null;
     S.completeIndexStateListenerBound = false;
+    S.completeIndexAdmittedSignature = null;
     return true;
   }
 

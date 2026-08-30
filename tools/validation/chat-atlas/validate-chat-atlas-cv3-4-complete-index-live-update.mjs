@@ -65,6 +65,7 @@ function instrumentCore() {
     'chatAtlasPublishCompleteIndex',
     'refreshCompleteTurnIndexProjection',
     'chatAtlasBindCompleteIndexRefreshListeners',
+    'chatAtlasNotifyCompleteIndexState',
   ];
   for (const name of required) {
     if (coreSource.split(`function ${name}(`).length - 1 !== 1) throw new Error(`live-update-production-anchor-invalid:${name}`);
@@ -80,6 +81,7 @@ function instrumentCore() {
     buildTurns,
     listTurns: listTurnRecords,
     status: getCompleteTurnIndexProjectionStatus,
+    notify: chatAtlasNotifyCompleteIndexState,
     refresh: refreshCompleteTurnIndexProjection,
     scheduleRefresh: chatAtlasScheduleCompleteIndexRefresh,
     bindListeners: chatAtlasBindCompleteIndexRefreshListeners,
@@ -151,6 +153,11 @@ function createRuntime() {
     timerSchedules: 0,
     timerClears: 0,
     eventListenerRegistrations: 0,
+    // CV-3.4 rebuild-edge contract: Atlas publishes, the MiniMap listener
+    // schedules. These two count the publication and the direct call-through
+    // separately so a single notification cannot arm both edges unnoticed.
+    completeIndexStateDispatches: 0,
+    miniMapDirectSchedules: 0,
   };
   let timerId = 0;
   let providerImpl = async () => ({ ok: false, errorCode: 'fixture-provider-unset' });
@@ -222,8 +229,16 @@ function createRuntime() {
   };
   sandbox.addEventListener = () => { counters.eventListenerRegistrations += 1; };
   sandbox.removeEventListener = () => {};
-  sandbox.dispatchEvent = () => true;
-  sandbox.H2O_MM_CORE_API = { scheduleRebuild() { return true; }, getTurnList() { return []; } };
+  sandbox.dispatchEvent = (event) => {
+    if (String(event?.type || '') === 'evt:h2o:complete-turn-index:state') {
+      counters.completeIndexStateDispatches += 1;
+    }
+    return true;
+  };
+  sandbox.H2O_MM_CORE_API = {
+    scheduleRebuild() { counters.miniMapDirectSchedules += 1; return true; },
+    getTurnList() { return []; },
+  };
   sandbox.window = sandbox;
   sandbox.self = sandbox;
   sandbox.top = sandbox;
@@ -817,6 +832,74 @@ await fixture('MiniMap projection uses complete plus pending count without chang
   ok(miniMapSource.includes("livePendingProvenance: record?.completeIndexPending === true ? 'live-pending-overlay' : null"));
 });
 
+// ══ REBUILD EDGE ══════════════════════════════════════════════════════════
+// Atlas is the publisher of complete-index state; the MiniMap listener owns
+// projection scheduling. One effective transition must therefore arm exactly
+// ONE logical rebuild-scheduling path. Atlas calling
+// W.H2O_MM_CORE_API.scheduleRebuild() directly is a second edge: it reaches
+// into MiniMap's global from the authority module and schedules the same
+// logical rebuild the dispatched event already schedules. The per-frame
+// in-flight guard inside scheduleRebuild hides the duplicate in profiles,
+// which is exactly why it needs a contract instead of a measurement.
+//
+// Deliberately NOT asserted here: that Atlas stops publishing. The event and
+// the H2O.events bus emit both keep firing — other subscribers depend on them.
+await fixture('one effective complete-index notification arms exactly one rebuild edge', () => {
+  const runtime = createRuntime();
+  seed(runtime);
+  runtime.counters.completeIndexStateDispatches = 0;
+  runtime.counters.miniMapDirectSchedules = 0;
+
+  const detail = runtime.api.notify();
+
+  ok(detail && typeof detail === 'object', 'notify still returns the projection status detail');
+  // Publication surfaces are unchanged and deliberately not pinned to an exact
+  // count: one notification reaches both the window CustomEvent and the
+  // H2O.events bus, and other subscribers depend on both.
+  ok(runtime.counters.completeIndexStateDispatches > 0,
+    'Atlas must still publish the complete-index state event');
+  equal(runtime.counters.miniMapDirectSchedules, 0,
+    'Atlas must not also reach into W.H2O_MM_CORE_API.scheduleRebuild — the listener owns scheduling');
+});
+
+await fixture('repeated notifications never add a second rebuild edge', () => {
+  const runtime = createRuntime();
+  seed(runtime);
+  runtime.counters.completeIndexStateDispatches = 0;
+  runtime.counters.miniMapDirectSchedules = 0;
+
+  runtime.api.notify();
+  const perNotification = runtime.counters.completeIndexStateDispatches;
+  ok(perNotification > 0, 'baseline publication measured');
+  for (let i = 0; i < 9; i += 1) runtime.api.notify();
+
+  equal(runtime.counters.completeIndexStateDispatches, perNotification * 10,
+    'every notification still publishes, at an unchanged fan-out');
+  equal(runtime.counters.miniMapDirectSchedules, 0, 'no notification schedules MiniMap directly');
+});
+
+// Structural: the direct call-through is gone from the source, not merely
+// unreachable in this harness.
+await fixture('Chat Atlas source retains no direct MiniMap scheduling call', () => {
+  // Matched against the raw source on purpose. Stripping comments first would
+  // mean running a homemade JS lexer over half a megabyte containing regex
+  // literals and quoted slashes, and getting that subtly wrong would weaken
+  // the control silently. A call-shaped pattern is unambiguous instead.
+  ok(!/\.scheduleRebuild\s*\??\.?\s*\(/u.test(chatAtlasOwnerSource),
+    'Chat Atlas Core must not invoke a MiniMap rebuild scheduler from any call site');
+  // The remaining MiniMap-global references are READ-only and stay: two API
+  // discoveries and one presence check that sequences a bus emit. None of them
+  // schedules, and none of them is in scope for this repair.
+  ok(chatAtlasOwnerSource.includes("typeof candidate?.getTurnList === 'function'"),
+    'the read-only MiniMap turn-list discovery is preserved');
+  ok(chatAtlasOwnerSource.includes('getCacheCompletenessDiagnostics'),
+    'the read-only MiniMap diagnostics discovery is preserved');
+  ok(chatAtlasOwnerSource.includes('if (!W?.H2O_MM_CORE_API) return current;'),
+    'the MiniMap presence check that sequences the bus emit is preserved');
+  ok(chatAtlasOwnerSource.includes('COMPLETE_TURN_INDEX_STATE_EVENT'),
+    'Chat Atlas Core still publishes the complete-index state event');
+});
+
 const failures = fixtures.filter((row) => !row.ok);
 for (const row of failures) console.error(`FAIL ${row.name}\n${row.error}`);
 
@@ -836,6 +919,8 @@ const totals = runtimes.reduce((out, runtime) => {
   out.timerClears += runtime.counters.timerClears;
   out.activeTimers += runtime.timers.size;
   out.automaticCanaryExecutions += runtime.api.status().automaticSetterCallCount;
+  out.completeIndexStateDispatches += runtime.counters.completeIndexStateDispatches;
+  out.miniMapDirectSchedules += runtime.counters.miniMapDirectSchedules;
   return out;
 }, {
   networkReads: 0,
@@ -849,10 +934,13 @@ const totals = runtimes.reduce((out, runtime) => {
   timerClears: 0,
   activeTimers: 0,
   automaticCanaryExecutions: 0,
+  completeIndexStateDispatches: 0,
+  miniMapDirectSchedules: 0,
 });
 
 console.log(`CV-3.4 complete index live update: ${fixtures.length - failures.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failures.length} failures`);
 console.log(`Update counters: provider GET reads ${totals.networkReads}, network writes ${totals.networkWrites}; cache reads ${totals.cacheReads}, writes ${totals.cacheWrites}, removals ${totals.cacheRemovals}`);
 console.log(`Safety counters: DOM ${totals.domMutations}, navigation ${totals.navigationMutations}, timers scheduled ${totals.timerSchedules}, cleared ${totals.timerClears}, active ${totals.activeTimers}, automatic canary ${totals.automaticCanaryExecutions}`);
+console.log(`Rebuild edge: complete-index state publications ${totals.completeIndexStateDispatches}, direct MiniMap schedules ${totals.miniMapDirectSchedules} (contract: 0)`);
 
 if (failures.length) process.exitCode = 1;
