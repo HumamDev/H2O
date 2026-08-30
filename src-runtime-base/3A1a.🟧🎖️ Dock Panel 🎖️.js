@@ -1352,6 +1352,85 @@ function UI_DP_nativeClose_sync() {
     });
   }
 
+  /* ───────── Native-close structural invalidation (S.moRail only) ─────────
+   * S.moRail watches the whole document for childList churn, but native-close
+   * discovery forces style + layout (DOM_DP_isVisible -> getComputedStyle and
+   * offsetParent/getClientRects). Requesting it on every batch meant transcript
+   * streaming paid one forced visibility probe per frame while the sidebar and
+   * the bound button were unchanged.
+   *
+   * These helpers consume the MutationRecords the callback already receives and
+   * admit only batches structurally capable of changing what discovery would
+   * find. Structural evidence only - identity, connectivity, containment and
+   * bounded selector lookups inside the added subtrees. Never geometry, never a
+   * whole-document scan, and never a blanket "retry because nothing is bound",
+   * which would just be polling under another name.
+   *
+   * This narrows S.moRail alone. Explicit Dock-state callers keep calling
+   * UI_DP_nativeClose_sync() directly and are not routed through it. Same-node
+   * class/style visibility transitions are deliberately not independently owned
+   * here: the current contract does not observe attributes.
+   */
+
+  /** @helper Is this node inside the sidebar / tiny-rail / bound-close domain? */
+  function CORE_DP_inNativeCloseDomain(node, sidebar, rail, bound) {
+    if (!node) return false;
+    if (sidebar && (node === sidebar || sidebar.contains?.(node))) return true;
+    if (rail && (node === rail || rail.contains?.(node))) return true;
+    if (bound && (node === bound || bound.contains?.(node))) return true;
+    return false;
+  }
+
+  /** @helper Does this added subtree carry evidence that discovery could now
+   * succeed - a native-close candidate, or a sidebar that was not there before?
+   * Bounded to the added subtree; never a document-wide query. */
+  function CORE_DP_carriesNativeCloseCandidate(node) {
+    if (!node || typeof node.querySelector !== 'function') return false;
+    for (const sel of [SEL_DPANEL.SB_CLOSE_BTN, SEL_DPANEL.SB_NAV_HISTORY, SEL_DPANEL.SB_ASIDE_ANY]) {
+      try {
+        if (node.matches?.(sel)) return true;
+        if (node.querySelector(sel)) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  /** @core Is this childList batch capable of invalidating native-close discovery? */
+  function CORE_DP_nativeCloseInvalidated(records) {
+    const bound = S.nativeCloseBtn;
+
+    // A bound button that has left the document is always stale.
+    if (bound && bound.isConnected === false) return true;
+
+    const sidebar = UI_DP_getLeftSidebar();
+    const rail = DOM_DP_q(SEL_DPANEL.SB_TINY_RAIL);
+
+    for (const rec of records || []) {
+      if (!rec || rec.type !== 'childList') continue;
+
+      // Something happened inside the domain discovery reads from.
+      if (CORE_DP_inNativeCloseDomain(rec.target, sidebar, rail, bound)) return true;
+
+      // A removal that carries away the sidebar, the rail or the bound button.
+      for (const node of rec.removedNodes || []) {
+        if (!node) continue;
+        if (node === bound || node === sidebar || node === rail) return true;
+        if (bound && node.contains?.(bound)) return true;
+        if (sidebar && node.contains?.(sidebar)) return true;
+        if (rail && node.contains?.(rail)) return true;
+      }
+
+      // Additions matter only while nothing is bound, and only when the added
+      // subtree itself carries the evidence.
+      if (!bound) {
+        for (const node of rec.addedNodes || []) {
+          if (CORE_DP_carriesNativeCloseCandidate(node)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   /** @core Bind observers so rail buttons appear whenever the sidebar rail appears. */
   function CORE_DP_bindRailObserversOnce() {
     if (S.moRail) return;
@@ -1367,11 +1446,13 @@ function UI_DP_nativeClose_sync() {
 
     if (typeof MutationObserver !== 'function') return;
 
-    S.moRail = new MutationObserver(() => {
-      // Every mutation batch still requests native-close discovery; the rail
-      // frame collapses many same-frame requests into one pass. Explicit
-      // Dock-state callers keep calling UI_DP_nativeClose_sync() directly.
-      S.nativeCloseReq = true;
+    S.moRail = new MutationObserver((records) => {
+      // The rail pass stays unconditional and is already rAF-coalesced. Native
+      // close discovery is requested only when the batch is structurally
+      // capable of invalidating it; the rail frame still collapses many
+      // same-frame requests into one pass. Explicit Dock-state callers keep
+      // calling UI_DP_nativeClose_sync() directly.
+      if (CORE_DP_nativeCloseInvalidated(records)) S.nativeCloseReq = true;
       UI_DPANEL_scheduleRailEnsure();
     });
     S.moRail.observe(document.documentElement, { childList: true, subtree: true });

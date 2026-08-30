@@ -552,13 +552,28 @@ function bootScene(env, opts) {
 
 // Boot alone never calls UI_DP_nativeClose_sync — only the rail observer and
 // the Dock-open path do. Drive one real observer round so the module reaches
-// its bound steady state before a fixture measures deltas from it.
+// its bound steady state before a fixture measures deltas from it. Under
+// Option A that round must be a SIDEBAR-RELEVANT structural change: transcript
+// churn no longer invalidates native-close discovery, so using it here would be
+// synthetic polling rather than a faithful steady state.
 function settleBinding(env, scene) {
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
   env.flushFrame();
+}
+
+// A legitimate sidebar-relevant childList invalidation: something appears
+// inside the resolved left sidebar, which is structurally capable of changing
+// what native-close discovery would find.
+let sbSeq = 0;
+function mutateSidebar(env, scene) {
+  sbSeq += 1;
+  const n = env.el('div', { cls: `sb-item-${sbSeq}`, mark: 'sidebar-child' });
+  scene.sidebar.appendChild(n);
+  env.flushMicrotasks();   // deliver this observer batch, as production would
+  return n;                // rAF deliberately NOT flushed here
 }
 
 let mutSeq = 0;
@@ -581,9 +596,11 @@ fixture('DOCK_PANEL_MUST_COALESCE_NATIVE_CLOSE_DISCOVERY_WITHIN_ONE_FRAME', () =
   ok(scene.nativeClose.isConnected, 'precondition: native close connected');
 
   env.reset();
-  // K unrelated childList mutation batches, all before the next frame. They do
-  // not touch the native close, the sidebar, Dock state, visibility, or route.
-  for (let i = 0; i < K_BATCHES; i += 1) mutateUnrelated(env, scene);
+  // K sidebar-relevant childList mutation batches, all before the next frame.
+  // Every one of them legitimately requests native-close discovery, so this
+  // measures coalescing and nothing else. (Under Option A, irrelevant transcript
+  // batches request nothing at all — that separate contract is control G1.)
+  for (let i = 0; i < K_BATCHES; i += 1) mutateSidebar(env, scene);
   env.flushFrame(); // the single animation frame
 
   gate.passes = env.discoveryPasses();
@@ -593,19 +610,79 @@ fixture('DOCK_PANEL_MUST_COALESCE_NATIVE_CLOSE_DISCOVERY_WITHIN_ONE_FRAME', () =
   gate.identity = env.state.cs.close > 0 ? 'same node throughout' : 'n/a';
 
   atMost(gate.passes, 1,
-    `${K_BATCHES} unrelated same-frame mutation batches must produce at most ONE native-close discovery/visibility pass`);
+    `${K_BATCHES} relevant same-frame mutation batches must produce at most ONE native-close discovery/visibility pass`);
+  atLeast(gate.passes, 1, 'and the frame that owns them must actually discover');
 });
 
-// ══ CONTROL G / anti-degeneracy: cross-frame discovery stays live ═════════
-fixture('control G: a request on each later frame still discovers the native close', () => {
+// ══ CONTROL G1: irrelevant churn budget ══════════════════════════════════
+// Supersedes the retired control G, whose expectation (unrelated transcript
+// churn across frames must keep re-discovering) is exactly the over-broad
+// invalidation Option A removes. A stable sidebar with a stable bound button is
+// not invalidated by transcript churn, so that churn must cost nothing.
+fixture('control G1: transcript-only churn across frames spends no native-close geometry', () => {
   const env = createEnv();
   const scene = bootScene(env);
-  for (let frame = 1; frame <= 3; frame += 1) {
-    env.reset();
+  settleBinding(env, scene);
+  const panel = env.panelEl();
+  eq(panel.getAttribute('data-h2o-native-close'), '1', 'precondition: discovered and bound');
+  const boundOps = env.closeListenerOps().length;
+  env.reset();
+
+  for (let frame = 1; frame <= 12; frame += 1) {
     mutateUnrelated(env, scene);
     env.flushFrame();
-    atLeast(env.discoveryPasses(), 1, `frame ${frame}: discovery must still run (no cache, no one-shot suppression)`);
+    env.advance(20);
+    env.flushMicrotasks();
   }
+
+  eq(env.discoveryPasses(), 0, 'transcript-only churn requests no native-close discovery');
+  const c = env.counts();
+  eq(c.getComputedStyle, 0, 'no forced style recalc on the native close');
+  eq(c.offsetParent, 0, 'no forced layout on the native close');
+  eq(c.getClientRects, 0, 'no client-rect read on the native close');
+  eq(panel.getAttribute('data-h2o-native-close'), '1', 'and the bound state is left intact');
+  eq(env.closeListenerOps().length, 0, 'no rebinding churn either');
+  ok(boundOps >= 1, 'the binding it is preserving was real');
+});
+
+// ══ CONTROL G2: relevant invalidation anti-cache ═════════════════════════
+// The repair must not degenerate into "discover once and never look again".
+fixture('control G2: every relevant structural invalidation still re-evaluates', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);
+  for (let frame = 1; frame <= 4; frame += 1) {
+    env.reset();
+    mutateSidebar(env, scene);
+    env.flushFrame();
+    atLeast(env.discoveryPasses(), 1,
+      `frame ${frame}: a sidebar-relevant batch still discovers (no cache, no one-shot suppression)`);
+  }
+});
+
+// ══ GEOMETRY BUDGET ══════════════════════════════════════════════════════
+// The regression guarantee stated as a budget rather than an exact global count.
+fixture('geometry budget: native-close layout work is spent only on relevant invalidation', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);
+
+  env.reset();
+  for (let i = 0; i < 30; i += 1) {
+    mutateUnrelated(env, scene);
+    env.flushFrame();
+    env.advance(10);
+    env.flushMicrotasks();
+  }
+  const idle = env.counts();
+  eq(idle.getComputedStyle + idle.offsetParent + idle.getClientRects, 0,
+    '30 irrelevant frames cost zero native-close style/layout work');
+
+  env.reset();
+  mutateSidebar(env, scene);
+  env.flushFrame();
+  atLeast(env.counts().getComputedStyle, 1,
+    'a relevant invalidation is still allowed to measure');
 });
 
 // ══ CONTROL A: native close replacement ═══════════════════════════════════
@@ -688,6 +765,10 @@ fixture('control D: a native close appearing after boot is discovered and bound'
 // ══ CONTROL E: connected but hidden ═══════════════════════════════════════
 // A connected-node cache would be WRONG: the same node stays connected while
 // becoming invisible (collapsed rail), and must be treated as unavailable.
+// Option A does not promise independent same-node class/style detection, so the
+// re-check is triggered by a legitimate sidebar-relevant structural event that
+// accompanies the visibility transition. The behavioural assertions are the
+// original ones: hidden -> unavailable, visible again -> recovered.
 fixture('control E: the same connected node going hidden is treated as unavailable, and visible again is rediscovered', () => {
   const env = createEnv();
   const scene = bootScene(env);
@@ -699,7 +780,7 @@ fixture('control E: the same connected node going hidden is treated as unavailab
   btn.__vis = { display: 'none', visibility: 'visible', opacity: '1' };
   ok(btn.isConnected, 'node is still CONNECTED while hidden');
   env.reset();
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
@@ -707,7 +788,7 @@ fixture('control E: the same connected node going hidden is treated as unavailab
 
   btn.__vis = { display: 'block', visibility: 'visible', opacity: '1' };
   env.reset();
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
