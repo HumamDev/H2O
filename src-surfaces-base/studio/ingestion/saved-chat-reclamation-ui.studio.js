@@ -76,6 +76,23 @@
     residueIncomplete: 'Residue enumeration was incomplete, so this is not a complete residue count.',
   };
 
+  /* Presentation token for the inline occupant remedy control.
+   *
+   * `studio.css` resets EVERY button to `border:0;background:none;color:inherit`,
+   * so a control with no style of its own is indistinguishable from the plain
+   * spans it sits beside — which is exactly how this action shipped unusable.
+   * The border / background / radius / `cursor:pointer` set is the same one the
+   * sibling Archive Health and Materializer cards already use; only the padding
+   * is compacted, because this control is inline in an 11px monospace row
+   * rather than a standalone card button.
+   *
+   * Presentation only. It confers no authority: the control is still created
+   * solely for a trusted-hinted row, still carries identity-only data
+   * attributes, and the trusted command still re-derives and re-classifies its
+   * target under exclusive ownership before acting. */
+  var OCCUPANT_BUTTON_STYLE = 'margin-left:8px;padding:2px 8px;border-radius:6px;cursor:pointer;'
+    + 'background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);color:inherit;font:inherit;';
+
   function safeObject(value) {
     return (value && typeof value === 'object') ? value : {};
   }
@@ -338,7 +355,15 @@
        * excluded as indeterminate at a generation path. */
       if (typeof onOccupant === 'function'
         && asArray(remedyRows).some(function (r) { return r.name === row.name; })) {
-        var action = el('button', TEXT.occupantButton);
+        /* PRESENTATION ONLY. The global Studio reset strips every button to
+         * `border:0;background:none;color:inherit`, so an unstyled control
+         * inlined among these monospace spans reads as ordinary text and
+         * offers no affordance at all. This reuses the sibling Archive Health
+         * / Materializer card token set — border, background, radius and
+         * `cursor:pointer` — at the compact scale this 11px row needs. It
+         * grants no authority: gating, identity and the listener below are
+         * unchanged. */
+        var action = el('button', TEXT.occupantButton, OCCUPANT_BUTTON_STYLE);
         action.setAttribute('type', 'button');
         action.setAttribute('data-h2o-action', 'quarantine-occupant');
         action.setAttribute('data-h2o-occupant', row.name);

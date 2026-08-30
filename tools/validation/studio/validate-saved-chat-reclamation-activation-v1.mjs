@@ -315,6 +315,47 @@ await checkAsync('6 the occupant action sends chatId + occupantName and nothing 
   }
 });
 
+// ── 6a. the offered remedy is actually operable, not text-shaped ───────────
+/* T4.2 shipped this control unusable: it WAS a real hint-gated <button> with a
+   bound listener, but `studio.css` resets every button to
+   `border:0;background:none;color:inherit`, and this one carried no style of
+   its own — so inline among the monospace decision spans it rendered as
+   ordinary text with no affordance, and the New-UI-only occupant action could
+   not be exercised. Existence and wiring alone therefore do NOT prove the
+   control is operable, which is exactly what the old pins asserted.
+
+   This pin is deliberately structural, not cosmetic: it requires the element
+   to still be a <button>, and to carry a presentation style that survives the
+   global reset — a pointer affordance plus visible treatment. Exact colours,
+   pixel values and property order are free. */
+await checkAsync('6a the occupant remedy renders as an operable control under the global button reset', async () => {
+  const stub = domStub();
+  const api = loadUi(stub.document);
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => DIAGNOSTICS_FIXTURE,
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => PREVIEW_FIXTURE,
+    confirm: () => false,
+  });
+  await handle.analyze();
+  const action = findByAction(container, 'quarantine-occupant');
+  assert.ok(action, 'the governed remedy is offered on the indeterminate row');
+  assert.equal(String(action.tagName).toLowerCase(), 'button',
+    'the remedy stays a real button element, never an anchor or a span');
+  assert.equal(action.getAttribute('type'), 'button', 'it never submits');
+
+  const style = String(action.getAttribute('style') || '');
+  assert.ok(style.trim(), 'an unstyled button is invisible under the global reset');
+  assert.ok(/cursor\s*:\s*pointer/i.test(style),
+    'the control must present a pointer affordance');
+  /* The global reset zeroes border and background, so at least one of them
+     must be restored for the control to read as a control at all. */
+  assert.ok(/border\s*:\s*(?!0)[^;]+/i.test(style) || /background\s*:\s*(?!none)[^;]+/i.test(style),
+    'the control must restore a visible border or background over the reset');
+  assert.ok(/padding\s*:/i.test(style), 'the control must be separated from adjacent row text');
+});
+
 // ── 6b. the remedy is offered ONLY where it is legitimate ──────────────────
 check('6b the remedy is gated by the TRUSTED hint, with no filename fallback', () => {
   const api = loadUi(domStub().document);
