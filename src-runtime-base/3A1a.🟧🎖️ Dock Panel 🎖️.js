@@ -1443,12 +1443,17 @@ function CORE_DP_bindRailDelegationOnce(){
   function UI_DPANEL_installRailButtons() {
     const rail = document.querySelector(SEL_DPANEL.SB_TINY_RAIL);
     if (!rail) return;
-    if (!UI_DPANEL_ensureRailVisible(rail)) return;
 
     // ✅ Hard throttle: avoid rail thrash (React re-renders can trigger many mutations per second)
+    // Admission is decided BEFORE the visibility probe, because that probe is a
+    // forced-layout read. With the probe first, a mutation burst paid one
+    // getBoundingClientRect per batch only to discard the pass here. Same single
+    // authority, same 180ms window, same rail correctness - only the order moved.
     const now = Date.now();
     if (S._railEnsureAt && (now - S._railEnsureAt) < 180) return;
     S._railEnsureAt = now;
+
+    if (!UI_DPANEL_ensureRailVisible(rail)) return;
 
     // Ensure capture delegation on the rail itself (resilient vs stopPropagation)
     if (!rail.getAttribute('data-h2o-rail-delegation')) {

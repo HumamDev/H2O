@@ -187,10 +187,15 @@ function createEnv() {
     cs: { close: 0, other: 0 },        // getComputedStyle
     op: { close: 0, other: 0 },        // offsetParent reads
     rects: { close: 0, other: 0 },     // getClientRects
+    bcr: { rail: 0, other: 0 },        // getBoundingClientRect (rail visibility probe)
     listenerOps: [],                   // {op:'add'|'remove', id, type, capture}
     nativeCloseAttrWrites: [],         // set/remove of data-h2o-native-close
     microtasks: [], raf: [], idle: [], timers: new Map(),
     timerSeq: 0, now: 0, seq: 0, observers: [],
+    // Wall clock the fixtures own. 3A1a's rail-ensure throttle reads Date.now(),
+    // so the throttle window must advance with env.advance() rather than with
+    // real time. Non-zero base: the throttle guard treats a falsy stamp as unset.
+    wall: 1700000000000,
   };
 
   class MStyle {
@@ -294,6 +299,7 @@ function createEnv() {
       return this.__isVisibleTruth() ? [this.getBoundingClientRect()] : [];
     }
     getBoundingClientRect() {
+      state.bcr[this.__mark === 'rail' ? 'rail' : 'other'] += 1;
       const r = this.__rect;
       return { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height, width: r.width, height: r.height };
     }
@@ -420,6 +426,10 @@ function createEnv() {
     return { ...v, getPropertyValue: (k) => v[k] || '' };
   };
 
+  const MDate = new Proxy(Date, {
+    get: (t, k) => (k === 'now' ? () => state.wall : Reflect.get(t, k)),
+  });
+
   const sandbox = {
     window: windowObj, document: documentObj, localStorage, getComputedStyle,
     location: { pathname: '/c/11111111-2222-3333-4444-555555555555', href: 'https://chatgpt.com/c/x' },
@@ -432,7 +442,7 @@ function createEnv() {
     CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } },
     CSS: windowObj.CSS,
     console: { log() {}, warn() {}, error() {}, debug() {}, info() {} },
-    JSON, Math, Number, String, Object, Array, Boolean, Date, RegExp, Error, Set, Map,
+    JSON, Math, Number, String, Object, Array, Boolean, Date: MDate, RegExp, Error, Set, Map,
     isNaN, parseInt, parseFloat, Promise, Symbol,
   };
   sandbox.setTimeout = windowObj.setTimeout; sandbox.clearTimeout = windowObj.clearTimeout;
@@ -441,12 +451,13 @@ function createEnv() {
 
   const api = {
     state, sandbox, documentObj, windowObj, documentElement, body, head, localStorage, MEl,
-    el(tag, { cls, attrs, mark, vis, text } = {}) {
+    el(tag, { cls, attrs, mark, vis, text, rect } = {}) {
       const e = new MEl(tag);
       if (cls) e.className = cls;
       if (attrs) for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
       if (mark) e.__mark = mark;
       if (vis) e.__vis = { ...e.__vis, ...vis };
+      if (rect) e.__rect = { ...e.__rect, ...rect };
       if (text !== undefined) e.__text = text;
       return e;
     },
@@ -456,6 +467,7 @@ function createEnv() {
     flushIdle() { for (const fn of state.idle.splice(0)) fn({ timeRemaining: () => 5, didTimeout: false }); },
     advance(ms) {
       state.now += ms;
+      state.wall += ms;
       for (const [id, t] of [...state.timers.entries()]) {
         if (t.at <= state.now) { if (t.repeat) t.at = state.now + t.repeat; else state.timers.delete(id); t.fn(); }
       }
@@ -478,11 +490,15 @@ function createEnv() {
       state.cs.close = 0; state.cs.other = 0;
       state.op.close = 0; state.op.other = 0;
       state.rects.close = 0; state.rects.other = 0;
+      state.bcr.rail = 0; state.bcr.other = 0;
       state.listenerOps.length = 0; state.nativeCloseAttrWrites.length = 0;
     },
     // A discovery pass is uniquely identified by a visibility probe of the
     // native close node — DOM_DP_isVisible always reads getComputedStyle first.
     discoveryPasses: () => state.cs.close,
+    // A rail visibility probe is uniquely identified by a getBoundingClientRect
+    // on the rail node - the one forced-layout read UI_DPANEL_ensureRailVisible makes.
+    railProbes: () => state.bcr.rail,
     counts: () => ({
       getComputedStyle: state.cs.close, offsetParent: state.op.close, getClientRects: state.rects.close,
     }),
@@ -718,7 +734,141 @@ fixture('control F: repeated bursts create no duplicate controls and no redundan
     'identity unchanged across the bursts, so no rebinding occurs');
 });
 
-// ── Report ────────────────────────────────────────────────────────────────
+// == RAIL VISIBILITY ADMISSION =============================================
+// Same module, same observer, one further contract:
+//
+//   MANY mutation-driven rail-ensure passes inside ONE throttle window
+//     -> AT MOST ONE rail visibility probe (getBoundingClientRect)
+//
+// A pass after the window probes again and reconciles, so the rail stays
+// correct. Deliberately NOT required here: caching the rail rect across frames,
+// a second throttle, a second observer, or making the rail unconditionally
+// visible to dodge the measurement.
+
+// The real collapsed-sidebar rail 3A1a looks for, with a native item to clone,
+// so UI_DPANEL_installRailButtons() runs its true path rather than bailing early.
+function addRail(env, { width = 56, height = 600 } = {}) {
+  const rail = env.el('div', {
+    attrs: { id: 'stage-sidebar-tiny-bar' }, mark: 'rail',
+    rect: { left: 0, top: 0, width, height },
+  });
+  const stack = env.el('div', { cls: 'mt-(--sidebar-section-first-margin-top)' });
+  const wrap = env.el('div', { attrs: { 'data-state': 'closed' } });
+  const a = env.el('a', { attrs: { 'data-sidebar-item': 'true' } });
+  a.appendChild(env.el('div', { cls: 'icon' }));
+  wrap.appendChild(a); stack.appendChild(wrap); rail.appendChild(stack);
+  env.body.appendChild(rail);
+  return { rail, stack };
+}
+const railButtons = (stack) =>
+  stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]').length;
+
+// First admitted pass: measures once and actually furnishes the rail.
+fixture('rail B: the first justified rail pass measures once and reconciles', () => {
+  const env = createEnv();
+  bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(env.railProbes(), 1, 'exactly one rail visibility probe for one admitted pass');
+  atLeast(railButtons(stack), 1, 'the admitted pass installs rail buttons');
+});
+
+// PRIMARY: redundant passes inside the window must not re-measure.
+fixture('rail A: repeated mutation-driven passes inside the throttle window never re-probe', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                      // the one legitimate pass
+  const furnished = railButtons(stack);
+  env.reset();
+
+  for (let burst = 0; burst < 12; burst += 1) {
+    for (let i = 0; i < 5; i += 1) mutateUnrelated(env, scene);
+    env.advance(5);                      // 60ms total: well inside the 180ms window
+    env.flushFrame();
+  }
+
+  eq(env.railProbes(), 0, 'no rail geometry read is paid for a throttled pass');
+  eq(railButtons(stack), furnished, 'and the rail is left exactly as it was');
+});
+
+// The same burst with a rail that is present but too small to be usable: the
+// probe result cannot be the thing that gates the cost, so this must hold too.
+fixture('rail A2: an unusable rail is not re-probed on every mutation batch either', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  addRail(env, { width: 56, height: 40 });   // fails the visibility test
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(env.railProbes(), 1, 'the admitted pass probes once and declines');
+  env.reset();
+
+  for (let i = 0; i < 20; i += 1) { mutateUnrelated(env, scene); env.advance(5); env.flushFrame(); }
+  eq(env.railProbes(), 0, 'a declined pass still holds the window shut');
+});
+
+// After the window, a justified pass measures again.
+fixture('rail C: a justified pass after the throttle window probes again', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  env.reset();
+
+  mutateUnrelated(env, scene); env.advance(5); env.flushFrame();
+  eq(env.railProbes(), 0, 'still inside the window');
+
+  env.advance(200);
+  mutateUnrelated(env, scene); env.flushFrame();
+  eq(env.railProbes(), 1, 'the window reopened and the pass measured');
+});
+
+// Genuine rail replacement is delayed by at most the window, never suppressed.
+fixture('rail E: a replacement rail is still reconciled after the window', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const first = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  atLeast(railButtons(first.stack), 1, 'the original rail is furnished');
+
+  first.rail.remove();
+  const next = addRail(env);
+  env.advance(200);
+  mutateUnrelated(env, scene);
+  env.flushFrame();
+  atLeast(railButtons(next.stack), 1, 'the replacement rail is furnished, not suppressed');
+});
+
+// Structure: one authority, admission ahead of the forced-layout read, and no
+// new throttle, observer, frame authority or cross-frame geometry cache.
+fixture('rail F: one throttle authority, admission before geometry, nothing new added', () => {
+  const start = DOCK_SOURCE.indexOf('function UI_DPANEL_installRailButtons()');
+  ok(start > 0, 'installRailButtons is still the rail entry point');
+  const rest = DOCK_SOURCE.slice(start + 1);
+  const next = rest.indexOf('\n  function ');
+  const body = rest.slice(0, next > 0 ? next : rest.length);
+  ok(body.length > 200 && body.length < 8000, `installRailButtons body isolated (${body.length} chars)`);
+
+  const throttleAt = body.indexOf('S._railEnsureAt');
+  const probeAt = body.indexOf('UI_DPANEL_ensureRailVisible(');
+  ok(throttleAt >= 0, 'the rail-ensure throttle still lives in installRailButtons');
+  ok(probeAt >= 0, 'the visibility probe is still called from installRailButtons');
+  ok(throttleAt < probeAt, 'the throttle admission is evaluated BEFORE the forced-layout probe');
+
+  eq((DOCK_SOURCE.match(/S\._railEnsureAt\s*=/gu) || []).length, 1, 'exactly one throttle stamp writer');
+  eq((DOCK_SOURCE.match(/function UI_DPANEL_ensureRailVisible\(/gu) || []).length, 1, 'one visibility probe');
+  eq((DOCK_SOURCE.match(/new MutationObserver\(/gu) || []).length, 2, 'no additional MutationObserver');
+  eq((DOCK_SOURCE.match(/requestAnimationFrame\(/gu) || []).length, 2, 'no additional frame authority');
+  eq((DOCK_SOURCE.match(/getBoundingClientRect\(\)/gu) || []).length, 5, 'no new geometry read sites');
+  ok(!/rail[A-Za-z]*(Rect|Geom|Bounds)[A-Za-z]*\s*=/u.test(DOCK_SOURCE),
+    'no cross-frame rail geometry cache introduced');
+});
+
+// -- Report ----------------------------------------------------------------
 const failed = fixtures.filter((f) => !f.ok);
 for (const f of fixtures) {
   console.log(`${f.ok ? 'PASS' : 'FAIL'} ${f.name}`);
