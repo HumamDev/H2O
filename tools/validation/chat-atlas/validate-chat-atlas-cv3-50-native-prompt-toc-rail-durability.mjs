@@ -25,6 +25,7 @@ let assertions = 0;
 const eq = (a, b, m) => { assertions += 1; assert.deepEqual(a, b, m); };
 const ok = (v, m) => { assertions += 1; assert.ok(v, m); };
 const atMost = (a, b, m) => { assertions += 1; assert.ok(a <= b, `${m} (got ${a}, allowed <= ${b})`); };
+const geometryTuple = (r) => r ? ['left', 'right', 'top', 'bottom', 'width', 'height'].map((key) => Number(r[key])) : null;
 function fixture(group, name, fn) {
   try { fn(); results.push({ group, name, ok: true }); }
   catch (error) { results.push({ group, name, ok: false, error: String(error?.message || error) }); }
@@ -87,7 +88,17 @@ function createRuntime({ rail = false, viewer = false, position = 'auto' } = {})
     set cssText(value) { this.map.clear(); this.priority.clear(); if (value) this.map.set('__cssText', String(value)); }
     getPropertyValue(k) { return this.map.get(String(k)) || ''; }
     getPropertyPriority(k) { return this.priority.get(String(k)) || ''; }
-    setProperty(k, v, p = '') { const event = `style:${this.owner.id}:${k}`; trace.writes.push(event); trace.order.push({ kind: 'write', event }); this.map.set(String(k), String(v)); this.priority.set(String(k), String(p)); }
+    setProperty(k, v, p = '') {
+      const property = String(k), value = String(v);
+      const event = `style:${this.owner.id}:${property}`;
+      trace.writes.push(event); trace.order.push({ kind: 'write', event });
+      this.map.set(property, value); this.priority.set(property, String(p));
+      if ((property === 'left' || property === 'top') && /^-?\d+(?:\.\d+)?px$/.test(value)) {
+        const pixel = Number.parseFloat(value);
+        if (property === 'left') this.owner.box = { ...this.owner.box, left: pixel, right: pixel + this.owner.box.width };
+        else this.owner.box = { ...this.owner.box, top: pixel, bottom: pixel + this.owner.box.height };
+      }
+    }
     removeProperty(k) { const event = `style-remove:${this.owner.id}:${k}`; trace.writes.push(event); trace.order.push({ kind: 'write', event }); const old = this.getPropertyValue(k); this.map.delete(String(k)); this.priority.delete(String(k)); return old; }
     get left() { return this.getPropertyValue('left'); }
     get top() { return this.getPropertyValue('top'); }
@@ -239,6 +250,15 @@ function createRuntime({ rail = false, viewer = false, position = 'auto' } = {})
   };
 }
 
+function appendViewerFixture(runtime, box = {}) {
+  const card = new runtime.El('div', { class: 'z-50 max-w-xs rounded-2xl popover' }, { left: 760, top: 280, width: 260, height: 240, ...box });
+  const list = new runtime.El('ul', { role: 'menu' }, { left: card.box.left, top: card.box.top, width: 260, height: 240 });
+  for (let i = 0; i < 3; i += 1) list.appendChild(new runtime.El('li', { role: 'menuitem' }, { left: card.box.left, top: card.box.top + 10 + i * 40, width: 240, height: 32 }));
+  card.appendChild(list);
+  runtime.body.appendChild(card);
+  return card;
+}
+
 // RED A — mutation admission and preservation controls.
 fixture('RED_A', 'unrelated child-list churn admits no repair', () => {
   const r = createRuntime({ rail: true }); const noise = new r.El('span'); r.body.appendChild(noise);
@@ -314,17 +334,40 @@ fixture('RED_C', 'interval callback performs no preliminary rail work', () => {
   const r = createRuntime(); r.tick(); eq(r.trace.railApply, 0, 'interval must only submit recovery'); r.flushOne(); atMost(r.trace.repair, 1, 'interval recovery is one coherent pass'); eq(r.intervals[0].ms, 1500, 'recovery cadence stays 1500 ms');
 });
 
-// RED D — stable success gets exactly one verification and then drains.
+// RED D / correction RED — stable success gets exactly one verification and then drains.
 fixture('RED_D', 'viewer follow has no independent perpetual frame authority', () => {
   ok(!/function startViewerLoop\([\s\S]*?requestAnimationFrame\(step\)[\s\S]*?requestAnimationFrame\(step\)/u.test(SOURCE), 'viewer loop must cooperate with the single scheduler');
-  const r = createRuntime({ rail: true, viewer: true }); r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl }); r.flushAll(8); eq(r.frames.length, 0, 'stable viewer queue must drain');
+});
+fixture('CORRECTION_RED', 'post-placement B is the transient baseline, never pre-write A', () => {
+  const r = createRuntime({ rail: true, viewer: true });
+  const beforeA = geometryTuple(r.viewerCard.box);
+  r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+  r.flushOne();
+  const afterB = geometryTuple(r.viewerCard.box);
+  ok(beforeA.some((value, index) => value !== afterB[index]), 'fixture must observe production placement A to B');
+  eq(geometryTuple(r.hooks.state.viewerFollowSnapshot?.viewer), afterB, 'post-placement baseline must be authoritative B');
+  eq(r.frames.length, 1, 'initial placement arms exactly one verification frame');
+});
+fixture('CORRECTION_RED', 'stable A-to-B placement drains after the authorized verification frame', () => {
+  const r = createRuntime({ rail: true, viewer: true });
+  r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+  r.flushOne();
+  eq(r.frames.length, 1, 'one verification frame is armed');
+  r.flushOne();
+  eq(r.frames.length, 0, 'own placement A-to-B must not arm a third frame');
+  eq(r.hooks.state.viewerLoopActive, false, 'stable verification terminates the loop');
+  eq(r.hooks.state.viewerFollowSnapshot, null, 'stable verification clears transient geometry');
 });
 fixture('RED_D', 'moving viewer is followed until one stable verification', () => {
   const r = createRuntime({ rail: true, viewer: true });
   r.hooks.startViewerLoop({ type: 'focusin', target: r.railEl });
   r.flushOne(); eq(r.frames.length, 1, 'first placement arms one verification');
+  const baselineB = geometryTuple(r.viewerCard.box);
+  eq(geometryTuple(r.hooks.state.viewerFollowSnapshot?.viewer), baselineB, 'moving control starts from authoritative B');
   r.viewerCard.box = { ...r.viewerCard.box, left: r.viewerCard.box.left + 12, right: r.viewerCard.box.right + 12 };
+  const movedC = geometryTuple(r.viewerCard.box);
   r.flushOne(); eq(r.frames.length, 1, 'geometry change keeps one bounded follow frame');
+  eq(geometryTuple(r.hooks.state.viewerFollowSnapshot?.viewer), movedC, 'genuine B-to-C movement becomes the next bounded baseline');
   r.flushAll(4); eq(r.frames.length, 0, 'stable geometry drains follow work');
 });
 fixture('RED_D', 'missing viewer recovery is bounded and disconnected managed state is cleaned', () => {
@@ -339,6 +382,54 @@ fixture('RED_D', 'missing viewer recovery is bounded and disconnected managed st
   removed.viewerCard.remove(); removed.deliver([removed.child(removed.body, [], [removed.viewerCard])]); removed.flushAll();
   eq(removed.hooks.state.managed.has(removed.viewerCard), false, 'disconnected viewer is removed from managed state');
   eq(removed.viewerCard.getAttribute('data-h2o-native-toc-viewer-managed'), null, 'disconnected viewer stamps are cleared');
+});
+fixture('CORRECTION_RED', 'transient snapshot clears on viewer disconnection and terminal miss', () => {
+  const r = createRuntime({ rail: true, viewer: true });
+  r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+  r.flushOne();
+  ok(r.hooks.state.viewerFollowSnapshot, 'active sequence owns transient geometry');
+  r.viewerCard.remove();
+  r.deliver([r.child(r.body, [], [r.viewerCard])]);
+  r.flushOne();
+  eq(r.hooks.state.viewerFollowSnapshot, null, 'viewer loss clears transient geometry immediately');
+  r.advance(501); r.flushAll(4);
+  eq(r.hooks.state.viewerLoopActive, false, 'terminal miss terminates the sequence');
+  eq(r.hooks.state.viewerFollowSnapshot, null, 'terminal miss retains no transient geometry');
+});
+fixture('CORRECTION_RED', 'viewer replacement retires the old identity baseline', () => {
+  const r = createRuntime({ rail: true, viewer: true });
+  r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+  r.flushOne();
+  const oldViewer = r.viewerCard;
+  oldViewer.remove();
+  const replacement = appendViewerFixture(r, { left: 720, top: 260 });
+  r.deliver([r.child(r.body, [replacement], [oldViewer])]);
+  r.flushOne();
+  eq(r.hooks.state.viewerFollowSnapshot?.viewerNode, replacement, 'replacement owns the new transient baseline');
+  ok(r.hooks.state.viewerFollowSnapshot?.viewerNode !== oldViewer, 'old viewer identity is retired');
+});
+fixture('CORRECTION_RED', 'hidden and off terminate viewer-follow transient state', () => {
+  for (const position of ['hidden', 'off']) {
+    const r = createRuntime({ rail: true, viewer: true });
+    r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+    r.flushOne();
+    ok(r.hooks.state.viewerFollowSnapshot, `${position} control starts with transient geometry`);
+    r.hooks.apply({ settings: { railPosition: position, gapPx: 4 }, reason: 'explicit' });
+    eq(r.hooks.state.viewerLoopActive, false, `${position} terminates viewer follow`);
+    eq(r.hooks.state.viewerVerificationPending, false, `${position} clears verification state`);
+    eq(r.hooks.state.viewerFollowSnapshot, null, `${position} clears transient geometry`);
+  }
+});
+fixture('CORRECTION_RED', 'fresh interaction generation replaces incompatible transient baseline', () => {
+  const r = createRuntime({ rail: true, viewer: true });
+  r.hooks.startViewerLoop({ type: 'pointerover', target: r.railEl });
+  r.flushOne();
+  const firstGeneration = r.hooks.state.viewerInteractionGeneration;
+  r.hooks.startViewerLoop({ type: 'focusin', target: r.railEl });
+  const secondGeneration = r.hooks.state.viewerInteractionGeneration;
+  ok(secondGeneration > firstGeneration, 'fixture advances interaction generation');
+  r.flushOne();
+  eq(r.hooks.state.viewerFollowSnapshot?.generation, secondGeneration, 'new generation owns the transient baseline');
 });
 
 // RED E — the real discovery function issues one union sweep.

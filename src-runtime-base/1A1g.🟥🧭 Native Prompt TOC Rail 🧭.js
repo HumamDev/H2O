@@ -905,7 +905,7 @@
     try {
       clearManagedViewer(true);
       hideCurrentViewerCards(viewerCandidates);
-      state.viewerLoopActive = false;
+      terminateViewerFollow();
       writeOwnedStyle(container, 'display', 'none', 'important');
       writeAttributeValue(container, 'data-h2o-native-prompt-rail-managed', '1');
       writeOwnedAttribute(container, 'data-h2o-native-prompt-rail-position', 'hidden');
@@ -1322,7 +1322,7 @@
 
     return {
       candidate, card, railRect, side, viewerSide, startRect, width,
-      desiredLeft, desiredTop, availableHeight, block, blockRect,
+      height, desiredLeft, desiredTop, availableHeight, block, blockRect,
       containerLeft, containerTop, appliedLeft, appliedTop,
     };
   }
@@ -1402,7 +1402,7 @@
     const plan = preparedPlan || buildViewerPlan(candidate, measure, settings);
     const card = plan?.card || null;
     if (!card) return false;
-    const { railRect, viewerSide, desiredLeft, desiredTop, width, availableHeight, containerLeft, containerTop, appliedLeft, appliedTop } = plan;
+    const { railRect, viewerSide, desiredLeft, desiredTop, width, height, availableHeight, containerLeft, containerTop, appliedLeft, appliedTop } = plan;
 
     try {
       let positionChanged = false;
@@ -1431,13 +1431,15 @@
       }
       state.managed.add(card);
 
-      const finalRect = positionChanged
+      const finalRect = (positionChanged
         ? applyCorrection(card, desiredLeft, desiredTop, appliedLeft, appliedTop)
-        : {
+        : null) || {
           left: desiredLeft,
           right: desiredLeft + width,
           top: desiredTop,
-          bottom: desiredTop + Number(plan.startRect.height || 0),
+          bottom: desiredTop + height,
+          width,
+          height,
         };
       writeAttributeValue(card, 'data-h2o-native-toc-viewer-managed', '1');
       writeAttributeValue(card, 'data-h2o-native-toc-viewer-side', viewerSide);
@@ -1456,9 +1458,14 @@
         writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-top', String(Math.round(finalRect.top)));
         writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-bottom', String(Math.round(finalRect.bottom)));
       }
-      return true;
+      return {
+        placed: true,
+        positionChanged,
+        finalRect: rectSnapshot(finalRect),
+        viewerNode: card,
+      };
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -1486,35 +1493,55 @@
       && keys.every((key) => Math.abs(Number(a.viewer?.[key] || 0) - Number(b.viewer?.[key] || 0)) <= 0.5);
   }
 
-  function viewerFollowAfterPass(plan, found) {
+  function terminateViewerFollow() {
+    state.viewerLoopActive = false;
+    state.viewerVerificationPending = false;
+    state.viewerFollowSnapshot = null;
+  }
+
+  function viewerFollowAfterPass(plan, placement) {
     if (!state.viewerLoopActive) return;
-    if (!found || !plan?.viewerPlan) {
+    const viewerNode = placement?.viewerNode || plan?.viewerPlan?.card || null;
+    if (!placement?.placed || !plan?.viewerPlan || !viewerNode?.isConnected) {
+      state.viewerFollowSnapshot = null;
       if (Date.now() - state.lastViewerSeenAt <= VIEWER_MAX_MISS_MS) {
+        state.viewerVerificationPending = true;
         requestRepair('viewer-verification', { discoverViewer: true });
       } else {
-        state.viewerLoopActive = false;
-        state.viewerVerificationPending = false;
-        state.viewerFollowSnapshot = null;
+        terminateViewerFollow();
         clearManagedViewer(false);
       }
       return;
     }
     state.lastViewerSeenAt = Date.now();
+    const generation = state.viewerInteractionGeneration;
+    const priorSnapshot = state.viewerFollowSnapshot;
+    const identityChanged = !!priorSnapshot?.viewerNode && priorSnapshot.viewerNode !== viewerNode;
+    const incompatibleGeneration = priorSnapshot?.generation != null && priorSnapshot.generation !== generation;
+    if (identityChanged || incompatibleGeneration) {
+      state.viewerFollowSnapshot = null;
+      state.viewerVerificationPending = true;
+    }
+    const baseline = state.viewerFollowSnapshot;
+    const viewerRect = placement.positionChanged && placement.finalRect
+      ? placement.finalRect
+      : rectSnapshot(plan.viewerPlan.startRect);
     const snapshot = {
       rail: rectSnapshot(plan.railPlan?.resultMeasure?.rect),
-      viewer: rectSnapshot(plan.viewerPlan.startRect),
+      viewer: rectSnapshot(viewerRect),
+      viewerNode,
+      generation,
     };
-    const freshGeneration = state.viewerVerifiedGeneration !== state.viewerInteractionGeneration;
-    const geometryChanged = !!state.viewerFollowSnapshot && !sameFollowSnapshot(state.viewerFollowSnapshot, snapshot);
+    const freshGeneration = state.viewerVerifiedGeneration !== generation;
+    const geometryChanged = !!baseline && !sameFollowSnapshot(baseline, snapshot);
     if (state.viewerVerificationPending || freshGeneration || geometryChanged) {
       state.viewerFollowSnapshot = snapshot;
-      state.viewerVerifiedGeneration = state.viewerInteractionGeneration;
+      state.viewerVerifiedGeneration = generation;
       state.viewerVerificationPending = false;
       requestRepair('viewer-verification', { discoverViewer: false });
       return;
     }
-    state.viewerLoopActive = false;
-    state.viewerFollowSnapshot = null;
+    terminateViewerFollow();
   }
 
   function applyRepairPlan(plan) {
@@ -1524,10 +1551,11 @@
     if (plan.position === 'hidden') return false;
     bindRailEvents(plan.railPlan.measure.container);
     if (plan.position === 'off') {
+      terminateViewerFollow();
       clearManagedViewer(true);
-      return false;
+      return null;
     }
-    if (!measure || !plan.viewerPlan) return false;
+    if (!measure || !plan.viewerPlan) return null;
     return placeViewer(plan.viewerPlan.candidate, measure, plan.settings, plan.viewerPlan);
   }
 
@@ -1538,9 +1566,9 @@
       : true;
     const plan = buildRepairPlan(settings, { discoverViewer });
     state.lastRepairHadRail = !!plan.measure;
-    const found = applyRepairPlan(plan);
-    viewerFollowAfterPass(plan, found);
-    return found;
+    const placement = applyRepairPlan(plan);
+    viewerFollowAfterPass(plan, placement);
+    return !!placement?.placed;
   }
 
   function runRepairFrame() {
