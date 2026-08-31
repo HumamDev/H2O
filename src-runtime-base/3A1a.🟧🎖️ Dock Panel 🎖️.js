@@ -364,6 +364,7 @@
     moRoot: null,
     moRail: null,
     railRAF: 0,
+    railEnsureReq: false,
     nativeCloseReq: false,
 
     isOpen: false,
@@ -1335,18 +1336,25 @@ function UI_DP_nativeClose_sync() {
   }
 
   /** @helper Schedule rail refresh (RAF coalesced). */
-  function UI_DPANEL_scheduleRailEnsure() {
+  function UI_DPANEL_scheduleRailEnsure(intents = null) {
+    const railRequested = !intents || intents.rail === true;
+    const nativeRequested = !!intents?.native;
+    if (railRequested) S.railEnsureReq = true;
+    if (nativeRequested) S.nativeCloseReq = true;
+    if (!S.railEnsureReq && !S.nativeCloseReq) return;
     if (S.railRAF) return;
     S.railRAF = requestAnimationFrame(() => {
       S.railRAF = 0;
-      try { UI_DPANEL_installRailButtons(); } catch (_) {}
+      const railReq = !!S.railEnsureReq;
+      const nativeReq = !!S.nativeCloseReq;
+      S.railEnsureReq = false;
+      S.nativeCloseReq = false;
+      if (railReq) {
+        try { UI_DPANEL_installRailButtons(); } catch (_) {}
+      }
       try { CORE_DP_bindRailObserversOnce();
         CORE_DP_bindRailDelegationOnce(); } catch (_) {}
-      // Observer-driven native-close discovery only. The flag is read here, so
-      // a request raised while this frame was already pending is still served
-      // by it. Cleared before the pass, so a later mutation re-requests.
-      if (S.nativeCloseReq) {
-        S.nativeCloseReq = false;
+      if (nativeReq) {
         try { UI_DP_nativeClose_sync(); } catch (_) {}
       }
     });
@@ -1372,27 +1380,32 @@ function UI_DP_nativeClose_sync() {
    * here: the current contract does not observe attributes.
    */
 
-  /** @helper Is this node inside the sidebar / tiny-rail / bound-close domain? */
-  function CORE_DP_inNativeCloseDomain(node, sidebar, rail, bound) {
-    if (!node) return false;
-    if (sidebar && (node === sidebar || sidebar.contains?.(node))) return true;
-    if (rail && (node === rail || rail.contains?.(node))) return true;
-    if (bound && (node === bound || bound.contains?.(node))) return true;
-    return false;
+  /** @helper Structural subtree selector test; never style or geometry. */
+  function CORE_DP_matchesOrCarries(node, selector) {
+    if (!node || node.nodeType !== 1 || !selector) return false;
+    try {
+      if (node.matches?.(selector)) return true;
+      return typeof node.querySelector === 'function' && !!node.querySelector(selector);
+    } catch (_) { return false; }
   }
 
   /** @helper Does this added subtree carry evidence that discovery could now
    * succeed - a native-close candidate, or a sidebar that was not there before?
    * Bounded to the added subtree; never a document-wide query. */
   function CORE_DP_carriesNativeCloseCandidate(node) {
-    if (!node || typeof node.querySelector !== 'function') return false;
     for (const sel of [SEL_DPANEL.SB_CLOSE_BTN, SEL_DPANEL.SB_NAV_HISTORY, SEL_DPANEL.SB_ASIDE_ANY]) {
-      try {
-        if (node.matches?.(sel)) return true;
-        if (node.querySelector(sel)) return true;
-      } catch (_) {}
+      if (CORE_DP_matchesOrCarries(node, sel)) return true;
     }
     return false;
+  }
+
+  /** @helper Is the known native close still structurally authoritative? */
+  function CORE_DP_nativeCloseStillCurrent(bound, sidebar) {
+    if (!bound || bound.isConnected === false || !sidebar) return false;
+    try {
+      if (!bound.matches?.(SEL_DPANEL.SB_CLOSE_BTN)) return false;
+      return bound === sidebar || !!sidebar.contains?.(bound);
+    } catch (_) { return false; }
   }
 
   /** @helper Is this record nothing but Dock Panel's own additions?
@@ -1437,12 +1450,11 @@ function UI_DP_nativeClose_sync() {
   /** @core Is this childList batch capable of invalidating native-close discovery? */
   function CORE_DP_nativeCloseInvalidated(records) {
     const bound = S.nativeCloseBtn;
-
-    // A bound button that has left the document is always stale.
-    if (bound && bound.isConnected === false) return true;
-
     const sidebar = UI_DP_getLeftSidebar();
-    const rail = DOM_DP_q(SEL_DPANEL.SB_TINY_RAIL);
+
+    // Existing identity state is reusable only while it remains selector-valid,
+    // connected, and owned by the current live sidebar context.
+    if (bound && !CORE_DP_nativeCloseStillCurrent(bound, sidebar)) return true;
 
     for (const rec of records || []) {
       if (!rec || rec.type !== 'childList') continue;
@@ -1452,49 +1464,85 @@ function UI_DP_nativeClose_sync() {
       // through whichever record is foreign, wherever it sits in the list.
       if (CORE_DP_isDockOwnedAdditionOnly(rec)) continue;
 
-      // Something happened inside the domain discovery reads from.
-      if (CORE_DP_inNativeCloseDomain(rec.target, sidebar, rail, bound)) return true;
-
-      // A removal that carries away the sidebar, the rail or the bound button.
+      // Removed identity/topology can invalidate a bound node or its sidebar
+      // context even though removed nodes are detached by callback time.
       for (const node of rec.removedNodes || []) {
         if (!node) continue;
-        if (node === bound || node === sidebar || node === rail) return true;
+        if (node === bound || node === sidebar) return true;
         if (bound && node.contains?.(bound)) return true;
         if (sidebar && node.contains?.(sidebar)) return true;
-        if (rail && node.contains?.(rail)) return true;
+        if (CORE_DP_carriesNativeCloseCandidate(node)) return true;
       }
 
-      // Additions matter only while nothing is bound, and only when the added
-      // subtree itself carries the evidence.
-      if (!bound) {
-        for (const node of rec.addedNodes || []) {
-          if (CORE_DP_carriesNativeCloseCandidate(node)) return true;
-        }
+      // Candidate/sidebar additions can change identity or precedence even
+      // while an eligible known close exists. Target containment alone cannot.
+      for (const node of rec.addedNodes || []) {
+        if (CORE_DP_carriesNativeCloseCandidate(node)) return true;
       }
     }
     return false;
   }
 
-  /** @helper Does this added subtree bring the tiny-rail itself into the page?
-   *
-   * The rail needs one invalidation native close does not. Native-close
-   * additions are considered only while nothing is bound, but the rail can
-   * appear at any time - and the tiny-bar is a stage-level element that is not
-   * necessarily inside the sidebar, so an in-domain target test cannot be
-   * relied on to catch it. Bounded to the added subtree; never a document-wide
-   * query, and never a poll.
-   */
-  function CORE_DP_railAppeared(records) {
-    const sel = SEL_DPANEL.SB_TINY_RAIL;
+  /** @helper Resolve final rail structure once for this mutation batch. */
+  function CORE_DP_railStructure() {
+    const rail = DOM_DP_q(SEL_DPANEL.SB_TINY_RAIL);
+    if (!rail) return { rail: null, stack: null, complete: false };
+    const stack =
+      rail.querySelector(SEL_DPANEL.SB_TINY_STACK_PRIMARY) ||
+      rail.querySelector(SEL_DPANEL.SB_TINY_STACK_FALLBACK) ||
+      rail;
+    const items = Array.isArray(DPANEL_RAIL_ITEMS) ? DPANEL_RAIL_ITEMS.slice(0) : [];
+    while (items.length < 8) items.push({ view: `dummy${items.length + 1}` });
+    const ownedWrapSel = `div[data-state][${ATTR_DPANEL_CGXUI_OWNER}="${SkID}"][${ATTR_DPANEL_RAIL_VIEW}]`;
+    const complete = !!stack && items.every((item) => {
+      const viewId = String(item.view || '').trim();
+      return !viewId || !!stack.querySelector(`${ownedWrapSel}[${ATTR_DPANEL_RAIL_VIEW}="${viewId}"]`);
+    });
+    return { rail, stack, complete };
+  }
+
+  /** @helper Did this batch add a replacement for a removed required view? */
+  function CORE_DP_batchAddsRailView(records, viewId) {
+    if (!viewId) return false;
+    const selector = `[${ATTR_DPANEL_CGXUI_OWNER}="${SkID}"][${ATTR_DPANEL_RAIL_VIEW}="${viewId}"]`;
+    for (const rec of records || []) {
+      if (!rec || rec.type !== 'childList') continue;
+      for (const node of rec.addedNodes || []) {
+        if (CORE_DP_matchesOrCarries(node, selector)) return true;
+      }
+    }
+    return false;
+  }
+
+  /** @core Is this batch structurally capable of invalidating rail repair? */
+  function CORE_DP_railInvalidated(records) {
+    const structure = CORE_DP_railStructure();
+
     for (const rec of records || []) {
       if (!rec || rec.type !== 'childList') continue;
       if (CORE_DP_isDockOwnedAdditionOnly(rec)) continue;
-      for (const node of rec.addedNodes || []) {
+
+      for (const node of [...(rec.removedNodes || []), ...(rec.addedNodes || [])]) {
+        if (CORE_DP_matchesOrCarries(node, SEL_DPANEL.SB_TINY_RAIL)) return true;
+        if (CORE_DP_matchesOrCarries(node, SEL_DPANEL.SB_TINY_STACK_PRIMARY) ||
+            CORE_DP_matchesOrCarries(node, SEL_DPANEL.SB_TINY_STACK_FALLBACK)) return true;
+      }
+
+      for (const node of rec.removedNodes || []) {
         if (!node || node.nodeType !== 1) continue;
-        try {
-          if (node.matches?.(sel)) return true;
-          if (typeof node.querySelector === 'function' && node.querySelector(sel)) return true;
-        } catch (_) {}
+        const ownedSelector = `[${ATTR_DPANEL_CGXUI_OWNER}="${SkID}"][${ATTR_DPANEL_RAIL_VIEW}]`;
+        const removedWrap = node.matches?.(ownedSelector) ? node : node.querySelector?.(ownedSelector);
+        const removedView = String(removedWrap?.getAttribute?.(ATTR_DPANEL_RAIL_VIEW) || '').trim();
+        if (removedView && (!structure.complete || CORE_DP_batchAddsRailView(records, removedView))) return true;
+      }
+
+      // Template identity matters only while a required wrapper is missing.
+      // A complete rail consumes neither template identity nor template geometry.
+      if (!structure.complete && structure.rail) {
+        for (const node of [...(rec.removedNodes || []), ...(rec.addedNodes || [])]) {
+          if (CORE_DP_matchesOrCarries(node, 'div[data-state]') ||
+              CORE_DP_matchesOrCarries(node, SEL_DPANEL.SB_TINY_ITEM_A)) return true;
+        }
       }
     }
     return false;
@@ -1522,13 +1570,13 @@ function UI_DP_nativeClose_sync() {
       // sizing rect. The 180ms window could only make that waste periodic; it
       // could not stop an irrelevant batch from arming it.
       //
-      // The rail admits everything native close admits, plus its own first
-      // appearance. Explicit Dock-state callers keep calling
-      // UI_DP_nativeClose_sync() directly, and resize, popstate and the
-      // bind-time call below stay ungated.
+      // Native-close and rail evidence are independent and OR-accumulated over
+      // the complete batch. Target containment alone marks neither concern.
+      // Explicit native callers stay synchronous; resize, popstate and the
+      // bind-time call below remain direct rail authorities.
       const nativeCloseRelevant = CORE_DP_nativeCloseInvalidated(records);
-      if (nativeCloseRelevant) S.nativeCloseReq = true;
-      if (nativeCloseRelevant || CORE_DP_railAppeared(records)) UI_DPANEL_scheduleRailEnsure();
+      const railRelevant = CORE_DP_railInvalidated(records);
+      UI_DPANEL_scheduleRailEnsure({ rail: railRelevant, native: nativeCloseRelevant });
     });
     S.moRail.observe(document.documentElement, { childList: true, subtree: true });
 

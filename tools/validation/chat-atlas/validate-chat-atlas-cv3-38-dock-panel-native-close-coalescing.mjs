@@ -46,7 +46,9 @@ import process from 'node:process';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const ROOT = process.env.H2O_SRC_DIR
+  ? path.resolve(process.env.H2O_SRC_DIR)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const DOCK_PATH = 'src-runtime-base/3A1a.🟧🎖️ Dock Panel 🎖️.js';
 const DOCK_SOURCE = fs.readFileSync(path.join(ROOT, DOCK_PATH), 'utf8');
 
@@ -188,6 +190,7 @@ function createEnv() {
     op: { close: 0, other: 0 },        // offsetParent reads
     rects: { close: 0, other: 0 },     // getClientRects
     bcr: { rail: 0, tmpl: 0, other: 0 },  // getBoundingClientRect: rail visibility probe / template sizing / other
+    queries: { nativeClose: 0 },          // selector work attributable to native-close discovery
     listenerOps: [],                   // {op:'add'|'remove', id, type, capture}
     nativeCloseAttrWrites: [],         // set/remove of data-h2o-native-close
     rafRequests: 0,                    // frame requests (rail scheduling, see below)
@@ -273,7 +276,11 @@ function createEnv() {
     matches(s) { return matchesSelector(this, s); }
     closest(s) { let n = this; while (n) { if (n instanceof MEl && matchesSelector(n, s)) return n; n = n.parentNode; } return null; }
     __desc(out = []) { for (const c of this.childNodes) if (c instanceof MEl) { out.push(c); c.__desc(out); } return out; }
-    querySelector(s) { for (const e of this.__desc()) if (matchesSelector(e, s)) return e; return null; }
+    querySelector(s) {
+      if (this.__mark === 'sidebar' && String(s).includes('close-sidebar-button')) state.queries.nativeClose += 1;
+      for (const e of this.__desc()) if (matchesSelector(e, s)) return e;
+      return null;
+    }
     querySelectorAll(s) { return this.__desc().filter((e) => matchesSelector(e, s)); }
     cloneNode() { const c = new MEl(this.tagName); for (const [k, v] of this.__attrs) c.__attrs.set(k, v); c.__text = this.__text; return c; }
     getRootNode() { let n = this; while (n.parentNode) n = n.parentNode; return n; }
@@ -507,6 +514,7 @@ function createEnv() {
       state.op.close = 0; state.op.other = 0;
       state.rects.close = 0; state.rects.other = 0;
       state.bcr.rail = 0; state.bcr.tmpl = 0; state.bcr.other = 0;
+      state.queries.nativeClose = 0;
       state.rafRequests = 0;
       state.listenerOps.length = 0; state.nativeCloseAttrWrites.length = 0;
     },
@@ -521,6 +529,7 @@ function createEnv() {
     // A discovery pass is uniquely identified by a visibility probe of the
     // native close node — DOM_DP_isVisible always reads getComputedStyle first.
     discoveryPasses: () => state.cs.close,
+    nativeDiscoveryQueries: () => state.queries.nativeClose,
     // A rail visibility probe is uniquely identified by a getBoundingClientRect
     // on the rail node - the one forced-layout read UI_DPANEL_ensureRailVisible makes.
     railProbes: () => state.bcr.rail,
@@ -592,13 +601,14 @@ function settleBinding(env, scene) {
   env.flushFrame();
 }
 
-// A legitimate sidebar-relevant childList invalidation: something appears
-// inside the resolved left sidebar, which is structurally capable of changing
-// what native-close discovery would find.
+// A legitimate native-domain invalidation: a selector-valid close candidate is
+// reinserted in the resolved sidebar. This changes candidate topology without
+// creating a duplicate and remains relevant even when the same node was bound.
 let sbSeq = 0;
 function mutateSidebar(env, scene) {
   sbSeq += 1;
-  const n = env.el('div', { cls: `sb-item-${sbSeq}`, mark: 'sidebar-child' });
+  const n = scene.nativeClose || addNativeClose(env, scene);
+  n.setAttribute('data-cv338-topology-seq', String(sbSeq));
   scene.sidebar.appendChild(n);
   env.flushMicrotasks();   // deliver this observer batch, as production would
   return n;                // rAF deliberately NOT flushed here
@@ -893,6 +903,133 @@ function addForeignRailNode(env, stack, mark = 'foreign') {
 
 const deliver = (env) => env.flushMicrotasks();
 
+function preparePopulatedRail(env) {
+  const scene = bootScene(env);
+  const railState = addRail(env);
+  deliver(env);
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.advance(200);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(railButtons(railState.stack), 8, 'precondition: complete populated rail');
+  env.reset();
+  return { scene, ...railState };
+}
+
+// ══ RECURRENT DOMAIN-SEPARATION GATE ═════════════════════════════════════
+// These controls distinguish the two independently accumulated mutation
+// intents. Counts are deterministic DOM operations, never timing samples.
+
+fixture('RED A: irrelevant stable-state mixed churn wakes neither domain', () => {
+  const env = createEnv();
+  const { scene, stack } = preparePopulatedRail(env);
+  scene.sidebar.appendChild(env.el('span', { mark: 'irrelevant-sidebar-child' }));
+  addDockOwnedWrap(env, stack, 'irrelevant-owned-duplicate');
+  addForeignRailNode(env, stack, 'irrelevant-foreign-child');
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeStyleReads: env.counts().getComputedStyle,
+    nativeLayoutReads: env.counts().offsetParent + env.counts().getClientRects,
+    railGeometryReads: env.railProbes(),
+  }, {
+    scheduledFrames: 0,
+    nativeDiscoveryQueries: 0,
+    nativeStyleReads: 0,
+    nativeLayoutReads: 0,
+    railGeometryReads: 0,
+  }, 'complete-rail foreign/mixed churn carries no native or rail invalidation');
+});
+
+fixture('RED B: required rail-wrapper removal repairs rail without native work', () => {
+  const env = createEnv();
+  const { stack } = preparePopulatedRail(env);
+  const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[2];
+  const view = victim.getAttribute('data-h2o-rail-view');
+  victim.remove();
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeStyleReads: env.counts().getComputedStyle,
+    nativeLayoutReads: env.counts().offsetParent + env.counts().getClientRects,
+    railGeometryReads: env.railProbes(),
+    templateGeometryReads: env.templateProbes(),
+    wrapperCount: railButtons(stack),
+    restored: !!stack.querySelector(`div[data-cgxui-owner="dcpn"][data-h2o-rail-view="${view}"]`),
+  }, {
+    scheduledFrames: 1,
+    nativeDiscoveryQueries: 0,
+    nativeStyleReads: 0,
+    nativeLayoutReads: 0,
+    railGeometryReads: 1,
+    templateGeometryReads: 1,
+    wrapperCount: 8,
+    restored: true,
+  }, 'rail-only invalidation runs only the governed rail sub-pass');
+});
+
+fixture('RED C: detached native-close replacement rebinds without rail work', () => {
+  const env = createEnv();
+  const { scene } = preparePopulatedRail(env);
+  const oldBtn = scene.nativeClose;
+  oldBtn.remove();
+  const replacement = addNativeClose(env, scene);
+  scene.nativeClose = replacement;
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeVisibilityPasses: env.discoveryPasses(),
+    railGeometryReads: env.railProbes(),
+    oldConnected: oldBtn.isConnected,
+    replacementBound: env.closeListenerOps().some((o) => o.op === 'add' && o.id === replacement.__id),
+  }, {
+    scheduledFrames: 1,
+    nativeDiscoveryQueries: 1,
+    nativeVisibilityPasses: 1,
+    railGeometryReads: 0,
+    oldConnected: false,
+    replacementBound: true,
+  }, 'native-only invalidation runs only the coalesced native sub-pass');
+});
+
+fixture('preservation: true dual invalidation OR-accumulates in either record order', () => {
+  for (const order of ['rail-first', 'native-first']) {
+    const env = createEnv();
+    const { scene, stack } = preparePopulatedRail(env);
+    const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[4];
+    const replaceNative = () => {
+      scene.nativeClose.remove();
+      scene.nativeClose = addNativeClose(env, scene);
+    };
+    if (order === 'rail-first') { victim.remove(); replaceNative(); }
+    else { replaceNative(); victim.remove(); }
+    deliver(env);
+    env.flushFrame();
+
+    eq({
+      scheduledFrames: env.railSchedules(),
+      nativeSubpasses: env.discoveryPasses(),
+      railSubpasses: env.railProbes(),
+      wrapperCount: railButtons(stack),
+    }, {
+      scheduledFrames: 1,
+      nativeSubpasses: 1,
+      railSubpasses: 1,
+      wrapperCount: 8,
+    }, `${order}: both independently dirty domains share exactly one frame`);
+  }
+});
+
 // First admitted pass: measures once and actually furnishes the rail.
 fixture('rail B: the first justified rail pass measures once and reconciles', () => {
   const env = createEnv();
@@ -954,16 +1091,19 @@ fixture('rail C: a justified pass after the throttle window probes again', () =>
   const { stack } = addRail(env);
   env.flushMicrotasks();
   env.flushFrame();
+  const firstVictim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[0];
   env.reset();
 
-  addForeignRailNode(env, stack, 'inside-window'); deliver(env);
+  firstVictim.remove(); deliver(env);
   env.advance(5); env.flushFrame();
   eq(env.railProbes(), 0, 'still inside the window');
 
   env.advance(200);
-  addForeignRailNode(env, stack, 'after-window'); deliver(env);
+  const secondVictim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[1];
+  secondVictim.remove(); deliver(env);
   env.flushFrame();
   eq(env.railProbes(), 1, 'the window reopened and the pass measured');
+  eq(railButtons(stack), 8, 'required wrappers are restored when the window reopens');
 });
 
 // Genuine rail replacement is delayed by at most the window, never suppressed.
@@ -1079,7 +1219,7 @@ fixture('self-owned: a stable rail spends nothing across many later self-owned f
   eq(railButtons(stack), furnished + 20, 'the fixture-added wrappers are still present, untouched');
 });
 
-fixture('foreign: a non-Dock insertion into the rail still schedules and revalidates', () => {
+fixture('foreign: unrelated insertion into a complete rail schedules nothing', () => {
   const env = createEnv();
   const scene = bootScene(env);
   const { stack } = addRail(env);
@@ -1093,8 +1233,9 @@ fixture('foreign: a non-Dock insertion into the rail still schedules and revalid
   env.advance(200);
   env.flushFrame();
 
-  atLeast(env.railSchedules(), 1, 'a foreign in-rail mutation must still schedule the rail pass');
-  atLeast(env.discoveryPasses(), 1, 'and must still revalidate native close');
+  eq(env.railSchedules(), 0, 'foreign target containment alone is not rail invalidation');
+  eq(env.discoveryPasses(), 0, 'foreign target containment alone is not native invalidation');
+  eq(env.railProbes(), 0, 'a complete rail spends no geometry on unrelated insertion');
 });
 
 fixture('foreign removal of Dock wrappers stays relevant and the rail self-heals', () => {
@@ -1123,7 +1264,7 @@ fixture('foreign removal of Dock wrappers stays relevant and the rail self-heals
   eq(railButtons(stack), furnished, 'and the rail must re-install itself');
 });
 
-fixture('mixed: a batch is relevant even when its only foreign record is last', () => {
+fixture('mixed: irrelevant owned/foreign records remain free in either order', () => {
   const env = createEnv();
   const scene = bootScene(env);
   const { stack } = addRail(env);
@@ -1132,17 +1273,22 @@ fixture('mixed: a batch is relevant even when its only foreign record is last', 
   settleBinding(env, scene);
   env.reset();
 
-  // Dock-owned records first, the single foreign record LAST: a
-  // first-record-wins shortcut would wrongly discard the whole batch.
-  addDockOwnedWrap(env, stack, 'mixed-self-1');
-  addDockOwnedWrap(env, stack, 'mixed-self-2');
-  addForeignRailNode(env, stack, 'mixed-foreign-last');
-  deliver(env);
-  env.advance(200);
-  env.flushFrame();
+  for (const order of ['owned-first', 'foreign-first']) {
+    if (order === 'owned-first') {
+      addDockOwnedWrap(env, stack, `mixed-self-${order}`);
+      addForeignRailNode(env, stack, `mixed-foreign-${order}`);
+    } else {
+      addForeignRailNode(env, stack, `mixed-foreign-${order}`);
+      addDockOwnedWrap(env, stack, `mixed-self-${order}`);
+    }
+    deliver(env);
+    env.advance(200);
+    env.flushFrame();
+  }
 
-  atLeast(env.railSchedules(), 1, 'a mixed batch must stay relevant');
-  atLeast(env.discoveryPasses(), 1, 'and must still revalidate native close');
+  eq(env.railSchedules(), 0, 'record order cannot manufacture a dirty domain');
+  eq(env.discoveryPasses(), 0, 'irrelevant mixed orderings never discover native close');
+  eq(env.railProbes(), 0, 'irrelevant mixed orderings never measure rail geometry');
 });
 
 fixture('rail first appearance is admitted even while a native close is bound', () => {
@@ -1175,9 +1321,8 @@ fixture('rail G: an admitted pass on a populated rail skips the template sizing 
   eq(railButtons(stack), 8, 'precondition: every required rail view exists');
   env.reset();
 
-  addForeignRailNode(env, stack, 'populated-pass');   // relevant, so the pass is admitted
-  deliver(env);
   env.advance(200);                                   // past the 180ms window
+  env.fire(env.windowObj, 'resize');                   // direct viewport authority
   env.flushFrame();
 
   eq(env.railProbes(), 1, 'the rail visibility read is retained on an admitted pass');
