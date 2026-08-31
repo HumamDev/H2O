@@ -1,6 +1,7 @@
 # Saved Chat Archive Reclamation — Governed GC Contract
 
-Status: Normative / M06 Phase P0 contract freeze — **M06 is ACTIVE and NOT Complete**
+Status: Normative / M06 Phase P0 contract freeze — **M06 is COMPLETE / ACCEPTED**
+(G3 passed 2026-08-31)
 
 Date: 2026-08-28
 
@@ -20,6 +21,7 @@ Related:
 - [ADR-0009 — Chat Saving Architecture](../../decisions/ADR-0009-chat-saving-architecture.md)
 - [ADR-0010 — Saved Chat Asset CAS](../../decisions/ADR-0010-saved-chat-asset-cas.md)
 - [M05 acceptance record](../../../release-evidence/2026-08-28/saved-chat-storage-m05-acceptance.md)
+- [M06 acceptance record](../../../release-evidence/2026-08-31/saved-chat-storage-m06-acceptance.md)
 
 ## A. Mission, authority and scope
 
