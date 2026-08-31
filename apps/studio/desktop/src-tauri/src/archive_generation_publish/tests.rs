@@ -493,6 +493,22 @@ fn concurrent_writers_never_clean_beneath_an_in_flight_operation() {
 
 // ── STAGING MATCHER / CONFIG TRIPWIRE (§R.1) ───────────────────────────────
 
+/// M06 T1.2: neither reserved identity may enter the archive as a chatId, in
+/// any ASCII casing. A chatId becomes a package basename, so admitting one
+/// would let caller-controlled input occupy a reserved infrastructure name.
+#[test]
+fn reserved_m06_identities_are_refused_as_chat_ids() {
+    for exact in crate::archive_durable_write::RESERVED_EXACT_COMPONENTS {
+        for candidate in [exact.to_string(), exact.to_ascii_uppercase()] {
+            assert_eq!(
+                super::validated_chat_id(&candidate).err(),
+                Some("generation-chat-id-reserved-namespace"),
+                "{candidate} must be refused as a chatId"
+            );
+        }
+    }
+}
+
 /// Executes the PINNED matcher semantics rather than asserting on source text.
 /// `require_literal_leading_dot` is what makes the renderer's `archive/**`
 /// scope unable to reach the private dot-leading staging namespace, and that
@@ -515,13 +531,35 @@ fn the_pinned_glob_matcher_denies_every_renderer_reach_into_staging() {
     let staging = format!("/AppLocalData/archive/packages/{STAGING_PREFIX}0011/manifest.json");
     let staging_dir = format!("/AppLocalData/archive/packages/{STAGING_PREFIX}0011");
 
+    // M06 T1.2: the same dot-leading exclusion covers the reserved instance
+    // lock and the reserved quarantine namespace, INCLUDING paths beneath the
+    // namespace -- the leading dot is on the namespace component itself.
+    let lock = format!(
+        "/AppLocalData/archive/{}",
+        crate::archive_durable_write::ARCHIVE_LOCK_COMPONENT
+    );
+    let reclaim = format!(
+        "/AppLocalData/archive/{}",
+        crate::archive_durable_write::RECLAIM_NAMESPACE_COMPONENT
+    );
+    let reclaim_child = format!(
+        "/AppLocalData/archive/{}/run-1/receipt.json",
+        crate::archive_durable_write::RECLAIM_NAMESPACE_COMPONENT
+    );
+
     // The real archive scopes granted to the renderer today.
     for scope in [
         "/AppLocalData/archive/**",          // write-file, read-file, lstat, mkdir
         "/AppLocalData/archive/packages/**", // read-dir
     ] {
         let pattern = Pattern::new(scope).expect("valid scope pattern");
-        for probe in [staging.as_str(), staging_dir.as_str()] {
+        for probe in [
+            staging.as_str(),
+            staging_dir.as_str(),
+            lock.as_str(),
+            reclaim.as_str(),
+            reclaim_child.as_str(),
+        ] {
             assert!(
                 !pattern.matches_with(probe, opts),
                 "scope {scope} must NOT reach staging path {probe} — the \

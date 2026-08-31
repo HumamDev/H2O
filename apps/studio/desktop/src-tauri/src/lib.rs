@@ -70,6 +70,58 @@ pub mod f5h_final_validation_seed;
 // source path is accepted from the renderer and no delete authority exists.
 pub mod archive_durable_write;
 
+/// M06 T3.1 — quarantine namespace and confined purge primitive. DORMANT:
+/// registers no command, is unreachable from the renderer, and can only remove
+/// data already inside `archive/.h2o-reclaim`. G02 remains the activation gate.
+pub mod archive_reclaim;
+
+/// M06 T3.2 — generation reclamation execution under full preflight. DORMANT:
+/// registers no command and is unreachable from the renderer.
+pub mod archive_reclaim_execute;
+
+/// M06 T3.4 — governed occupant quarantine. DORMANT: registers no command and
+/// is unreachable from the renderer. Quarantine only — it holds no purge
+/// authority, because occupant action dwells.
+pub mod archive_occupant_quarantine;
+
+/// M06 T3.5 — stale quarantine convergence. DORMANT: registers no command and
+/// is unreachable from the renderer. Acts only on PRIOR runs, through typed
+/// run/item structure and the T3.1 confined purge.
+pub mod archive_reclaim_recovery;
+
+/// M06 T2.3 — READ-ONLY reclamation Preview / Analyze command. Orchestrates
+/// the trusted engine; owns no authority and mutates nothing.
+pub mod archive_reclamation_preview;
+
+/// M06 T2.2 — trusted READ-ONLY canonical CAS inventory, for read-only orphan
+/// analysis. Observes only; no CAS mutation authority exists.
+pub mod archive_cas_scan;
+
+/// M06 T2.2 — READ-ONLY retention computation and plan model. Pure: no
+/// filesystem, no database, no clock, no command, and nothing executable.
+pub mod archive_retention_plan;
+
+/// M06 T2.1 — trusted READ-ONLY enumerate / verify / classify over the
+/// canonical package namespace. Registers no command and mutates nothing.
+pub mod archive_package_scan;
+
+/// M06 T1.5 — trusted ordering foundation for verified generations. Pure:
+/// no filesystem, no database, no renderer input, and no command.
+pub mod archive_generation_order;
+
+/// M06 T1.4 — trusted READ-ONLY SQLite protection probe. Supplies protection
+/// facts to future reclamation machinery; registers no command and decides
+/// nothing.
+pub mod archive_db_probe;
+
+/// M06 T1.3 — trusted READ-ONLY durable-temp residue probe. Registers one
+/// diagnostics command that creates, removes, renames and writes nothing.
+pub mod archive_residue_probe;
+
+/// M06 T1.1 — archive instance-presence lock and in-process mutation gate.
+/// Non-destructive: it registers no command and can delete nothing.
+pub mod archive_instance_lock;
+
 // M05 T1.2.1: trusted staged publication of immutable saved-chat archive
 // generations. Purpose-bounded and SEPARATE from the CAS-scoped durable write
 // above — the renderer names only a semantic chatId, a member enum and bytes,
@@ -2522,6 +2574,10 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            archive_residue_probe::h2o_archive_durable_temp_residue,
+            archive_reclamation_preview::h2o_archive_reclamation_preview,
+            archive_reclaim_execute::h2o_archive_reclamation_execute,
+            archive_occupant_quarantine::h2o_archive_occupant_quarantine,
             dev_seed_f5h_final_validation_synthetic_rows,
             dev_teardown_f5h_final_validation_synthetic_rows
         ]
@@ -2556,7 +2612,11 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_begin,
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
-            archive_generation_publish::h2o_archive_generation_abort
+            archive_generation_publish::h2o_archive_generation_abort,
+            archive_residue_probe::h2o_archive_durable_temp_residue,
+            archive_reclamation_preview::h2o_archive_reclamation_preview,
+            archive_reclaim_execute::h2o_archive_reclamation_execute,
+            archive_occupant_quarantine::h2o_archive_occupant_quarantine
         ]
     };
 }
@@ -2571,6 +2631,24 @@ pub fn run() {
         // survive across invokes, so the publisher is app state rather than
         // per-command.
         .manage(archive_generation_publish::PublisherState::default())
+        .manage(archive_instance_lock::ArchiveInstanceState::default())
+        // M06 T1.1: instance-lifetime participation in the archive presence
+        // protocol. Established here, at startup, rather than lazily on the
+        // first archive mutation: the contract requires every M06-aware
+        // instance to participate for its lifetime, which is strictly stronger
+        // than "every instance that eventually mutates". A failure is NOT fatal
+        // to startup -- reads stay available -- but it leaves presence
+        // unproven, so trusted archive mutation refuses with the retryable
+        // environmental code until shared participation is established.
+        .setup(|app| {
+            use tauri::Manager;
+            let handle = app.handle().clone();
+            let state = app.state::<archive_instance_lock::ArchiveInstanceState>();
+            if let Err(code) = archive_instance_lock::establish_startup_presence(&handle, &state) {
+                eprintln!("[h2o] archive instance presence unavailable at startup: {code}");
+            }
+            Ok(())
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())

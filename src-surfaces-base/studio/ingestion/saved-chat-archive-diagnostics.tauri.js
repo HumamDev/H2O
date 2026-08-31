@@ -260,7 +260,84 @@
         failed: 0,
       },
       packages: [],
+      /* M06 T1.3: read-only staging/temp residue evidence, closing the M05
+       * gap recorded in saved-chat-generations.md: "diagnostics report residue
+       * count and exact paths; no delete authority."
+       *
+       * `count` is DERIVED from `entries.length`, never tracked separately, so
+       * the two cannot drift. `complete` says whether the enumerated scope was
+       * fully walked; `scanned` and `unscanned` say what that scope IS, so a
+       * `count: 0` is never mistaken for "no residue anywhere in the archive".
+       * Paths are evidence only -- nothing here confers mutation authority. */
+      residue: {
+        complete: false,
+        scanned: [],
+        unscanned: [],
+        sources: [],
+        count: 0,
+        entries: [],
+      },
     };
+  }
+
+  /* The reserved trusted staging/temp families of M05 section R and M06 T1.2.
+   * Deliberately NOT "anything that looks temporary": a foreign or stray file
+   * is reported by the existing archive-entry-* warnings, not counted as
+   * trusted-writer residue. The reserved instance lock and the reserved
+   * quarantine namespace are infrastructure, never residue. */
+  /* M06 T1.3: the durable CAS writer's temps live in archive/assets/<aa>/,
+   * where this surface holds no read-dir grant. A narrow trusted read-only
+   * command answers for that family instead of widening the renderer. */
+  var DURABLE_TEMP_RESIDUE_COMMAND = 'h2o_archive_durable_temp_residue';
+  var DURABLE_TEMP_ROOT = LIVE_CAS_ROOT;
+  var DURABLE_TEMP_FAMILY = '.h2o-durable-*.tmp';
+
+  async function probeDurableTempResidue() {
+    var source = {
+      root: DURABLE_TEMP_ROOT,
+      family: DURABLE_TEMP_FAMILY,
+      complete: false,
+      entries: [],
+      reason: '',
+    };
+    var invoke = getInvoke();
+    if (!invoke) {
+      source.reason = 'tauri-invoke-unavailable';
+      return source;
+    }
+    try {
+      var probe = await invoke(DURABLE_TEMP_RESIDUE_COMMAND);
+      var payload = safeObject(probe);
+      /* Completeness is only ever ADOPTED from an explicit true. A malformed or
+       * partial payload stays incomplete. */
+      source.complete = payload.complete === true;
+      source.entries = asArray(payload.entries).map(function (entry) {
+        var item = safeObject(entry);
+        return {
+          name: cleanString(item.name),
+          path: cleanString(item.path),
+          kind: cleanString(item.kind) || 'durable-temp',
+        };
+      });
+      if (!source.complete) source.reason = 'probe-incomplete';
+      return source;
+    } catch (err) {
+      recordError(DURABLE_TEMP_RESIDUE_COMMAND, err);
+      source.reason = 'probe-failed';
+      return source;
+    }
+  }
+
+  var RESIDUE_STAGING_PREFIX = '.h2o-genstage-';
+  var RESIDUE_TEMP_PREFIX = '.h2o-durable-';
+  var RESIDUE_TEMP_SUFFIX = '.tmp';
+
+  function residueKindForName(name) {
+    var text = cleanString(name);
+    if (!text) return '';
+    if (text.indexOf(RESIDUE_STAGING_PREFIX) === 0) return 'generation-staging';
+    if (text.indexOf(RESIDUE_TEMP_PREFIX) === 0 && /\.tmp$/.test(text)) return 'durable-temp';
+    return '';
   }
 
   function entryName(entry) {
@@ -424,6 +501,8 @@
         assetSummary.passed += 1;
       }
     });
+    /* Derived from the list itself so a count can never outlive its entries. */
+    counts.residueTotal = asArray(result.residue && result.residue.entries).length;
     result.counts = Object.assign({}, result.counts || {}, counts);
     result.assetChecks = assetSummary;
     result.dbChecks = dbSummary;
@@ -465,10 +544,23 @@
     var bounded = isFiniteNumber(opts.limit) && opts.limit > 0;
     var limit = bounded ? Math.floor(opts.limit) : Infinity;
     var result = rootResult();
+    var stagingSource = {
+      root: PACKAGE_ROOT,
+      family: RESIDUE_STAGING_PREFIX + '*',
+      complete: false,
+      entries: [],
+      reason: '',
+    };
+    /* Probed on EVERY path, including the early returns below: a result that
+     * skipped the probe must never present itself as complete. */
+    var durableSource = await probeDurableTempResidue();
     try {
       var rootExists = await fsExists(PACKAGE_ROOT);
       if (!rootExists) {
         result.warnings.push(makeIssue('archive-packages-root-missing', 'archive package root is missing'));
+        /* A missing package root is a PROVEN absence of staging residue. */
+        stagingSource.complete = true;
+        finalizeResidue(result, [stagingSource, durableSource]);
         return setAggregateStatus(result, true);
       }
       var entries = asArray(await fsReadDir(PACKAGE_ROOT));
@@ -478,6 +570,18 @@
         if (!name) {
           result.warnings.push(makeIssue('archive-entry-name-missing', 'archive package entry has no readable name'));
           continue;
+        }
+        /* Recorded BEFORE the existing branches so residue evidence is
+         * gathered without changing which warning any entry already produced.
+         * Both reserved families are captured whether they land as a directory
+         * (staging) or a file (temp). */
+        var residueKind = residueKindForName(name);
+        if (residueKind) {
+          stagingSource.entries.push({
+            name: name,
+            path: entryPath(entry, name),
+            kind: residueKind,
+          });
         }
         if (!entryIsDirectory(entry)) {
           result.warnings.push(makeIssue('archive-entry-not-directory', 'archive entry is not a package directory', { name: name }));
@@ -497,13 +601,65 @@
         result.truncated = true;
         result.blockers.push(makeIssue('archive-package-inventory-truncated', 'archive package inventory was bounded and did not enumerate every entry; this result must not be used to conclude a package is absent', { limit: limit, entries: entries.length }));
       }
+      /* Residue authority is exactly the enumeration authority: a bounded walk
+       * stops early, so it cannot support a zero-residue conclusion either. */
+      stagingSource.complete = result.complete === true;
+      finalizeResidue(result, [stagingSource, durableSource]);
       state.lastRunAt = result.generatedAt;
       return setAggregateStatus(result, true);
     } catch (err) {
       recordError('listSavedChatArchivePackagesV1', err);
       result.blockers.push(makeIssue('archive-package-list-failed', 'archive package inventory failed', String((err && err.message) || err)));
+      /* The walk threw: whatever was collected is a partial observation and
+       * must never read as authoritative zero. */
+      stagingSource.complete = false;
+      stagingSource.reason = 'enumeration-failed';
+      finalizeResidue(result, [stagingSource, durableSource]);
       return setAggregateStatus(result, false);
     }
+  }
+
+  /* Seals the residue block: deterministic order, derived count, and an
+   * explicit statement of what was NOT looked at.
+   *
+   * `.h2o-durable-*.tmp` is created by the trusted CAS writer inside the shard
+   * directory `archive/assets/<aa>/`, and this surface holds fs:allow-read-dir
+   * for archive/packages only. That family therefore cannot be enumerated from
+   * here at all, so it is declared unscanned rather than silently contributing
+   * zero. Reaching it would require a renderer capability change, which T1.3
+   * is not authorized to make. */
+  function finalizeResidue(result, sources) {
+    var residue = result.residue;
+    var entries = [];
+    var list = asArray(sources);
+    list.forEach(function (source) {
+      asArray(source.entries).forEach(function (entry) { entries.push(entry); });
+    });
+    entries.sort(function (a, b) {
+      if (a.path < b.path) return -1;
+      if (a.path > b.path) return 1;
+      return 0;
+    });
+    residue.entries = entries;
+    /* DERIVED, both of them. `count` cannot outlive its list, and completeness
+     * cannot be asserted independently of the sources that established it --
+     * so "a failed probe plus an empty staging list" can never compose into an
+     * authoritative zero. */
+    residue.count = entries.length;
+    residue.sources = list.map(function (source) {
+      return {
+        root: source.root,
+        family: source.family,
+        complete: source.complete === true,
+        reason: source.complete === true ? '' : (source.reason || 'incomplete'),
+      };
+    });
+    residue.scanned = residue.sources
+      .filter(function (source) { return source.complete; })
+      .map(function (source) { return source.root; });
+    residue.unscanned = residue.sources.filter(function (source) { return !source.complete; });
+    residue.complete = residue.unscanned.length === 0;
+    return result;
   }
 
   function packageDiagnostic(packagePath) {
@@ -1378,6 +1534,12 @@
     var result = rootResult(list.generatedAt);
     result.blockers = list.blockers.slice();
     result.warnings = list.warnings.slice();
+    /* rootResult() starts with an EMPTY residue block; without carrying the
+     * inventory's findings the aggregate would report an authoritative zero it
+     * never established. Completeness carries with it. */
+    result.residue = list.residue;
+    result.complete = list.complete;
+    result.truncated = list.truncated;
     for (var i = 0; i < list.packages.length; i += 1) {
       result.packages.push(await validateSavedChatPackageV1({
         packagePath: list.packages[i].packagePath,

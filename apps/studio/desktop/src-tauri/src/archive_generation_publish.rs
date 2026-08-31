@@ -413,6 +413,9 @@ fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
     if crate::archive_durable_write::RESERVED_COMPONENT_PREFIXES
         .iter()
         .any(|prefix| lowered.starts_with(&prefix.to_ascii_lowercase()))
+        || crate::archive_durable_write::RESERVED_EXACT_COMPONENTS
+            .iter()
+            .any(|exact| lowered == exact.to_ascii_lowercase())
     {
         return Err("generation-chat-id-reserved-namespace");
     }
@@ -484,6 +487,14 @@ impl Default for Registry {
 }
 
 impl Registry {
+    /// Number of admitted sessions, INCLUDING in-flight commits. M06 T1.1
+    /// exposes this so a future reclamation preflight can require an empty
+    /// registry (contract §D). Read-only: it admits, evicts and mutates
+    /// nothing.
+    pub fn admitted_len(&self) -> usize {
+        self.admitted.lock().map(|n| *n).unwrap_or(usize::MAX)
+    }
+
     pub fn new() -> Self {
         Registry::default()
     }
@@ -522,6 +533,12 @@ impl Publisher {
             root: root.into(),
             registry: Registry::new(),
         }
+    }
+
+    /// True when no session is admitted and no commit is in flight. Reserved
+    /// for the future reclamation preflight; nothing in T1.1 reclaims.
+    pub fn sessions_empty(&self) -> bool {
+        self.registry.admitted_len() == 0
     }
 
     fn packages_dir(&self) -> Result<confined::Dir, String> {
@@ -942,6 +959,17 @@ fn v2_content_pre_image(snapshot_sha: &str, sorted_asset_shas: &[String]) -> Str
     out
 }
 
+/// Test-only access to the identity derivation, so a T2.1 fixture can build a
+/// coherent v2 manifest with the REAL algorithm instead of restating it.
+#[cfg(test)]
+pub(crate) fn derive_content_hash_for_test(
+    payload_v2: bool,
+    snapshot_bytes: &[u8],
+    sorted_asset_shas: &[String],
+) -> String {
+    derive_content_hash(payload_v2, snapshot_bytes, sorted_asset_shas)
+}
+
 /// Derives the package content hash from the STAGED BYTES.
 ///
 /// v1: SHA-256 of the exact staged `snapshot.json` bytes. The bytes are never
@@ -963,22 +991,22 @@ fn derive_content_hash(
 // ── Manifest validation (§S, §V) ───────────────────────────────────────────
 
 #[derive(Debug)]
-struct AssetDescriptor {
-    path: String,
-    sha256: String,
-    ext: String,
-    byte_length: u64,
+pub(crate) struct AssetDescriptor {
+    pub(crate) path: String,
+    pub(crate) sha256: String,
+    pub(crate) ext: String,
+    pub(crate) byte_length: u64,
 }
 
 #[derive(Debug)]
-struct ValidatedManifest {
-    chat_id: String,
-    snapshot_id: String,
-    content_hash: String,
-    payload_v2: bool,
-    assets: Vec<AssetDescriptor>,
+pub(crate) struct ValidatedManifest {
+    pub(crate) chat_id: String,
+    pub(crate) snapshot_id: String,
+    pub(crate) content_hash: String,
+    pub(crate) payload_v2: bool,
+    pub(crate) assets: Vec<AssetDescriptor>,
     /// key -> (sha256, byteLength)
-    files: BTreeMap<String, (String, u64)>,
+    pub(crate) files: BTreeMap<String, (String, u64)>,
 }
 
 fn json_str(value: &serde_json::Value, key: &str) -> String {
@@ -1591,65 +1619,70 @@ fn commit_consumed(
     }
 }
 
-/// Classifies an occupying generation. TRUSTED-SIDE ONLY — the renderer never
-/// adjudicates this (§N.2). The occupant is never overwritten, repaired or
-/// deleted.
-fn classify_occupant(
+/// The trusted facts `verify_occupant` establishes about a package on disk.
+///
+/// M06 T2.1 consumes this so the read-only engine reuses the publisher's
+/// verification authority verbatim instead of running an "almost equivalent"
+/// second verifier. `content_hash` is RECOMPUTED from the stored bytes — never
+/// the filename's or the manifest's claim.
+pub(crate) struct VerifiedOccupant {
+    pub(crate) dir: confined::Dir,
+    pub(crate) manifest: ValidatedManifest,
+    pub(crate) snapshot_bytes: Vec<u8>,
+    pub(crate) content_hash: String,
+}
+
+/// The authoritative occupant verification, factored out of `classify_occupant`
+/// UNCHANGED so both the publisher and the M06 read-only engine share exactly
+/// one implementation.
+///
+/// It performs every structural check the publisher already performed: symlinks
+/// are refused and never followed, required members must be present, the
+/// manifest must validate, every DECLARED asset member is re-hashed and
+/// length-checked, the snapshot cross-binding must hold, the `files.snapshot`
+/// descriptor must match the stored bytes, and the derived contentHash must
+/// agree with the manifest's.
+///
+/// TRUSTED-SIDE ONLY — the renderer never adjudicates this (§N.2). The occupant
+/// is never overwritten, repaired or deleted.
+pub(crate) fn verify_occupant(
     packages: &confined::Dir,
     name: &[u8],
-    expected_content_hash: &str,
-    session_chat_id: &str,
-) -> (Outcome, &'static str, Vec<Blocker>) {
+) -> Result<VerifiedOccupant, (Outcome, &'static str)> {
     let st = match packages.stat_child_nofollow(name) {
         Ok(Some(st)) => st,
         _ => {
-            return (
-                Outcome::GenerationOccupantUnreadable,
-                "generation-occupant-unreadable",
-                Vec::new(),
-            )
+            return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"))
         }
     };
     if confined::is_symlink(&st) {
         // Neither valid nor an identity, so NOT "foreign" (§N.2 fixes that as
         // "occupant valid but a different identity"). Never followed.
-        return (
-            Outcome::GenerationOccupantUnreadable,
-            "generation-occupant-unreadable",
-            Vec::new(),
-        );
+        return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"));
     }
     let dir = match packages.open_child_nofollow(name) {
         Ok(dir) => dir,
         Err(_) => {
-            return (
-                Outcome::GenerationOccupantUnreadable,
-                "generation-occupant-unreadable",
-                Vec::new(),
-            )
+            return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"))
         }
     };
     let manifest_bytes = match read_staged_member(&dir, Member::Manifest) {
         Ok(bytes) => bytes,
-        Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
+        Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
     };
     let snapshot_bytes = match read_staged_member(&dir, Member::Snapshot) {
         Ok(bytes) => bytes,
-        Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
+        Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
     };
     if read_staged_member(&dir, Member::Markdown).is_err()
         || read_staged_member(&dir, Member::Html).is_err()
     {
-        return (Outcome::GenerationPartial, "generation-partial", Vec::new());
+        return Err((Outcome::GenerationPartial, "generation-partial"));
     }
     let manifest = match validate_manifest(&manifest_bytes) {
         Ok(manifest) => manifest,
         Err(_) => {
-            return (
-                Outcome::GenerationDestinationCorrupt,
-                "generation-destination-corrupt",
-                Vec::new(),
-            )
+            return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
         }
     };
     // §N.2 step "verify the required members are present": the governed
@@ -1667,44 +1700,28 @@ fn classify_occupant(
     if !manifest.assets.is_empty() {
         let assets = match dir.open_child_nofollow(b"assets") {
             Ok(dir) => dir,
-            Err(_) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
+            Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
         };
         for asset in &manifest.assets {
             let member_name = format!("{}.{}", asset.sha256, asset.ext);
             let st = match assets.stat_child_nofollow(member_name.as_bytes()) {
                 Ok(Some(st)) => st,
-                Ok(None) => return (Outcome::GenerationPartial, "generation-partial", Vec::new()),
+                Ok(None) => return Err((Outcome::GenerationPartial, "generation-partial")),
                 Err(_) => {
-                    return (
-                        Outcome::GenerationDestinationCorrupt,
-                        "generation-destination-corrupt",
-                        Vec::new(),
-                    )
+                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
                 }
             };
             if !confined::is_regular(&st) {
-                return (
-                    Outcome::GenerationDestinationCorrupt,
-                    "generation-destination-corrupt",
-                    Vec::new(),
-                );
+                return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
             }
             match hash_child(&assets, member_name.as_bytes()) {
                 Ok((hex, len)) => {
                     if len != asset.byte_length || format!("sha256-{hex}") != asset.sha256 {
-                        return (
-                            Outcome::GenerationDestinationCorrupt,
-                            "generation-destination-corrupt",
-                            Vec::new(),
-                        );
+                        return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
                     }
                 }
                 Err(_) => {
-                    return (
-                        Outcome::GenerationDestinationCorrupt,
-                        "generation-destination-corrupt",
-                        Vec::new(),
-                    )
+                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
                 }
             }
         }
@@ -1714,11 +1731,7 @@ fn classify_occupant(
     // reader applies (manifest.chatId == snapshot.chatId, snapshotId agreement,
     // asset refs ⊆ manifest). A verification failure is CORRUPT, not foreign.
     if validate_snapshot_cross_binding(&snapshot_bytes, &manifest, &manifest.chat_id).is_err() {
-        return (
-            Outcome::GenerationDestinationCorrupt,
-            "generation-destination-corrupt",
-            Vec::new(),
-        );
+        return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
     }
 
     // The governed reader hard-blocks `snapshot-sha-mismatch` for v1/v2 when
@@ -1741,19 +1754,11 @@ fn classify_occupant(
             Some((declared_sha, declared_len)) => {
                 let actual = format!("sha256-{}", sha256_hex(&snapshot_bytes));
                 if *declared_len != snapshot_bytes.len() as u64 || *declared_sha != actual {
-                    return (
-                        Outcome::GenerationDestinationCorrupt,
-                        "generation-destination-corrupt",
-                        Vec::new(),
-                    );
+                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
                 }
             }
             None => {
-                return (
-                    Outcome::GenerationDestinationCorrupt,
-                    "generation-destination-corrupt",
-                    Vec::new(),
-                )
+                return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
             }
         }
     }
@@ -1762,12 +1767,38 @@ fn classify_occupant(
     sorted.sort();
     let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted);
     if derived != manifest.content_hash {
-        return (
+        return Err((
             Outcome::GenerationDestinationCorrupt,
             "generation-destination-corrupt",
-            Vec::new(),
-        );
+        ));
     }
+
+    Ok(VerifiedOccupant {
+        dir,
+        manifest,
+        snapshot_bytes,
+        content_hash: derived,
+    })
+}
+
+/// Classifies an occupying generation against THIS session's expected identity.
+/// The structural verification above is shared; only the session comparison and
+/// the presentation advisory live here.
+fn classify_occupant(
+    packages: &confined::Dir,
+    name: &[u8],
+    expected_content_hash: &str,
+    session_chat_id: &str,
+) -> (Outcome, &'static str, Vec<Blocker>) {
+    let VerifiedOccupant {
+        dir,
+        manifest,
+        snapshot_bytes: _,
+        content_hash: derived,
+    } = match verify_occupant(packages, name) {
+        Ok(verified) => verified,
+        Err((outcome, code)) => return (outcome, code, Vec::new()),
+    };
     // §D's join, reduced to its only free variable here. UNREACHABLE in
     // practice and deliberately kept as defence in depth: reaching it requires
     // an occupant whose snapshot bytes hash exactly as ours while naming a
@@ -1913,8 +1944,13 @@ fn member_from_name(name: &str) -> Option<Member> {
 pub async fn h2o_archive_generation_begin(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: BeginOptions,
 ) -> Result<BeginResult, String> {
+    // M06 T1.1: entered for THIS invoke only. A generation session spans
+    // BEGIN -> WRITE MEMBER -> COMMIT as separate invokes, so the guard must
+    // never straddle them; session lifetime stays owned by the registry.
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(begin(&publisher, &options.chat_id))
 }
@@ -1923,8 +1959,10 @@ pub async fn h2o_archive_generation_begin(
 pub async fn h2o_archive_generation_write_member(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<AckResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let options: MemberOptions = crate::archive_durable_write::required_options(&request)?;
     let member = match member_from_name(&options.member) {
         Some(member) => member,
@@ -1940,8 +1978,10 @@ pub async fn h2o_archive_generation_write_member(
 pub async fn h2o_archive_generation_commit(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: CommitOptions,
 ) -> Result<PublishResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(commit(
         &publisher,
@@ -1954,8 +1994,10 @@ pub async fn h2o_archive_generation_commit(
 pub async fn h2o_archive_generation_abort(
     app: tauri::AppHandle,
     state: tauri::State<'_, PublisherState>,
+    gate: tauri::State<'_, crate::archive_instance_lock::ArchiveInstanceState>,
     options: AbortOptions,
 ) -> Result<AckResult, String> {
+    let _mutation = crate::archive_instance_lock::enter_mutation_for(&app, &gate)?;
     let publisher = publisher_for(&app, &state)?;
     Ok(abort(&publisher, options.token))
 }

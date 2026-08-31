@@ -37,6 +37,12 @@ sha2 = "0.10"
 # deps so archive_durable_write.rs can `use` them cleanly.
 libc = "0.2"
 percent-encoding = "2"
+# M06 T1.5: strict RFC 3339 parsing for the trusted savedAt ordering key.
+# `time` is ALREADY in this crate's dependency graph (transitively, at the same
+# 0.3 line), so naming it directly adds no new crate to the build; only the
+# `parsing` feature is requested. Preferred over hand-rolling calendar
+# arithmetic inside a security-sensitive ordering primitive.
+time = { version = "0.3", features = ["parsing"] }
 
 [profile.release]
 panic = "abort"

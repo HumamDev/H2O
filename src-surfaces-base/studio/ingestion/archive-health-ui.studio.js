@@ -570,6 +570,17 @@
       }
     } catch (_) { /* exporter card must never break the read-only health card */ }
 
+    // M06 T2.4: mount the New-UI-only, READ-ONLY storage/reclamation overview
+    // as a sibling beneath this card. It exposes exactly one action, Analyze,
+    // and no destructive control; this health card is unchanged and still
+    // performs no mutation.
+    try {
+      var reclamationApi = H2O.Studio && H2O.Studio.reclamationUi;
+      if (reclamationApi && typeof reclamationApi.mountReclamationCard === 'function') {
+        reclamationApi.mountReclamationCard(container);
+      }
+    } catch (_) { /* reclamation card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 
