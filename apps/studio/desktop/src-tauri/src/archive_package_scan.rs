@@ -254,6 +254,14 @@ pub(crate) fn name_shape(name: &str) -> NameShape {
     }
 }
 
+/// Canonical grandfathered legacy basename. The caller still has to validate
+/// `chat_id` through the publisher's single chat-id authority before using it.
+/// Kept beside `name_shape` so legacy construction and parsing cannot grow two
+/// independent grammars.
+pub(crate) fn legacy_basename(chat_id: &str) -> String {
+    format!("{chat_id}{PACKAGE_SUFFIX}")
+}
+
 fn indeterminate_for(outcome: Outcome) -> IndeterminateReason {
     match outcome {
         Outcome::GenerationPartial => IndeterminateReason::Partial,

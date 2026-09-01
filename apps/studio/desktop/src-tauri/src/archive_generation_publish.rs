@@ -69,11 +69,11 @@ pub const CHUNK_CAP_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Concurrently admitted sessions. Bounds concurrent OPERATIONS, never bytes —
 /// a large valid package still publishes (§R.2-A).
-const MAX_ADMITTED_SESSIONS: usize = 4;
+pub(crate) const MAX_ADMITTED_SESSIONS: usize = 4;
 
 /// Idle period after which an abandoned session may be evicted. Operational
 /// constant, not a product value (§Q).
-const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+pub(crate) const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// OPERATIONAL RESOURCE POLICY (§R.2), not package format authority and not a
 /// package-size limit. Refusing to consume the last of the disk keeps the
@@ -86,7 +86,7 @@ const STAGING_NAME_ATTEMPTS: u32 = 8;
 /// Fixed streaming window. Bounds working memory for member and CAS reads so
 /// nothing is proportional to member size (§W, "Member bounds"). Not a member
 /// or package ceiling.
-const STREAM_WINDOW_BYTES: usize = 256 * 1024;
+pub(crate) const STREAM_WINDOW_BYTES: usize = 256 * 1024;
 
 /// Test-only seam forcing the post-promotion parent fence to report failure,
 /// so the frozen "promotion is the commit point" rule is provable. Production
@@ -116,7 +116,7 @@ fn parent_fence(dir: &confined::Dir) -> bool {
 /// quit session leaves residue that would deterministically collide with the
 /// first BEGIN of every subsequent launch and eventually wedge it. The sibling
 /// durable-write module mitigates the same hazard by mixing in the pid.
-fn random_token_seed() -> u64 {
+pub(crate) fn random_token_seed() -> u64 {
     let mut buf = [0u8; 8];
     // getentropy(2) is available on macOS and Linux; on failure fall back to a
     // process/time mix, which is weaker but still non-replaying.
@@ -276,7 +276,7 @@ impl PublishResult {
 /// So the token crosses the IPC boundary as decimal text and is parsed back to
 /// the exact u64 here. Callers must treat it as opaque: it is an identifier,
 /// never a number to compute with.
-mod ipc_token {
+pub(crate) mod ipc_token {
     use serde::de::{Error as DeError, Unexpected, Visitor};
     use serde::{Deserializer, Serializer};
     use std::fmt;
@@ -370,7 +370,7 @@ impl AckResult {
 /// The trusted side re-validates the renderer's `chatId` against the frozen
 /// charset before ANY path construction. The renderer's string is an input to
 /// validation, never a path fragment taken on trust.
-fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
+pub(crate) fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
     if chat_id.is_empty() {
         return Err("generation-chat-id-empty");
     }
@@ -429,7 +429,7 @@ fn validated_chat_id(chat_id: &str) -> Result<&str, &'static str> {
 }
 
 /// `<chatId>.g<64 lowercase hex>.h2ochat` — derived here, never supplied.
-fn generation_basename(chat_id: &str, content_hash_hex: &str) -> String {
+pub(crate) fn generation_basename(chat_id: &str, content_hash_hex: &str) -> String {
     format!("{chat_id}.g{content_hash_hex}.h2ochat")
 }
 
@@ -995,11 +995,14 @@ pub(crate) struct AssetDescriptor {
     pub(crate) path: String,
     pub(crate) sha256: String,
     pub(crate) ext: String,
+    pub(crate) mime_type: String,
     pub(crate) byte_length: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct ValidatedManifest {
+    pub(crate) schema_version: u64,
+    pub(crate) payload_version: Option<u64>,
     pub(crate) chat_id: String,
     pub(crate) snapshot_id: String,
     pub(crate) content_hash: String,
@@ -1123,6 +1126,7 @@ fn validate_manifest(bytes: &[u8]) -> Result<ValidatedManifest, &'static str> {
             path,
             sha256: sha.to_string(),
             ext,
+            mime_type: mime,
             byte_length,
         });
     }
@@ -1142,6 +1146,8 @@ fn validate_manifest(bytes: &[u8]) -> Result<ValidatedManifest, &'static str> {
     }
 
     Ok(ValidatedManifest {
+        schema_version: schema_version.expect("version triple validated above"),
+        payload_version,
         chat_id,
         snapshot_id,
         content_hash,
@@ -1319,7 +1325,7 @@ fn stream_cas_object_into(
 
 /// CAS object location, derived HERE from the validated identity. The renderer
 /// supplies no CAS source path (§W).
-fn cas_relative_parts(sha: &str) -> (String, String) {
+pub(crate) fn cas_relative_parts(sha: &str) -> (String, String) {
     let hex = sha.strip_prefix("sha256-").unwrap_or(sha);
     (hex[0..2].to_string(), format!("sha256-{hex}"))
 }
@@ -1628,6 +1634,7 @@ fn commit_consumed(
 pub(crate) struct VerifiedOccupant {
     pub(crate) dir: confined::Dir,
     pub(crate) manifest: ValidatedManifest,
+    pub(crate) manifest_bytes: Vec<u8>,
     pub(crate) snapshot_bytes: Vec<u8>,
     pub(crate) content_hash: String,
 }
@@ -1776,6 +1783,7 @@ pub(crate) fn verify_occupant(
     Ok(VerifiedOccupant {
         dir,
         manifest,
+        manifest_bytes,
         snapshot_bytes,
         content_hash: derived,
     })
@@ -1793,6 +1801,7 @@ fn classify_occupant(
     let VerifiedOccupant {
         dir,
         manifest,
+        manifest_bytes: _,
         snapshot_bytes: _,
         content_hash: derived,
     } = match verify_occupant(packages, name) {

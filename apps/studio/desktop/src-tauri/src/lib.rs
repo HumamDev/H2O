@@ -105,6 +105,11 @@ pub mod archive_retention_plan;
 /// canonical package namespace. Registers no command and mutates nothing.
 pub mod archive_package_scan;
 
+/// M07 P0/P1 — storage-owned, read-only immutable transport-object handoff.
+/// Semantic selectors only; retained verified handles expose bounded reads and
+/// carry no remote, path, credential, outbox, ledger or destructive authority.
+pub mod archive_transport_handoff;
+
 /// M06 T1.5 — trusted ordering foundation for verified generations. Pure:
 /// no filesystem, no database, no renderer input, and no command.
 pub mod archive_generation_order;
@@ -2574,6 +2579,9 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            archive_transport_handoff::h2o_archive_transport_handoff_begin,
+            archive_transport_handoff::h2o_archive_transport_handoff_read,
+            archive_transport_handoff::h2o_archive_transport_handoff_end,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
             archive_reclaim_execute::h2o_archive_reclamation_execute,
@@ -2613,6 +2621,9 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            archive_transport_handoff::h2o_archive_transport_handoff_begin,
+            archive_transport_handoff::h2o_archive_transport_handoff_read,
+            archive_transport_handoff::h2o_archive_transport_handoff_end,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
             archive_reclaim_execute::h2o_archive_reclamation_execute,
@@ -2631,6 +2642,7 @@ pub fn run() {
         // survive across invokes, so the publisher is app state rather than
         // per-command.
         .manage(archive_generation_publish::PublisherState::default())
+        .manage(archive_transport_handoff::HandoffState::default())
         .manage(archive_instance_lock::ArchiveInstanceState::default())
         // M06 T1.1: instance-lifetime participation in the archive presence
         // protocol. Established here, at startup, rather than lazily on the
