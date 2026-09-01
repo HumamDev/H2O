@@ -1997,6 +1997,37 @@
     });
   }
 
+  function mutationNodeContainsReference(node, reference) {
+    if (!node || !reference) return false;
+    if (node === reference) return true;
+    return node.nodeType === 1 && !!node.contains?.(reference);
+  }
+
+  function mutationNodeMayChangeInternalTitleTopology(node) {
+    if (!node || node.nodeType !== 1) return false;
+    const selector = 'form, #thread-bottom-container, .composer-parent, [data-testid="thread-disclaimer"], .ho-tab-title-under-input';
+    try {
+      return !!node.matches?.(selector) || !!node.querySelector?.(selector);
+    } catch {
+      return false;
+    }
+  }
+
+  function mutationBatchMayAffectInternalTitlePresentation(records, label = labelEl, host = titleHostEl, presentationExpected = true) {
+    if (!presentationExpected) return false;
+    const surfaceCurrent = !!label?.isConnected && !!host?.isConnected && label.parentElement === host;
+    if (!surfaceCurrent && (label || host)) return true;
+    for (const record of records || []) {
+      if (record?.type !== 'childList') continue;
+      const changedNodes = [...(record.addedNodes || []), ...(record.removedNodes || [])];
+      for (const node of changedNodes) {
+        if (mutationNodeContainsReference(node, label) || mutationNodeContainsReference(node, host)) return true;
+        if (mutationNodeMayChangeInternalTitleTopology(node)) return true;
+      }
+    }
+    return false;
+  }
+
   function init() {
     if (destroyed) return;
     ensureLabel();
@@ -2029,8 +2060,11 @@
     addCleanup(() => W.removeEventListener('popstate', onPopState));
     addCleanup(() => W.removeEventListener('evt:h2o:projects:changed', onProjectsChanged));
 
-    bodyObserver = new MutationObserver(() => {
-      refreshPresentationSoon('composer-dom-mutation');
+    bodyObserver = new MutationObserver((records) => {
+      const presentationExpected = !isProjectView() && !!getCurrentChatId();
+      if (mutationBatchMayAffectInternalTitlePresentation(records, labelEl, titleHostEl, presentationExpected)) {
+        refreshPresentationSoon('composer-dom-mutation');
+      }
       scheduleNativeDisclaimerVisibility();
       scheduleOpenMenuPositions();
     });

@@ -46,7 +46,9 @@ import process from 'node:process';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const ROOT = process.env.H2O_SRC_DIR
+  ? path.resolve(process.env.H2O_SRC_DIR)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const DOCK_PATH = 'src-runtime-base/3A1a.🟧🎖️ Dock Panel 🎖️.js';
 const DOCK_SOURCE = fs.readFileSync(path.join(ROOT, DOCK_PATH), 'utf8');
 
@@ -187,10 +189,17 @@ function createEnv() {
     cs: { close: 0, other: 0 },        // getComputedStyle
     op: { close: 0, other: 0 },        // offsetParent reads
     rects: { close: 0, other: 0 },     // getClientRects
+    bcr: { rail: 0, tmpl: 0, other: 0 },  // getBoundingClientRect: rail visibility probe / template sizing / other
+    queries: { nativeClose: 0 },          // selector work attributable to native-close discovery
     listenerOps: [],                   // {op:'add'|'remove', id, type, capture}
     nativeCloseAttrWrites: [],         // set/remove of data-h2o-native-close
+    rafRequests: 0,                    // frame requests (rail scheduling, see below)
     microtasks: [], raf: [], idle: [], timers: new Map(),
     timerSeq: 0, now: 0, seq: 0, observers: [],
+    // Wall clock the fixtures own. 3A1a's rail-ensure throttle reads Date.now(),
+    // so the throttle window must advance with env.advance() rather than with
+    // real time. Non-zero base: the throttle guard treats a falsy stamp as unset.
+    wall: 1700000000000,
   };
 
   class MStyle {
@@ -214,6 +223,12 @@ function createEnv() {
       this.dataset = {};
       this.__text = '';
     }
+    // Real elements report nodeType 1. The double omitted it, so production
+    // code that guards on element-ness the standard way saw every node as
+    // non-Element. Adding it makes the double more faithful, not more
+    // permissive: the fail-closed branch for a non-Element is still reachable
+    // by handing a record a plain object.
+    get nodeType() { return 1; }
     get parentElement() { return this.parentNode; }
     get children() { return this.childNodes.filter((n) => n instanceof MEl); }
     get isConnected() { let n = this; while (n) { if (n === documentElement) return true; n = n.parentNode; } return false; }
@@ -261,7 +276,11 @@ function createEnv() {
     matches(s) { return matchesSelector(this, s); }
     closest(s) { let n = this; while (n) { if (n instanceof MEl && matchesSelector(n, s)) return n; n = n.parentNode; } return null; }
     __desc(out = []) { for (const c of this.childNodes) if (c instanceof MEl) { out.push(c); c.__desc(out); } return out; }
-    querySelector(s) { for (const e of this.__desc()) if (matchesSelector(e, s)) return e; return null; }
+    querySelector(s) {
+      if (this.__mark === 'sidebar' && String(s).includes('close-sidebar-button')) state.queries.nativeClose += 1;
+      for (const e of this.__desc()) if (matchesSelector(e, s)) return e;
+      return null;
+    }
     querySelectorAll(s) { return this.__desc().filter((e) => matchesSelector(e, s)); }
     cloneNode() { const c = new MEl(this.tagName); for (const [k, v] of this.__attrs) c.__attrs.set(k, v); c.__text = this.__text; return c; }
     getRootNode() { let n = this; while (n.parentNode) n = n.parentNode; return n; }
@@ -294,6 +313,7 @@ function createEnv() {
       return this.__isVisibleTruth() ? [this.getBoundingClientRect()] : [];
     }
     getBoundingClientRect() {
+      state.bcr[this.__mark === 'rail' ? 'rail' : (this.__mark === 'rail-template-icon' ? 'tmpl' : 'other')] += 1;
       const r = this.__rect;
       return { left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height, width: r.width, height: r.height };
     }
@@ -420,19 +440,32 @@ function createEnv() {
     return { ...v, getPropertyValue: (k) => v[k] || '' };
   };
 
+  const MDate = new Proxy(Date, {
+    get: (t, k) => (k === 'now' ? () => state.wall : Reflect.get(t, k)),
+  });
+
   const sandbox = {
     window: windowObj, document: documentObj, localStorage, getComputedStyle,
     location: { pathname: '/c/11111111-2222-3333-4444-555555555555', href: 'https://chatgpt.com/c/x' },
     performance: { now: () => state.now },
     MutationObserver: MMutationObserver,
-    requestAnimationFrame: (fn) => { state.raf.push(fn); return state.raf.length; },
+    // Rail scheduling is now itself relevance-gated, so a batch can be refused
+    // BEFORE it schedules rather than at the 180ms window. Geometry counters
+    // cannot see that difference - a throttled pass and an unscheduled one both
+    // read nothing - so frame requests are counted separately.
+    //
+    // 3A1a requests a frame from exactly two places: the rail path, and
+    // CORE_DP_scheduleRender, which returns early unless the Dock panel is
+    // OPEN. Every fixture below keeps the Dock closed, so a request here is a
+    // rail schedule. `railSchedulesAreFaithful()` asserts that precondition.
+    requestAnimationFrame: (fn) => { state.rafRequests += 1; state.raf.push(fn); return state.raf.length; },
     cancelAnimationFrame: () => {},
     requestIdleCallback: (fn) => { state.idle.push(fn); return state.idle.length; },
     Event: class { constructor(t) { this.type = t; } },
     CustomEvent: class { constructor(t, o) { this.type = t; this.detail = o && o.detail; } },
     CSS: windowObj.CSS,
     console: { log() {}, warn() {}, error() {}, debug() {}, info() {} },
-    JSON, Math, Number, String, Object, Array, Boolean, Date, RegExp, Error, Set, Map,
+    JSON, Math, Number, String, Object, Array, Boolean, Date: MDate, RegExp, Error, Set, Map,
     isNaN, parseInt, parseFloat, Promise, Symbol,
   };
   sandbox.setTimeout = windowObj.setTimeout; sandbox.clearTimeout = windowObj.clearTimeout;
@@ -441,12 +474,13 @@ function createEnv() {
 
   const api = {
     state, sandbox, documentObj, windowObj, documentElement, body, head, localStorage, MEl,
-    el(tag, { cls, attrs, mark, vis, text } = {}) {
+    el(tag, { cls, attrs, mark, vis, text, rect } = {}) {
       const e = new MEl(tag);
       if (cls) e.className = cls;
       if (attrs) for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
       if (mark) e.__mark = mark;
       if (vis) e.__vis = { ...e.__vis, ...vis };
+      if (rect) e.__rect = { ...e.__rect, ...rect };
       if (text !== undefined) e.__text = text;
       return e;
     },
@@ -456,6 +490,7 @@ function createEnv() {
     flushIdle() { for (const fn of state.idle.splice(0)) fn({ timeRemaining: () => 5, didTimeout: false }); },
     advance(ms) {
       state.now += ms;
+      state.wall += ms;
       for (const [id, t] of [...state.timers.entries()]) {
         if (t.at <= state.now) { if (t.repeat) t.at = state.now + t.repeat; else state.timers.delete(id); t.fn(); }
       }
@@ -478,11 +513,29 @@ function createEnv() {
       state.cs.close = 0; state.cs.other = 0;
       state.op.close = 0; state.op.other = 0;
       state.rects.close = 0; state.rects.other = 0;
+      state.bcr.rail = 0; state.bcr.tmpl = 0; state.bcr.other = 0;
+      state.queries.nativeClose = 0;
+      state.rafRequests = 0;
       state.listenerOps.length = 0; state.nativeCloseAttrWrites.length = 0;
+    },
+    // Frame requests since the last reset. With the Dock closed this is the
+    // count of admitted rail schedules.
+    railSchedules: () => state.rafRequests,
+    railSchedulesAreFaithful() {
+      const panel = api.panelEl();
+      const openState = panel && String(panel.getAttribute('data-cgxui-state') || '');
+      return !openState || openState !== 'open';
     },
     // A discovery pass is uniquely identified by a visibility probe of the
     // native close node — DOM_DP_isVisible always reads getComputedStyle first.
     discoveryPasses: () => state.cs.close,
+    nativeDiscoveryQueries: () => state.queries.nativeClose,
+    // A rail visibility probe is uniquely identified by a getBoundingClientRect
+    // on the rail node - the one forced-layout read UI_DPANEL_ensureRailVisible makes.
+    railProbes: () => state.bcr.rail,
+    // The template sizing read: templateIconHost.getBoundingClientRect() inside
+    // UI_DPANEL_installRailButtons, used only to size a wrapper being created.
+    templateProbes: () => state.bcr.tmpl,
     counts: () => ({
       getComputedStyle: state.cs.close, offsetParent: state.op.close, getClientRects: state.rects.close,
     }),
@@ -536,13 +589,29 @@ function bootScene(env, opts) {
 
 // Boot alone never calls UI_DP_nativeClose_sync — only the rail observer and
 // the Dock-open path do. Drive one real observer round so the module reaches
-// its bound steady state before a fixture measures deltas from it.
+// its bound steady state before a fixture measures deltas from it. Under
+// Option A that round must be a SIDEBAR-RELEVANT structural change: transcript
+// churn no longer invalidates native-close discovery, so using it here would be
+// synthetic polling rather than a faithful steady state.
 function settleBinding(env, scene) {
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
   env.flushFrame();
+}
+
+// A legitimate native-domain invalidation: a selector-valid close candidate is
+// reinserted in the resolved sidebar. This changes candidate topology without
+// creating a duplicate and remains relevant even when the same node was bound.
+let sbSeq = 0;
+function mutateSidebar(env, scene) {
+  sbSeq += 1;
+  const n = scene.nativeClose || addNativeClose(env, scene);
+  n.setAttribute('data-cv338-topology-seq', String(sbSeq));
+  scene.sidebar.appendChild(n);
+  env.flushMicrotasks();   // deliver this observer batch, as production would
+  return n;                // rAF deliberately NOT flushed here
 }
 
 let mutSeq = 0;
@@ -565,9 +634,11 @@ fixture('DOCK_PANEL_MUST_COALESCE_NATIVE_CLOSE_DISCOVERY_WITHIN_ONE_FRAME', () =
   ok(scene.nativeClose.isConnected, 'precondition: native close connected');
 
   env.reset();
-  // K unrelated childList mutation batches, all before the next frame. They do
-  // not touch the native close, the sidebar, Dock state, visibility, or route.
-  for (let i = 0; i < K_BATCHES; i += 1) mutateUnrelated(env, scene);
+  // K sidebar-relevant childList mutation batches, all before the next frame.
+  // Every one of them legitimately requests native-close discovery, so this
+  // measures coalescing and nothing else. (Under Option A, irrelevant transcript
+  // batches request nothing at all — that separate contract is control G1.)
+  for (let i = 0; i < K_BATCHES; i += 1) mutateSidebar(env, scene);
   env.flushFrame(); // the single animation frame
 
   gate.passes = env.discoveryPasses();
@@ -577,19 +648,79 @@ fixture('DOCK_PANEL_MUST_COALESCE_NATIVE_CLOSE_DISCOVERY_WITHIN_ONE_FRAME', () =
   gate.identity = env.state.cs.close > 0 ? 'same node throughout' : 'n/a';
 
   atMost(gate.passes, 1,
-    `${K_BATCHES} unrelated same-frame mutation batches must produce at most ONE native-close discovery/visibility pass`);
+    `${K_BATCHES} relevant same-frame mutation batches must produce at most ONE native-close discovery/visibility pass`);
+  atLeast(gate.passes, 1, 'and the frame that owns them must actually discover');
 });
 
-// ══ CONTROL G / anti-degeneracy: cross-frame discovery stays live ═════════
-fixture('control G: a request on each later frame still discovers the native close', () => {
+// ══ CONTROL G1: irrelevant churn budget ══════════════════════════════════
+// Supersedes the retired control G, whose expectation (unrelated transcript
+// churn across frames must keep re-discovering) is exactly the over-broad
+// invalidation Option A removes. A stable sidebar with a stable bound button is
+// not invalidated by transcript churn, so that churn must cost nothing.
+fixture('control G1: transcript-only churn across frames spends no native-close geometry', () => {
   const env = createEnv();
   const scene = bootScene(env);
-  for (let frame = 1; frame <= 3; frame += 1) {
-    env.reset();
+  settleBinding(env, scene);
+  const panel = env.panelEl();
+  eq(panel.getAttribute('data-h2o-native-close'), '1', 'precondition: discovered and bound');
+  const boundOps = env.closeListenerOps().length;
+  env.reset();
+
+  for (let frame = 1; frame <= 12; frame += 1) {
     mutateUnrelated(env, scene);
     env.flushFrame();
-    atLeast(env.discoveryPasses(), 1, `frame ${frame}: discovery must still run (no cache, no one-shot suppression)`);
+    env.advance(20);
+    env.flushMicrotasks();
   }
+
+  eq(env.discoveryPasses(), 0, 'transcript-only churn requests no native-close discovery');
+  const c = env.counts();
+  eq(c.getComputedStyle, 0, 'no forced style recalc on the native close');
+  eq(c.offsetParent, 0, 'no forced layout on the native close');
+  eq(c.getClientRects, 0, 'no client-rect read on the native close');
+  eq(panel.getAttribute('data-h2o-native-close'), '1', 'and the bound state is left intact');
+  eq(env.closeListenerOps().length, 0, 'no rebinding churn either');
+  ok(boundOps >= 1, 'the binding it is preserving was real');
+});
+
+// ══ CONTROL G2: relevant invalidation anti-cache ═════════════════════════
+// The repair must not degenerate into "discover once and never look again".
+fixture('control G2: every relevant structural invalidation still re-evaluates', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);
+  for (let frame = 1; frame <= 4; frame += 1) {
+    env.reset();
+    mutateSidebar(env, scene);
+    env.flushFrame();
+    atLeast(env.discoveryPasses(), 1,
+      `frame ${frame}: a sidebar-relevant batch still discovers (no cache, no one-shot suppression)`);
+  }
+});
+
+// ══ GEOMETRY BUDGET ══════════════════════════════════════════════════════
+// The regression guarantee stated as a budget rather than an exact global count.
+fixture('geometry budget: native-close layout work is spent only on relevant invalidation', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);
+
+  env.reset();
+  for (let i = 0; i < 30; i += 1) {
+    mutateUnrelated(env, scene);
+    env.flushFrame();
+    env.advance(10);
+    env.flushMicrotasks();
+  }
+  const idle = env.counts();
+  eq(idle.getComputedStyle + idle.offsetParent + idle.getClientRects, 0,
+    '30 irrelevant frames cost zero native-close style/layout work');
+
+  env.reset();
+  mutateSidebar(env, scene);
+  env.flushFrame();
+  atLeast(env.counts().getComputedStyle, 1,
+    'a relevant invalidation is still allowed to measure');
 });
 
 // ══ CONTROL A: native close replacement ═══════════════════════════════════
@@ -672,6 +803,10 @@ fixture('control D: a native close appearing after boot is discovered and bound'
 // ══ CONTROL E: connected but hidden ═══════════════════════════════════════
 // A connected-node cache would be WRONG: the same node stays connected while
 // becoming invisible (collapsed rail), and must be treated as unavailable.
+// Option A does not promise independent same-node class/style detection, so the
+// re-check is triggered by a legitimate sidebar-relevant structural event that
+// accompanies the visibility transition. The behavioural assertions are the
+// original ones: hidden -> unavailable, visible again -> recovered.
 fixture('control E: the same connected node going hidden is treated as unavailable, and visible again is rediscovered', () => {
   const env = createEnv();
   const scene = bootScene(env);
@@ -683,7 +818,7 @@ fixture('control E: the same connected node going hidden is treated as unavailab
   btn.__vis = { display: 'none', visibility: 'visible', opacity: '1' };
   ok(btn.isConnected, 'node is still CONNECTED while hidden');
   env.reset();
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
@@ -691,7 +826,7 @@ fixture('control E: the same connected node going hidden is treated as unavailab
 
   btn.__vis = { display: 'block', visibility: 'visible', opacity: '1' };
   env.reset();
-  mutateUnrelated(env, scene);
+  mutateSidebar(env, scene);
   env.flushFrame();
   env.advance(50);
   env.flushMicrotasks();
@@ -718,7 +853,507 @@ fixture('control F: repeated bursts create no duplicate controls and no redundan
     'identity unchanged across the bursts, so no rebinding occurs');
 });
 
-// ── Report ────────────────────────────────────────────────────────────────
+// == RAIL VISIBILITY ADMISSION =============================================
+// Same module, same observer, one further contract:
+//
+//   MANY mutation-driven rail-ensure passes inside ONE throttle window
+//     -> AT MOST ONE rail visibility probe (getBoundingClientRect)
+//
+// A pass after the window probes again and reconciles, so the rail stays
+// correct. Deliberately NOT required here: caching the rail rect across frames,
+// a second throttle, a second observer, or making the rail unconditionally
+// visible to dodge the measurement.
+
+// The real collapsed-sidebar rail 3A1a looks for, with a native item to clone,
+// so UI_DPANEL_installRailButtons() runs its true path rather than bailing early.
+function addRail(env, { width = 56, height = 600 } = {}) {
+  const rail = env.el('div', {
+    attrs: { id: 'stage-sidebar-tiny-bar' }, mark: 'rail',
+    rect: { left: 0, top: 0, width, height },
+  });
+  const stack = env.el('div', { cls: 'mt-(--sidebar-section-first-margin-top)' });
+  const wrap = env.el('div', { attrs: { 'data-state': 'closed' } });
+  const a = env.el('a', { attrs: { 'data-sidebar-item': 'true' } });
+  a.appendChild(env.el('div', { cls: 'icon', mark: 'rail-template-icon' }));
+  wrap.appendChild(a); stack.appendChild(wrap); rail.appendChild(stack);
+  env.body.appendChild(rail);
+  return { rail, stack };
+}
+const railButtons = (stack) =>
+  stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]').length;
+
+// A Dock-owned rail wrapper, stamped the way UI_DPANEL_installRailButtons stamps
+// its own: owner marker and rail-view marker, on the node ITSELF, applied before
+// insertion. This is the shape of 3A1a's own writes into the rail.
+function addDockOwnedWrap(env, stack, view) {
+  const wrap = env.el('div', {
+    attrs: { 'data-state': 'closed', 'data-cgxui-owner': 'dcpn', 'data-h2o-rail-view': view },
+  });
+  stack.appendChild(wrap);
+  return wrap;
+}
+
+// A foreign insertion into the same rail - the 8A1b tiny-rail shape. Carries no
+// Dock owner stamp, so it must stay relevant.
+function addForeignRailNode(env, stack, mark = 'foreign') {
+  const node = env.el('div', { attrs: { 'data-state': 'closed', 'data-h2o-foreign': mark } });
+  stack.appendChild(node);
+  return node;
+}
+
+const deliver = (env) => env.flushMicrotasks();
+
+function preparePopulatedRail(env) {
+  const scene = bootScene(env);
+  const railState = addRail(env);
+  deliver(env);
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.advance(200);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(railButtons(railState.stack), 8, 'precondition: complete populated rail');
+  env.reset();
+  return { scene, ...railState };
+}
+
+// ══ RECURRENT DOMAIN-SEPARATION GATE ═════════════════════════════════════
+// These controls distinguish the two independently accumulated mutation
+// intents. Counts are deterministic DOM operations, never timing samples.
+
+fixture('RED A: irrelevant stable-state mixed churn wakes neither domain', () => {
+  const env = createEnv();
+  const { scene, stack } = preparePopulatedRail(env);
+  scene.sidebar.appendChild(env.el('span', { mark: 'irrelevant-sidebar-child' }));
+  addDockOwnedWrap(env, stack, 'irrelevant-owned-duplicate');
+  addForeignRailNode(env, stack, 'irrelevant-foreign-child');
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeStyleReads: env.counts().getComputedStyle,
+    nativeLayoutReads: env.counts().offsetParent + env.counts().getClientRects,
+    railGeometryReads: env.railProbes(),
+  }, {
+    scheduledFrames: 0,
+    nativeDiscoveryQueries: 0,
+    nativeStyleReads: 0,
+    nativeLayoutReads: 0,
+    railGeometryReads: 0,
+  }, 'complete-rail foreign/mixed churn carries no native or rail invalidation');
+});
+
+fixture('RED B: required rail-wrapper removal repairs rail without native work', () => {
+  const env = createEnv();
+  const { stack } = preparePopulatedRail(env);
+  const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[2];
+  const view = victim.getAttribute('data-h2o-rail-view');
+  victim.remove();
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeStyleReads: env.counts().getComputedStyle,
+    nativeLayoutReads: env.counts().offsetParent + env.counts().getClientRects,
+    railGeometryReads: env.railProbes(),
+    templateGeometryReads: env.templateProbes(),
+    wrapperCount: railButtons(stack),
+    restored: !!stack.querySelector(`div[data-cgxui-owner="dcpn"][data-h2o-rail-view="${view}"]`),
+  }, {
+    scheduledFrames: 1,
+    nativeDiscoveryQueries: 0,
+    nativeStyleReads: 0,
+    nativeLayoutReads: 0,
+    railGeometryReads: 1,
+    templateGeometryReads: 1,
+    wrapperCount: 8,
+    restored: true,
+  }, 'rail-only invalidation runs only the governed rail sub-pass');
+});
+
+fixture('RED C: detached native-close replacement rebinds without rail work', () => {
+  const env = createEnv();
+  const { scene } = preparePopulatedRail(env);
+  const oldBtn = scene.nativeClose;
+  oldBtn.remove();
+  const replacement = addNativeClose(env, scene);
+  scene.nativeClose = replacement;
+  deliver(env);
+  env.flushFrame();
+
+  eq({
+    scheduledFrames: env.railSchedules(),
+    nativeDiscoveryQueries: env.nativeDiscoveryQueries(),
+    nativeVisibilityPasses: env.discoveryPasses(),
+    railGeometryReads: env.railProbes(),
+    oldConnected: oldBtn.isConnected,
+    replacementBound: env.closeListenerOps().some((o) => o.op === 'add' && o.id === replacement.__id),
+  }, {
+    scheduledFrames: 1,
+    nativeDiscoveryQueries: 1,
+    nativeVisibilityPasses: 1,
+    railGeometryReads: 0,
+    oldConnected: false,
+    replacementBound: true,
+  }, 'native-only invalidation runs only the coalesced native sub-pass');
+});
+
+fixture('preservation: true dual invalidation OR-accumulates in either record order', () => {
+  for (const order of ['rail-first', 'native-first']) {
+    const env = createEnv();
+    const { scene, stack } = preparePopulatedRail(env);
+    const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[4];
+    const replaceNative = () => {
+      scene.nativeClose.remove();
+      scene.nativeClose = addNativeClose(env, scene);
+    };
+    if (order === 'rail-first') { victim.remove(); replaceNative(); }
+    else { replaceNative(); victim.remove(); }
+    deliver(env);
+    env.flushFrame();
+
+    eq({
+      scheduledFrames: env.railSchedules(),
+      nativeSubpasses: env.discoveryPasses(),
+      railSubpasses: env.railProbes(),
+      wrapperCount: railButtons(stack),
+    }, {
+      scheduledFrames: 1,
+      nativeSubpasses: 1,
+      railSubpasses: 1,
+      wrapperCount: 8,
+    }, `${order}: both independently dirty domains share exactly one frame`);
+  }
+});
+
+// First admitted pass: measures once and actually furnishes the rail.
+fixture('rail B: the first justified rail pass measures once and reconciles', () => {
+  const env = createEnv();
+  bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(env.railProbes(), 1, 'exactly one rail visibility probe for one admitted pass');
+  atLeast(railButtons(stack), 1, 'the admitted pass installs rail buttons');
+});
+
+// PRIMARY: redundant passes inside the window must not re-measure.
+fixture('rail A: repeated mutation-driven passes inside the throttle window never re-probe', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                      // the one legitimate pass
+  const furnished = railButtons(stack);
+  env.reset();
+
+  for (let burst = 0; burst < 12; burst += 1) {
+    for (let i = 0; i < 5; i += 1) mutateUnrelated(env, scene);
+    env.advance(5);                      // 60ms total: well inside the 180ms window
+    env.flushFrame();
+  }
+
+  eq(env.railProbes(), 0, 'no rail geometry read is paid for a throttled pass');
+  eq(railButtons(stack), furnished, 'and the rail is left exactly as it was');
+});
+
+// The same burst with a rail that is present but too small to be usable: the
+// probe result cannot be the thing that gates the cost, so this must hold too.
+fixture('rail A2: an unusable rail is not re-probed on every mutation batch either', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  addRail(env, { width: 56, height: 40 });   // fails the visibility test
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(env.railProbes(), 1, 'the admitted pass probes once and declines');
+  env.reset();
+
+  for (let i = 0; i < 20; i += 1) { mutateUnrelated(env, scene); env.advance(5); env.flushFrame(); }
+  eq(env.railProbes(), 0, 'a declined pass still holds the window shut');
+});
+
+// After the window, a justified pass measures again.
+// TRIGGER REVISED, assertions unchanged. This fixture used transcript-only
+// churn to pump the second pass. Rail scheduling is now relevance-gated, so
+// transcript churn no longer reaches the rail at all - it is refused before
+// scheduling rather than at the window, which is the point of the gate. The
+// pump becomes a legitimate foreign in-rail mutation; what is asserted - that
+// the window holds inside 180ms and reopens after it - is untouched, and the
+// first assertion is now strictly stronger: it proves the THROTTLE still
+// refuses a genuinely relevant batch, independently of the new gate.
+fixture('rail C: a justified pass after the throttle window probes again', () => {
+  const env = createEnv();
+  bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  const firstVictim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[0];
+  env.reset();
+
+  firstVictim.remove(); deliver(env);
+  env.advance(5); env.flushFrame();
+  eq(env.railProbes(), 0, 'still inside the window');
+
+  env.advance(200);
+  const secondVictim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[1];
+  secondVictim.remove(); deliver(env);
+  env.flushFrame();
+  eq(env.railProbes(), 1, 'the window reopened and the pass measured');
+  eq(railButtons(stack), 8, 'required wrappers are restored when the window reopens');
+});
+
+// Genuine rail replacement is delayed by at most the window, never suppressed.
+fixture('rail E: a replacement rail is still reconciled after the window', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const first = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  atLeast(railButtons(first.stack), 1, 'the original rail is furnished');
+
+  first.rail.remove();
+  const next = addRail(env);
+  env.advance(200);
+  mutateUnrelated(env, scene);
+  env.flushFrame();
+  atLeast(railButtons(next.stack), 1, 'the replacement rail is furnished, not suppressed');
+});
+
+// Structure: one authority, admission ahead of the forced-layout read, and no
+// new throttle, observer, frame authority or cross-frame geometry cache.
+fixture('rail F: one throttle authority, admission before geometry, nothing new added', () => {
+  const start = DOCK_SOURCE.indexOf('function UI_DPANEL_installRailButtons()');
+  ok(start > 0, 'installRailButtons is still the rail entry point');
+  const rest = DOCK_SOURCE.slice(start + 1);
+  const next = rest.indexOf('\n  function ');
+  const body = rest.slice(0, next > 0 ? next : rest.length);
+  ok(body.length > 200 && body.length < 8000, `installRailButtons body isolated (${body.length} chars)`);
+
+  const throttleAt = body.indexOf('S._railEnsureAt');
+  const probeAt = body.indexOf('UI_DPANEL_ensureRailVisible(');
+  ok(throttleAt >= 0, 'the rail-ensure throttle still lives in installRailButtons');
+  ok(probeAt >= 0, 'the visibility probe is still called from installRailButtons');
+  ok(throttleAt < probeAt, 'the throttle admission is evaluated BEFORE the forced-layout probe');
+
+  eq((DOCK_SOURCE.match(/S\._railEnsureAt\s*=/gu) || []).length, 1, 'exactly one throttle stamp writer');
+  eq((DOCK_SOURCE.match(/function UI_DPANEL_ensureRailVisible\(/gu) || []).length, 1, 'one visibility probe');
+  eq((DOCK_SOURCE.match(/new MutationObserver\(/gu) || []).length, 2, 'no additional MutationObserver');
+  eq((DOCK_SOURCE.match(/requestAnimationFrame\(/gu) || []).length, 2, 'no additional frame authority');
+  eq((DOCK_SOURCE.match(/getBoundingClientRect\(\)/gu) || []).length, 5, 'no new geometry read sites');
+  ok(!/rail[A-Za-z]*(Rect|Geom|Bounds)[A-Za-z]*\s*=/u.test(DOCK_SOURCE),
+    'no cross-frame rail geometry cache introduced');
+});
+
+// == SELF-OWNED MUTATION ADMISSION =========================================
+// 3A1a writes its own stamped wrappers into the tiny-rail. Those writes land
+// inside the very domain the structural predicate treats as relevant, so the
+// module's own output re-arms native-close discovery and re-schedules the rail
+// pass. One further contract closes that:
+//
+//   a batch whose ADDED nodes are exclusively Dock-owned
+//     -> invalidates nothing, and schedules nothing
+//
+// Two boundaries are deliberate and load-bearing.
+//
+// ADDITIONS ONLY. Removal of Dock-owned wrappers stays relevant. A host React
+// pass that strips the rail removes only Dock-stamped nodes; if that batch were
+// excluded, the rail would never re-install and the Dock buttons would vanish
+// until some unrelated mutation happened to arrive. Self-healing depends on it.
+//
+// OWNERSHIP IS READ FROM THE ADDED NODE. For an insertion the record target is
+// the host's unstamped stack, so a target-based test would call 3A1a's own
+// append foreign. Equally, "the removed subtree contains only stamped nodes"
+// must NOT qualify - that would ignore removal of the native stack that happens
+// to hold Dock wrappers.
+//
+// Deliberately NOT required here: suppressing foreign in-rail work, caching the
+// rail or its geometry, observing attributes, or changing the 180ms window.
+
+fixture('self-owned: a Dock-owned-only batch invalidates nothing and schedules nothing', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                 // the one legitimate pass furnishes the rail
+  settleBinding(env, scene);
+  ok(env.railSchedulesAreFaithful(), 'precondition: Dock closed, so a frame request is a rail schedule');
+  env.reset();
+
+  // Exactly the shape of 3A1a's own re-append after host churn.
+  addDockOwnedWrap(env, stack, 'self-probe-1');
+  addDockOwnedWrap(env, stack, 'self-probe-2');
+  deliver(env);
+  env.flushFrame();
+
+  eq(env.railSchedules(), 0, 'a Dock-owned-only batch must not schedule a rail pass');
+  eq(env.discoveryPasses(), 0, 'and must not re-arm native-close discovery');
+  eq(env.railProbes(), 0, 'and must spend no rail geometry');
+});
+
+fixture('self-owned: a stable rail spends nothing across many later self-owned frames', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  const furnished = railButtons(stack);
+  env.reset();
+
+  // Well past the 180ms window each round, so the throttle is NOT what is
+  // holding the cost down - admission is.
+  for (let frame = 0; frame < 20; frame += 1) {
+    addDockOwnedWrap(env, stack, `self-frame-${frame}`);
+    mutateUnrelated(env, scene);
+    env.advance(200);
+    env.flushFrame();
+  }
+
+  eq(env.railSchedules(), 0, '20 later frames of self-owned + transcript churn schedule nothing');
+  eq(env.discoveryPasses(), 0, 'and discover nothing');
+  eq(env.railProbes(), 0, 'and measure nothing');
+  eq(railButtons(stack), furnished + 20, 'the fixture-added wrappers are still present, untouched');
+});
+
+fixture('foreign: unrelated insertion into a complete rail schedules nothing', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.reset();
+
+  addForeignRailNode(env, stack, '8a1b-shape');
+  deliver(env);
+  env.advance(200);
+  env.flushFrame();
+
+  eq(env.railSchedules(), 0, 'foreign target containment alone is not rail invalidation');
+  eq(env.discoveryPasses(), 0, 'foreign target containment alone is not native invalidation');
+  eq(env.railProbes(), 0, 'a complete rail spends no geometry on unrelated insertion');
+});
+
+fixture('foreign removal of Dock wrappers stays relevant and the rail self-heals', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  const furnished = railButtons(stack);
+  atLeast(furnished, 1, 'precondition: the rail is furnished');
+  env.reset();
+
+  // The host strips the rail: every removed node is Dock-owned. Excluding this
+  // batch would strand the rail empty.
+  for (const wrap of stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')) {
+    wrap.remove();
+  }
+  deliver(env);
+  eq(railButtons(stack), 0, 'precondition: the host removed every Dock wrapper');
+
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'removal of Dock-owned nodes must remain relevant');
+  eq(railButtons(stack), furnished, 'and the rail must re-install itself');
+});
+
+fixture('mixed: irrelevant owned/foreign records remain free in either order', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  settleBinding(env, scene);
+  env.reset();
+
+  for (const order of ['owned-first', 'foreign-first']) {
+    if (order === 'owned-first') {
+      addDockOwnedWrap(env, stack, `mixed-self-${order}`);
+      addForeignRailNode(env, stack, `mixed-foreign-${order}`);
+    } else {
+      addForeignRailNode(env, stack, `mixed-foreign-${order}`);
+      addDockOwnedWrap(env, stack, `mixed-self-${order}`);
+    }
+    deliver(env);
+    env.advance(200);
+    env.flushFrame();
+  }
+
+  eq(env.railSchedules(), 0, 'record order cannot manufacture a dirty domain');
+  eq(env.discoveryPasses(), 0, 'irrelevant mixed orderings never discover native close');
+  eq(env.railProbes(), 0, 'irrelevant mixed orderings never measure rail geometry');
+});
+
+fixture('rail first appearance is admitted even while a native close is bound', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  settleBinding(env, scene);        // a native close is bound before the rail exists
+  env.reset();
+
+  const { stack } = addRail(env);   // the tiny-rail appears
+  deliver(env);
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.railSchedules(), 1, 'the tiny-rail appearing must schedule a pass');
+  atLeast(railButtons(stack), 1, 'and the rail must be furnished');
+});
+
+// ══ TEMPLATE SIZING RECT ══════════════════════════════════════════════════
+// An admitted pass on a fully populated rail creates no wrapper, so the
+// template sizing rect it takes cannot be used for anything: existing wrappers
+// are never re-sized by that result. The rail VISIBILITY read is a different
+// thing and must stay - it is what decides the rail is usable at all.
+
+fixture('rail G: an admitted pass on a populated rail skips the template sizing rect', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();                                   // furnishes every rail view
+  eq(railButtons(stack), 8, 'precondition: every required rail view exists');
+  env.reset();
+
+  env.advance(200);                                   // past the 180ms window
+  env.fire(env.windowObj, 'resize');                   // direct viewport authority
+  env.flushFrame();
+
+  eq(env.railProbes(), 1, 'the rail visibility read is retained on an admitted pass');
+  eq(env.templateProbes(), 0, 'but a populated rail must not pay the template sizing rect');
+  eq(railButtons(stack), 8, 'and the rail is still complete');
+});
+
+fixture('rail H: a missing wrapper still sizes from the template', () => {
+  const env = createEnv();
+  const scene = bootScene(env);
+  const { stack } = addRail(env);
+  env.flushMicrotasks();
+  env.flushFrame();
+  eq(railButtons(stack), 8, 'precondition: rail furnished');
+
+  const victim = stack.querySelectorAll('div[data-cgxui-owner="dcpn"][data-h2o-rail-view]')[3];
+  ok(victim, 'a Dock-owned wrapper to remove');
+  const view = victim.getAttribute('data-h2o-rail-view');
+  victim.remove();                                    // foreign-shaped removal: stays relevant
+  deliver(env);
+  env.reset();
+  env.advance(200);
+  env.flushFrame();
+
+  atLeast(env.templateProbes(), 1, 'creating a wrapper must still read the template size');
+  eq(railButtons(stack), 8, 'the missing view is recreated');
+  ok(stack.querySelector(`div[data-cgxui-owner="dcpn"][data-h2o-rail-view="${view}"]`),
+    'and it is the same view that was removed');
+});
+
+// -- Report ----------------------------------------------------------------
 const failed = fixtures.filter((f) => !f.ok);
 for (const f of fixtures) {
   console.log(`${f.ok ? 'PASS' : 'FAIL'} ${f.name}`);

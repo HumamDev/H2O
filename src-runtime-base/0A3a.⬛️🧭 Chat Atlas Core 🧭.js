@@ -10186,12 +10186,16 @@
       }
     } catch {}
     const detail = getCompleteTurnIndexProjectionStatus();
+    // Atlas publishes; it does not schedule. Calling the MiniMap core global's
+    // rebuild scheduler from here was a second edge onto the same logical
+    // rebuild the published event already arms, and it put the decision to
+    // project in the authority module rather than in the consumer that owns
+    // the projection. MiniMap's listener now admits on a state delta; the
+    // per-frame in-flight guard on the consumer side was hiding the duplicate,
+    // not preventing it. Both publication surfaces below are unchanged -
+    // other subscribers depend on them.
     try { W.dispatchEvent(new CustomEvent(COMPLETE_TURN_INDEX_STATE_EVENT, { detail })); } catch {}
     try { H2O.events?.emit?.(COMPLETE_TURN_INDEX_STATE_EVENT, detail); } catch {}
-    try {
-      const api = W.H2O_MM_CORE_API || W.top?.H2O_MM_CORE_API || null;
-      api?.scheduleRebuild?.(`complete-index:${detail.status}`);
-    } catch {}
     return detail;
   }
 

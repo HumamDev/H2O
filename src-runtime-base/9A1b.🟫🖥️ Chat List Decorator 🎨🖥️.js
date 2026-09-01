@@ -1377,6 +1377,8 @@ function isSidebarOpen() {
 let hoColorPriorityRAF = 0;
 let hoColorPriorityTO = 0;
 let hoColorPriorityOrderCounter = 0;
+let hoColorPriorityRecoverySatisfied = false;
+let hoColorPriorityControlWasValid = false;
 
 function getPriorityColorDef(name) {
   const key = normalizePriorityColor(name);
@@ -1430,6 +1432,33 @@ function closeColorPriorityMenus(root = document) {
   } catch {}
 }
 
+function setColorPriorityDataset(el, key, value) {
+  if (!el?.dataset) return;
+  const next = String(value);
+  if (el.dataset[key] !== next) el.dataset[key] = next;
+}
+
+function setColorPriorityAttribute(el, name, value) {
+  if (!el) return;
+  const next = String(value);
+  if (el.getAttribute(name) !== next) el.setAttribute(name, next);
+}
+
+function setColorPriorityTitle(el, value) {
+  if (!el) return;
+  const next = String(value);
+  if (el.title !== next) el.title = next;
+}
+
+function setColorPriorityStyle(el, name, value) {
+  if (!(el instanceof HTMLElement)) return;
+  const next = String(value || '');
+  const current = el.style.getPropertyValue(name);
+  if (current === next) return;
+  if (next) el.style.setProperty(name, next);
+  else el.style.removeProperty(name);
+}
+
 function updateColorPriorityControl(root = document.querySelector(".ho-color-priority")) {
   if (!root) return;
   const color = getPriorityColor();
@@ -1438,19 +1467,18 @@ function updateColorPriorityControl(root = document.querySelector(".ho-color-pri
   const trigger = root.querySelector(".ho-color-priority-trigger");
   const swatch = root.querySelector(".ho-color-priority-swatch");
 
-  root.dataset.color = color;
+  setColorPriorityDataset(root, "color", color);
   if (trigger) {
-    trigger.dataset.active = active ? "true" : "false";
-    trigger.setAttribute("aria-label", active ? `Bring ${color} chats to the top` : "Choose a chat color to bring to the top");
-    trigger.title = active ? `Showing ${color} chats first` : "Bring chats with a selected color to the top";
+    setColorPriorityDataset(trigger, "active", active ? "true" : "false");
+    setColorPriorityAttribute(trigger, "aria-label", active ? `Bring ${color} chats to the top` : "Choose a chat color to bring to the top");
+    setColorPriorityTitle(trigger, active ? `Showing ${color} chats first` : "Bring chats with a selected color to the top");
   }
   if (swatch instanceof HTMLElement) {
-    if (active && def?.value) swatch.style.setProperty("--ho-color-priority-swatch-bg", def.value);
-    else swatch.style.removeProperty("--ho-color-priority-swatch-bg");
+    setColorPriorityStyle(swatch, "--ho-color-priority-swatch-bg", active && def?.value ? def.value : "");
   }
 
   root.querySelectorAll(".ho-color-priority-option").forEach((btn) => {
-    btn.dataset.active = btn.dataset.color === color ? "true" : "false";
+    setColorPriorityDataset(btn, "active", btn.dataset.color === color ? "true" : "false");
   });
 }
 
@@ -1562,32 +1590,50 @@ function compactText(el) {
 function findProjectTabsHost() {
   const main = document.querySelector("main");
   if (!main) return null;
-  const mainRect = main.getBoundingClientRect();
+  const rects = new Map();
+  const styles = new Map();
+  const texts = new Map();
+  const readRect = (el) => {
+    if (!rects.has(el)) rects.set(el, el.getBoundingClientRect());
+    return rects.get(el);
+  };
+  const readStyle = (el) => {
+    if (!styles.has(el)) styles.set(el, window.getComputedStyle(el));
+    return styles.get(el);
+  };
+  const readText = (el) => {
+    if (!texts.has(el)) texts.set(el, compactText(el));
+    return texts.get(el);
+  };
+  const mainRect = readRect(main);
   const candidates = [...main.querySelectorAll('[role="tablist"], div, nav')];
   let best = null;
   let bestScore = Number.POSITIVE_INFINITY;
 
   candidates.forEach((el) => {
-    if (!(el instanceof HTMLElement) || !isElementVisible(el)) return;
-    const text = compactText(el);
+    if (!(el instanceof HTMLElement)) return;
+    const rect = readRect(el);
+    if (rect.width === 0 || rect.height === 0) return;
+    const style = readStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') return;
+    const text = readText(el);
     if (!/\bchats\b/.test(text) || !/\bsources\b/.test(text)) return;
     if (text.length > 120) return;
 
-    const rect = el.getBoundingClientRect();
     if (rect.height < 20 || rect.height > 84) return;
     if (rect.width < 110) return;
 
     let host = el;
     let cur = el.parentElement;
     while (cur && cur !== main.parentElement && main.contains(cur)) {
-      const pr = cur.getBoundingClientRect();
+      const pr = readRect(cur);
       if (pr.height > 96) break;
       if (pr.width >= rect.width && pr.width <= mainRect.width + 40) host = cur;
       if (pr.width >= mainRect.width * 0.68) break;
       cur = cur.parentElement;
     }
 
-    const hr = host.getBoundingClientRect();
+    const hr = readRect(host);
     const score = Math.max(0, hr.top - mainRect.top) + Math.abs(mainRect.width - hr.width) * 0.03 + hr.height * 0.12;
     if (score < bestScore) {
       best = host;
@@ -1598,7 +1644,60 @@ function findProjectTabsHost() {
   return best;
 }
 
-function ensureColorPriorityControl() {
+function hoColorPriorityStateMatches(control) {
+  if (!control) return false;
+  const color = getPriorityColor();
+  const active = color !== COLOR_PRIORITY_NONE;
+  const def = getPriorityColorDef(color);
+  const trigger = control.querySelector(".ho-color-priority-trigger");
+  const swatch = control.querySelector(".ho-color-priority-swatch");
+  if (!trigger || !swatch) return false;
+  if (control.dataset.color !== color) return false;
+  if (trigger.dataset.active !== (active ? "true" : "false")) return false;
+  if (trigger.getAttribute("aria-label") !== (active ? `Bring ${color} chats to the top` : "Choose a chat color to bring to the top")) return false;
+  if (trigger.title !== (active ? `Showing ${color} chats first` : "Bring chats with a selected color to the top")) return false;
+  if (swatch.style.getPropertyValue("--ho-color-priority-swatch-bg") !== (active && def?.value ? String(def.value) : "")) return false;
+  const options = [...control.querySelectorAll(".ho-color-priority-option")];
+  if (options.length !== I.config.COLORS.length + 1) return false;
+  return options.every((btn) => btn.dataset.active === (btn.dataset.color === color ? "true" : "false"));
+}
+
+function hoGetStampedProjectControlState() {
+  if (!hoSurfaceEligible()) return null;
+  const main = document.querySelector("main");
+  if (!main) return null;
+  const stamped = [...document.querySelectorAll(".ho-project-tabs-host")];
+  if (stamped.length !== 1) return null;
+  const host = stamped[0];
+  if (!(host instanceof HTMLElement) || !host.isConnected || !main.contains(host)) return null;
+  if (host.closest?.('.ho-main-row, a[href]')) return null;
+  if (I.utils?.isInsideH2OInternalSurface?.(host)) return null;
+
+  const controls = [...document.querySelectorAll(".ho-color-priority")];
+  if (controls.length !== 1) return null;
+  const control = controls[0];
+  if (!(control instanceof HTMLElement) || !control.isConnected || control.parentElement !== host) return null;
+  if (control.getAttribute("data-ho-color-priority") !== "1") return null;
+  const trigger = control.querySelector(".ho-color-priority-trigger");
+  const menu = control.querySelector(".ho-color-priority-menu");
+  const swatch = control.querySelector(".ho-color-priority-swatch");
+  if (!trigger || !menu || !swatch || !trigger.contains(swatch)) return null;
+  if (menu.getAttribute("role") !== "menu") return null;
+  if (control.querySelectorAll(".ho-color-priority-option").length !== I.config.COLORS.length + 1) return null;
+  return { main, host, control, stateMatches: hoColorPriorityStateMatches(control) };
+}
+
+function ensureColorPriorityControl(options = null) {
+  const stable = options?.structuralStateChecked
+    ? options.structuralState
+    : hoGetStampedProjectControlState();
+  if (stable) {
+    if (!stable.stateMatches) updateColorPriorityControl(stable.control);
+    return stable.control;
+  }
+  if (!hoSurfaceEligible()) return null;
+  if (options?.skipBroadDiscovery) return null;
+
   const host = findProjectTabsHost();
   document.querySelectorAll(".ho-color-priority").forEach((el) => {
     if (!host || !host.contains(el)) el.remove();
@@ -1608,9 +1707,14 @@ function ensureColorPriorityControl() {
   });
 
   if (!host) return null;
-  host.classList.add("ho-project-tabs-host");
+  if (!host.classList.contains("ho-project-tabs-host")) host.classList.add("ho-project-tabs-host");
 
-  let control = [...host.children].find((el) => el instanceof HTMLElement && el.classList.contains("ho-color-priority"));
+  const directControls = [...host.children].filter((el) => el instanceof HTMLElement && el.classList.contains("ho-color-priority"));
+  let control = directControls.shift() || null;
+  for (const duplicate of directControls) duplicate.remove();
+  host.querySelectorAll(".ho-color-priority").forEach((el) => {
+    if (el !== control) el.remove();
+  });
   if (!control) {
     control = createColorPriorityControl();
     host.appendChild(control);
@@ -1673,6 +1777,9 @@ function collectSortableMainRows() {
   const hostBottom = host.getBoundingClientRect().bottom;
   const seen = new Set();
   const seenUnits = new Set();
+  /* Phase 1 collects every read the pass needs; these units are written in
+     phase 2, after the last read. */
+  const pendingOrderWrites = [];
   const links = [...document.querySelectorAll('main a[href*="/c/"], main a[href*="/chat/"]')];
 
   links.forEach((link) => {
@@ -1694,15 +1801,25 @@ function collectSortableMainRows() {
     if (seenUnits.has(sortable.unit)) return;
 
     seenUnits.add(sortable.unit);
+    /* The expando is not a DOM write and must keep its document-order value, so
+       it is assigned here. The dataset write it mirrors is deferred: writing it
+       inside the read loop dirtied the tree that the remaining rows are then
+       measured against. */
     if (sortable.unit.__hoColorPriorityOrder == null) {
       sortable.unit.__hoColorPriorityOrder = ++hoColorPriorityOrderCounter;
-      sortable.unit.dataset.hoColorPriorityOrder = String(sortable.unit.__hoColorPriorityOrder);
+      pendingOrderWrites.push(sortable.unit);
     }
 
     const parent = sortable.parent;
     if (!groups.has(parent)) groups.set(parent, []);
     groups.get(parent).push({ row, unit: sortable.unit });
   });
+
+  /* Phase 2 - writes only, from values already read. Same units, same values,
+     same order as before; nothing is retained beyond this call. */
+  for (const unit of pendingOrderWrites) {
+    unit.dataset.hoColorPriorityOrder = String(unit.__hoColorPriorityOrder);
+  }
 
   return groups;
 }
@@ -1713,9 +1830,16 @@ function rowPriorityOrder(entry) {
   return Number.isFinite(n) && n > 0 ? n : 999999;
 }
 
-function applyColorPrioritySort() {
+function applyColorPrioritySort(options = null) {
   if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
-  const control = ensureColorPriorityControl();
+  const structuralState = hoGetStampedProjectControlState();
+  const control = ensureColorPriorityControl({
+    structuralStateChecked: true,
+    structuralState,
+    skipBroadDiscovery: !!options?.controlRecoverySatisfied
+      && !options?.controlWasValid
+      && !structuralState,
+  });
   if (!control) return;
 
   const color = getPriorityColor();
@@ -1743,7 +1867,11 @@ function applyColorPrioritySort() {
   });
 }
 
-function scheduleColorPrioritySort() {
+function scheduleColorPrioritySort(options = null) {
+  if (options?.controlRecoverySatisfied) {
+    hoColorPriorityRecoverySatisfied = true;
+    hoColorPriorityControlWasValid = !!options?.controlWasValid;
+  }
   cancelAnimationFrame(hoColorPriorityRAF);
   clearTimeout(hoColorPriorityTO);
 
@@ -1752,11 +1880,15 @@ function scheduleColorPrioritySort() {
     clearTimeout(hoColorPriorityTO);
     hoColorPriorityRAF = 0;
     hoColorPriorityTO = 0;
+    const controlRecoverySatisfied = hoColorPriorityRecoverySatisfied;
+    const controlWasValid = hoColorPriorityControlWasValid;
+    hoColorPriorityRecoverySatisfied = false;
+    hoColorPriorityControlWasValid = false;
     if (I.lock.locked()) {
-      setTimeout(scheduleColorPrioritySort, 50);
+      setTimeout(() => scheduleColorPrioritySort({ controlRecoverySatisfied, controlWasValid }), 50);
       return;
     }
-    I.lock.with(() => applyColorPrioritySort());
+    I.lock.with(() => applyColorPrioritySort({ controlRecoverySatisfied, controlWasValid }));
   };
 
   hoColorPriorityRAF = requestAnimationFrame(run);
@@ -2267,15 +2399,19 @@ function markSeeControls() {
      7) Full scan pass (decorate + mark projects + controls + active ring)
      ───────────────────────────────────────── */
 
-function scanSidebar() {
+function scanSidebar(work = HO_WORK_ALL) {
       if (I.lock.locked()) return;
+  const workMask = Number(work) || HO_WORK_ALL;
+  const reconcileChatList = !!(workMask & HO_WORK_CHAT_LIST_RECONCILE);
+  const recoverControlHost = !!(workMask & HO_WORK_CONTROL_HOST_RECOVERY);
+  const sortColor = !!(workMask & HO_WORK_COLOR_SORT);
   const paletteOpen = hoOpenPalette && hoOpenPalette.classList.contains("show");
-  applyActivityStyle();
+  if (reconcileChatList) applyActivityStyle();
 
   // Grab ALL anchors from sidebar-ish + main list
-  const allA = [
+  const allA = reconcileChatList ? [
     ...document.querySelectorAll('nav a[href], aside a[href], main a[href]')
-  ];
+  ] : [];
 
   const links = allA.filter(a => {
     const href = a.getAttribute("href") || "";
@@ -2292,19 +2428,28 @@ function scanSidebar() {
   // they should never carry the .ho-has-colorbtn class), re-check here in case an older
   // decoration leaked onto an H2O surface before this guard shipped, or a future surface
   // gets temporarily mis-classified.
-  document.querySelectorAll("a.ho-has-colorbtn").forEach(a => {
-    if (I.utils?.isInsideH2OInternalSurface?.(a)) return;
-    const id = I.nav.getChatIdFromHref(a.getAttribute("href") || "");
-    const btn = a.querySelector(".ho-colorbtn");
-    if (id && btn) I.heat.applyToBtn(btn, id);
-  });
+  if (reconcileChatList) {
+    document.querySelectorAll("a.ho-has-colorbtn").forEach(a => {
+      if (I.utils?.isInsideH2OInternalSurface?.(a)) return;
+      const id = I.nav.getChatIdFromHref(a.getAttribute("href") || "");
+      const btn = a.querySelector(".ho-colorbtn");
+      if (id && btn) I.heat.applyToBtn(btn, id);
+    });
+  }
 
   if (!paletteOpen) {
-    markSidebarProjects();
-    markSeeControls();
-    markActiveSidebarLink();
-    ensureColorPriorityControl();
-    scheduleColorPrioritySort();
+    if (reconcileChatList) {
+      markSidebarProjects();
+      markSeeControls();
+      markActiveSidebarLink();
+    }
+    let controlRecoverySatisfied = false;
+    let controlWasValid = false;
+    if (reconcileChatList || recoverControlHost) {
+      controlWasValid = !!ensureColorPriorityControl();
+      controlRecoverySatisfied = true;
+    }
+    if (sortColor) scheduleColorPrioritySort({ controlRecoverySatisfied, controlWasValid });
   }
 }
 
@@ -2333,6 +2478,12 @@ let hoScanPendingFast = false;
 let hoScanDirty = false;
 let hoScanSettleIds = [];
 
+const HO_WORK_CHAT_LIST_RECONCILE = 1 << 0;
+const HO_WORK_CONTROL_HOST_RECOVERY = 1 << 1;
+const HO_WORK_COLOR_SORT = 1 << 2;
+const HO_WORK_ALL = HO_WORK_CHAT_LIST_RECONCILE | HO_WORK_CONTROL_HOST_RECOVERY | HO_WORK_COLOR_SORT;
+let hoScanPendingWork = 0;
+
 /* Coalescing windows. The body observer used to own its own debounce; folding
    it into the scheduler keeps exactly one queue.
 
@@ -2357,9 +2508,15 @@ const HO_SCAN_RECOVERY_MS = 15000;
 /* One canonical request boundary. Every full-reconciliation trigger funnels
    through here, so N requests inside one window collapse to one pass and no
    trigger family can own an independent queue. */
-function hoRequestScan(reason) {
+function hoScanWorkForReason(reason) {
+  if (reason === 'dom') return HO_WORK_CHAT_LIST_RECONCILE | HO_WORK_COLOR_SORT;
+  return HO_WORK_ALL;
+}
+
+function hoRequestScan(reason, work = 0) {
   if (!hoScanActive) return;                 // suspended: never queue work
   hoScanDirty = true;
+  hoScanPendingWork |= Number(work) || hoScanWorkForReason(reason);
   const fast = reason !== 'dom';
   if (hoScanPendingId) {
     /* An existing deadline is never postponed -- only escalated to the shorter
@@ -2380,18 +2537,114 @@ function hoRequestScan(reason) {
 function hoFlushScan() {
   hoScanPendingId = 0;
   hoScanPendingFast = false;
-  if (!hoScanActive) { hoScanDirty = false; return; }
+  if (!hoScanActive) { hoScanDirty = false; hoScanPendingWork = 0; return; }
   if (!hoScanDirty) return;
   hoScanDirty = false;
+  const work = hoScanPendingWork || HO_WORK_ALL;
+  hoScanPendingWork = 0;
   if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
-  scanSidebar();
+  scanSidebar(work);
+}
+
+/* Structural admission for the body observer.
+ *
+ * hoScanObserver watches document.body {childList,subtree} and was wired as
+ * `() => hoRequestScan('dom')`: the records were discarded, so every mutation
+ * anywhere in the body marked the list dirty and bought a full reconciliation
+ * pass. ChatGPT emits hundreds of such records per idle minute.
+ *
+ * A batch is relevant when it changes something a chat-list pass could find:
+ * a chat link or a decorated row entering or leaving, or structure changing
+ * inside the sidebar itself. Deliberately NOT "anything inside <main>" - the
+ * transcript and the chat list share that container, so a container test would
+ * admit exactly the traffic this is meant to refuse.
+ *
+ * Structural evidence only: tag identity, ancestry, and bounded selector
+ * lookups inside the changed subtrees. It forces no style or layout, performs
+ * no document-wide scan, keeps no state, and is a pure function of its records.
+ * The 15-second recovery watchdog is untouched and still reconciles anything a
+ * childList observer cannot see, so nothing here can strand the list.
+ */
+function hoMutationsAffectChatList(records) {
+  const CANDIDATE_SELECTORS = ['a[href*="/c/"]', 'a[href*="/chat/"]', '.ho-main-row', 'nav', 'aside'];
+
+  /* Our own stamped output cannot change what a pass would find. Per record and
+     additions only: a record that removes anything is never excluded, so the
+     list still reconciles when our own nodes are torn out. */
+  const isOwned = (n) => !!(n && n.nodeType === 1 && n.dataset
+    && (n.dataset.hoRowColorOwner === '9A1b' || n.dataset.hoHeatPillOwner === '9A1b'));
+  const ownedAdditionsOnly = (rec) => {
+    const added = rec.addedNodes || [];
+    if (!added.length || (rec.removedNodes || []).length) return false;
+    for (const n of added) if (!isOwned(n)) return false;
+    return true;
+  };
+
+  /* Sidebar structure changing at all is relevant: rows there carry no chat
+     link of their own shape until the list is built. */
+  const inSidebar = (n) => {
+    let cur = n;
+    while (cur) {
+      const tag = cur.tagName;
+      if (tag === 'NAV' || tag === 'ASIDE') return true;
+      cur = cur.parentElement || null;
+    }
+    return false;
+  };
+
+  const carries = (n) => {
+    if (!n || n.nodeType !== 1) return false;
+    for (const sel of CANDIDATE_SELECTORS) {
+      try {
+        if (n.matches?.(sel)) return true;
+        if (typeof n.querySelector === 'function' && n.querySelector(sel)) return true;
+      } catch (_) {}
+    }
+    return false;
+  };
+
+  for (const rec of records || []) {
+    if (!rec || rec.type !== 'childList') continue;
+    if (ownedAdditionsOnly(rec)) continue;
+    if (inSidebar(rec.target)) return true;
+    for (const n of rec.removedNodes || []) if (carries(n)) return true;
+    for (const n of rec.addedNodes || []) if (carries(n)) return true;
+  }
+  return false;
+}
+
+function hoClassifyAdmittedScanWork(records) {
+  let work = HO_WORK_CHAT_LIST_RECONCILE | HO_WORK_COLOR_SORT;
+  const affectsControlHost = (node) => {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      if (node.matches?.('.ho-project-tabs-host, .ho-color-priority')) return true;
+      return !!node.querySelector?.('.ho-project-tabs-host, .ho-color-priority');
+    } catch (_) { return false; }
+  };
+
+  for (const record of records || []) {
+    if (!record || record.type !== 'childList') continue;
+    if (affectsControlHost(record.target)) work |= HO_WORK_CONTROL_HOST_RECOVERY;
+    for (const node of record.addedNodes || []) {
+      if (affectsControlHost(node)) work |= HO_WORK_CONTROL_HOST_RECOVERY;
+    }
+    for (const node of record.removedNodes || []) {
+      if (affectsControlHost(node)) work |= HO_WORK_CONTROL_HOST_RECOVERY;
+    }
+  }
+  return work;
 }
 
 function hoActivateScanLayer() {
   if (hoScanActive) return;                  // already active -- exactly once
   hoScanActive = true;
   if (!hoScanObserver) {
-    hoScanObserver = new MutationObserver(() => hoRequestScan('dom'));
+    hoScanObserver = new MutationObserver((records) => {
+      if (hoMutationsAffectChatList(records)) {
+        hoRequestScan('dom', hoClassifyAdmittedScanWork(records));
+      }
+    });
     hoScanObserver.observe(document.body, { childList: true, subtree: true });
   }
   if (!hoScanRecoveryId) {
@@ -2410,6 +2663,7 @@ function hoActivateScanLayer() {
 function hoSuspendScanLayer() {
   hoScanActive = false;
   hoScanDirty = false;
+  hoScanPendingWork = 0;
   if (hoScanPendingId) { clearTimeout(hoScanPendingId); hoScanPendingId = 0; }
   hoScanPendingFast = false;
   if (hoScanRecoveryId) { clearInterval(hoScanRecoveryId); hoScanRecoveryId = 0; }

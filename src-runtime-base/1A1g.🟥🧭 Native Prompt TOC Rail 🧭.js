@@ -34,6 +34,49 @@
   const VIEWER_MAX_WIDTH_PX = 360;
   const VIEWER_MIN_WIDTH_PX = 180;
   const VIEWER_MAX_MISS_MS = 500;
+  const RAIL_DOMAIN_SEL = [
+    '[data-h2o-native-prompt-rail-managed]',
+    '[data-h2o-native-prompt-rail-position]',
+    '[data-h2o-native-toc-rail-position]',
+    'button[aria-label^="Prompt "]',
+    'button[data-toc-active]',
+    '[data-toc-active]',
+    'div[class*="max-h-[50lvh]"][class*="w-9"]',
+    'div[class*="no-scrollbar"][class*="w-9"]',
+    'div[class*="inset-e-4"]',
+    'div[class*="top-1/2"][class*="fixed"]',
+  ].join(',');
+  const VIEWER_DOMAIN_SEL = [
+    '[data-h2o-native-toc-viewer-managed]',
+    'div[class*="popover"]',
+    'div[class*="rounded-2xl"]',
+    'div[class*="shadow-long"]',
+    'div[class*="max-w-85"]',
+    'div[class*="min-w-60"]',
+    'div[class*="select-none"][class*="absolute"]',
+    '[role="menu"]', '[role="listbox"]', '[class*="max-h-[50lvh]"]',
+    'button.__menu-item', 'button[class*="__menu-item"]',
+    '[role="menuitem"]', '[role="option"]',
+  ].join(',');
+  const ANCHOR_DOMAIN_SEL = [
+    'nav', 'aside', '[role="navigation"]', '#stage-slideover-sidebar',
+    '[data-ho-chat-root="true"]', 'main#main', '#thread',
+    '[class*="sidebar" i]', '[id*="sidebar" i]',
+    '[class*="slideover" i]', '[id*="slideover" i]',
+    '[class*="scroll-root"]', TURN_SECTION_SEL,
+  ].join(',');
+  const MUTATION_DOMAIN_SEL = `${RAIL_DOMAIN_SEL},${VIEWER_DOMAIN_SEL},${ANCHOR_DOMAIN_SEL}`;
+  const VIEWER_UNION_SEL = [
+    '[data-h2o-native-toc-viewer-managed="1"]',
+    'div.z-50.max-w-xs.rounded-2xl.popover',
+    'div[class*="popover"]', 'div[class*="rounded-2xl"]',
+    'div[class*="shadow-long"]', 'div[class*="max-w-85"]',
+    'div[class*="min-w-60"]', 'div[class*="select-none"][class*="absolute"]',
+    'ul', 'ol', '[role="menu"]', '[role="listbox"]', '[class*="max-h-[50lvh]"]',
+    'button.__menu-item', 'button[class*="__menu-item"]', 'li > button',
+    '[role="menuitem"]', '[role="option"]',
+    'button[class*="hoverable"][class*="text-start"]', 'button[class*="text-start"]',
+  ].join(',');
 
   const VIEWER_STYLE_PROPS = [
     'position', 'inset-inline-start', 'inset-inline-end', 'left', 'right', 'top', 'bottom',
@@ -69,9 +112,20 @@
     managed: new Set(),
     hiddenViewers: new Set(),
     rafQueued: false,
+    pendingCauses: new Set(),
+    pendingViewerDiscovery: false,
+    inRepairPass: false,
+    viewerInteractionGeneration: 0,
+    viewerVerifiedGeneration: 0,
+    viewerVerificationPending: false,
+    viewerFollowSnapshot: null,
+    lastRepairHadRail: false,
     mutationObserver: null,
     intervalId: 0,
   };
+
+  let ownAttributeTransitions = new WeakMap();
+  let ownTransitionExpiryQueued = false;
 
   function clampNum(value, min, max) {
     const n = Number(value);
@@ -153,6 +207,193 @@
         '[data-cgxui="mnmp-panel"]',
       ].join(','));
     } catch { return false; }
+  }
+
+  function isElement(node) {
+    return !!node && node.nodeType === 1;
+  }
+
+  function matchesDomain(node, selector) {
+    if (!isElement(node)) return false;
+    try { return !!node.matches?.(selector); } catch { return false; }
+  }
+
+  function subtreeCarriesDomain(node, selector = MUTATION_DOMAIN_SEL) {
+    if (!isElement(node)) return false;
+    if (matchesDomain(node, selector)) return true;
+    try { return !!node.querySelector?.(selector); } catch { return false; }
+  }
+
+  function managedRelationship(node) {
+    if (!isElement(node)) return false;
+    const managed = [state.railContainer, state.railInner, state.railBound, ...state.managed, ...state.hiddenViewers];
+    for (const current of managed) {
+      if (!current) continue;
+      try {
+        if (node === current || current.contains?.(node)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  function subtreeContainsManaged(node) {
+    if (!isElement(node)) return false;
+    const managed = [state.railContainer, state.railInner, state.railBound, ...state.managed, ...state.hiddenViewers];
+    for (const current of managed) {
+      if (!current) continue;
+      try { if (node === current || node.contains?.(current)) return true; } catch {}
+    }
+    return false;
+  }
+
+  function managedViewerRelationship(node, includeContainingSubtree = false) {
+    if (!isElement(node)) return false;
+    for (const current of [...state.managed, ...state.hiddenViewers]) {
+      if (!current) continue;
+      try {
+        if (node === current || current.contains?.(node) || (includeContainingSubtree && node.contains?.(current))) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  function serializeAttribute(target, attributeName) {
+    try {
+      if (attributeName === 'style') return String(target?.getAttribute?.('style') ?? target?.style?.cssText ?? '');
+      return target?.getAttribute?.(attributeName);
+    } catch { return null; }
+  }
+
+  function scheduleOwnTransitionExpiry() {
+    if (ownTransitionExpiryQueued) return;
+    ownTransitionExpiryQueued = true;
+    try {
+      const enqueue = W.queueMicrotask || globalThis.queueMicrotask;
+      enqueue?.(() => {
+        ownAttributeTransitions = new WeakMap();
+        ownTransitionExpiryQueued = false;
+      });
+    } catch {}
+  }
+
+  function registerOwnAttributeTransition(target, attributeName, oldValue, newValue) {
+    if (!target || oldValue === newValue) return;
+    let byAttribute = ownAttributeTransitions.get(target);
+    if (!byAttribute) {
+      byAttribute = new Map();
+      ownAttributeTransitions.set(target, byAttribute);
+    }
+    let transitions = byAttribute.get(attributeName);
+    if (!transitions) {
+      transitions = [];
+      byAttribute.set(attributeName, transitions);
+    }
+    for (const transition of transitions) transition.newValue = newValue;
+    transitions.push({ oldValue, newValue });
+    scheduleOwnTransitionExpiry();
+  }
+
+  function mutateOwnedAttribute(target, attributeName, mutate) {
+    if (!target) return false;
+    const oldValue = serializeAttribute(target, attributeName);
+    try { mutate(); } catch { return false; }
+    const newValue = serializeAttribute(target, attributeName);
+    if (oldValue === newValue) return false;
+    registerOwnAttributeTransition(target, attributeName, oldValue, newValue);
+    return true;
+  }
+
+  function writeOwnedAttribute(target, attributeName, value) {
+    const next = String(value);
+    if (serializeAttribute(target, attributeName) === next) return false;
+    return mutateOwnedAttribute(target, attributeName, () => target.setAttribute(attributeName, next));
+  }
+
+  function removeOwnedAttribute(target, attributeName) {
+    if (serializeAttribute(target, attributeName) == null) return false;
+    return mutateOwnedAttribute(target, attributeName, () => target.removeAttribute(attributeName));
+  }
+
+  function writeAttributeValue(target, attributeName, value) {
+    const next = String(value);
+    if (!target || serializeAttribute(target, attributeName) === next) return false;
+    try { target.setAttribute(attributeName, next); return true; } catch { return false; }
+  }
+
+  function removeAttributeValue(target, attributeName) {
+    if (!target || serializeAttribute(target, attributeName) == null) return false;
+    try { target.removeAttribute(attributeName); return true; } catch { return false; }
+  }
+
+  function writeOwnedStyle(target, property, value, priority = '') {
+    if (!target?.style) return false;
+    const next = String(value);
+    try {
+      if (target.style.getPropertyValue(property) === next && target.style.getPropertyPriority(property) === String(priority)) return false;
+    } catch {}
+    return mutateOwnedAttribute(target, 'style', () => target.style.setProperty(property, next, priority));
+  }
+
+  function removeOwnedStyle(target, property) {
+    if (!target?.style) return false;
+    try { if (!target.style.getPropertyValue(property)) return false; } catch {}
+    return mutateOwnedAttribute(target, 'style', () => target.style.removeProperty(property));
+  }
+
+  function exactOwnAttributeRecord(record) {
+    if (record?.type !== 'attributes') return false;
+    const attributeName = String(record.attributeName || '');
+    const transitions = ownAttributeTransitions.get(record.target)?.get(attributeName) || [];
+    if (!transitions.length) return false;
+    const oldValue = attributeName === 'style' ? String(record.oldValue ?? '') : (record.oldValue ?? null);
+    const newValue = serializeAttribute(record.target, attributeName);
+    return transitions.some((transition) => transition.oldValue === oldValue && transition.newValue === newValue);
+  }
+
+  function attributeTargetRelevant(target, attributeName) {
+    if (!isElement(target)) return false;
+    if (attributeName === 'data-toc-active') {
+      return managedRelationship(target) || matchesDomain(target, `${RAIL_DOMAIN_SEL},${VIEWER_DOMAIN_SEL}`);
+    }
+    if (attributeName === 'data-h2o-native-prompt-rail-position') {
+      return managedRelationship(target) || matchesDomain(target, RAIL_DOMAIN_SEL);
+    }
+    if (attributeName === 'class' || attributeName === 'style') {
+      return managedRelationship(target) || matchesDomain(target, MUTATION_DOMAIN_SEL);
+    }
+    return false;
+  }
+
+  function classifyMutationRecords(records) {
+    let relevant = false;
+    let discoverViewer = false;
+    for (const record of Array.from(records || [])) {
+      if (!record) continue;
+      if (record.type === 'attributes') {
+        if (exactOwnAttributeRecord(record)) continue;
+        const attributeName = String(record.attributeName || '');
+        if (!attributeTargetRelevant(record.target, attributeName)) continue;
+        relevant = true;
+        if (managedViewerRelationship(record.target) || matchesDomain(record.target, VIEWER_DOMAIN_SEL) || attributeName === 'data-toc-active') discoverViewer = true;
+        continue;
+      }
+      if (record.type !== 'childList') continue;
+      let recordRelevant = managedRelationship(record.target) || matchesDomain(record.target, MUTATION_DOMAIN_SEL);
+      let recordViewer = matchesDomain(record.target, VIEWER_DOMAIN_SEL);
+      for (const node of Array.from(record.addedNodes || [])) {
+        if (!subtreeCarriesDomain(node)) continue;
+        recordRelevant = true;
+        if (subtreeCarriesDomain(node, VIEWER_DOMAIN_SEL)) recordViewer = true;
+      }
+      for (const node of Array.from(record.removedNodes || [])) {
+        if (!subtreeContainsManaged(node) && !subtreeCarriesDomain(node)) continue;
+        recordRelevant = true;
+        if (managedViewerRelationship(node, true) || subtreeCarriesDomain(node, VIEWER_DOMAIN_SEL)) recordViewer = true;
+      }
+      if (recordRelevant) relevant = true;
+      if (recordViewer) discoverViewer = true;
+    }
+    return { relevant, discoverViewer };
   }
 
   function hasConversationTurn(el) {
@@ -330,10 +571,10 @@
     };
   }
 
-  function collectChatSurfaceCandidates() {
+  function collectChatSurfaceCandidates(sidebarRightInput = null) {
     const out = [];
     const seen = new Set();
-    const sidebarRight = getOpenAISidebarRight();
+    const sidebarRight = sidebarRightInput == null ? getOpenAISidebarRight() : Number(sidebarRightInput || 0);
     const push = (el, source) => {
       if (!el || seen.has(el)) return;
       seen.add(el);
@@ -359,13 +600,14 @@
     return out;
   }
 
-  function selectChatSurfaceAnchor() {
-    return collectChatSurfaceCandidates().find((candidate) => candidate.ok) || null;
+  function selectChatSurfaceAnchor(sidebarRight = null, candidates = null) {
+    return (candidates || collectChatSurfaceCandidates(sidebarRight)).find((candidate) => candidate.ok) || null;
   }
 
-  function resolveLeftRailAnchor() {
-    const sidebarBoundary = selectSidebarBoundary();
-    const selected = selectChatSurfaceAnchor();
+  function resolveLeftRailAnchor(sidebarBoundaryInput = null, chatCandidatesInput = null) {
+    const sidebarBoundary = sidebarBoundaryInput || selectSidebarBoundary();
+    const chatCandidates = chatCandidatesInput || collectChatSurfaceCandidates(sidebarBoundary.visibleSidebarRight);
+    const selected = selectChatSurfaceAnchor(sidebarBoundary.visibleSidebarRight, chatCandidates);
     if (sidebarBoundary.visibleSidebarRight > 0) {
       return {
         source: 'visible-sidebar-right',
@@ -448,11 +690,16 @@
     };
   }
 
-  function isRailInner(el) {
+  function looksLikeRailInner(el) {
     const cls = classText(el);
     if (!el || el.tagName !== 'DIV') return false;
     if (!cls.includes('max-h-[50lvh]') || !cls.includes('w-9')) return false;
     if (!cls.includes('flex-col') || !cls.includes('overflow-y-auto')) return false;
+    return true;
+  }
+
+  function isRailInner(el) {
+    if (!looksLikeRailInner(el)) return false;
     const r = visibleRect(el, 8, 80);
     return !!(r && r.width <= 80);
   }
@@ -599,7 +846,11 @@
   }
 
   function resolveRailContainer() {
-    if (state.railContainer?.isConnected && evaluateRailCandidate(state.railContainer, 'cached').ok) return state.railContainer;
+    if (state.railContainer?.isConnected) {
+      try {
+        if (matchesDomain(state.railContainer, RAIL_DOMAIN_SEL) || state.railContainer.querySelector?.(RAIL_DOMAIN_SEL)) return state.railContainer;
+      } catch {}
+    }
     const selected = selectRailCandidate();
     const container = selected?.element || null;
     state.railContainer = container;
@@ -610,7 +861,9 @@
   function getRailMeasure() {
     const container = resolveRailContainer();
     if (!container) return null;
-    const inner = firstVisibleRailInner(container);
+    const inner = state.railInner?.isConnected && container.contains?.(state.railInner) && looksLikeRailInner(state.railInner)
+      ? state.railInner
+      : firstVisibleRailInner(container);
     const innerRect = rectOf(inner);
     const containerRect = rectOf(container);
     if (!innerRect && !containerRect) return null;
@@ -627,43 +880,42 @@
     for (const el of Array.from(state.hiddenViewers)) {
       try {
         if (el?.getAttribute?.('data-h2o-native-toc-viewer-hidden') === '1') {
-          el.style.removeProperty('display');
-          el.removeAttribute('data-h2o-native-toc-viewer-hidden');
+          removeOwnedStyle(el, 'display');
+          removeAttributeValue(el, 'data-h2o-native-toc-viewer-hidden');
         }
       } catch {}
       state.hiddenViewers.delete(el);
     }
   }
 
-  function hideCurrentViewerCards() {
-    const candidates = collectViewerCandidates(null).accepted;
+  function hideCurrentViewerCards(candidates = []) {
     for (const candidate of candidates) {
       const card = candidate?.card || null;
       if (!card) continue;
       try {
-        card.style.setProperty('display', 'none', 'important');
-        card.setAttribute('data-h2o-native-toc-viewer-hidden', '1');
+        writeOwnedStyle(card, 'display', 'none', 'important');
+        writeAttributeValue(card, 'data-h2o-native-toc-viewer-hidden', '1');
         state.hiddenViewers.add(card);
       } catch {}
     }
   }
 
-  function hideRailContainer(container) {
+  function hideRailContainer(container, viewerCandidates = []) {
     if (!container) return;
     try {
       clearManagedViewer(true);
-      hideCurrentViewerCards();
-      state.viewerLoopActive = false;
-      container.style.setProperty('display', 'none', 'important');
-      container.setAttribute('data-h2o-native-prompt-rail-managed', '1');
-      container.setAttribute('data-h2o-native-prompt-rail-position', 'hidden');
-      container.setAttribute('data-h2o-native-toc-rail-position', 'hidden');
-      container.setAttribute('data-h2o-native-toc-rail-hidden', '1');
-      container.removeAttribute('data-h2o-native-toc-rail-anchor');
-      container.removeAttribute('data-h2o-native-toc-rail-anchor-left');
-      container.removeAttribute('data-h2o-native-toc-rail-applied-left');
-      document.documentElement.removeAttribute('data-h2o-native-toc-rail-position');
-      document.documentElement.setAttribute('data-h2o-native-toc-rail-config-position', 'hidden');
+      hideCurrentViewerCards(viewerCandidates);
+      terminateViewerFollow();
+      writeOwnedStyle(container, 'display', 'none', 'important');
+      writeAttributeValue(container, 'data-h2o-native-prompt-rail-managed', '1');
+      writeOwnedAttribute(container, 'data-h2o-native-prompt-rail-position', 'hidden');
+      writeAttributeValue(container, 'data-h2o-native-toc-rail-position', 'hidden');
+      writeAttributeValue(container, 'data-h2o-native-toc-rail-hidden', '1');
+      removeAttributeValue(container, 'data-h2o-native-toc-rail-anchor');
+      removeAttributeValue(container, 'data-h2o-native-toc-rail-anchor-left');
+      removeAttributeValue(container, 'data-h2o-native-toc-rail-applied-left');
+      removeAttributeValue(document.documentElement, 'data-h2o-native-toc-rail-position');
+      writeAttributeValue(document.documentElement, 'data-h2o-native-toc-rail-config-position', 'hidden');
     } catch {}
   }
 
@@ -672,9 +924,9 @@
     if (!container) return;
     try {
       if (container.getAttribute?.('data-h2o-native-toc-rail-hidden') === '1') {
-        container.style.removeProperty('display');
+        removeOwnedStyle(container, 'display');
       }
-      container.removeAttribute('data-h2o-native-toc-rail-hidden');
+      removeAttributeValue(container, 'data-h2o-native-toc-rail-hidden');
     } catch {}
   }
 
@@ -687,63 +939,55 @@
     return 'right';
   }
 
-  function applyRailPosition(settings = getSettings()) {
+  function applyRailPosition(settings = getSettings(), repairPlan = null) {
     const position = normalizeRailPosition(settings.railPosition);
-    let measure = getRailMeasure();
-    const container = measure?.container || (state.railContainer?.isConnected ? state.railContainer : null);
+    const railPlan = repairPlan?.railPlan || repairPlan || null;
+    const measure = railPlan?.measure || getRailMeasure();
+    const container = measure?.container || null;
     if (!container) return null;
     try {
       if (position === 'hidden') {
-        hideRailContainer(container);
+        hideRailContainer(container, repairPlan?.viewerCandidates || []);
         return null;
       }
       restoreRailContainer(container);
-      measure = getRailMeasure() || { container, inner: null, rect: rectOf(container), containerRect: rectOf(container) };
       if (position === 'left') {
-        const anchor = resolveLeftRailAnchor();
-        const desiredLeft = Math.round(Number(anchor.left || 0) + RAIL_EDGE_INSET_PX);
-        let appliedLeft = desiredLeft;
-        container.style.setProperty('left', `${desiredLeft}px`, 'important');
-        container.style.setProperty('right', 'auto', 'important');
-        container.style.setProperty('inset-inline-start', `${desiredLeft}px`, 'important');
-        container.style.setProperty('inset-inline-end', 'auto', 'important');
-        try {
-          const rr = rectOf(container);
-          if (rr && Math.abs(rr.left - desiredLeft) > 1) {
-            appliedLeft = Math.round(desiredLeft + (desiredLeft - rr.left));
-            container.style.setProperty('left', `${appliedLeft}px`, 'important');
-            container.style.setProperty('inset-inline-start', `${appliedLeft}px`, 'important');
-          }
-        } catch {}
-        container.setAttribute('data-h2o-native-prompt-rail-managed', '1');
-        container.setAttribute('data-h2o-native-prompt-rail-position', 'left');
-        container.setAttribute('data-h2o-native-toc-rail-position', 'left');
-        container.setAttribute('data-h2o-native-toc-rail-anchor', anchor.source || (anchor.candidate ? 'chat-surface' : 'unknown'));
-        container.setAttribute('data-h2o-native-toc-rail-anchor-left', String(Math.round(Number(anchor.left || 0))));
-        container.setAttribute('data-h2o-native-toc-rail-applied-left', String(appliedLeft));
+        const anchor = railPlan?.anchor || { left: 0, source: 'viewport-fallback-no-sidebar', candidate: null };
+        const desiredLeft = railPlan?.desiredLeft ?? Math.round(Number(anchor.left || 0) + RAIL_EDGE_INSET_PX);
+        const appliedLeft = railPlan?.appliedLeft ?? desiredLeft;
+        writeOwnedStyle(container, 'left', `${appliedLeft}px`, 'important');
+        writeOwnedStyle(container, 'right', 'auto', 'important');
+        writeOwnedStyle(container, 'inset-inline-start', `${appliedLeft}px`, 'important');
+        writeOwnedStyle(container, 'inset-inline-end', 'auto', 'important');
+        writeAttributeValue(container, 'data-h2o-native-prompt-rail-managed', '1');
+        writeOwnedAttribute(container, 'data-h2o-native-prompt-rail-position', 'left');
+        writeAttributeValue(container, 'data-h2o-native-toc-rail-position', 'left');
+        writeAttributeValue(container, 'data-h2o-native-toc-rail-anchor', anchor.source || (anchor.candidate ? 'chat-surface' : 'unknown'));
+        writeAttributeValue(container, 'data-h2o-native-toc-rail-anchor-left', String(Math.round(Number(anchor.left || 0))));
+        writeAttributeValue(container, 'data-h2o-native-toc-rail-applied-left', String(appliedLeft));
       } else {
-        container.style.removeProperty('left');
-        container.style.removeProperty('right');
-        container.style.removeProperty('inset-inline-start');
-        container.style.removeProperty('inset-inline-end');
-        container.removeAttribute('data-h2o-native-toc-rail-anchor');
-        container.removeAttribute('data-h2o-native-toc-rail-anchor-left');
-        container.removeAttribute('data-h2o-native-toc-rail-applied-left');
-        container.removeAttribute('data-h2o-native-toc-rail-hidden');
+        removeOwnedStyle(container, 'left');
+        removeOwnedStyle(container, 'right');
+        removeOwnedStyle(container, 'inset-inline-start');
+        removeOwnedStyle(container, 'inset-inline-end');
+        removeAttributeValue(container, 'data-h2o-native-toc-rail-anchor');
+        removeAttributeValue(container, 'data-h2o-native-toc-rail-anchor-left');
+        removeAttributeValue(container, 'data-h2o-native-toc-rail-applied-left');
+        removeAttributeValue(container, 'data-h2o-native-toc-rail-hidden');
         if (position === 'off') {
-          container.removeAttribute('data-h2o-native-prompt-rail-managed');
-          container.removeAttribute('data-h2o-native-prompt-rail-position');
-          container.removeAttribute('data-h2o-native-toc-rail-position');
+          removeAttributeValue(container, 'data-h2o-native-prompt-rail-managed');
+          removeOwnedAttribute(container, 'data-h2o-native-prompt-rail-position');
+          removeAttributeValue(container, 'data-h2o-native-toc-rail-position');
         } else {
-          container.setAttribute('data-h2o-native-prompt-rail-managed', '1');
-          container.setAttribute('data-h2o-native-prompt-rail-position', position);
-          container.setAttribute('data-h2o-native-toc-rail-position', position);
+          writeAttributeValue(container, 'data-h2o-native-prompt-rail-managed', '1');
+          writeOwnedAttribute(container, 'data-h2o-native-prompt-rail-position', position);
+          writeAttributeValue(container, 'data-h2o-native-toc-rail-position', position);
         }
       }
-      document.documentElement.removeAttribute('data-h2o-native-toc-rail-position');
-      document.documentElement.setAttribute('data-h2o-native-toc-rail-config-position', position);
+      removeAttributeValue(document.documentElement, 'data-h2o-native-toc-rail-position');
+      writeAttributeValue(document.documentElement, 'data-h2o-native-toc-rail-config-position', position);
     } catch {}
-    return getRailMeasure();
+    return railPlan?.resultMeasure || measure;
   }
 
   function getRailMarkerRect() {
@@ -941,7 +1185,9 @@
     return best;
   }
 
-  function addCandidate(map, rejected, card, list, method, railRect) {
+  function addCandidate(map, rejected, seen, card, list, method, railRect) {
+    if (!card || seen.has(card)) return;
+    seen.add(card);
     const candidate = evaluateViewerCard(card, method, railRect, list);
     if (!candidate.ok) {
       rejected.push(candidate);
@@ -955,30 +1201,34 @@
   function collectViewerCandidates(railRect = null) {
     const candidates = new Map();
     const rejected = [];
+    const seen = new Set();
+    let nodes = [];
     try {
-      for (const card of document.querySelectorAll([
-        '[data-h2o-native-toc-viewer-managed="1"]',
-        'div.z-50.max-w-xs.rounded-2xl.popover',
-        'div[class*="popover"]',
-        'div[class*="rounded-2xl"]',
-        'div[class*="shadow-long"]',
-        'div[class*="max-w-85"]',
-        'div[class*="min-w-60"]',
-        'div[class*="select-none"][class*="absolute"]',
-      ].join(','))) {
-        addCandidate(candidates, rejected, card, visibleListIn(card), 'card-class', railRect);
+      nodes = Array.from(document.querySelectorAll(VIEWER_UNION_SEL));
+    } catch {}
+    try {
+      for (const card of nodes) {
+        if (!matchesDomain(card, [
+          '[data-h2o-native-toc-viewer-managed="1"]',
+          'div.z-50.max-w-xs.rounded-2xl.popover',
+          'div[class*="popover"]', 'div[class*="rounded-2xl"]',
+          'div[class*="shadow-long"]', 'div[class*="max-w-85"]',
+          'div[class*="min-w-60"]', 'div[class*="select-none"][class*="absolute"]',
+        ].join(','))) continue;
+        addCandidate(candidates, rejected, seen, card, visibleListIn(card), 'card-class', railRect);
       }
     } catch {}
     try {
-      for (const list of document.querySelectorAll('ul, ol, [role="menu"], [role="listbox"], [class*="max-h-[50lvh]"]')) {
+      for (const list of nodes) {
+        if (!matchesDomain(list, 'ul, ol, [role="menu"], [role="listbox"], [class*="max-h-[50lvh]"]')) continue;
         if (!visibleRect(list, 80, 40) || isOwnedByH2O(list) || isHiddenTooltipShell(list)) continue;
         if (list.closest?.('nav[aria-label], aside')) continue;
         if (visibleRowCount(list) < 2 && !classText(list).includes('max-h-[50lvh]')) continue;
-        addCandidate(candidates, rejected, floatingCardFor(list), list, 'list-menu', railRect);
+        addCandidate(candidates, rejected, seen, floatingCardFor(list), list, 'list-menu', railRect);
       }
     } catch {}
     try {
-      for (const btn of document.querySelectorAll([
+      const itemSelector = [
         'button.__menu-item',
         'button[class*="__menu-item"]',
         'li > button',
@@ -986,10 +1236,12 @@
         '[role="option"]',
         'button[class*="hoverable"][class*="text-start"]',
         'button[class*="text-start"]',
-      ].join(','))) {
+      ].join(',');
+      for (const btn of nodes) {
+        if (!matchesDomain(btn, itemSelector)) continue;
         if (!visibleRect(btn, 8, 8) || isOwnedByH2O(btn) || isHiddenTooltipShell(btn)) continue;
         if (btn.closest?.('nav[aria-label], aside')) continue;
-        addCandidate(candidates, rejected, floatingCardFor(btn), btn.closest?.('ul, ol, [role="menu"], [role="listbox"]') || null, 'menu-item', railRect);
+        addCandidate(candidates, rejected, seen, floatingCardFor(btn), btn.closest?.('ul, ol, [role="menu"], [role="listbox"]') || null, 'menu-item', railRect);
       }
     } catch {}
     const sorted = Array.from(candidates.values()).filter((c) => c.itemCount > 0 || c.rowCount > 1 || c.active);
@@ -1022,54 +1274,33 @@
     return null;
   }
 
-  function clearManagedViewer(force = false) {
-    for (const el of Array.from(state.managed)) {
-      if (!force && el?.isConnected) continue;
-      try {
-        for (const prop of VIEWER_STYLE_PROPS) el.style.removeProperty(prop);
-        for (const attr of VIEWER_ATTRS) el.removeAttribute(attr);
-      } catch {}
-      state.managed.delete(el);
+  function currentManagedViewerCandidate(railRect = null) {
+    for (const card of state.managed) {
+      if (!card?.isConnected || card.getAttribute?.('data-h2o-native-toc-viewer-managed') !== '1') continue;
+      const candidate = evaluateViewerCard(card, 'managed-current', railRect, visibleListIn(card));
+      if (candidate.ok) return candidate;
     }
+    return null;
   }
 
-  function applyCorrection(card, desiredLeft, desiredTop) {
-    let fr = rectOf(card);
-    if (!fr) return null;
-    let adjusted = false;
-    let leftPx = parseFloat(card.style.left || '0') || 0;
-    let topPx = parseFloat(card.style.top || '0') || 0;
-    const dx = desiredLeft - fr.left;
-    const dy = desiredTop - fr.top;
-    if (Math.abs(dx) > 1) {
-      leftPx += dx;
-      try { card.style.setProperty('left', `${Math.round(leftPx)}px`, 'important'); } catch {}
-      adjusted = true;
-    }
-    if (Math.abs(dy) > 1) {
-      topPx += dy;
-      try { card.style.setProperty('top', `${Math.round(topPx)}px`, 'important'); } catch {}
-      adjusted = true;
-    }
-    if (adjusted) {
-      try { fr = rectOf(card); } catch {}
-    }
-    return fr;
+  function translateRectSnapshot(input, deltaLeft) {
+    if (!input || !Number.isFinite(deltaLeft)) return input;
+    return { ...input, left: input.left + deltaLeft, right: input.right + deltaLeft };
   }
 
-  function placeViewer(candidate, measure, settings) {
+  function buildViewerPlan(candidate, measure, settings) {
     const card = candidate?.card || null;
-    if (!card) return false;
+    if (!card) return null;
     const railRect = measure?.rect || null;
-    if (!railRect) return false;
+    if (!railRect) return null;
     const side = inferRailSide(measure, settings);
     const gap = Math.max(8, Number(settings.gapPx || RAIL_GAP_DEFAULT) || RAIL_GAP_DEFAULT);
     const vw = Number(W.innerWidth || 0);
     const vh = Number(W.innerHeight || 0);
-    if (!vw || !vh) return false;
+    if (!vw || !vh) return null;
 
     const startRect = rectOf(card);
-    if (!startRect) return false;
+    if (!startRect) return null;
     const margin = VIEWER_MARGIN_PX;
     const width = clampNum(startRect.width || VIEWER_MAX_WIDTH_PX, VIEWER_MIN_WIDTH_PX, Math.min(VIEWER_MAX_WIDTH_PX, vw - (margin * 2)));
     let desiredLeft = side === 'left'
@@ -1089,50 +1320,152 @@
     const appliedTop = Math.round(desiredTop - containerTop);
     const viewerSide = side === 'left' ? 'right' : 'left';
 
+    return {
+      candidate, card, railRect, side, viewerSide, startRect, width,
+      height, desiredLeft, desiredTop, availableHeight, block, blockRect,
+      containerLeft, containerTop, appliedLeft, appliedTop,
+    };
+  }
+
+  function buildRepairPlan(settings = getSettings(), options = {}) {
+    const position = normalizeRailPosition(settings.railPosition);
+    const measure = getRailMeasure();
+    if (!measure) return { settings, position, measure: null, railPlan: null, viewerCandidates: [], viewerPlan: null };
+    let anchor = null;
+    let desiredLeft = null;
+    let appliedLeft = null;
+    let resultMeasure = measure;
+    if (position === 'left') {
+      const sidebarBoundary = selectSidebarBoundary();
+      const chatCandidates = collectChatSurfaceCandidates(sidebarBoundary.visibleSidebarRight);
+      anchor = resolveLeftRailAnchor(sidebarBoundary, chatCandidates);
+      desiredLeft = Math.round(Number(anchor.left || 0) + RAIL_EDGE_INSET_PX);
+      const railBlock = containingBlockForFixed(measure.container);
+      const railBlockRect = rectOf(railBlock);
+      appliedLeft = Math.round(desiredLeft - Number(railBlockRect?.left || 0));
+      const currentContainerLeft = Number(measure.containerRect?.left ?? measure.rect?.left ?? 0);
+      const deltaLeft = desiredLeft - currentContainerLeft;
+      resultMeasure = {
+        ...measure,
+        rect: translateRectSnapshot(measure.rect, deltaLeft),
+        containerRect: translateRectSnapshot(measure.containerRect, deltaLeft),
+      };
+    }
+    const railPlan = { measure, position, anchor, desiredLeft, appliedLeft, resultMeasure };
+    let viewerCandidates = [];
+    let candidate = null;
+    if (options.discoverViewer) {
+      const sets = collectViewerCandidates(resultMeasure.rect);
+      viewerCandidates = sets.accepted;
+      candidate = viewerCandidates[0] || null;
+    } else {
+      candidate = currentManagedViewerCandidate(resultMeasure.rect);
+      if (candidate) viewerCandidates = [candidate];
+    }
+    const viewerPlan = position !== 'hidden' && position !== 'off'
+      ? buildViewerPlan(candidate, resultMeasure, settings)
+      : null;
+    return { settings, position, measure, railPlan, viewerCandidates, viewerPlan };
+  }
+
+  function clearManagedViewer(force = false) {
+    for (const el of Array.from(state.managed)) {
+      if (!force && el?.isConnected) continue;
+      try {
+        for (const prop of VIEWER_STYLE_PROPS) removeOwnedStyle(el, prop);
+        for (const attr of VIEWER_ATTRS) removeAttributeValue(el, attr);
+      } catch {}
+      state.managed.delete(el);
+    }
+  }
+
+  function applyCorrection(card, desiredLeft, desiredTop, appliedLeft, appliedTop) {
+    const measured = rectOf(card);
+    if (!measured) return null;
+    const dx = desiredLeft - measured.left;
+    const dy = desiredTop - measured.top;
+    const correctedLeft = Math.abs(dx) > 1 ? Math.round(appliedLeft + dx) : appliedLeft;
+    const correctedTop = Math.abs(dy) > 1 ? Math.round(appliedTop + dy) : appliedTop;
+    if (correctedLeft !== appliedLeft) writeOwnedStyle(card, 'left', `${correctedLeft}px`, 'important');
+    if (correctedTop !== appliedTop) writeOwnedStyle(card, 'top', `${correctedTop}px`, 'important');
+    return {
+      left: desiredLeft,
+      right: desiredLeft + measured.width,
+      top: desiredTop,
+      bottom: desiredTop + measured.height,
+      width: measured.width,
+      height: measured.height,
+    };
+  }
+
+  function placeViewer(candidate, measure, settings, preparedPlan = null) {
+    const plan = preparedPlan || buildViewerPlan(candidate, measure, settings);
+    const card = plan?.card || null;
+    if (!card) return false;
+    const { railRect, viewerSide, desiredLeft, desiredTop, width, height, availableHeight, containerLeft, containerTop, appliedLeft, appliedTop } = plan;
+
     try {
-      card.style.setProperty('position', 'fixed', 'important');
-      card.style.setProperty('inset-inline-start', 'auto', 'important');
-      card.style.setProperty('inset-inline-end', 'auto', 'important');
-      card.style.setProperty('right', 'auto', 'important');
-      card.style.setProperty('bottom', 'auto', 'important');
-      card.style.setProperty('left', `${appliedLeft}px`, 'important');
-      card.style.setProperty('top', `${appliedTop}px`, 'important');
-      card.style.setProperty('transform', 'none', 'important');
-      card.style.setProperty('translate', 'none', 'important');
-      card.style.setProperty('--tw-translate-x', '0px');
-      card.style.setProperty('--tw-translate-y', '0px');
-      card.style.setProperty('max-width', `${Math.min(VIEWER_MAX_WIDTH_PX, vw - (margin * 2))}px`, 'important');
-      card.style.setProperty('max-height', `${availableHeight}px`, 'important');
-      card.style.setProperty('overflow', 'hidden', 'important');
-      card.style.setProperty('z-index', '2147483000', 'important');
-      if (candidate.list && candidate.list !== card) {
-        candidate.list.style.setProperty('max-height', `${Math.max(40, availableHeight - 12)}px`, 'important');
-        candidate.list.style.setProperty('overflow-y', 'auto', 'important');
-        state.managed.add(candidate.list);
+      let positionChanged = false;
+      const positionWrite = (property, value, priority = '') => {
+        positionChanged = writeOwnedStyle(card, property, value, priority) || positionChanged;
+      };
+      positionWrite('position', 'fixed', 'important');
+      positionWrite('inset-inline-start', 'auto', 'important');
+      positionWrite('inset-inline-end', 'auto', 'important');
+      positionWrite('right', 'auto', 'important');
+      positionWrite('bottom', 'auto', 'important');
+      positionWrite('left', `${appliedLeft}px`, 'important');
+      positionWrite('top', `${appliedTop}px`, 'important');
+      positionWrite('transform', 'none', 'important');
+      positionWrite('translate', 'none', 'important');
+      positionWrite('--tw-translate-x', '0px');
+      positionWrite('--tw-translate-y', '0px');
+      positionWrite('max-width', `${Math.min(VIEWER_MAX_WIDTH_PX, Number(W.innerWidth || 0) - (VIEWER_MARGIN_PX * 2))}px`, 'important');
+      positionWrite('max-height', `${availableHeight}px`, 'important');
+      writeOwnedStyle(card, 'overflow', 'hidden', 'important');
+      writeOwnedStyle(card, 'z-index', '2147483000', 'important');
+      if (plan.candidate.list && plan.candidate.list !== card) {
+        writeOwnedStyle(plan.candidate.list, 'max-height', `${Math.max(40, availableHeight - 12)}px`, 'important');
+        writeOwnedStyle(plan.candidate.list, 'overflow-y', 'auto', 'important');
+        state.managed.add(plan.candidate.list);
       }
       state.managed.add(card);
 
-      let finalRect = applyCorrection(card, desiredLeft, desiredTop) || rectOf(card);
-      card.setAttribute('data-h2o-native-toc-viewer-managed', '1');
-      card.setAttribute('data-h2o-native-toc-viewer-side', viewerSide);
-      card.setAttribute('data-h2o-native-toc-viewer-left', String(Math.round(desiredLeft)));
-      card.setAttribute('data-h2o-native-toc-viewer-right', String(Math.round(desiredLeft + width)));
-      card.setAttribute('data-h2o-native-toc-viewer-rail-left', String(Math.round(railRect.left)));
-      card.setAttribute('data-h2o-native-toc-viewer-rail-right', String(Math.round(railRect.right)));
-      card.setAttribute('data-h2o-native-toc-viewer-applied-left', String(appliedLeft));
-      card.setAttribute('data-h2o-native-toc-viewer-applied-top', String(appliedTop));
-      card.setAttribute('data-h2o-native-toc-viewer-container-left', String(Math.round(containerLeft)));
-      card.setAttribute('data-h2o-native-toc-viewer-container-top', String(Math.round(containerTop)));
-      card.setAttribute('data-h2o-native-toc-viewer-detection-method', candidate.method || 'unknown');
+      const finalRect = (positionChanged
+        ? applyCorrection(card, desiredLeft, desiredTop, appliedLeft, appliedTop)
+        : null) || {
+          left: desiredLeft,
+          right: desiredLeft + width,
+          top: desiredTop,
+          bottom: desiredTop + height,
+          width,
+          height,
+        };
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-managed', '1');
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-side', viewerSide);
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-left', String(Math.round(desiredLeft)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-right', String(Math.round(desiredLeft + width)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-rail-left', String(Math.round(railRect.left)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-rail-right', String(Math.round(railRect.right)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-applied-left', String(appliedLeft));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-applied-top', String(appliedTop));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-container-left', String(Math.round(containerLeft)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-container-top', String(Math.round(containerTop)));
+      writeAttributeValue(card, 'data-h2o-native-toc-viewer-detection-method', plan.candidate.method || 'unknown');
       if (finalRect) {
-        card.setAttribute('data-h2o-native-toc-viewer-final-left', String(Math.round(finalRect.left)));
-        card.setAttribute('data-h2o-native-toc-viewer-final-right', String(Math.round(finalRect.right)));
-        card.setAttribute('data-h2o-native-toc-viewer-final-top', String(Math.round(finalRect.top)));
-        card.setAttribute('data-h2o-native-toc-viewer-final-bottom', String(Math.round(finalRect.bottom)));
+        writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-left', String(Math.round(finalRect.left)));
+        writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-right', String(Math.round(finalRect.right)));
+        writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-top', String(Math.round(finalRect.top)));
+        writeAttributeValue(card, 'data-h2o-native-toc-viewer-final-bottom', String(Math.round(finalRect.bottom)));
       }
-      return true;
+      return {
+        placed: true,
+        positionChanged,
+        finalRect: rectSnapshot(finalRect),
+        viewerNode: card,
+      };
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -1153,67 +1486,170 @@
     } catch {}
   }
 
-  function repairViewer(reason = 'repair') {
-    const settings = getSettings();
-    const measure = applyRailPosition(settings);
-    if (!measure) return false;
-    bindRailEvents(measure.container);
-    if (settings.railPosition === 'off') {
-      clearManagedViewer(true);
-      return false;
-    }
-    const candidate = findViewerCandidate(measure.rect);
-    if (!candidate) return false;
-    state.lastViewerSeenAt = Date.now();
-    return placeViewer(candidate, measure, settings, reason);
+  function sameFollowSnapshot(a, b) {
+    if (!a || !b) return false;
+    const keys = ['left', 'right', 'top', 'bottom', 'width', 'height'];
+    return keys.every((key) => Math.abs(Number(a.rail?.[key] || 0) - Number(b.rail?.[key] || 0)) <= 0.5)
+      && keys.every((key) => Math.abs(Number(a.viewer?.[key] || 0) - Number(b.viewer?.[key] || 0)) <= 0.5);
   }
 
-  function startViewerLoop() {
-    if (state.viewerLoopActive) return;
-    state.viewerLoopActive = true;
-    state.lastViewerSeenAt = Date.now();
-    const step = () => {
-      const found = repairViewer('viewer-loop');
-      if (!found && Date.now() - state.lastViewerSeenAt > VIEWER_MAX_MISS_MS) {
-        state.viewerLoopActive = false;
+  function terminateViewerFollow() {
+    state.viewerLoopActive = false;
+    state.viewerVerificationPending = false;
+    state.viewerFollowSnapshot = null;
+  }
+
+  function viewerFollowAfterPass(plan, placement) {
+    if (!state.viewerLoopActive) return;
+    const viewerNode = placement?.viewerNode || plan?.viewerPlan?.card || null;
+    if (!placement?.placed || !plan?.viewerPlan || !viewerNode?.isConnected) {
+      state.viewerFollowSnapshot = null;
+      if (Date.now() - state.lastViewerSeenAt <= VIEWER_MAX_MISS_MS) {
+        state.viewerVerificationPending = true;
+        requestRepair('viewer-verification', { discoverViewer: true });
+      } else {
+        terminateViewerFollow();
         clearManagedViewer(false);
-        return;
       }
-      W.requestAnimationFrame(step);
+      return;
+    }
+    state.lastViewerSeenAt = Date.now();
+    const generation = state.viewerInteractionGeneration;
+    const priorSnapshot = state.viewerFollowSnapshot;
+    const identityChanged = !!priorSnapshot?.viewerNode && priorSnapshot.viewerNode !== viewerNode;
+    const incompatibleGeneration = priorSnapshot?.generation != null && priorSnapshot.generation !== generation;
+    if (identityChanged || incompatibleGeneration) {
+      state.viewerFollowSnapshot = null;
+      state.viewerVerificationPending = true;
+    }
+    const baseline = state.viewerFollowSnapshot;
+    const viewerRect = placement.positionChanged && placement.finalRect
+      ? placement.finalRect
+      : rectSnapshot(plan.viewerPlan.startRect);
+    const snapshot = {
+      rail: rectSnapshot(plan.railPlan?.resultMeasure?.rect),
+      viewer: rectSnapshot(viewerRect),
+      viewerNode,
+      generation,
     };
-    W.requestAnimationFrame(step);
+    const freshGeneration = state.viewerVerifiedGeneration !== generation;
+    const geometryChanged = !!baseline && !sameFollowSnapshot(baseline, snapshot);
+    if (state.viewerVerificationPending || freshGeneration || geometryChanged) {
+      state.viewerFollowSnapshot = snapshot;
+      state.viewerVerifiedGeneration = generation;
+      state.viewerVerificationPending = false;
+      requestRepair('viewer-verification', { discoverViewer: false });
+      return;
+    }
+    terminateViewerFollow();
+  }
+
+  function applyRepairPlan(plan) {
+    if (!plan?.railPlan) return false;
+    clearManagedViewer(false);
+    const measure = applyRailPosition(plan.settings, plan);
+    if (plan.position === 'hidden') return false;
+    bindRailEvents(plan.railPlan.measure.container);
+    if (plan.position === 'off') {
+      terminateViewerFollow();
+      clearManagedViewer(true);
+      return null;
+    }
+    if (!measure || !plan.viewerPlan) return null;
+    return placeViewer(plan.viewerPlan.candidate, measure, plan.settings, plan.viewerPlan);
+  }
+
+  function repairViewer(reason = 'repair', options = {}) {
+    const settings = options.settings || getSettings(options.input || null);
+    const discoverViewer = Object.prototype.hasOwnProperty.call(options, 'discoverViewer')
+      ? !!options.discoverViewer
+      : true;
+    const plan = buildRepairPlan(settings, { discoverViewer });
+    state.lastRepairHadRail = !!plan.measure;
+    const placement = applyRepairPlan(plan);
+    viewerFollowAfterPass(plan, placement);
+    return !!placement?.placed;
+  }
+
+  function runRepairFrame() {
+    state.rafQueued = false;
+    if (!state.pendingCauses.size) return;
+    const causes = Array.from(state.pendingCauses);
+    const discoverViewer = state.pendingViewerDiscovery;
+    state.pendingCauses.clear();
+    state.pendingViewerDiscovery = false;
+    state.inRepairPass = true;
+    try { repairViewer(causes.join('+'), { discoverViewer }); }
+    finally { state.inRepairPass = false; }
+  }
+
+  function requestRepair(cause = 'scheduled', options = {}) {
+    state.pendingCauses.add(String(cause || 'scheduled'));
+    if (options.discoverViewer) state.pendingViewerDiscovery = true;
+    if (state.rafQueued) return;
+    state.rafQueued = true;
+    W.requestAnimationFrame(runRepairFrame);
+  }
+
+  function startViewerLoop(event = null) {
+    if (event?.type === 'mousemove' && state.railBound && !state.railBound.contains?.(event.target)) return;
+    state.viewerLoopActive = true;
+    state.viewerVerificationPending = true;
+    state.viewerInteractionGeneration += 1;
+    state.lastViewerSeenAt = Date.now();
+    requestRepair(`viewer-${event?.type || 'interaction'}`, { discoverViewer: true });
   }
 
   function scheduleApply() {
-    if (state.rafQueued) return;
-    state.rafQueued = true;
-    W.requestAnimationFrame(() => {
-      state.rafQueued = false;
-      repairViewer('scheduled');
-    });
+    requestRepair('scheduled', { discoverViewer: true });
+  }
+
+  function handleResize() {
+    const hasManagedViewer = Array.from(state.managed).some((node) => node?.isConnected);
+    requestRepair('resize', { discoverViewer: state.viewerLoopActive || hasManagedViewer });
+  }
+
+  function handleScroll() {
+    const connectedRail = !!state.railContainer?.isConnected;
+    const hasManagedViewer = Array.from(state.managed).some((node) => node?.isConnected);
+    if (!connectedRail && !hasManagedViewer && !state.viewerLoopActive && !state.pendingCauses.size) return;
+    requestRepair('scroll', { discoverViewer: false });
+  }
+
+  function handleMutations(records) {
+    const classification = classifyMutationRecords(records);
+    ownAttributeTransitions = new WeakMap();
+    ownTransitionExpiryQueued = false;
+    if (!classification.relevant) return;
+    requestRepair('mutation', { discoverViewer: classification.discoverViewer });
   }
 
   function apply(input = null) {
+    state.pendingCauses.clear();
+    state.pendingViewerDiscovery = false;
     const settings = getSettings(input);
-    const measure = applyRailPosition(settings);
-    if (measure) bindRailEvents(measure.container);
-    scheduleApply();
-    return !!measure;
+    repairViewer(input?.reason || 'explicit', { settings, discoverViewer: true });
+    return state.lastRepairHadRail;
+  }
+
+  function intervalRecovery() {
+    requestRepair('interval-recovery', { discoverViewer: true });
   }
 
   function ensureObservers() {
-    try { W.addEventListener('resize', scheduleApply, { passive: true }); } catch {}
-    try { W.addEventListener('scroll', scheduleApply, { passive: true, capture: true }); } catch {}
+    try { W.addEventListener('resize', handleResize, { passive: true }); } catch {}
+    try { W.addEventListener('scroll', handleScroll, { passive: true, capture: true }); } catch {}
     try {
-      state.mutationObserver = new MutationObserver(scheduleApply);
+      state.mutationObserver = new MutationObserver(handleMutations);
       state.mutationObserver.observe(document.documentElement || document.body, {
         childList: true,
         subtree: true,
         attributes: true,
+        attributeOldValue: true,
         attributeFilter: ['class', 'style', 'data-toc-active', 'data-h2o-native-prompt-rail-position'],
       });
     } catch {}
-    try { state.intervalId = W.setInterval(apply, 1500); } catch {}
+    try { state.intervalId = W.setInterval(intervalRecovery, 1500); } catch {}
   }
 
   function publicRailCandidate(candidate) {

@@ -86,7 +86,7 @@ assert.match(source.title, /nativeDisclaimerEl\.setAttribute\('data-ho-native-di
   'the default-on preference hides only the scoped native disclaimer element');
 assert.match(source.title, /nativeDisclaimerEl\.removeAttribute\('data-ho-native-disclaimer-hidden'\)/,
   'turning the preference off restores the native disclaimer immediately');
-assert.match(source.title, /bodyObserver = new MutationObserver\(\(\) => \{[\s\S]*scheduleNativeDisclaimerVisibility\(\)/,
+assert.match(source.title, /bodyObserver = new MutationObserver\(\(records\) => \{[\s\S]*scheduleNativeDisclaimerVisibility\(\)/,
   'the existing 9C1a lifecycle reapplies disclaimer visibility after native rerenders');
 const settingsConsumerBlock = source.title.match(/function applyInternalChatTitleSettings\(settings\)\s*\{([\s\S]*?)\n\s*\}/)?.[1] || '';
 assert.doesNotMatch(settingsConsumerBlock, /H2O\.Projects|moveChatToProject|projectId\s*=/,
@@ -128,8 +128,8 @@ assert.match(source.title, /function isCurrentTitleSurface\(label, host, parent\
   'mounted state requires one connected title owned by the current connected composer host');
 assert.match(source.title, /if \(labelEl && !isCurrentTitleSurface\(labelEl, titleHostEl, parent\)\)[\s\S]*labelEl = null/,
   'a detached or replaced composer surface is invalidated before deterministic remount');
-assert.match(source.title, /bodyObserver = new MutationObserver\(\(\) => \{[\s\S]*refreshPresentationSoon\('composer-dom-mutation'\)/,
-  'composer DOM readiness schedules a coalesced presentation remount instead of waiting for title-state changes');
+assert.match(source.title, /bodyObserver = new MutationObserver\(\(records\) => \{[\s\S]*const presentationExpected = !isProjectView\(\) && !!getCurrentChatId\(\)[\s\S]*if \(mutationBatchMayAffectInternalTitlePresentation\(records, labelEl, titleHostEl, presentationExpected\)\)[\s\S]*refreshPresentationSoon\('composer-dom-mutation'\)/,
+  'composer DOM readiness is classified before it can schedule a presentation remount');
 assert.match(source.title, /if \(destroyed \|\| presentationRefreshRaf\) return[\s\S]*requestAnimationFrame\(\(\) =>/,
   'repeated SPA mutations coalesce into one lifecycle refresh');
 assert.match(source.title, /W\.addEventListener\('evt:h2o:projects:changed', onProjectsChanged\)/,
@@ -278,6 +278,113 @@ assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, currentHost),
   'exact current-host ownership satisfies mounted state');
 assert.equal(lifecycleSandbox.isCurrent(currentLabel, currentHost, { isConnected: true }), false,
   'returning to the same chat still requires remount when the composer host changed');
+
+class MutationNodeMock {
+  constructor(name, selectors = []) {
+    this.name = name;
+    this.nodeType = 1;
+    this.isConnected = true;
+    this.parentElement = null;
+    this.children = [];
+    this.selectors = new Set(selectors);
+    this.geometryReads = 0;
+  }
+  append(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+  contains(candidate) {
+    return this === candidate || this.children.some((child) => child.contains(candidate));
+  }
+  matches(selector) {
+    return selector.split(',').some((part) => this.selectors.has(part.trim()));
+  }
+  querySelector(selector) {
+    return this.children.find((child) => child.matches(selector) || child.querySelector(selector)) || null;
+  }
+  getBoundingClientRect() {
+    this.geometryReads += 1;
+    throw new Error('mutation relevance must remain layout-free');
+  }
+}
+
+const mutationSandbox = {};
+mutationSandbox.globalThis = mutationSandbox;
+vm.createContext(mutationSandbox);
+vm.runInContext(
+  `${extractFunction(source.title, 'mutationNodeContainsReference')}\n` +
+  `${extractFunction(source.title, 'mutationNodeMayChangeInternalTitleTopology')}\n` +
+  `${extractFunction(source.title, 'mutationBatchMayAffectInternalTitlePresentation')}\n` +
+  'globalThis.isRelevant = mutationBatchMayAffectInternalTitlePresentation;',
+  mutationSandbox,
+  { filename: rel.title }
+);
+const mutationRelevant = mutationSandbox.isRelevant;
+const childList = ({ added = [], removed = [], target = null } = {}) => ({
+  type: 'childList',
+  target,
+  addedNodes: added,
+  removedNodes: removed,
+});
+const host = new MutationNodeMock('host');
+const label = host.append(new MutationNodeMock('label', ['.ho-tab-title-under-input']));
+const unrelated = new MutationNodeMock('unrelated');
+
+assert.equal(mutationRelevant([childList({ added: [unrelated] })], label, host), false,
+  'an unrelated child-list mutation cannot invalidate a connected current title surface');
+let mutationDrivenRefreshes = 0;
+let mutationDrivenWidthPasses = 0;
+for (let frame = 0; frame < 12; frame += 1) {
+  if (mutationRelevant([childList({ added: [new MutationNodeMock(`unrelated-${frame}`)] })], label, host)) {
+    mutationDrivenRefreshes += 1;
+    mutationDrivenWidthPasses += 1;
+  }
+}
+assert.equal(mutationDrivenRefreshes, 0,
+  'repeated irrelevant mutation batches across frames schedule no presentation refresh');
+assert.equal(mutationDrivenWidthPasses, 0,
+  'repeated irrelevant mutation batches across frames schedule no adaptive-width work');
+assert.equal(host.geometryReads + label.geometryReads + unrelated.geometryReads, 0,
+  'the stable-host mutation classifier performs no geometry reads');
+
+assert.equal(mutationRelevant([childList({ removed: [label] })], label, host), true,
+  'removing the current title label schedules presentation recovery');
+const hostAncestor = new MutationNodeMock('host-ancestor');
+hostAncestor.append(host);
+assert.equal(mutationRelevant([childList({ removed: [hostAncestor] })], label, host), true,
+  'removing an ancestor containing the current host schedules remount recovery');
+const replacementComposer = new MutationNodeMock('replacement-composer', ['form', 'form[data-testid="composer"]']);
+assert.equal(mutationRelevant([childList({ added: [replacementComposer] })], label, host), true,
+  'adding a replacement canonical composer schedules presentation reconciliation');
+const newlyAvailableFallback = new MutationNodeMock('new-fallback-form', ['form']);
+assert.equal(mutationRelevant([childList({ added: [newlyAvailableFallback] })], null, null), true,
+  'a fallback composer becoming available can mount a previously unavailable title surface');
+assert.equal(mutationRelevant([childList({ added: [unrelated] })], null, null), false,
+  'unrelated mutations do not cause repeated discovery passes while no host is available');
+assert.equal(mutationRelevant([childList({ added: [replacementComposer] })], null, host, false), false,
+  'project and non-chat routes do not remount the under-composer chat title from body churn');
+host.isConnected = false;
+assert.equal(mutationRelevant([childList({ added: [unrelated] })], label, host), true,
+  'a disconnected remembered host schedules stale-surface recovery');
+host.isConnected = true;
+
+const mutationClassifierSource = [
+  extractFunction(source.title, 'mutationNodeContainsReference'),
+  extractFunction(source.title, 'mutationNodeMayChangeInternalTitleTopology'),
+  extractFunction(source.title, 'mutationBatchMayAffectInternalTitlePresentation'),
+].join('\n');
+assert.doesNotMatch(mutationClassifierSource, /getBoundingClientRect|getComputedStyle|createRange|scrollWidth|clientWidth/,
+  'mutation relevance remains independent of all layout-dependent reads');
+assert.match(extractFunction(source.title, 'observeInternalTitleHost'),
+  /new W\.ResizeObserver\(\(\) => scheduleAdaptiveInternalTitleWidth\(\)\)/,
+  'a genuine host ResizeObserver signal still schedules fresh adaptive sizing');
+assert.match(extractFunction(source.title, 'applyInternalChatTitleSettings'), /scheduleAdaptiveInternalTitleWidth\(\)/,
+  'explicit width and project-presentation settings still schedule adaptive sizing');
+assert.match(extractFunction(source.title, 'buildStaticLabel'), /scheduleAdaptiveInternalTitleWidth\(\)/,
+  'title or project content rebuild still schedules adaptive sizing');
+assert.match(extractFunction(source.title, 'startInlineEdit'), /scheduleAdaptiveInternalTitleWidth\(\)/,
+  'entering title edit mode still schedules adaptive sizing');
 const canonicalRows = [{
   id: 'g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying',
   href: '/g/g-p-694c441066b08191add4a7c3293f5e7a-2-h2o-studying/project',

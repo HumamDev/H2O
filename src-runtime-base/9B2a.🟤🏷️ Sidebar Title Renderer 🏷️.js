@@ -308,8 +308,11 @@
     const candidate = candidateFor(record.anchor, snapshot);
     return !!candidate && candidate.source === record.source;
   }
-  function releaseInvalidSynchronously() {
-    for (const [anchor, record] of [...adoptions]) {
+  function releaseInvalidSynchronously(anchors = null) {
+    const entries = anchors === null
+      ? [...adoptions]
+      : [...anchors].map((anchor) => [anchor, adoptions.get(anchor)]).filter(([, record]) => !!record);
+    for (const [anchor, record] of entries) {
       if (!adoptionStillValid(record, acceptedSnapshot)) {
         releaseAdoption(anchor, record.source !== anchor.querySelector?.(NATIVE_TITLE_SELECTOR)
           ? 'native-node-replaced'
@@ -330,23 +333,135 @@
     }
     return out;
   }
+  function mutationElement(node) {
+    if (node instanceof HTMLElement) return node;
+    return node?.parentElement instanceof HTMLElement ? node.parentElement : null;
+  }
+  function mutationChangedElements(record) {
+    return [...(record?.addedNodes || []), ...(record?.removedNodes || [])]
+      .map(mutationElement)
+      .filter(Boolean);
+  }
+  function elementOwnedByVisual(element) {
+    return !!element && (
+      element.matches?.(VISUAL_SELECTOR) ||
+      !!element.closest?.(VISUAL_SELECTOR)
+    );
+  }
   function mutationOwnedByVisual(record) {
-    const nodes = [record.target, ...(record.addedNodes || []), ...(record.removedNodes || [])];
-    return nodes.length > 0 && nodes.every((node) => {
-      const element = node?.nodeType === 1 ? node : node?.parentElement;
-      return !!element && (
-        element.matches?.(VISUAL_SELECTOR) ||
-        !!element.closest?.(VISUAL_SELECTOR)
-      );
-    });
+    const target = mutationElement(record?.target);
+    if (elementOwnedByVisual(target)) return true;
+    const changed = mutationChangedElements(record);
+    // Child-list records target the non-owned native parent. The changed nodes,
+    // not that parent, identify a pure renderer projection insertion/removal.
+    return changed.length > 0 && changed.every(elementOwnedByVisual);
+  }
+  function anchorMatchesAcceptedRoute(anchor) {
+    if (!(anchor instanceof HTMLElement) || !anchor.matches?.('a[href]')) return false;
+    const identity = routeIdentityFromHref(anchor.getAttribute('href'));
+    return !!identity && identity.key === acceptedSnapshot?.routeIdentity?.key;
+  }
+  function currentRouteAnchorForMutationNode(node) {
+    const element = mutationElement(node);
+    if (!element) return null;
+    const anchor = element.matches?.('a[href]') ? element : element.closest?.('a[href]');
+    return anchorMatchesAcceptedRoute(anchor) ? anchor : null;
+  }
+  function elementContainsCurrentRouteAnchor(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    if (element.matches?.('a[href]') && anchorMatchesAcceptedRoute(element)) return true;
+    for (const anchor of element.querySelectorAll?.('a[href]') || []) {
+      if (anchorMatchesAcceptedRoute(anchor)) return true;
+    }
+    return false;
+  }
+  function nativeTitleSurfaceForMutationNode(node) {
+    const element = mutationElement(node);
+    if (!element) return null;
+    if (element.matches?.(NATIVE_TITLE_SELECTOR)) return element;
+    return element.closest?.(NATIVE_TITLE_SELECTOR) || null;
+  }
+  function elementHasNativeTitleSurface(element) {
+    return !!element && (
+      element.matches?.(NATIVE_TITLE_SELECTOR) ||
+      !!element.querySelector?.(NATIVE_TITLE_SELECTOR)
+    );
+  }
+  function elementChangesApprovedContainerTopology(element) {
+    return !!element && (
+      element.matches?.('nav,aside') ||
+      !!element.querySelector?.('nav,aside')
+    );
+  }
+  function mutationAffectsAdoption(record, adoption) {
+    const { anchor, source, visual } = adoption;
+    const type = String(record?.type || '');
+    const target = mutationElement(record?.target);
+    if (type === 'attributes') {
+      const name = String(record?.attributeName || '');
+      const visibilityAttribute = ['class', 'style', 'hidden', 'aria-hidden'].includes(name);
+      if (target === anchor) return name === 'href' || visibilityAttribute;
+      if (visibilityAttribute && target?.contains?.(anchor)) return true;
+      return name === 'class' && target === source;
+    }
+    if (type === 'characterData') {
+      return !!target && (target === source || source.contains?.(target));
+    }
+    if (type !== 'childList') return false;
+    if (target && (target === source || source.contains?.(target))) return true;
+    for (const element of mutationChangedElements(record)) {
+      if (!visual.isConnected && (
+        element === visual || element.contains?.(visual) || visual.contains?.(element)
+      )) return true;
+      if (element === anchor || element.contains?.(anchor)) return true;
+      if (element === source || element.contains?.(source) || source.contains?.(element)) return true;
+      if (anchor.contains?.(element) && elementHasNativeTitleSurface(element)) return true;
+    }
+    return false;
+  }
+  function mutationCanChangeCurrentRoute(record) {
+    const type = String(record?.type || '');
+    const target = mutationElement(record?.target);
+    if (type === 'attributes') {
+      const name = String(record?.attributeName || '');
+      const anchor = currentRouteAnchorForMutationNode(target);
+      if (name === 'href') return target === anchor;
+      if (!['class', 'style', 'hidden', 'aria-hidden'].includes(name)) return false;
+      if (elementContainsCurrentRouteAnchor(target)) return true;
+      return name === 'class' && !!anchor && !!nativeTitleSurfaceForMutationNode(target);
+    }
+    if (type === 'characterData') {
+      return !!currentRouteAnchorForMutationNode(target) && !!nativeTitleSurfaceForMutationNode(target);
+    }
+    if (type !== 'childList') return true;
+    const changed = mutationChangedElements(record);
+    if (changed.some(elementChangesApprovedContainerTopology)) return true;
+    if (changed.some(elementContainsCurrentRouteAnchor)) return true;
+    if (!currentRouteAnchorForMutationNode(target)) return false;
+    if (nativeTitleSurfaceForMutationNode(target)) return true;
+    return changed.some(elementHasNativeTitleSurface);
+  }
+  function classifyMutationBatch(records) {
+    const affectedAnchors = new Set();
+    let shouldSchedule = false;
+    for (const record of records || []) {
+      const recordAffected = [];
+      for (const [anchor, adoption] of adoptions) {
+        if (mutationAffectsAdoption(record, adoption)) recordAffected.push(anchor);
+      }
+      for (const anchor of recordAffected) affectedAnchors.add(anchor);
+      if (mutationOwnedByVisual(record) && recordAffected.length === 0) continue;
+      if (recordAffected.length > 0 || mutationCanChangeCurrentRoute(record)) shouldSchedule = true;
+    }
+    return { affectedAnchors, shouldSchedule };
   }
   function ensureObserver(containers) {
     if (!observer && typeof W.MutationObserver === 'function') {
       observer = new W.MutationObserver((records) => {
         if (destroyed) return;
-        releaseInvalidSynchronously();
-        if (records?.length && records.every(mutationOwnedByVisual)) return;
-        scheduleSync('sidebar-mutation');
+        const impact = classifyMutationBatch(records);
+        if (impact.affectedAnchors.size > 0) releaseInvalidSynchronously(impact.affectedAnchors);
+        if (impact.shouldSchedule) scheduleSync('sidebar-mutation');
       });
     }
     if (!observer) return;
