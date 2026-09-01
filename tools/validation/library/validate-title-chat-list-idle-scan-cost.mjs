@@ -29,6 +29,7 @@ import vm from 'node:vm';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = process.env.H2O_SRC_DIR ? path.resolve(process.env.H2O_SRC_DIR) : path.resolve(HERE, '..', '..', '..');
 const DECORATOR = 'src-runtime-base/9A1b.🟫🖥️ Chat List Decorator 🎨🖥️.js';
+const SOURCE = readFileSync(path.join(ROOT, DECORATOR), 'utf8');
 
 const ELIGIBLE = '/c/69fbbadd-3268-8333-baae-98ff8aa85bcf';
 const EXCLUDED = '/settings';
@@ -234,6 +235,13 @@ function makeEnv(pathname) {
     win, navigate, advance, emitDomChange, emitIrrelevantDomChange, emitSemantic, runFrames,
     passes: () => scanPasses,
     resetPasses: () => { scanPasses = 0; },
+    recurrent: () => win.__P60_RECURRENT || null,
+    resetRecurrent: () => {
+      const state = win.__P60_RECURRENT;
+      if (!state) return;
+      for (const key of Object.keys(state.calls)) state.calls[key] = 0;
+      state.trace.length = 0;
+    },
     liveIntervals: () => intervals.filter((t) => t.live).length,
     fastestLiveIntervalMs: () => intervals.filter((t) => t.live).reduce((m, t) => Math.min(m, t.ms), Infinity),
   };
@@ -241,7 +249,25 @@ function makeEnv(pathname) {
 
 function realSubject(startPath) {
   const env = makeEnv(startPath);
-  const src = readFileSync(path.join(ROOT, DECORATOR), 'utf8');
+  let src = SOURCE;
+  src = src.replace(
+    '  const I = window.H2O.interface;',
+    `  const I = window.H2O.interface;
+  window.__P60_RECURRENT = {
+    calls: { scan: 0, ensure: 0, find: 0, sort: 0, collect: 0 },
+    trace: [],
+  };`,
+  );
+  for (const [name, key] of [
+    ['scanSidebar', 'scan'], ['ensureColorPriorityControl', 'ensure'],
+    ['findProjectTabsHost', 'find'], ['applyColorPrioritySort', 'sort'],
+    ['collectSortableMainRows', 'collect'],
+  ]) {
+    src = src.replace(
+      new RegExp(`function ${name}\\(([^)]*)\\) \\{`, 'u'),
+      `function ${name}($1) { window.__P60_RECURRENT.calls.${key} += 1; window.__P60_RECURRENT.trace.push('${name}');`,
+    );
+  }
   vm.runInContext(src, vm.createContext(env.win), { filename: '9A1b', timeout: 20000 });
   env.runFrames();
   return env;
@@ -437,6 +463,41 @@ function assertBoundedMutationCoalescing(makeSubject, tag) {
   }
 }
 
+function assertRecurrentRecoveryContract(makeSubject, tag) {
+  const s = makeSubject(ELIGIBLE);
+  s.advance(2500); // boot + both activation settling requests
+  s.resetPasses();
+  s.resetRecurrent();
+  s.advance(13000); // crosses exactly the first 15-second recovery tick
+  const recurrent = s.recurrent();
+
+  check(`${tag} / R1 one recovery tick consumes one scan and one sort`, () => {
+    assert.ok(recurrent, 'recurrent instrumentation must be installed');
+    assert.equal(recurrent.calls.scan, 1, `expected one recovery scan, saw ${recurrent.calls.scan}`);
+    assert.equal(recurrent.calls.sort, 1, `expected one recovery sort, saw ${recurrent.calls.sort}`);
+  });
+  check(`${tag} / R2 missing-host recovery performs one broad discovery total`, () => {
+    assert.equal(recurrent.calls.find, 1,
+      `one missing-host tick may discover once, including its follow-on sort; saw ${recurrent.calls.find}`);
+  });
+  check(`${tag} / R3 recovery trace has no second broad phase before sort completion`, () => {
+    assert.deepEqual([...recurrent.trace].filter((name) => name === 'findProjectTabsHost'), ['findProjectTabsHost']);
+    assert.ok(recurrent.trace.includes('applyColorPrioritySort'), 'the preserved color-sort authority must run');
+  });
+  check(`${tag} / R4 work-domain intent is explicit and module-local`, () => {
+    for (const token of ['HO_WORK_CHAT_LIST_RECONCILE', 'HO_WORK_CONTROL_HOST_RECOVERY', 'HO_WORK_COLOR_SORT']) {
+      assert.ok(SOURCE.includes(token), `missing governed work-domain token ${token}`);
+    }
+    assert.ok(SOURCE.includes('hoClassifyAdmittedScanWork'), 'admitted batches must classify local subpasses');
+  });
+  check(`${tag} / R5 established deadlines and authorities remain singular`, () => {
+    assert.match(SOURCE, /const HO_SCAN_COALESCE_MS = 50;/u);
+    assert.match(SOURCE, /const HO_SCAN_DOM_COALESCE_MS = 250;/u);
+    assert.match(SOURCE, /const HO_SCAN_RECOVERY_MS = 15000;/u);
+    assert.equal((SOURCE.match(/new MutationObserver\(/gu) || []).length, 1, 'one private observer remains');
+  });
+}
+
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */
 const isEligible = (p) => /^\/(?:c\/|g\/[^/]+\/c\/)/.test(p);
 
@@ -575,6 +636,7 @@ const reentryControlFailures = (() => {
 const productStart = failures.length;
 assertIdleScanContract(realSubject, 'PRODUCT');
 assertBoundedMutationCoalescing(realSubject, 'PRODUCT');
+assertRecurrentRecoveryContract(realSubject, 'PRODUCT-RECURRENT');
 const productFailures = failures.slice(productStart);
 
 console.log(`Checks executed: ${checks}`);

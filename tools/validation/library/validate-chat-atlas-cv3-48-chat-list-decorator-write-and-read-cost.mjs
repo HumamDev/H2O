@@ -33,7 +33,9 @@ import process from 'node:process';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+const ROOT = process.env.H2O_SRC_DIR
+  ? path.resolve(process.env.H2O_SRC_DIR)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const DECORATOR_PATH = 'src-runtime-base/9A1b.🟫🖥️ Chat List Decorator 🎨🖥️.js';
 const SOURCE = fs.readFileSync(path.join(ROOT, DECORATOR_PATH), 'utf8');
 
@@ -519,6 +521,7 @@ function makeRowsEnv() {
     // Scan wiring state and the admission counter.
     hoScanActive: false, hoScanObserver: null, hoScanRecoveryId: 0, hoScanSettleIds: [],
     HO_SCAN_RECOVERY_MS: 15000,
+    HO_WORK_CHAT_LIST_RECONCILE: 1, HO_WORK_CONTROL_HOST_RECOVERY: 2, HO_WORK_COLOR_SORT: 4, HO_WORK_ALL: 7,
     hoRequestScan: (reason) => { if (reason === 'dom') counts.domRequests += 1; else counts.otherRequests += 1; },
     setInterval: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     clearInterval: () => {}, setTimeout: (fn) => { timers.push({ fn, ms: 0 }); return timers.length; }, clearTimeout: () => {},
@@ -530,6 +533,7 @@ function makeRowsEnv() {
 
   const wanted = ['findSortableRowUnit', 'collectSortableMainRows', 'hoActivateScanLayer'];
   if (admissionPresent) wanted.push(ADMISSION_FN);
+  if (SOURCE.includes('\nfunction hoClassifyAdmittedScanWork(')) wanted.push('hoClassifyAdmittedScanWork');
   const program = wanted.map((n) => extractFunction(n)).join('\n\n');
   vm.runInNewContext(program, sandbox, { filename: DECORATOR_PATH });
   for (const n of wanted) {
@@ -782,6 +786,414 @@ fixture('anti-vacuity: the rows harness really drives what it measures', () => {
   assert.equal(env.counts.hostFallback || 0, 0, 'the explicit host was used, no silent fallback');
   assertions += 1;
   assert.equal(env.rowUnsupported.size, 0, `every selector used is supported: ${[...env.rowUnsupported].join(' | ')}`);
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// RECURRENT PHASE — project-host/control discovery and scan→sort topology.
+// Real production functions from updateColorPriorityControl through
+// scheduleColorPrioritySort, plus scanSidebar and the scan queue, execute in a
+// deterministic structural DOM. The harness counts broad discovery, control
+// writes, exact-node reads and queue consumption; collectSortableMainRows is
+// executed unchanged with an empty row set so its call/order boundary remains
+// observable without duplicating the row fixtures above.
+
+function makeRecurrentEnv({ control = true, stampedHost = true, twoCandidates = false } = {}) {
+  let seq = 0;
+  let rafSeq = 0;
+  let timerSeq = 0;
+  const frames = new Map();
+  const timers = new Map();
+  const M2 = {
+    scan: 0, sort: 0, collect: 0, find: 0, ensure: 0, update: 0, create: 0, remove: 0,
+    writeCalls: 0, stateChanges: 0, trace: [],
+    rectById: new Map(), styleById: new Map(), textById: new Map(),
+  };
+
+  const write = (el, what, before, after) => {
+    M2.writeCalls += 1;
+    if (before !== after) M2.stateChanges += 1;
+    M2.trace.push({ kind: 'write', what, id: el.__id, before, after });
+  };
+
+  class El {
+    constructor(tag = 'div') {
+      this.tagName = String(tag).toUpperCase();
+      this.nodeType = 1;
+      this.__id = ++seq;
+      this.__cls = new Set();
+      this.__attrs = new Map();
+      this.__text = '';
+      this.__title = '';
+      this.__rect = { top: 0, left: 0, width: 300, height: 40 };
+      this.children = [];
+      this.parentNode = null;
+      const self = this;
+      this.__ds = {};
+      this.dataset = new Proxy(this.__ds, {
+        get: (t, k) => t[k],
+        set: (t, k, v) => { const next = String(v); const before = t[k]; t[k] = next; write(self, `dataset.${String(k)}`, before, next); return true; },
+      });
+      this.__style = new Map();
+      this.style = {
+        setProperty(name, value) { const key = String(name); const next = String(value); const before = self.__style.get(key) || ''; self.__style.set(key, next); write(self, `style.${key}`, before, next); },
+        removeProperty(name) { const key = String(name); const before = self.__style.get(key) || ''; self.__style.delete(key); write(self, `style.${key}`, before, ''); },
+        getPropertyValue(name) { return self.__style.get(String(name)) || ''; },
+      };
+    }
+    get parentElement() { return this.parentNode; }
+    get isConnected() { let n = this; while (n) { if (n === documentElement) return true; n = n.parentNode; } return false; }
+    get className() { return [...this.__cls].join(' '); }
+    set className(value) { const before = this.className; this.__cls = new Set(String(value).split(/\s+/).filter(Boolean)); write(this, 'className', before, this.className); }
+    get title() { return this.__title; }
+    set title(value) { const next = String(value); const before = this.__title; this.__title = next; write(this, 'title', before, next); }
+    get textContent() { return this.__text; }
+    set textContent(value) { const next = String(value); const before = this.__text; this.__text = next; write(this, 'textContent', before, next); }
+    get classList() {
+      const self = this;
+      return {
+        contains: (c) => self.__cls.has(c),
+        add: (...cs) => { for (const c of cs) { const before = self.__cls.has(c); self.__cls.add(c); write(self, `class.${c}`, before, true); } },
+        remove: (...cs) => { for (const c of cs) { const before = self.__cls.has(c); self.__cls.delete(c); write(self, `class.${c}`, before, false); } },
+        toggle: (c, force) => { const before = self.__cls.has(c); const next = force === undefined ? !before : !!force; next ? self.__cls.add(c) : self.__cls.delete(c); write(self, `class.${c}`, before, next); return next; },
+      };
+    }
+    setAttribute(name, value) { const key = String(name); const next = String(value); const before = this.__attrs.get(key); this.__attrs.set(key, next); write(this, `attr.${key}`, before, next); }
+    getAttribute(name) { const value = this.__attrs.get(String(name)); return value === undefined ? null : value; }
+    hasAttribute(name) { return this.__attrs.has(String(name)); }
+    appendChild(node) { if (node.parentNode) node.parentNode.removeChild(node); node.parentNode = this; this.children.push(node); write(this, 'appendChild', false, true); return node; }
+    removeChild(node) { const i = this.children.indexOf(node); if (i >= 0) { this.children.splice(i, 1); node.parentNode = null; M2.remove += 1; write(this, 'removeChild', true, false); } return node; }
+    remove() { this.parentNode?.removeChild(this); }
+    insertBefore(node, before) { if (node.parentNode) node.parentNode.removeChild(node); const i = this.children.indexOf(before); node.parentNode = this; this.children.splice(i < 0 ? this.children.length : i, 0, node); write(this, 'insertBefore', false, true); return node; }
+    addEventListener() {}
+    removeEventListener() {}
+    __desc(out = []) { for (const child of this.children) { out.push(child); child.__desc(out); } return out; }
+    contains(node) { let cur = node; while (cur) { if (cur === this) return true; cur = cur.parentNode; } return false; }
+    matches(selector) { return match(this, selector); }
+    closest(selector) { let cur = this; while (cur) { if (match(cur, selector)) return cur; cur = cur.parentNode; } return null; }
+    querySelector(selector) { return this.__desc().find((node) => match(node, selector)) || null; }
+    querySelectorAll(selector) { return this.__desc().filter((node) => match(node, selector)); }
+    getBoundingClientRect() {
+      M2.rectById.set(this.__id, (M2.rectById.get(this.__id) || 0) + 1);
+      M2.trace.push({ kind: 'read', what: 'rect', id: this.__id });
+      const r = this.__rect;
+      return { ...r, right: r.left + r.width, bottom: r.top + r.height };
+    }
+  }
+
+  const split = (selector) => String(selector).split(',').map((part) => part.trim()).filter(Boolean);
+  function match(el, selector) {
+    return split(selector).some((s) => {
+      if (s === 'main') return el.tagName === 'MAIN';
+      if (s === 'div') return el.tagName === 'DIV';
+      if (s === 'nav') return el.tagName === 'NAV';
+      if (s === '[role="tablist"]') return el.getAttribute('role') === 'tablist';
+      if (s.startsWith('.')) return el.__cls.has(s.slice(1));
+      if (s === 'a[href]') return el.tagName === 'A' && el.hasAttribute('href');
+      if (s === 'main a[href*="/c/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/c/') && !!el.closest('main');
+      if (s === 'main a[href*="/chat/"]') return el.tagName === 'A' && String(el.getAttribute('href') || '').includes('/chat/') && !!el.closest('main');
+      return false;
+    });
+  }
+
+  const documentElement = new El('html');
+  const body = new El('body');
+  documentElement.appendChild(body);
+  const main = new El('main');
+  main.__rect = { top: 80, left: 0, width: 700, height: 800 };
+  body.appendChild(main);
+  const host = new El('div');
+  host.__rect = { top: 100, left: 0, width: 690, height: 58 };
+  host.__text = 'Chats Sources';
+  if (stampedHost) host.__cls.add('ho-project-tabs-host');
+  main.appendChild(host);
+  if (twoCandidates) {
+    const shared = new El('section');
+    shared.__rect = { top: 170, left: 0, width: 660, height: 82 };
+    main.appendChild(shared);
+    for (let i = 0; i < 2; i += 1) {
+      const candidate = new El('div');
+      candidate.__rect = { top: 175 + i * 30, left: 4, width: 640, height: 28 };
+      candidate.__text = 'Chats Sources';
+      shared.appendChild(candidate);
+    }
+  }
+
+  function buildControl(parent = host) {
+    const root = new El('div'); root.__cls.add('ho-color-priority'); root.__attrs.set('data-ho-color-priority', '1'); root.__ds.color = 'all';
+    const trigger = new El('button'); trigger.__cls.add('ho-color-priority-trigger'); trigger.__ds.active = 'false';
+    trigger.__attrs.set('aria-haspopup', 'menu'); trigger.__attrs.set('aria-expanded', 'false');
+    trigger.__attrs.set('aria-label', 'Choose a chat color to bring to the top'); trigger.__title = 'Bring chats with a selected color to the top';
+    const swatch = new El('span'); swatch.__cls.add('ho-color-priority-swatch'); trigger.appendChild(swatch);
+    const menu = new El('div'); menu.__cls.add('ho-color-priority-menu'); menu.__attrs.set('role', 'menu');
+    for (const color of ['all', 'gold', 'red', 'blue', 'green']) {
+      const option = new El('button'); option.__cls.add('ho-color-priority-option'); option.__ds.color = color; option.__ds.active = color === 'all' ? 'true' : 'false'; menu.appendChild(option);
+    }
+    root.appendChild(trigger); root.appendChild(menu); parent.appendChild(root); return root;
+  }
+  let controlNode = control ? buildControl() : null;
+
+  const doc = {
+    documentElement, body,
+    querySelector: (selector) => match(documentElement, selector) ? documentElement : documentElement.querySelector(selector),
+    querySelectorAll: (selector) => documentElement.querySelectorAll(selector),
+    contains: (node) => documentElement.contains(node),
+    createElement: (tag) => new El(tag),
+    createTextNode: () => new El('#text'),
+  };
+
+  const sandbox = {
+    document: doc,
+    window: null,
+    location: { pathname: '/c/recurrent', origin: 'https://chatgpt.com' },
+    HTMLElement: El, HTMLAnchorElement: El,
+    I: {
+      config: { COLORS: ['gold', 'red', 'blue', 'green'].map((name) => ({ name, value: name })) },
+      utils: { isInsideH2OInternalSurface: () => false },
+      nav: { getChatIdFromHref: () => '' }, store: { getRow: () => -1 }, heat: { applyToBtn() {} },
+      lock: { locked: () => false, with: (fn) => fn() },
+    },
+    COLOR_PRIORITY_NONE: 'all',
+    hoSurfaceEligible: () => true,
+    normalizePriorityColor: (value) => ['gold', 'red', 'blue', 'green'].includes(String(value)) ? String(value) : 'all',
+    getPriorityColor: () => 'all',
+    getPriorityColorDef: (name) => ({ name, value: name }),
+    closeAllPalettes() {}, closeColorPriorityMenus() {}, setPriorityColor: (value) => value,
+    hoOpenPalette: null,
+    HO_WORK_CHAT_LIST_RECONCILE: 1, HO_WORK_CONTROL_HOST_RECOVERY: 2, HO_WORK_COLOR_SORT: 4, HO_WORK_ALL: 7,
+    applyActivityStyle() {}, decorateLink() {}, markSidebarProjects() {}, markSeeControls() {}, markActiveSidebarLink() {},
+    hoColorPriorityRAF: 0, hoColorPriorityTO: 0, hoColorPriorityOrderCounter: 0,
+    hoColorPriorityRecoverySatisfied: false,
+    requestAnimationFrame(fn) { const id = ++rafSeq; frames.set(id, fn); return id; },
+    cancelAnimationFrame(id) { frames.delete(id); },
+    setTimeout(fn, ms) { const id = ++timerSeq; timers.set(id, { fn, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+    setInterval() { return 1; }, clearInterval() {},
+    MutationObserver: class { constructor(cb) { this.cb = cb; } observe() {} disconnect() {} },
+    M2,
+    Map, Set, WeakMap, Array, Object, String, Number, Boolean, Math, JSON, Proxy, Infinity,
+    console: { log() {}, warn() {}, error() {}, info() {}, debug() {} },
+  };
+  sandbox.window = {
+    getComputedStyle: (el) => {
+      M2.styleById.set(el.__id, (M2.styleById.get(el.__id) || 0) + 1);
+      M2.trace.push({ kind: 'read', what: 'style', id: el.__id });
+      return { display: 'block', visibility: 'visible', opacity: '1' };
+    },
+  };
+  sandbox.compactText = (el) => {
+    M2.textById.set(el.__id, (M2.textById.get(el.__id) || 0) + 1);
+    M2.trace.push({ kind: 'read', what: 'text', id: el.__id });
+    return String(el.__text || '').toLowerCase();
+  };
+
+  const rangeStart = SOURCE.indexOf('\nfunction updateColorPriorityControl(');
+  const rangeEnd = SOURCE.indexOf('\n  /* ─────────────────────────────────────────\n     4) Palette toggle logic', rangeStart);
+  if (rangeStart < 0 || rangeEnd <= rangeStart) throw new Error('TEST_HARNESS_BLOCKED:recurrent-range');
+  const optionalHelpers = [
+    'setColorPriorityDataset', 'setColorPriorityAttribute', 'setColorPriorityTitle', 'setColorPriorityStyle',
+  ].filter((name) => SOURCE.includes(`\nfunction ${name}(`));
+  let program = [
+    extractFunction('isElementVisible'),
+    ...optionalHelpers.map((name) => extractFunction(name)),
+    SOURCE.slice(rangeStart + 1, rangeEnd),
+  ].join('\n');
+  program = program.replace(
+    extractFunction('compactText'),
+    `function compactText(el) {
+      if (!el) return '';
+      M2.textById.set(el.__id, (M2.textById.get(el.__id) || 0) + 1);
+      M2.trace.push({ kind: 'read', what: 'text', id: el.__id });
+      return String(el.__text || '').toLowerCase();
+    }`,
+  );
+  program += `\n${extractFunction('scanSidebar')}`;
+  const lifecycleStart = SOURCE.indexOf('\nlet hoScanActive = false;');
+  const lifecycleEnd = SOURCE.indexOf('\nfunction hoActivateScanLayer()', lifecycleStart);
+  if (lifecycleStart < 0 || lifecycleEnd <= lifecycleStart) throw new Error('TEST_HARNESS_BLOCKED:scan-lifecycle-range');
+  program += `\n${SOURCE.slice(lifecycleStart + 1, lifecycleEnd)}`;
+  for (const [name, key] of [
+    ['updateColorPriorityControl', 'update'], ['createColorPriorityControl', 'create'],
+    ['findProjectTabsHost', 'find'], ['ensureColorPriorityControl', 'ensure'],
+    ['collectSortableMainRows', 'collect'], ['applyColorPrioritySort', 'sort'], ['scanSidebar', 'scan'],
+  ]) {
+    program = program.replace(new RegExp(`function ${name}\\(([^)]*)\\) \\{`, 'u'), `function ${name}($1) { M2.${key} += 1; M2.trace.push({kind:'call', what:'${name}'});`);
+  }
+  const context = vm.createContext(sandbox);
+  vm.runInContext(program, context, { filename: `${DECORATOR_PATH}:recurrent` });
+  vm.runInContext('hoScanActive = true;', context);
+
+  const reset = () => {
+    for (const key of ['scan', 'sort', 'collect', 'find', 'ensure', 'update', 'create', 'remove', 'writeCalls', 'stateChanges']) M2[key] = 0;
+    M2.trace.length = 0; M2.rectById.clear(); M2.styleById.clear(); M2.textById.clear();
+  };
+  reset();
+  return {
+    sandbox, M: M2, main, host, El, get control() { return controlNode; },
+    set control(value) { controlNode = value; }, buildControl, reset,
+    requestRecovery() { sandbox.hoRequestScan('recovery'); },
+    requestWork(reason, work) { sandbox.hoRequestScan(reason, work); },
+    flushSort() {
+      for (let turn = 0; turn < 12 && (frames.size || timers.size); turn += 1) {
+        const pendingFrames = [...frames.values()]; frames.clear();
+        for (const fn of pendingFrames) fn();
+        const pendingTimers = [...timers.values()]; timers.clear();
+        for (const item of pendingTimers) item.fn();
+      }
+    },
+  };
+}
+
+fixture('RED recurrent A/E: stable scan→sort cycle avoids duplicate broad discovery and stable writes', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  eq({ scan: env.M.scan, sort: env.M.sort, collect: env.M.collect }, { scan: 1, sort: 1, collect: 1 },
+    'one admitted scan produces one sort and one collect');
+  eq(env.M.find, 0, 'valid stamps suppress both broad host discovery phases');
+  eq(env.M.create, 0, 'stable control is not recreated');
+  eq(env.M.remove, 0, 'stable control is not cleaned up');
+  eq(env.M.writeCalls, 0, 'stable host/control cycle performs no participating writes');
+  const firstCollect = env.M.trace.findIndex((entry) => entry.what === 'collectSortableMainRows');
+  ok(firstCollect >= 0, 'ordered trace reaches collect');
+  eq(env.M.trace.slice(0, firstCollect).filter((entry) => entry.what === 'findProjectTabsHost').length, 0,
+    'no second broad read phase precedes collect');
+});
+
+fixture('RED recurrent E: stable host/control performs no semantically unchanged writes', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  eq(env.M.writeCalls, 0, `stable cycle emitted ${env.M.writeCalls} participating host/control writes`);
+});
+
+fixture('RED recurrent E: ordered stable trace reaches collect without broad-read/write amplification', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  const collectAt = env.M.trace.findIndex((entry) => entry.what === 'collectSortableMainRows');
+  ok(collectAt >= 0, 'trace reaches collect');
+  eq(env.M.trace.slice(0, collectAt).filter((entry) => entry.what === 'findProjectTabsHost').length, 0,
+    'no broad host discovery precedes stable collect');
+  eq(env.M.trace.slice(0, collectAt).filter((entry) => entry.kind === 'write').length, 0,
+    'no stable host/control write precedes collect geometry');
+});
+
+fixture('RED recurrent B: stale host and missing control recover once, then sort reuses stamps', () => {
+  const env = makeRecurrentEnv({ control: false, stampedHost: false });
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  ok(env.host.classList.contains('ho-project-tabs-host'), 'broad recovery stamps the live host');
+  ok(env.host.querySelector('.ho-color-priority'), 'missing control is recreated');
+  ok(env.M.find <= 1, `one coherent recovery performs at most one broad discovery, saw ${env.M.find}`);
+  eq(env.M.sort, 1, 'sorting remains preserved after recovery');
+});
+
+fixture('RED recurrent B: disconnected stamped host is rejected and replacement recovers', () => {
+  const env = makeRecurrentEnv();
+  env.host.remove();
+  const replacement = new env.El('div');
+  replacement.__rect = { top: 100, left: 0, width: 690, height: 58 };
+  replacement.__text = 'Chats Sources';
+  env.main.appendChild(replacement);
+  env.reset();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  ok(replacement.classList.contains('ho-project-tabs-host'), 'replacement host is discovered and stamped');
+  ok(replacement.querySelector('.ho-color-priority'), 'replacement host receives a structurally complete control');
+  ok(env.M.find <= 1, `replacement recovery performs at most one broad discovery, saw ${env.M.find}`);
+});
+
+fixture('RED recurrent B: disconnected control recovers once and remains sortable', () => {
+  const env = makeRecurrentEnv();
+  env.control.remove();
+  env.reset();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  ok(env.host.querySelector('.ho-color-priority'), 'removed control is recreated under the valid host');
+  ok(env.M.find <= 1, `control recovery performs at most one broad discovery, saw ${env.M.find}`);
+  eq(env.M.sort, 1, 'sorting remains preserved after control recovery');
+});
+
+fixture('RED recurrent B: duplicate and wrong-context controls fail closed', () => {
+  const env = makeRecurrentEnv();
+  env.buildControl(env.host);
+  const foreign = env.buildControl(env.main);
+  env.reset();
+  env.sandbox.scanSidebar();
+  env.flushSort();
+  eq(env.host.querySelectorAll('.ho-color-priority').length, 1, 'duplicate host controls converge to one');
+  eq(foreign.isConnected, false, 'wrong-context control is removed');
+  ok(env.M.find <= 1, `fail-closed cleanup performs at most one broad discovery, saw ${env.M.find}`);
+});
+
+fixture('RED recurrent direct sort: valid stamps require no broad discovery', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scheduleColorPrioritySort();
+  env.flushSort();
+  eq(env.M.sort, 1, 'direct sort still executes');
+  eq(env.M.find, 0, 'direct sort validates stamps structurally without broad discovery');
+});
+
+fixture('control recurrent direct sort: stale state tokens reconcile without broad discovery', () => {
+  const env = makeRecurrentEnv();
+  env.control.__ds.color = 'red';
+  env.reset();
+  env.sandbox.scheduleColorPrioritySort();
+  env.flushSort();
+  eq(env.M.sort, 1, 'direct sort still executes when a control-state token is stale');
+  eq(env.M.find, 0, 'valid host/control structure avoids broad discovery during state reconciliation');
+  eq(env.control.dataset.color, 'all', 'the stale control-state token is reconciled');
+  ok(env.M.stateChanges >= 1, 'the required state reconciliation performs a real state change');
+});
+
+fixture('RED recurrent C: stable 15-second recovery cycle uses valid stamps without broad discovery', () => {
+  const env = makeRecurrentEnv();
+  env.requestRecovery();
+  env.flushSort();
+  eq({ scan: env.M.scan, sort: env.M.sort, find: env.M.find }, { scan: 1, sort: 1, find: 0 },
+    'one stable recovery request drains one scan/sort cycle with zero broad discovery');
+});
+
+fixture('RED recurrent C: missing host/control recovery cycle discovers once total', () => {
+  const env = makeRecurrentEnv({ control: false, stampedHost: false });
+  env.requestRecovery();
+  env.flushSort();
+  eq({ scan: env.M.scan, sort: env.M.sort, find: env.M.find }, { scan: 1, sort: 1, find: 1 },
+    'one invalid recovery request discovers once and the follow-on sort does not rediscover');
+  ok(env.host.classList.contains('ho-project-tabs-host'), 'recovery stamps the live host');
+  ok(env.host.querySelector('.ho-color-priority'), 'recovery creates the missing control');
+});
+
+fixture('RED recurrent domains: complete causes OR-accumulate before one queue consumption', () => {
+  const env = makeRecurrentEnv({ control: false, stampedHost: false });
+  env.requestWork('dom', 1 | 4);
+  env.requestWork('recovery', 2);
+  env.flushSort();
+  eq({ scan: env.M.scan, sort: env.M.sort, find: env.M.find }, { scan: 1, sort: 1, find: 1 },
+    'chat reconcile, control recovery and color sort accumulate into one bounded cycle');
+  ok(env.host.querySelector('.ho-color-priority'), 'the accumulated recovery domain is not lost');
+});
+
+fixture('RED recurrent D: one broad host discovery reuses exact-node reads', () => {
+  const env = makeRecurrentEnv({ control: false, stampedHost: false, twoCandidates: true });
+  env.sandbox.findProjectTabsHost();
+  const mainRect = env.M.rectById.get(env.main.__id) || 0;
+  const candidateIds = [...env.M.textById.keys()];
+  const max = (map, ids) => ids.reduce((value, id) => Math.max(value, map.get(id) || 0), 0);
+  eq(mainRect, 1, 'main rect is read once per broad discovery call');
+  ok(max(env.M.styleById, candidateIds) <= 1, 'each candidate style is read at most once');
+  ok(max(env.M.rectById, candidateIds) <= 1, 'each candidate rect is read at most once');
+  ok(max(env.M.textById, candidateIds) <= 1, 'each candidate text is traversed at most once');
+  const ancestorIds = [...env.M.rectById.keys()].filter((id) => id !== env.main.__id && !candidateIds.includes(id));
+  ok(max(env.M.rectById, ancestorIds) <= 1, 'each unique shared ancestor rect is read at most once');
+});
+
+fixture('binding recurrent: immutable observer/scheduler and collect authorities remain pinned', () => {
+  eq((SOURCE.match(/new MutationObserver\(/gu) || []).length, 1, 'one private MutationObserver remains');
+  ok(/const HO_SCAN_RECOVERY_MS = 15000;/.test(SOURCE), '15-second recovery authority remains');
+  ok(/const HO_SCAN_COALESCE_MS = 50;/.test(SOURCE) && /const HO_SCAN_DOM_COALESCE_MS = 250;/.test(SOURCE),
+    '50/250 ms scan deadlines remain');
+  ok(!/ObserverHub|observerHub/u.test(SOURCE), 'no Observer Hub migration appears');
 });
 
 // ── Report ────────────────────────────────────────────────────────────────
