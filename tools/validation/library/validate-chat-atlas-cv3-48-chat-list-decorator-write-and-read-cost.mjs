@@ -963,6 +963,7 @@ function makeRecurrentEnv({ control = true, stampedHost = true, twoCandidates = 
     applyActivityStyle() {}, decorateLink() {}, markSidebarProjects() {}, markSeeControls() {}, markActiveSidebarLink() {},
     hoColorPriorityRAF: 0, hoColorPriorityTO: 0, hoColorPriorityOrderCounter: 0,
     hoColorPriorityRecoverySatisfied: false,
+    hoColorPriorityControlWasValid: false,
     requestAnimationFrame(fn) { const id = ++rafSeq; frames.set(id, fn); return id; },
     cancelAnimationFrame(id) { frames.delete(id); },
     setTimeout(fn, ms) { const id = ++timerSeq; timers.set(id, { fn, ms }); return id; },
@@ -1057,6 +1058,55 @@ fixture('RED recurrent A/E: stable scan→sort cycle avoids duplicate broad disc
   ok(firstCollect >= 0, 'ordered trace reaches collect');
   eq(env.M.trace.slice(0, firstCollect).filter((entry) => entry.what === 'findProjectTabsHost').length, 0,
     'no second broad read phase precedes collect');
+});
+
+fixture('CORRECTION RED F1: control stale between scan and sort recovers at consume time', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scanSidebar();
+  env.reset();
+  env.control.remove();
+  env.reset();
+  env.flushSort();
+  eq({
+    sort: env.M.sort,
+    ensure: env.M.ensure,
+    find: env.M.find,
+    collect: env.M.collect,
+    liveControls: env.host.querySelectorAll('.ho-color-priority').length,
+  }, {
+    sort: 1,
+    ensure: 1,
+    find: 1,
+    collect: 1,
+    liveControls: 1,
+  }, 'consume-time structural truth overrides the stale scan-time skip hint');
+});
+
+fixture('CORRECTION RED F1: host stale between scan and sort recovers current authority', () => {
+  const env = makeRecurrentEnv();
+  env.sandbox.scanSidebar();
+  const replacement = new env.El('div');
+  replacement.__rect = { top: 100, left: 0, width: 690, height: 58 };
+  replacement.__text = 'Chats Sources';
+  env.host.remove();
+  env.main.appendChild(replacement);
+  env.reset();
+  env.flushSort();
+  eq({
+    sort: env.M.sort,
+    ensure: env.M.ensure,
+    find: env.M.find,
+    collect: env.M.collect,
+    replacementStamped: replacement.classList.contains('ho-project-tabs-host'),
+    liveControls: replacement.querySelectorAll('.ho-color-priority').length,
+  }, {
+    sort: 1,
+    ensure: 1,
+    find: 1,
+    collect: 1,
+    replacementStamped: true,
+    liveControls: 1,
+  }, 'consume-time validation rejects a disconnected host and recovers the current host once');
 });
 
 fixture('RED recurrent E: stable host/control performs no semantically unchanged writes', () => {

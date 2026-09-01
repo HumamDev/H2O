@@ -1378,6 +1378,7 @@ let hoColorPriorityRAF = 0;
 let hoColorPriorityTO = 0;
 let hoColorPriorityOrderCounter = 0;
 let hoColorPriorityRecoverySatisfied = false;
+let hoColorPriorityControlWasValid = false;
 
 function getPriorityColorDef(name) {
   const key = normalizePriorityColor(name);
@@ -1687,7 +1688,9 @@ function hoGetStampedProjectControlState() {
 }
 
 function ensureColorPriorityControl(options = null) {
-  const stable = hoGetStampedProjectControlState();
+  const stable = options?.structuralStateChecked
+    ? options.structuralState
+    : hoGetStampedProjectControlState();
   if (stable) {
     if (!stable.stateMatches) updateColorPriorityControl(stable.control);
     return stable.control;
@@ -1829,7 +1832,14 @@ function rowPriorityOrder(entry) {
 
 function applyColorPrioritySort(options = null) {
   if (hoOpenPalette && hoOpenPalette.classList.contains("show")) return;
-  const control = ensureColorPriorityControl({ skipBroadDiscovery: !!options?.controlRecoverySatisfied });
+  const structuralState = hoGetStampedProjectControlState();
+  const control = ensureColorPriorityControl({
+    structuralStateChecked: true,
+    structuralState,
+    skipBroadDiscovery: !!options?.controlRecoverySatisfied
+      && !options?.controlWasValid
+      && !structuralState,
+  });
   if (!control) return;
 
   const color = getPriorityColor();
@@ -1858,7 +1868,10 @@ function applyColorPrioritySort(options = null) {
 }
 
 function scheduleColorPrioritySort(options = null) {
-  hoColorPriorityRecoverySatisfied = hoColorPriorityRecoverySatisfied || !!options?.controlRecoverySatisfied;
+  if (options?.controlRecoverySatisfied) {
+    hoColorPriorityRecoverySatisfied = true;
+    hoColorPriorityControlWasValid = !!options?.controlWasValid;
+  }
   cancelAnimationFrame(hoColorPriorityRAF);
   clearTimeout(hoColorPriorityTO);
 
@@ -1868,12 +1881,14 @@ function scheduleColorPrioritySort(options = null) {
     hoColorPriorityRAF = 0;
     hoColorPriorityTO = 0;
     const controlRecoverySatisfied = hoColorPriorityRecoverySatisfied;
+    const controlWasValid = hoColorPriorityControlWasValid;
     hoColorPriorityRecoverySatisfied = false;
+    hoColorPriorityControlWasValid = false;
     if (I.lock.locked()) {
-      setTimeout(() => scheduleColorPrioritySort({ controlRecoverySatisfied }), 50);
+      setTimeout(() => scheduleColorPrioritySort({ controlRecoverySatisfied, controlWasValid }), 50);
       return;
     }
-    I.lock.with(() => applyColorPrioritySort({ controlRecoverySatisfied }));
+    I.lock.with(() => applyColorPrioritySort({ controlRecoverySatisfied, controlWasValid }));
   };
 
   hoColorPriorityRAF = requestAnimationFrame(run);
@@ -2429,11 +2444,12 @@ function scanSidebar(work = HO_WORK_ALL) {
       markActiveSidebarLink();
     }
     let controlRecoverySatisfied = false;
+    let controlWasValid = false;
     if (reconcileChatList || recoverControlHost) {
-      ensureColorPriorityControl();
+      controlWasValid = !!ensureColorPriorityControl();
       controlRecoverySatisfied = true;
     }
-    if (sortColor) scheduleColorPrioritySort({ controlRecoverySatisfied });
+    if (sortColor) scheduleColorPrioritySort({ controlRecoverySatisfied, controlWasValid });
   }
 }
 
