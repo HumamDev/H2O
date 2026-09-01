@@ -1,7 +1,6 @@
 # Saved Chat Storage ↔ Transport Object Handoff Contract
 
-Status: Normative / M07 P0 contract freeze; P0/P1 core slice implemented,
-pending guarded checkpoint acceptance
+Status: Normative / M07 COMPLETE / ACCEPTED; G2 passed 2026-09-01
 
 Date: 2026-08-31
 
@@ -15,6 +14,7 @@ Related:
 - [Saved Chat Archive Generations Contract](saved-chat-generations.md)
 - [Saved Chat Archive Reclamation Contract](saved-chat-reclamation.md)
 - [ADR-0010 — Saved Chat Asset CAS](../../decisions/ADR-0010-saved-chat-asset-cas.md)
+- [M07 acceptance record](../../../release-evidence/2026-09-01/saved-chat-storage-m07-acceptance.md)
 
 ## 1. Bounded outcome
 
