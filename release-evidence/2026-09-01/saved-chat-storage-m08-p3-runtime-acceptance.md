@@ -97,3 +97,36 @@ inventory were unchanged after export/import. No ZIP was extracted into the
 archive namespace, no capability was broadened, and no Sync, cloud, WebDAV,
 Chrome, migration, M05, M06 or M07 authority changed. The disposable Studio
 process was shut down after the evidence was sealed.
+
+## G2 corrective publication delta
+
+Independent G2 identified a check-then-rename race in ZIP final publication:
+on macOS, an ordinary rename could replace a destination created after the
+renderer pre-check. The correction replaces ZIP final rename authority with a
+ZIP-specific native command confined to `$HOME/H2O Studio Exports/`. That
+command reuses the existing descriptor-relative atomic no-replace promotion
+primitive and has no overwrite-capable fallback.
+
+Corrective source identity was checkpoint `46594c17bdf0569adee65db676d40ea01648eb8f`
+plus this uncommitted delta. The assembled release executable SHA-256 was
+`89a621a39bccb345c21dee7b1b5f47ba3bdd52c8ec8cc492605f448c77e54381`.
+Focused native tests passed for absent, occupied, race-point, confined-name and
+non-collision error cases (5 passed / 0 failed); the product race regression
+passed in the focused export validator (47 checks / 0 failed).
+
+The corrective runtime used the disposable root
+`s-files/m08-g2-fix-20260901/disposable-home`. A normal verified export passed
+and reproduced ZIP SHA-256
+`0473d54654a11e54fb53800956d5f9fea940fe09bfee14722f3645ddcc8323af`.
+At the native publication point, an occupied destination was refused as
+`destination-exists`; the product exporter also refused that occupied name.
+The winner's sentinel SHA-256 remained
+`6daccebc9c3bf7c44b6dbfec0a6b78e00c1208e39851be0dc9b082ab9350d8fd`
+before and after. The disposable process was shut down and no production state
+was opened or mutated.
+
+P3 corrective delta — PASS
+
+G1 — PASS / RE-ESTABLISHED
+
+G2 — AWAITING REVERIFICATION

@@ -99,6 +99,12 @@ Export uses the existing bounded `$HOME/H2O Studio Exports/` authority and
 refuses an existing destination. It does not mutate the source package and does
 not replace the existing folder export.
 
+The existence pre-check is advisory only. Final ZIP publication uses one
+native atomic create-only/no-replace operation inside that fixed export root.
+A destination created concurrently before publication survives byte-unchanged
+and the export refuses; ordinary overwrite-capable rename is never a ZIP final
+publication fallback.
+
 ## 5. DP-M08-C — admitted ZIP subset
 
 The reader supports only the subset M08 needs:

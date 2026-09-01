@@ -10,7 +10,8 @@
  *   - No OS picker, no arbitrary caller-supplied destination root.
  *   - Manifest-driven copy only; no blind recursive copy.
  *   - No overwrite: existing final destination is rejected.
- *   - Atomic strategy: temp .h2ochat directory under export root, then rename.
+ *   - Folder export: temp .h2ochat directory under export root, then rename.
+ *   - ZIP export: verified staged file, then native atomic create-only publish.
  *   - No DB/store writes, no scanner/materializer/importer calls, no Chrome
  *     package-body authority, no sync/WebDAV/cloud/native messaging.
  */
@@ -206,6 +207,14 @@
         path: encodeURIComponent(path),
         options: JSON.stringify(options || homeOptions()),
       },
+    });
+  }
+
+  function publishZipCreateOnly(stagedName, finalName) {
+    var invoke = getInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for ZIP publication'));
+    return invoke('h2o_publish_saved_chat_zip_create_only', {
+      request: { stagedName: stagedName, finalName: finalName },
     });
   }
 
@@ -446,11 +455,13 @@
     var packagePath = cleanString(opts.packagePath);
     var packageName = packageDirNameForPath(packagePath);
     var exportName = sanitizeZipExportName(opts.exportName, packageName);
+    var tempName = exportName + TMP_SUFFIX_PREFIX + Date.now().toString(36);
     return {
       exportRoot: EXPORT_ROOT,
       exportName: exportName,
       destinationPath: joinPath(EXPORT_ROOT, exportName),
-      tempPath: joinPath(EXPORT_ROOT, exportName + TMP_SUFFIX_PREFIX + Date.now().toString(36)),
+      tempName: tempName,
+      tempPath: joinPath(EXPORT_ROOT, tempName),
       packageDirName: packageName,
     };
   }
@@ -777,10 +788,28 @@
       await fsWriteFile(tempPath, zipBytes, homeOptions());
       var readbackBytes = await fsReadFile(tempPath, homeOptions());
       var decoded = await verifyPortableZipReadback(readbackBytes, assembled);
-      if (await fsExists(dest.destinationPath, homeOptions())) {
-        throw new Error('portable ZIP destination appeared before publication');
+      /* Advisory existence checks above improve UX but are not publication
+       * authority. This native operation performs the final existence test and
+       * create-only namespace mutation atomically under the fixed export root. */
+      var publication = safeObject(await publishZipCreateOnly(dest.tempName, dest.exportName));
+      if (cleanString(publication.status) === 'destination-exists') {
+        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
+        tempPath = '';
+        return zipExportResult('destination-exists', {
+          packagePath: packagePath,
+          exportName: dest.exportName,
+          destinationPath: dest.destinationPath,
+          packageDirName: dest.packageDirName,
+          inspectionStatus: 'verified',
+          reason: 'destination already exists',
+        });
       }
-      await fsRename(tempPath, dest.destinationPath, { oldPathBaseDir: HOME_BASE_DIR, newPathBaseDir: HOME_BASE_DIR });
+      if (publication.ok !== true || cleanString(publication.status) !== 'published') {
+        throw new Error('saved-chat-zip-create-only-publication-failed');
+      }
+      if (publication.stagingRemoved !== true) {
+        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
+      }
       tempPath = '';
       return zipExportResult('exported', {
         packagePath: packagePath,

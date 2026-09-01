@@ -29,6 +29,8 @@ const PORTABLE_ZIP = 'src-surfaces-base/studio/ingestion/saved-chat-portable-zip
 const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
 const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const IMPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const ZIP_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_zip_publish.rs';
+const TAURI_LIB = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const V3_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
 const V3_GZIP_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/gzip/t06-canonical-assets.h2ochat';
 const CAPABILITY_FILES = [
@@ -199,6 +201,8 @@ function createBehaviorFs() {
   const files = new Map();
   const APP = 15;
   const HOME = 21;
+  let beforeZipPublish = null;
+  let zipPublishCalls = 0;
   const key = (baseDir, p) => `${baseDir}:${p}`;
   const splitKey = (entry) => {
     const index = entry.indexOf(':');
@@ -263,6 +267,27 @@ function createBehaviorFs() {
       renameTree(options.oldPathBaseDir, body.oldPath, options.newPathBaseDir, body.newPath);
       return null;
     }
+    if (command === 'h2o_publish_saved_chat_zip_create_only') {
+      zipPublishCalls += 1;
+      const request = body?.request || {};
+      const stagedPath = `H2O Studio Exports/${request.stagedName || ''}`;
+      const finalPath = `H2O Studio Exports/${request.finalName || ''}`;
+      if (beforeZipPublish) {
+        const hook = beforeZipPublish;
+        beforeZipPublish = null;
+        await hook({ stagedPath, finalPath });
+      }
+      if (exists(HOME, finalPath)) {
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'destination-exists', stagingRemoved: false };
+      }
+      const stagedBytes = files.get(key(HOME, stagedPath));
+      if (!stagedBytes) {
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-missing', stagingRemoved: false };
+      }
+      files.set(key(HOME, finalPath), stagedBytes);
+      files.delete(key(HOME, stagedPath));
+      return { schema: 'h2o.savedChatZipPublish.v1', ok: true, status: 'published', stagingRemoved: true };
+    }
     const p = body?.path;
     const options = body?.options || {};
     if (command === 'plugin:fs|exists') return exists(options.baseDir, p);
@@ -297,7 +322,11 @@ function createBehaviorFs() {
       .sort((a, b) => a.path.localeCompare(b.path));
   }
   mkdir(APP, 'archive/packages');
-  return { APP, HOME, dirs, files, invoke, mkdir, put, exists, inventory, key };
+  return {
+    APP, HOME, dirs, files, invoke, mkdir, put, exists, inventory, key,
+    setBeforeZipPublish(fn) { beforeZipPublish = fn; },
+    zipPublishCallCount() { return zipPublishCalls; },
+  };
 }
 
 function makeBehaviorPackage({ schemaVersion, chatId, withAsset = false, encoding = 'identity' }) {
@@ -623,13 +652,32 @@ check('J.2 exporter guards package-relative paths and asset paths', () => {
   assertIncludes(exporterCode, 'asset path sha mismatch');
 });
 
-check('J.2 exporter is no-overwrite and uses temp-to-rename atomic strategy', () => {
+check('J.2 folder exporter remains no-overwrite and uses its existing temp-to-rename strategy', () => {
   assertIncludes(exporterCode, 'destination-exists');
   assertIncludes(exporterCode, 'fsExists(dest.destinationPath');
   assertIncludes(exporterCode, 'TMP_SUFFIX_PREFIX');
   assertIncludes(exporterCode, 'fsRename(tempPath, dest.destinationPath');
   assertIncludes(exporterCode, 'plugin:fs|rename');
   assert.doesNotMatch(exporterCode, /truncate:\s*true|overwrite:\s*true/);
+});
+
+check('M08 ZIP final publication uses one bounded native atomic create-only command', () => {
+  assert.ok(existsRepo(ZIP_PUBLISH_NATIVE), `${ZIP_PUBLISH_NATIVE} does not exist`);
+  const native = readRepo(ZIP_PUBLISH_NATIVE);
+  const tauriLib = readRepo(TAURI_LIB);
+  assertIncludes(exporterCode, 'h2o_publish_saved_chat_zip_create_only');
+  assertIncludes(exporterCode, 'publishZipCreateOnly(dest.tempName, dest.exportName)');
+  assertIncludes(native, 'promote_exclusive');
+  assertIncludes(native, 'destination-exists');
+  assertIncludes(native, 'H2O Studio Exports');
+  assertIncludes(tauriLib, 'saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only');
+  const nativeProduction = native.slice(0, native.indexOf('#[cfg(test)]'));
+  const zipBody = exporterCode.slice(
+    exporterCode.indexOf('async function exportVerifiedPackageZip'),
+    exporterCode.indexOf('var TEXT =', exporterCode.indexOf('async function exportVerifiedPackageZip')),
+  );
+  assert.doesNotMatch(zipBody, /fsRename|plugin:fs\|rename/);
+  assert.doesNotMatch(nativeProduction, /std::fs::rename|rename_within/);
 });
 
 check('J.2 exporter verifies copied hashes and contentHash after copy', () => {
@@ -1050,6 +1098,37 @@ checkAsync('M08 verified v1/v2 ZIP export is method-8, byte-faithful, determinis
   const collision = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: 'm08-one.h2ochat.zip' });
   assert.equal(collision.status, 'destination-exists');
   assert.deepEqual(mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-one.h2ochat.zip')), beforeCollision);
+});
+
+checkAsync('M08 ZIP publication refuses a race winner after advisory absence and cleans staging', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm08_zip_publish_race', withAsset: false });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const exporter = runtime.H2O.Studio.archiveExporter;
+  const finalPath = 'H2O Studio Exports/m08-race.h2ochat.zip';
+  const sentinel = Buffer.from('independent-race-winner');
+
+  assert.equal(mem.exists(mem.HOME, finalPath), false, 'advisory pre-check begins absent');
+  mem.setBeforeZipPublish(({ finalPath: publishingFinal }) => {
+    assert.equal(publishingFinal, finalPath);
+    mem.put(mem.HOME, publishingFinal, sentinel);
+  });
+
+  const result = await exporter.exportVerifiedPackageZip({
+    packagePath: sourceRoot,
+    exportName: 'm08-race.h2ochat.zip',
+  });
+
+  assert.equal(mem.zipPublishCallCount(), 1, 'native create-only boundary invoked once');
+  assert.equal(result.status, 'destination-exists');
+  assert.equal(result.ok, false);
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, finalPath)), sentinel, 'race winner bytes changed');
+  assert.equal(
+    [...mem.files.keys()].some((entry) => entry.includes('m08-race.h2ochat.zip.tmp-')),
+    false,
+    'private staging artifact was not cleaned',
+  );
 });
 
 checkAsync('M08 portable ZIP reaches the shared import-as-new core; failures and dry-run write nothing', async () => {
