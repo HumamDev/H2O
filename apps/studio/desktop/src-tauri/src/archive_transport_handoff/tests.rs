@@ -142,6 +142,13 @@ fn generation_selector(fx: &Fixture) -> HandoffSelector {
     }
 }
 
+fn canonical_cas_path(root: &Path, identity: &str) -> PathBuf {
+    let hex = identity.strip_prefix("sha256-").unwrap();
+    root.join("assets")
+        .join(&hex[0..2])
+        .join(format!("sha256-{hex}"))
+}
+
 fn blocker<T>(result: &T) -> String
 where
     T: HasBlockers,
@@ -402,7 +409,7 @@ fn semantic_selectors_fail_closed_for_missing_wrong_corrupt_partial_and_symlinke
     ] {
         let refused = begin(&handoff, &selector);
         assert!(!refused.ok);
-        assert_eq!(blocker(&refused), codes::PACKAGE_UNVERIFIED);
+        assert_eq!(blocker(&refused), codes::PACKAGE_ABSENT);
     }
 
     // Valid bytes under an identity-mismatched name are not laundered.
@@ -440,6 +447,150 @@ fn semantic_selectors_fail_closed_for_missing_wrong_corrupt_partial_and_symlinke
     assert!(!partial.ok);
     assert_eq!(blocker(&partial), codes::PACKAGE_UNVERIFIED);
 
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn failed_late_asset_admission_publishes_nothing_and_releases_capacity() {
+    let root = scratch("atomic-admission");
+    let fx = v2_fixture(
+        &root,
+        "chat_atomic",
+        &[("png", b"first-body"), ("jpg", b"second-body")],
+    );
+    publish(&root, &fx);
+    let handoff = Handoff::new(&root);
+
+    let mut assets = fx.assets.clone();
+    assets.sort_by(|a, b| a.0.cmp(&b.0));
+    let (missing_sha, original) = assets.last().unwrap();
+    let missing_path = canonical_cas_path(&root, missing_sha);
+    std::fs::remove_file(&missing_path).expect("remove last canonical CAS object");
+
+    let refused = begin(&handoff, &generation_selector(&fx));
+    assert!(!refused.ok);
+    assert_eq!(blocker(&refused), codes::ASSET_UNAVAILABLE);
+    assert_eq!(refused.token, 0);
+    assert!(refused.descriptor.is_none());
+    {
+        let registry = handoff.registry.inner.lock().unwrap();
+        assert!(registry.sessions.is_empty());
+        assert_eq!(registry.building, 0);
+    }
+
+    std::fs::write(&missing_path, original).expect("restore canonical CAS object");
+    let retry = begin(&handoff, &generation_selector(&fx));
+    assert!(retry.ok, "released admission must be reusable");
+    assert!(end(&handoff, retry.token).ok);
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn in_progress_begin_reservations_share_the_four_session_capacity() {
+    let root = scratch("building-capacity");
+    let handoff = Handoff::new(&root);
+    for _ in 0..crate::archive_generation_publish::MAX_ADMITTED_SESSIONS {
+        assert_eq!(handoff.reserve_begin(), Ok(()));
+    }
+    assert_eq!(
+        handoff.reserve_begin(),
+        Err(codes::SESSIONS_EXHAUSTED),
+        "in-progress admissions must consume the same bound as live sessions"
+    );
+    for _ in 0..crate::archive_generation_publish::MAX_ADMITTED_SESSIONS {
+        handoff.cancel_begin();
+    }
+    let registry = handoff.registry.inner.lock().unwrap();
+    assert_eq!(registry.building, 0);
+    assert!(registry.sessions.is_empty());
+    drop(registry);
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn handoff_tokens_are_lossless_opaque_decimal_text() {
+    let max_text = u64::MAX.to_string();
+    let serialized = serde_json::to_value(BeginResult {
+        schema: HANDOFF_SCHEMA,
+        ok: true,
+        token: u64::MAX,
+        descriptor: None,
+        blockers: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(serialized["token"].as_str(), Some(max_text.as_str()));
+
+    let read_text = format!(
+        r#"{{"token":"{}","objectId":"manifest","offset":0,"maxBytes":1}}"#,
+        u64::MAX
+    );
+    let read_options: ReadOptions = serde_json::from_str(&read_text).unwrap();
+    assert_eq!(read_options.token, u64::MAX);
+    let end_text = format!(r#"{{"token":"{}"}}"#, u64::MAX);
+    let end_options: EndOptions = serde_json::from_str(&end_text).unwrap();
+    assert_eq!(end_options.token, u64::MAX);
+
+    let numeric = format!(
+        r#"{{"token":{},"objectId":"manifest","offset":0,"maxBytes":1}}"#,
+        u64::MAX
+    );
+    assert!(serde_json::from_str::<ReadOptions>(&numeric).is_err());
+}
+
+#[test]
+fn repeated_snapshot_asset_refs_create_one_physical_asset_object() {
+    let root = scratch("repeated-asset-refs");
+    let mut fx = v2_fixture(&root, "chat_repeated_refs", &[("png", b"one-body")]);
+    let asset_sha = fx.assets[0].0.clone();
+    fx.snapshot = format!(
+        r#"{{"schemaVersion":2,"chatId":"{}","snapshotId":"s1","savedAt":"2026-08-31T00:00:00Z","messages":[{{"id":"m0","turnIndex":0,"assetRefs":["{1}","{1}","{1}"]}}]}}"#,
+        fx.chat_id, asset_sha
+    )
+    .into_bytes();
+    fx.content_hash = crate::archive_generation_publish::derive_content_hash_for_test(
+        true,
+        &fx.snapshot,
+        std::slice::from_ref(&asset_sha),
+    );
+    fx.manifest = format!(
+        r#"{{"schema":"h2o.savedChatPackage","schemaVersion":2,"payloadVersion":2,"chatId":"{}","snapshotId":"s1","contentHash":"{}","files":{{"snapshot":{{"path":"snapshot.json","sha256":"{}","byteLength":{}}},"markdown":{{"path":"chat.md","sha256":"{}","byteLength":{}}},"html":{{"path":"chat.html","sha256":"{}","byteLength":{}}}}},"assets":[{{"path":"assets/{}.png","sha256":"{}","ext":"png","mimeType":"image/png","byteLength":{}}}]}}"#,
+        fx.chat_id,
+        fx.content_hash,
+        sha(&fx.snapshot),
+        fx.snapshot.len(),
+        sha(&fx.markdown),
+        fx.markdown.len(),
+        sha(&fx.html),
+        fx.html.len(),
+        asset_sha,
+        asset_sha,
+        fx.assets[0].1.len(),
+    )
+    .into_bytes();
+    publish(&root, &fx);
+
+    let handoff = Handoff::new(&root);
+    let first = begin(&handoff, &generation_selector(&fx));
+    assert!(first.ok, "{:?}", first.blockers);
+    let descriptor = first.descriptor.as_ref().unwrap();
+    assert_eq!(
+        descriptor
+            .objects
+            .iter()
+            .filter(|object| object.role == ObjectRole::Asset)
+            .count(),
+        1
+    );
+    assert_eq!(descriptor.object_count, 5);
+    assert_eq!(
+        descriptor.total_physical_bytes,
+        descriptor
+            .objects
+            .iter()
+            .map(|object| object.byte_length)
+            .sum::<u64>()
+    );
+    assert!(end(&handoff, first.token).ok);
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
@@ -496,7 +647,7 @@ fn retained_handles_survive_package_rename_and_unlink_while_new_begin_refuses() 
     );
     let new_begin = begin(&handoff, &generation_selector(&fx));
     assert!(!new_begin.ok);
-    assert_eq!(blocker(&new_begin), codes::PACKAGE_UNVERIFIED);
+    assert_eq!(blocker(&new_begin), codes::PACKAGE_ABSENT);
     assert!(end(&handoff, begun.token).ok);
 
     let _ = std::fs::remove_dir_all(root.parent().unwrap());

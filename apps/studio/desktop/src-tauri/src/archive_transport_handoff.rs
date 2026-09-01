@@ -35,6 +35,7 @@ const PACKAGE_KIND: &str = "saved-chat-package";
 
 pub mod codes {
     pub const SELECTOR_INVALID: &str = "transport-handoff-selector-invalid";
+    pub const PACKAGE_ABSENT: &str = "transport-handoff-package-absent";
     pub const PACKAGE_UNVERIFIED: &str = "transport-handoff-package-unverified";
     pub const PACKAGE_IDENTITY_MISMATCH: &str = "transport-handoff-package-identity-mismatch";
     pub const PACKAGE_FAMILY_UNSUPPORTED: &str = "transport-handoff-package-family-unsupported";
@@ -526,6 +527,11 @@ fn prepare(
     let packages = archive
         .open_child_nofollow(b"packages")
         .map_err(|_| codes::PACKAGE_UNVERIFIED)?;
+    match packages.stat_child_nofollow(package_name.as_bytes()) {
+        Ok(None) => return Err(codes::PACKAGE_ABSENT),
+        Ok(Some(_)) => {}
+        Err(_) => return Err(codes::PACKAGE_UNVERIFIED),
+    }
     let verified = verify_occupant(&packages, package_name.as_bytes())
         .map_err(|_| codes::PACKAGE_UNVERIFIED)?;
 

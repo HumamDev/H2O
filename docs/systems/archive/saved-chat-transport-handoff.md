@@ -166,6 +166,11 @@ If any declared asset is absent, non-regular, unreadable, hash-mismatched, or
 length-mismatched, BEGIN fails and exposes no partial descriptor. An asset is
 never silently dropped.
 
+The current trusted verifier refuses duplicate asset-SHA descriptors in the
+manifest. Repeated references to the same verified SHA in snapshot content do
+not create additional physical handoff objects: M07 enumerates the verified
+manifest dependency set once, so reference order cannot multiply object bytes.
+
 Future v3 admission must use current version-aware truth: app-owned v3 does not
 inherit v1/v2 Markdown/HTML requirements, and verified v3 encoding,
 `contentSha256`, and `contentByteLength` must be carried without reinterpretation.
@@ -228,6 +233,16 @@ pathname rename or unlink. Therefore an admitted session remains byte-stable
 if M06 or an operator subsequently moves/unlinks the pathname, while a new
 BEGIN against the now-absent semantic identity fails. This property is pinned
 by a permanent rename-plus-unlink regression test.
+
+BEGIN publishes only after every package member and canonical CAS dependency
+has been opened and checked. A concurrent namespace rename/unlink therefore
+either leaves a complete self-consistent opened object set or makes BEGIN fail
+without publishing a session; partially opened handles are dropped.
+
+Published generations and governed CAS objects are immutable within H2O's
+authority. Retained handles protect identity across namespace rename/unlink;
+they do not claim protection against an unrelated privileged external process
+that mutates an already-open inode in place.
 
 No durable pin, staging copy, retention-policy modification, process-exit hook,
 or filesystem lease is introduced.
@@ -337,6 +352,13 @@ boundaries as follows:
 M07 representationHash = sha256-<hex>
 Transport hash reference = sha256:<same hex>
 ```
+
+The conversion is permitted only after validating the complete M07 syntax
+`^sha256-[0-9a-f]{64}$`, and is exactly
+`"sha256:" + representationHash.substring("sha256-".length)`. It performs no
+truncation, alternate digest, or payload/body derivation. B4 receives the result
+as `candidatePayloadHash`; B6 receives the same result identically as both
+`candidatePayloadHash` and `candidateBundleHash`.
 
 For a Transport candidate whose payload is exactly this handoff object set:
 
