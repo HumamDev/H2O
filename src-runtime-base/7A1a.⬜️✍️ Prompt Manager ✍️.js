@@ -630,6 +630,71 @@
   let PM_THEME_OBS = null;
   let PM_FORCE_RECOVER = false;
   let PM_LAYOUT_RAF = 0;
+  let PM_SELF_HEAL_IDENTITY_DIRTY = false;
+  let PM_SELF_HEAL_PLACEMENT_DIRTY = false;
+  let PM_SELF_HEAL_OWN_ATTR = new WeakMap();
+  const PM_SELF_HEAL_OWN_CHILD = [];
+
+  const CORE_PM_serializeAttribute = (target, attributeName) =>
+    String(target?.getAttribute?.(attributeName) || '');
+  const CORE_PM_beginOwnedAttribute = (target, attributeName) => {
+    if (!target || !attributeName) return null;
+    const name = String(attributeName);
+    return { target, name, before: CORE_PM_serializeAttribute(target, name) };
+  };
+  const CORE_PM_finishOwnedAttribute = (token) => {
+    if (!token) return;
+    const { target, name, before } = token;
+    const after = CORE_PM_serializeAttribute(target, name);
+    let attrs = PM_SELF_HEAL_OWN_ATTR.get(target);
+    if (!attrs) { attrs = new Map(); PM_SELF_HEAL_OWN_ATTR.set(target, attrs); }
+    const prior = attrs.get(name);
+    attrs.set(name, {
+      before: prior?.after === before ? prior.before : before,
+      after,
+    });
+  };
+  const CORE_PM_recordOwnedChildList = (target, addedNodes) => {
+    if (!target) return;
+    PM_SELF_HEAL_OWN_CHILD.push({ target, addedNodes: Array.from(addedNodes || []) });
+  };
+  const CORE_PM_collectOwnedAttributeRecords = (records) => {
+    const groups = new Map();
+    for (const record of records || []) {
+      if (record?.type !== 'attributes') continue;
+      const entry = PM_SELF_HEAL_OWN_ATTR.get(record.target)?.get(String(record.attributeName || ''));
+      if (!entry) continue;
+      let group = groups.get(entry);
+      if (!group) { group = []; groups.set(entry, group); }
+      group.push(record);
+    }
+    const owned = new Set();
+    for (const [entry, group] of groups) {
+      const firstBefore = String(group[0]?.oldValue || '');
+      const target = group[0]?.target;
+      const name = String(group[0]?.attributeName || '');
+      if (firstBefore !== entry.before) continue;
+      if (CORE_PM_serializeAttribute(target, name) !== entry.after) continue;
+      for (const record of group) owned.add(record);
+    }
+    return owned;
+  };
+  const CORE_PM_consumeOwnedChildMutation = (record) => {
+    if (!record) return false;
+    if (record.type !== 'childList' || (record.removedNodes || []).length) return false;
+    const added = Array.from(record.addedNodes || []);
+    const index = PM_SELF_HEAL_OWN_CHILD.findIndex((entry) =>
+      entry.target === record.target &&
+      entry.addedNodes.length === added.length &&
+      entry.addedNodes.every((node, i) => node === added[i]));
+    if (index < 0) return false;
+    PM_SELF_HEAL_OWN_CHILD.splice(index, 1);
+    return true;
+  };
+  const CORE_PM_expireOwnedMutationProvenance = () => {
+    PM_SELF_HEAL_OWN_CHILD.length = 0;
+    PM_SELF_HEAL_OWN_ATTR = new WeakMap();
+  };
 
   /* ───────────────────────────── 🟫 VERIFY/SAFETY — Guards 📝🔓💧 ───────────────────────────── */
   const SAFE_try = (where, fn, fallback) => {
@@ -661,7 +726,7 @@
   const DOM_q = (sel, root = D) => root.querySelector(sel);
   const DOM_qa = (sel, root = D) => Array.from(root.querySelectorAll(sel));
 
-  const DOM_isVisible = (el) => {
+  const DOM_isVisible = (el, measure = null) => {
     if (!el) return false;
     try {
       if (!D.contains(el)) return false;
@@ -675,6 +740,7 @@
       const r = el.getBoundingClientRect?.();
       if (!r) return false;
       if (r.width <= 0 || r.height <= 0) return false;
+      if (measure && typeof measure === 'object') measure.rect = r;
       return true;
     } catch {
       return false;
@@ -723,7 +789,7 @@
     return score;
   };
 
-  const DOM_pickEditableInForm = (form) => {
+  const DOM_pickEditableInForm = (form, pass = null) => {
     if (!form) return null;
     const cands = Array.from(form.querySelectorAll('#prompt-textarea, textarea, div[contenteditable="true"], [contenteditable="true"]'));
     if (!cands.length) return null;
@@ -736,26 +802,54 @@
       if (el.id === 'prompt-textarea') score += 12;
       if (String(el.getAttribute?.('contenteditable') || '').toLowerCase() === 'true') score += 3;
       if (el.tagName === 'TEXTAREA') score += 2;
-      if (DOM_isVisible(el)) score += 4;
-      try { score += DOM_scoreBottomLaneRect(el.getBoundingClientRect()); } catch {}
+      const measure = {};
+      if (DOM_isVisible(el, measure)) score += 4;
+      const rect = measure.rect || SAFE_try('DOM.pickEditable.rect', () => el.getBoundingClientRect(), null);
+      score += DOM_scoreBottomLaneRect(rect);
 
       if (score > bestScore) {
         best = el;
         bestScore = score;
+        if (pass) {
+          pass.input = el;
+          pass.inputRect = rect || null;
+        }
       }
     }
     return best;
   };
 
-  const DOM_getForm = () => {
+  const DOM_PM_rememberForm = (pass, form, rect = null) => {
+    if (!pass || typeof pass !== 'object') return form;
+    pass.formResolved = true;
+    pass.form = form || null;
+    pass.formRect = rect || null;
+    return form;
+  };
+
+  const DOM_PM_isStructurallyEligibleForm = (form) => {
+    if (!form || !D.contains(form) || form.tagName !== 'FORM') return false;
+    try {
+      if (form.matches?.(SEL_PM.HOST_FORM)) return true;
+      return !!form.querySelector?.('#prompt-textarea, textarea, [contenteditable="true"]');
+    } catch { return false; }
+  };
+
+  const DOM_getForm = (pass = null) => {
     const promptTa = D.getElementById?.('prompt-textarea');
     const promptForm = promptTa?.closest?.('form') || null;
-    if (promptForm && DOM_isVisible(promptForm)) return promptForm;
+    const promptMeasure = {};
+    if (promptForm && DOM_isVisible(promptForm, promptMeasure)) {
+      return DOM_PM_rememberForm(pass, promptForm, promptMeasure.rect);
+    }
 
     const forms = DOM_qa(SEL_PM.HOST_FORM);
-    if (!forms.length) return null;
+    if (!forms.length) return DOM_PM_rememberForm(pass, null);
 
     let best = null;
+    let bestRect = null;
+    let bestInput = null;
+    let bestInputRect = null;
     let bestScore = -1;
     for (const f of forms) {
       if (!f) continue;
@@ -765,7 +859,8 @@
       const isConvo = !!f.matches?.('form[action*="conversation"]');
       const hasPrompt = !!f.querySelector?.('#prompt-textarea');
       const hasSend = !!f.querySelector?.('button[data-testid="send-button"], button[aria-label*="Send" i]');
-      const hasInput = !!DOM_pickEditableInForm(f);
+      const candidatePass = {};
+      const hasInput = !!DOM_pickEditableInForm(f, candidatePass);
 
       if (!(isUnified || isComposer || isConvo || hasPrompt || hasSend || hasInput)) continue;
 
@@ -776,16 +871,28 @@
       if (isConvo) score += 8;
       if (hasSend) score += 6;
       if (hasInput) score += 4;
-      if (DOM_isVisible(f)) score += 3;
-      try { score += DOM_scoreBottomLaneRect(f.getBoundingClientRect()); } catch {}
+      const formMeasure = {};
+      if (DOM_isVisible(f, formMeasure)) score += 3;
+      const formRect = formMeasure.rect || SAFE_try('DOM.getForm.rect', () => f.getBoundingClientRect(), null);
+      score += DOM_scoreBottomLaneRect(formRect);
 
       if (score > bestScore) {
         best = f;
+        bestRect = formRect || null;
+        bestInput = candidatePass.input || null;
+        bestInputRect = candidatePass.inputRect || null;
         bestScore = score;
       }
     }
 
-    if (best && bestScore >= 8) return best;
+    if (best && bestScore >= 8) {
+      DOM_PM_rememberForm(pass, best, bestRect);
+      if (pass && bestInput) {
+        pass.input = bestInput;
+        pass.inputRect = bestInputRect;
+      }
+      return best;
+    }
 
     // Fallback: visible input host form if direct selectors miss.
     const fallbackInput = (
@@ -795,28 +902,45 @@
       null
     );
     const inputForm = fallbackInput?.closest?.('form') || null;
-    if (inputForm && DOM_isVisible(inputForm)) return inputForm;
+    const inputFormMeasure = {};
+    if (inputForm && DOM_isVisible(inputForm, inputFormMeasure)) {
+      return DOM_PM_rememberForm(pass, inputForm, inputFormMeasure.rect);
+    }
 
     // Last fallback: visible bottom-lane form with a send button.
     let tail = null;
+    let tailRect = null;
+    let tailInput = null;
+    let tailInputRect = null;
     let tailScore = -Infinity;
     const tailForms = DOM_qa('form');
     for (const f of tailForms) {
-      if (!DOM_isVisible(f)) continue;
+      const formMeasure = {};
+      if (!DOM_isVisible(f, formMeasure)) continue;
       if (!f.querySelector?.('button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="send" i]')) continue;
       let score = 6;
-      const hasInput = !!DOM_pickEditableInForm(f);
+      const candidatePass = {};
+      const hasInput = !!DOM_pickEditableInForm(f, candidatePass);
       if (hasInput) score += 3;
-      try { score += DOM_scoreBottomLaneRect(f.getBoundingClientRect()); } catch {}
+      const rect = formMeasure.rect;
+      score += DOM_scoreBottomLaneRect(rect);
       if (score >= tailScore) {
         tail = f;
+        tailRect = rect || null;
+        tailInput = candidatePass.input || null;
+        tailInputRect = candidatePass.inputRect || null;
         tailScore = score;
       }
+    }
+    DOM_PM_rememberForm(pass, tail || null, tailRect);
+    if (pass && tailInput) {
+      pass.input = tailInput;
+      pass.inputRect = tailInputRect;
     }
     return tail || null;
   };
 
-  const DOM_pickComposerSurface = (inputHint = null) => {
+  const DOM_pickComposerSurface = (inputHint = null, pass = null) => {
     const cands = DOM_qa('[data-composer-surface="true"]');
     if (!cands.length) return null;
 
@@ -824,8 +948,9 @@
     let bestScore = -Infinity;
 
     for (const el of cands) {
-      if (!DOM_isVisible(el)) continue;
-      const r = el.getBoundingClientRect?.();
+      const measure = {};
+      if (!DOM_isVisible(el, measure)) continue;
+      const r = measure.rect;
       if (!r || r.width <= 0 || r.height <= 0) continue;
 
       let score = 0;
@@ -837,14 +962,18 @@
       if (score > bestScore) {
         best = el;
         bestScore = score;
+        if (pass) {
+          pass.surface = el;
+          pass.surfaceRect = r;
+        }
       }
     }
     return best;
   };
-  const DOM_getEditableInput = () => {
-    const form = DOM_getForm();
+  const DOM_getEditableInput = (formHint = null, pass = null) => {
+    const form = pass?.formResolved ? pass.form : (formHint || DOM_getForm(pass));
     if (form) {
-      const picked = DOM_pickEditableInForm(form);
+      const picked = DOM_pickEditableInForm(form, pass);
       if (picked) return picked;
     }
     return null;
@@ -917,10 +1046,13 @@
     };
   };
 
-  const DOM_getComposerAnchorRect = () => {
-    const form = DOM_getForm();
-    const input = DOM_getEditableInput();
-    const bestSurface = DOM_pickComposerSurface(input || null);
+  const DOM_getComposerAnchorRect = (formHint = null, pass = null) => {
+    const placementPass = pass || {};
+    const form = placementPass.formResolved
+      ? placementPass.form
+      : (formHint || DOM_getForm(placementPass));
+    const input = DOM_getEditableInput(form, placementPass);
+    const bestSurface = DOM_pickComposerSurface(input || null, placementPass);
     const surface =
       bestSurface ||
       input?.closest?.('[data-composer-surface="true"]') ||
@@ -928,17 +1060,27 @@
       form?.closest?.('[data-composer-surface="true"]') ||
       null;
 
-    if (surface && DOM_isVisible(surface)) {
-      const rSurface = surface.getBoundingClientRect?.();
+    if (surface) {
+      const surfaceMeasure = {};
+      const rSurface = placementPass.surface === surface
+        ? placementPass.surfaceRect
+        : (DOM_isVisible(surface, surfaceMeasure) ? surfaceMeasure.rect : null);
       if (rSurface && rSurface.width > 0 && rSurface.height > 0) return rSurface;
     }
 
-    const rForm = (form && DOM_isVisible(form)) ? form.getBoundingClientRect() : null;
-    const rInput = (input && DOM_isVisible(input)) ? input.getBoundingClientRect() : null;
+    const formMeasure = {};
+    const inputMeasure = {};
+    const rForm = placementPass.form === form && placementPass.formRect
+      ? placementPass.formRect
+      : ((form && DOM_isVisible(form, formMeasure)) ? formMeasure.rect : null);
+    const rInput = placementPass.input === input && placementPass.inputRect
+      ? placementPass.inputRect
+      : ((input && DOM_isVisible(input, inputMeasure)) ? inputMeasure.rect : null);
     const sendBtn =
       form?.querySelector?.('button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="send" i]') ||
       null;
-    const rSend = (sendBtn && DOM_isVisible(sendBtn)) ? sendBtn.getBoundingClientRect() : null;
+    const sendMeasure = {};
+    const rSend = (sendBtn && DOM_isVisible(sendBtn, sendMeasure)) ? sendMeasure.rect : null;
 
     return DOM_clampAnchorRect(DOM_unionRect([rForm, rInput, rSend]) || rInput || rForm || rSend || null);
   };
@@ -5096,7 +5238,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       }, null);
     },
 
-    ensureHistoryCapture() {
+    ensureHistoryCapture(formHint = undefined) {
       SAFE_try('TIME_PM.ensureHistoryCapture', () => {
         const hc = STATE_PM.historyCapture;
         if (!hc) return;
@@ -5105,7 +5247,7 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
           ENGINE_PM.pushHistory(txt);
         };
 
-        const form = DOM_getForm();
+        const form = formHint === undefined ? DOM_getForm() : formHint;
         if (!form) {
           TIME_PM.resetHistoryCapture();
           return;
@@ -5419,7 +5561,9 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         `.trim();
 
         // Mount in body as a floating layer so composer re-renders do not remount/move us.
-        (D.body || D.documentElement).appendChild(wrap);
+        const mountHost = D.body || D.documentElement;
+        mountHost.appendChild(wrap);
+        CORE_PM_recordOwnedChildList(mountHost, [wrap]);
         CLEAN_addNode(wrap);
         return wrap;
       }, null);
@@ -5604,39 +5748,44 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
   const PM_DOCK_sync = (root = (STATE_PM.ui.root || UI_PM.getRoot())) => {
     if (!root) return false;
-    if (!VIEW_PM_shouldShow()) {
-      PM_DOCK_disable(root);
-      root.style.display = 'none';
-      return false;
-    }
-    root.style.display = '';
-    const api = PM_DOCK_getApi();
-    const canDock = !!(
-      api &&
-      typeof api.ready === 'function' &&
-      typeof api.register === 'function' &&
-      typeof api.unregister === 'function' &&
-      api.ready()
-    );
-    if (!canDock) {
-      if (STATE_PM.ui.dockMode || STATE_PM.ui.dockRegActive) PM_DOCK_disable(root, api);
-      return false;
-    }
+    const rootStyleWrite = CORE_PM_beginOwnedAttribute(root, 'style');
     try {
-      const topSlot = api.getSlot?.('top');
-      if (
-        STATE_PM.ui.dockMode &&
-        STATE_PM.ui.dockRegActive &&
-        topSlot &&
-        root.parentElement === topSlot
-      ) return true;
-    } catch {}
-    const ok = PM_DOCK_enable(root, api);
-    if (!ok) {
-      PM_DOCK_disable(root, api);
-      return false;
+      if (!VIEW_PM_shouldShow()) {
+        PM_DOCK_disable(root);
+        root.style.display = 'none';
+        return false;
+      }
+      root.style.display = '';
+      const api = PM_DOCK_getApi();
+      const canDock = !!(
+        api &&
+        typeof api.ready === 'function' &&
+        typeof api.register === 'function' &&
+        typeof api.unregister === 'function' &&
+        api.ready()
+      );
+      if (!canDock) {
+        if (STATE_PM.ui.dockMode || STATE_PM.ui.dockRegActive) PM_DOCK_disable(root, api);
+        return false;
+      }
+      try {
+        const topSlot = api.getSlot?.('top');
+        if (
+          STATE_PM.ui.dockMode &&
+          STATE_PM.ui.dockRegActive &&
+          topSlot &&
+          root.parentElement === topSlot
+        ) return true;
+      } catch {}
+      const ok = PM_DOCK_enable(root, api);
+      if (!ok) {
+        PM_DOCK_disable(root, api);
+        return false;
+      }
+      return true;
+    } finally {
+      CORE_PM_finishOwnedAttribute(rootStyleWrite);
     }
-    return true;
   };
 
   const PM_DOCK_installBridge = () => {
@@ -5678,51 +5827,61 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
   function UI_PM_placeFloatingRoot(root) {
     SAFE_try('UI_PM.placeFloatingRoot', () => {
       if (!root || !D.contains(root)) return;
-      if (!VIEW_PM_shouldShow()) {
-        root.style.display = 'none';
-        UI_PM_applyPanelState(false);
-        return;
-      }
-      root.style.display = '';
-      const btnBox = DOM_q(UI_PM.selOwned(UI_PM_BTNBOX), root);
-      if (!btnBox) return;
-      if (STATE_PM.ui.dockMode) {
+      const rootStyleWrite = CORE_PM_beginOwnedAttribute(root, 'style');
+      let btnBoxStyleWrite = null;
+      try {
+        if (!VIEW_PM_shouldShow()) {
+          root.style.display = 'none';
+          UI_PM_applyPanelState(false);
+          return;
+        }
+        root.style.display = '';
+        const btnBox = DOM_q(UI_PM.selOwned(UI_PM_BTNBOX), root);
+        if (!btnBox) return;
+        btnBoxStyleWrite = CORE_PM_beginOwnedAttribute(btnBox, 'style');
+        if (STATE_PM.ui.dockMode) {
+          btnBox.style.display = 'flex';
+          root.style.left = 'auto';
+          root.style.top = 'auto';
+          root.style.right = 'auto';
+          root.style.bottom = 'auto';
+          return;
+        }
+
+        const placementPass = {};
+        const form = DOM_getForm(placementPass);
+        const anchor = DOM_getComposerAnchorRect(form, placementPass);
+        if (!anchor || anchor.width <= 0 || anchor.height <= 0) {
+          btnBox.style.display = 'none';
+          return;
+        }
+        if (anchor.bottom <= 0 || anchor.top >= W.innerHeight) {
+          btnBox.style.display = 'none';
+          return;
+        }
+
         btnBox.style.display = 'flex';
-        root.style.left = 'auto';
-        root.style.top = 'auto';
+
+        const vvTop = W.visualViewport?.offsetTop || 0;
+        const vvLeft = W.visualViewport?.offsetLeft || 0;
+
+        const desiredTop = Math.round(anchor.top + vvTop - CFG_PM.FLOAT_TOP_GAP_Y);
+        const mirroredLeftInset = DOM_getMirroredNavRightInset(anchor);
+        const desiredLeft = Math.round(anchor.left + vvLeft + mirroredLeftInset);
+
+        const bw = Math.max(50, btnBox.getBoundingClientRect().width || 0);
+        const left = Math.min(Math.max(6, desiredLeft), Math.max(6, W.innerWidth - bw - 6));
+        const safeTop = Math.max(6, vvTop + CFG_PM.FLOAT_MIN_TOP_SAFE_Y);
+        const top = Math.max(safeTop, desiredTop);
+
+        root.style.left = `${left}px`;
+        root.style.top = `${top}px`;
         root.style.right = 'auto';
         root.style.bottom = 'auto';
-        return;
+      } finally {
+        CORE_PM_finishOwnedAttribute(btnBoxStyleWrite);
+        CORE_PM_finishOwnedAttribute(rootStyleWrite);
       }
-
-      const anchor = DOM_getComposerAnchorRect();
-      if (!anchor || anchor.width <= 0 || anchor.height <= 0) {
-        btnBox.style.display = 'none';
-        return;
-      }
-      if (anchor.bottom <= 0 || anchor.top >= W.innerHeight) {
-        btnBox.style.display = 'none';
-        return;
-      }
-
-      btnBox.style.display = 'flex';
-
-      const vvTop = W.visualViewport?.offsetTop || 0;
-      const vvLeft = W.visualViewport?.offsetLeft || 0;
-
-      const desiredTop = Math.round(anchor.top + vvTop - CFG_PM.FLOAT_TOP_GAP_Y);
-      const mirroredLeftInset = DOM_getMirroredNavRightInset(anchor);
-      const desiredLeft = Math.round(anchor.left + vvLeft + mirroredLeftInset);
-
-      const bw = Math.max(50, btnBox.getBoundingClientRect().width || 0);
-      const left = Math.min(Math.max(6, desiredLeft), Math.max(6, W.innerWidth - bw - 6));
-      const safeTop = Math.max(6, vvTop + CFG_PM.FLOAT_MIN_TOP_SAFE_Y);
-      const top = Math.max(safeTop, desiredTop);
-
-      root.style.left = `${left}px`;
-      root.style.top = `${top}px`;
-      root.style.right = 'auto';
-      root.style.bottom = 'auto';
     }, null);
   }
 
@@ -6267,19 +6426,148 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
     }, wait);
   }
 
-  function CORE_PM_scheduleSelfHeal(delayMs = 120) {
+  const CORE_PM_nodeMatchesOrCarries = (node, selector) => {
+    if (!node || (node.nodeType != null && node.nodeType !== 1) || !selector) return false;
+    try {
+      if (node.matches?.(selector)) return true;
+      return typeof node.querySelector === 'function' && !!node.querySelector(selector);
+    } catch { return false; }
+  };
+
+  const CORE_PM_knownComposerForm = () => {
+    const form = STATE_PM.historyCapture?.form || null;
+    return DOM_PM_isStructurallyEligibleForm(form) ? form : null;
+  };
+
+  const CORE_PM_isHarmlessOwnedTarget = (target, root) => {
+    if (!target || !root || target === root || !root.contains?.(target)) return false;
+    const btnBox = root.querySelector?.(UI_PM.selOwned(UI_PM_BTNBOX));
+    const tray = root.querySelector?.(UI_PM.selOwned(UI_PM_QUICK_TRAY));
+    if ((btnBox && (target === btnBox || btnBox.contains?.(target))) ||
+        (tray && (target === tray || tray.contains?.(target)))) return false;
+    return !!target.closest?.(`[${ATTR_CGXUI_OWNER}="${SkID}"]`);
+  };
+
+  const CORE_PM_isPlacementAuthority = (target, root, form) => {
+    if (!target || (target.nodeType != null && target.nodeType !== 1)) return false;
+    if (target === root || target === form || form?.contains?.(target)) return true;
+    const btnBox = root?.querySelector?.(UI_PM.selOwned(UI_PM_BTNBOX));
+    const tray = root?.querySelector?.(UI_PM.selOwned(UI_PM_QUICK_TRAY));
+    if ((btnBox && (target === btnBox || btnBox.contains?.(target))) ||
+        (tray && (target === tray || tray.contains?.(target)))) return true;
+    if (CORE_PM_nodeMatchesOrCarries(target, VIEW_PM.SEARCH_SEL)) return true;
+    if (target.closest?.('[role="dialog"]')) return true;
+    if (target.closest?.('[data-cgxui-owner="nvcn"]')) return true;
+    return false;
+  };
+
+  function CORE_PM_classifySelfHealRecords(records) {
+    let identity = false;
+    let placement = false;
+    const root = STATE_PM.ui.root || UI_PM.getRoot();
+    const form = CORE_PM_knownComposerForm();
+    const ownedAttributeRecords = CORE_PM_collectOwnedAttributeRecords(records);
+
+    if (STATE_PM.booted && VIEW_PM_isChatPath() && root && !D.contains(root)) {
+      identity = true;
+      placement = true;
+    }
+    const rememberedForm = STATE_PM.historyCapture?.form || null;
+    if (rememberedForm && !DOM_PM_isStructurallyEligibleForm(rememberedForm)) {
+      identity = true;
+      placement = true;
+    }
+
+    for (const record of records || []) {
+      if (!record || (record.type !== 'childList' && record.type !== 'attributes')) continue;
+      // Native MutationRecords always carry a target. Fail closed for a
+      // structurally incomplete delivery instead of treating unknown evidence
+      // as irrelevant.
+      if (!record.target) {
+        identity = true;
+        placement = true;
+        continue;
+      }
+      if (ownedAttributeRecords.has(record) || CORE_PM_consumeOwnedChildMutation(record)) continue;
+
+      if (record.type === 'attributes') {
+        const name = String(record.attributeName || '');
+        if (!['class', 'style', 'hidden', 'open', 'aria-hidden'].includes(name)) continue;
+        if (CORE_PM_isHarmlessOwnedTarget(record.target, root)) continue;
+        if (CORE_PM_isPlacementAuthority(record.target, root, form)) placement = true;
+        if (record.target === root && (!D.contains(root) || root.getAttribute?.(ATTR_CGXUI) !== UI_PM_WRAP)) {
+          identity = true;
+        }
+        if (record.target === form && !DOM_PM_isStructurallyEligibleForm(form)) identity = true;
+        continue;
+      }
+
+      for (const node of record.removedNodes || []) {
+        if (!node || (node.nodeType != null && node.nodeType !== 1)) continue;
+        if (node === root || node.contains?.(root) || CORE_PM_nodeMatchesOrCarries(node, UI_PM.selOwned(UI_PM_WRAP))) {
+          identity = true;
+          placement = true;
+        }
+        if (node === form || node.contains?.(form) || (
+          form && (record.target === form || form.contains?.(record.target)) &&
+          CORE_PM_nodeMatchesOrCarries(node, '#prompt-textarea, [data-composer-surface="true"]')
+        )) {
+          identity = true;
+          placement = true;
+        }
+        if (CORE_PM_nodeMatchesOrCarries(node, VIEW_PM.SEARCH_SEL) || node.matches?.('[role="dialog"]')) {
+          identity = true;
+          placement = true;
+        }
+      }
+
+      for (const node of record.addedNodes || []) {
+        if (!node || (node.nodeType != null && node.nodeType !== 1)) continue;
+        if ((!root || !D.contains(root)) && CORE_PM_nodeMatchesOrCarries(node, UI_PM.selOwned(UI_PM_WRAP))) {
+          identity = true;
+          placement = true;
+        }
+        const composerEvidence =
+          CORE_PM_nodeMatchesOrCarries(node, SEL_PM.HOST_FORM) ||
+          CORE_PM_nodeMatchesOrCarries(node, '#prompt-textarea, [data-composer-surface="true"]');
+        if (composerEvidence && (
+          !form || record.target === form || form.contains?.(record.target)
+        )) {
+          identity = true;
+          placement = true;
+        }
+        if (CORE_PM_nodeMatchesOrCarries(node, VIEW_PM.SEARCH_SEL) || node.matches?.('[role="dialog"]')) {
+          identity = true;
+          placement = true;
+        }
+      }
+
+      if (CORE_PM_isHarmlessOwnedTarget(record.target, root)) continue;
+      if (CORE_PM_isPlacementAuthority(record.target, root, form)) placement = true;
+    }
+
+    CORE_PM_expireOwnedMutationProvenance();
+    return { identity, placement };
+  }
+
+  function CORE_PM_scheduleSelfHeal(delayMs = 120, intent = null) {
+    const requested = intent || { identity: true, placement: true };
+    PM_SELF_HEAL_IDENTITY_DIRTY = PM_SELF_HEAL_IDENTITY_DIRTY || !!requested.identity;
+    PM_SELF_HEAL_PLACEMENT_DIRTY = PM_SELF_HEAL_PLACEMENT_DIRTY || !!requested.placement;
+    if (!PM_SELF_HEAL_IDENTITY_DIRTY && !PM_SELF_HEAL_PLACEMENT_DIRTY) return;
     if (PM_SELF_HEAL_TIMER) return;
     const wait = Math.max(0, Number(delayMs) || 0);
     PM_SELF_HEAL_TIMER = CLEAN_setTimeout(() => {
       PM_SELF_HEAL_TIMER = 0;
-      const hasRoot = !!UI_PM.getRoot();
-      const hasForm = !!DOM_getForm();
+      const identityDirty = PM_SELF_HEAL_IDENTITY_DIRTY;
+      const placementDirty = PM_SELF_HEAL_PLACEMENT_DIRTY;
+      PM_SELF_HEAL_IDENTITY_DIRTY = false;
+      PM_SELF_HEAL_PLACEMENT_DIRTY = false;
       const root = STATE_PM.ui.root || UI_PM.getRoot();
-      if (root) {
-        PM_DOCK_sync(root);
-        UI_PM_scheduleFloatingLayout(root);
-      }
-      if (STATE_PM.booted) TIME_PM.ensureHistoryCapture();
+      const hasRoot = !!(root && D.contains(root));
+      const formPass = {};
+      const form = identityDirty ? DOM_getForm(formPass) : null;
+      const hasForm = !!form;
 
       if (!STATE_PM.booted) {
         if (PM_FORCE_RECOVER || !PM_READY_EMITTED) {
@@ -6299,6 +6587,15 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         STATE_PM.booted = false;
         if (hasForm) CORE_PM_boot();
         else CORE_PM_scheduleBootRetry(260);
+        return;
+      }
+
+      if (identityDirty && root) {
+        PM_DOCK_sync(root);
+        TIME_PM.ensureHistoryCapture(form);
+      }
+      if (placementDirty && root) {
+        UI_PM_scheduleFloatingLayout(root);
       }
     }, wait);
   }
@@ -6308,12 +6605,16 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
 
     const start = () => {
       if (PM_SELF_HEAL_OBS) return;
-      PM_SELF_HEAL_OBS = new MutationObserver(() => { CORE_PM_scheduleSelfHeal(120); });
+      PM_SELF_HEAL_OBS = new MutationObserver((records) => {
+        const intent = CORE_PM_classifySelfHealRecords(records);
+        CORE_PM_scheduleSelfHeal(120, intent);
+      });
       try {
         PM_SELF_HEAL_OBS.observe(D.body || D.documentElement, {
           childList: true,
           subtree: true,
           attributes: true,
+          attributeOldValue: true,
           attributeFilter: ['class', 'style', 'hidden', 'open', 'aria-hidden'],
         });
       } catch {}
@@ -6345,7 +6646,6 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       UTIL_event.emit(EV_PM_READY_LEGACY_V1, detail);
     }
     PM_FORCE_RECOVER = false;
-    CORE_PM_scheduleSelfHeal(80);
   }
 
   /* ── Route invalidation ────────────────────────────────────────────────────
@@ -6541,17 +6841,21 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
       // re-runs layout → re-acquires the new form → re-targets the RO.
       let composerRo = null;
       let composerRoTarget = null;
-      const ensureComposerRo = () => {
+      const ensureComposerRo = (formHint = null) => {
         if (typeof ResizeObserver !== 'function') return;
-        const form = SAFE_try('UI_PM.composerRoForm', () => DOM_getForm(), null);
+        const form = DOM_PM_isStructurallyEligibleForm(formHint)
+          ? formHint
+          : (DOM_PM_isStructurallyEligibleForm(composerRoTarget)
+              ? composerRoTarget
+              : SAFE_try('UI_PM.composerRoForm', () => DOM_getForm(), null));
         if (form === composerRoTarget) return;
         try { composerRo?.disconnect?.(); } catch {}
         composerRo = null;
         composerRoTarget = form || null;
         if (!form) return;
         composerRo = new ResizeObserver(() => {
+          if (!DOM_PM_isStructurallyEligibleForm(composerRoTarget)) ensureComposerRo();
           onLayout();
-          W.requestAnimationFrame(ensureComposerRo);
         });
         try { composerRo.observe(form); } catch {}
       };
@@ -7345,6 +7649,9 @@ ${TOOLTIP} .cgxui-${SkID}--tip-title{
         SAFE_try('dispose.selfHealTimer', () => W.clearTimeout(PM_SELF_HEAL_TIMER), null);
         PM_SELF_HEAL_TIMER = 0;
       }
+      PM_SELF_HEAL_IDENTITY_DIRTY = false;
+      PM_SELF_HEAL_PLACEMENT_DIRTY = false;
+      CORE_PM_expireOwnedMutationProvenance();
       if (PM_LAYOUT_RAF) {
         SAFE_try('dispose.layoutRaf', () => W.cancelAnimationFrame(PM_LAYOUT_RAF), null);
         PM_LAYOUT_RAF = 0;
