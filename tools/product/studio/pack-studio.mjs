@@ -154,6 +154,7 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: governed v3 package-member gzip codec and bounded
   // physical/logical verification. Must precede the package writer.
   "ingestion/saved-chat-package-codec.tauri.js",
+  "ingestion/saved-chat-portable-zip.studio.js",
   // Desktop-only: saved-chat package v1 projector/writer. Private Phase B
   // API only; no UI, import/recovery, sync transport, or CAS implementation.
   "ingestion/saved-chat-package-v1.tauri.js",
@@ -1366,6 +1367,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "platform/html-sanitizer.js",
   "renderer/chat-renderer.studio.js",
   "ingestion/saved-chat-package-codec.tauri.js",
+  "ingestion/saved-chat-portable-zip.studio.js",
   "ingestion/saved-chat-package-v1.tauri.js",
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",

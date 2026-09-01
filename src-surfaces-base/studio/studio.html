@@ -651,6 +651,9 @@
   <!-- Desktop-only: governed v3 package-member gzip codec and bounded
        physical/logical verification. Must load before the package writer. -->
   <script src="./ingestion/saved-chat-package-codec.tauri.js"></script>
+  <!-- Desktop-only: M08 narrow portable ZIP codec. Owns bounded methods 0/8
+       container mechanics only; package verification/import remain below. -->
+  <script src="./ingestion/saved-chat-portable-zip.studio.js"></script>
   <!-- Desktop-only: saved-chat package v1 projector/writer. Private API
        only; reads through H2O.Studio.store adapters and writes deterministic
        projection files only when explicitly invoked. No UI, import, sync, or
@@ -755,11 +758,12 @@
        adapters. Never overwrites existing rows; restore/relink deferred; mounts
        a sibling card beneath Archive Health. No Chrome authority. -->
   <script src="./ingestion/saved-chat-archive-importer.studio.js"></script>
-  <!-- Desktop-only: saved-chat archive export / share action (Phase J.2).
+  <!-- Desktop-only: saved-chat archive export / share action (Phase J.2/M08).
        Two-step, verification-gated, NO-OVERWRITE: dry-run a .h2ochat package
        (reuses the read-only inspector), then explicitly export it by manifest-
-       driven folder copy to $HOME/H2O Studio Exports/. No zip, picker, Chrome
-       authority, sync/WebDAV/cloud, restore/relink, or full-bundle export. -->
+       driven folder copy or portable ZIP to $HOME/H2O Studio Exports/. No
+       picker, Chrome authority, sync/WebDAV/cloud, restore/relink, or
+       full-bundle export. -->
   <script src="./ingestion/saved-chat-archive-exporter.studio.js"></script>
   <!-- Desktop-only: saved-chat archive restore-original-ids action (Phase K.2).
        Verification-gated, absent-only, no-overwrite restore of original chatId

@@ -97,6 +97,17 @@
     var ins = H2O.Studio && H2O.Studio.archiveInspector;
     return (ins && typeof ins.inspectPackage === 'function') ? ins : null;
   }
+  function getPackageByteValidator() {
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
+    return typeof ingestion.validateSavedChatPackageBytesV1 === 'function'
+      ? ingestion.validateSavedChatPackageBytesV1 : null;
+  }
+  function getPortableZip() {
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
+    var portable = ingestion.savedChatPortableZip;
+    return portable && portable.__installed === true &&
+      typeof portable.readPortablePackageZip === 'function' ? portable : null;
+  }
   function getStores() { return (H2O.Studio && H2O.Studio.store) || {}; }
   function getSnapshotsStore() {
     var s = getStores().snapshots;
@@ -156,6 +167,17 @@
       var out = ''; for (var i = 0; i < arr.length; i += 1) out += String.fromCharCode(arr[i]);
       return out;
     } catch (_) { return ''; }
+  }
+
+  function bytesFor(value) {
+    if (value instanceof Uint8Array) return value;
+    if (value && value.data && (Array.isArray(value.data) || value.data instanceof Uint8Array)) value = value.data;
+    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (value && typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    }
+    if (Array.isArray(value)) return Uint8Array.from(value);
+    throw new Error('package byte input is invalid');
   }
 
   /* Read a package-relative text file via the existing bounded archive fs scope
@@ -220,6 +242,26 @@
       return readPackageTextFile(packagePath, 'snapshot.json')
         .then(function (t) { return safeParseJson(String(t || '').slice(0, SNAPSHOT_READ_CAP)); }, function () { return null; });
     });
+  }
+
+  async function readPackageSnapshotJsonFromBytes(manifestInput, storedInput) {
+    var manifest = safeObject(manifestInput);
+    var storedBytes = bytesFor(storedInput);
+    var descriptor = safeObject(safeObject(manifest.files).snapshot);
+    if (manifest.schemaVersion === 3) {
+      var codec = savedChatPackageCodecV3();
+      if (!codec) throw new Error('governed saved-chat package codec unavailable');
+      var verified = await codec.verifyPackageMemberBytes({
+        storedBytes: storedBytes,
+        descriptor: descriptor,
+        expectedPath: 'snapshot.json',
+        physicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+        logicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+      });
+      return safeParseJson(decodeToText(safeObject(verified).logicalBytes));
+    }
+    if (storedBytes.byteLength > SNAPSHOT_READ_CAP) throw new Error('snapshot.json exceeds importer read cap');
+    return safeParseJson(decodeToText(storedBytes));
   }
 
   function firstTypedPartBody(parts, type, field) {
@@ -325,63 +367,147 @@
     };
   }
 
-  /* ── Step 1: NON-MUTATING dry run ───────────────────────────────────────────
-   * Reuses the read-only inspector for verification, then reads existing store
-   * state (snapshots.get by the package's snapshotId; chats.get / listByChat by
-   * the package's chatId) to decide. Performs NO write of any kind. */
+  async function loadArchiveCandidate(packagePath) {
+    var inspection = safeObject(await getInspector().inspectPackage({ packagePath: packagePath }));
+    var snapshotJson = await readPackageSnapshotJson(packagePath);
+    return {
+      sourceKind: 'archive-package',
+      sourceName: packageDirNameForPath(packagePath),
+      packagePath: packagePath,
+      packageDirName: packageDirNameForPath(packagePath),
+      inspection: inspection,
+      snapshotJson: snapshotJson,
+      identity: packageIdentity(inspection, snapshotJson),
+    };
+  }
+
+  function portableSourceName(value) {
+    var name = cleanString(value) || 'portable-saved-chat.h2ochat.zip';
+    if (!/^[A-Za-z0-9._ -]+\.h2ochat\.zip$/.test(name) || name.indexOf('..') >= 0 || /[\\/]/.test(name)) {
+      throw new Error('portable ZIP sourceName must be a safe .h2ochat.zip leaf');
+    }
+    return name;
+  }
+
+  async function loadPortableCandidate(zipBytes, sourceName) {
+    var portable = getPortableZip();
+    var validator = getPackageByteValidator();
+    if (!portable || !validator) throw new Error('portable ZIP or package-byte verification authority unavailable');
+    var contained = await portable.readPortablePackageZip(zipBytes);
+    var diag = safeObject(await validator({
+      packageDirName: contained.packageDirName,
+      entries: contained.entries,
+      includeRendererChecks: true,
+    }));
+    var manifestEntry = contained.entries.filter(function (entry) { return entry.name === 'manifest.json'; })[0];
+    var snapshotEntry = contained.entries.filter(function (entry) { return entry.name === 'snapshot.json'; })[0];
+    var manifest = safeParseJson(decodeToText(manifestEntry && manifestEntry.bytes));
+    var snapshotJson = manifest && snapshotEntry
+      ? await readPackageSnapshotJsonFromBytes(manifest, snapshotEntry.bytes) : null;
+    var inspectStatus = getInspector().mapInspectStatus(diag, null);
+    var hashChecks = safeObject(diag.hashChecks);
+    var classification = cleanString(diag.nameClassification) || 'unclassified';
+    var inspection = {
+      status: inspectStatus,
+      identity: {
+        chatId: cleanString(diag.chatId) || cleanString(snapshotJson && snapshotJson.chatId),
+        snapshotId: cleanString(diag.snapshotId) || cleanString(snapshotJson && snapshotJson.snapshotId),
+        title: cleanString(snapshotJson && snapshotJson.title),
+        contentHash: cleanString(hashChecks.expectedContentHash),
+        manifestClaimedContentHash: cleanString(manifest && manifest.contentHash),
+        contentHashVerified: hashChecks.contentHashOk === true,
+        schemaVersion: diag.schemaVersion,
+        payloadVersion: diag.payloadVersion,
+        nameClassification: classification,
+        packageKind: classification === 'generation' ? 'generation' :
+          (classification === 'legacy' ? 'legacy' : 'unusable'),
+        messageCount: asArray(snapshotJson && snapshotJson.messages).length,
+      },
+      blockers: asArray(diag.blockers),
+    };
+    return {
+      sourceKind: 'portable-zip',
+      sourceName: portableSourceName(sourceName),
+      packagePath: '',
+      packageDirName: contained.packageDirName,
+      inspection: inspection,
+      snapshotJson: snapshotJson,
+      identity: packageIdentity(inspection, snapshotJson),
+    };
+  }
+
+  /* Shared non-mutating decision core. Archive paths and verified ZIP byte
+   * sources both arrive here only after their respective verification adapters. */
+  function dryRunCandidate(candidate) {
+    var source = safeObject(candidate);
+    var packagePath = cleanString(source.packagePath);
+    var inspection = safeObject(source.inspection);
+    var identity = safeObject(source.identity);
+    var inspectStatus = cleanString(inspection.status);
+    var early = nonVerifiedDecision(inspectStatus);
+    if (early) {
+      var refused = dryRunResult(packagePath, early, identity, null, 'inspector status: ' + inspectStatus, inspectStatus);
+      refused.sourceKind = cleanString(source.sourceKind);
+      refused.sourceName = cleanString(source.sourceName);
+      return Promise.resolve(refused);
+    }
+    var snapStore = getSnapshotsStore();
+    var chatStore = getChatsStore();
+    return Promise.resolve(snapStore.get(identity.snapshotId)).catch(function () { return null; })
+      .then(function (existingCombined) {
+        var existingSnap = safeObject(existingCombined).snapshot;
+        if (existingSnap && snapshotRowId(existingSnap)) {
+          var storeDigest = cleanString(existingSnap.digest) || cleanString(safeObject(existingSnap.meta).digest);
+          var digestMatches = !!identity.digest && !!storeDigest && storeDigest === identity.digest;
+          var sameContent = digestMatches || !identity.digest || !storeDigest;
+          var store = { snapshotExists: true, chatExists: true, digestMatches: digestMatches, existingSnapshotId: snapshotRowId(existingSnap), existingChatId: cleanString(existingSnap.chatId) };
+          var existing = dryRunResult(packagePath, sameContent ? 'already-imported' : 'conflict-snapshot-id', identity, store,
+            sameContent ? 'snapshotId already present in store' : 'snapshotId present with a different content digest; will not overwrite', inspectStatus);
+          existing.sourceKind = cleanString(source.sourceKind);
+          existing.sourceName = cleanString(source.sourceName);
+          return existing;
+        }
+        return Promise.all([
+          Promise.resolve(chatStore.get(identity.chatId)).catch(function () { return null; }),
+          Promise.resolve(snapStore.listByChat(identity.chatId)).catch(function () { return []; }),
+        ]).then(function (pair) {
+          var existingChat = pair[0];
+          var snapsForChat = asArray(pair[1]);
+          var chatExists = !!(existingChat && (cleanString(safeObject(existingChat).id) || cleanString(safeObject(existingChat).chatId))) || snapsForChat.length > 0;
+          var store = { snapshotExists: false, chatExists: chatExists, digestMatches: false, existingSnapshotId: '', existingChatId: chatExists ? identity.chatId : '' };
+          var result = dryRunResult(packagePath, chatExists ? 'conflict-chat-id' : 'import-ready', identity, store,
+            chatExists ? 'chatId already present; will not modify the existing chat' : 'verified and not present in store', inspectStatus);
+          result.sourceKind = cleanString(source.sourceKind);
+          result.sourceName = cleanString(source.sourceName);
+          return result;
+        });
+      });
+  }
+
+  /* ── Step 1: NON-MUTATING dry run ─────────────────────────────────────────── */
   function dryRunImportPackage(options) {
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     if (!packagePath) return Promise.resolve(dryRunResult(null, 'rejected', null, null, 'no package path', ''));
     if (!isDesktopCapable()) return Promise.resolve(dryRunResult(packagePath, 'rejected', null, null, 'desktop-only', ''));
     if (!packagePathIsScoped(packagePath)) return Promise.resolve(dryRunResult(packagePath, 'rejected', null, null, 'path-not-scoped', ''));
+    return loadArchiveCandidate(packagePath).then(dryRunCandidate).catch(function (err) {
+      return dryRunResult(packagePath, 'rejected', null, null, String((err && err.message) || err || 'dry-run threw'), '');
+    });
+  }
 
-    var inspector = getInspector();
-    var snapStore = getSnapshotsStore();
-    var chatStore = getChatsStore();
-    var inspection = null;
-    var snapshotJson = null;
-
-    return Promise.resolve()
-      .then(function () { return inspector.inspectPackage({ packagePath: packagePath }); })
-      .then(function (res) { inspection = safeObject(res); })
-      .then(function () { return readPackageSnapshotJson(packagePath); })
-      .then(function (json) { snapshotJson = json; })
-      .then(function () {
-        var inspectStatus = cleanString(inspection.status);
-        var identity = packageIdentity(inspection, snapshotJson);
-        var early = nonVerifiedDecision(inspectStatus);
-        if (early) return dryRunResult(packagePath, early, identity, null, 'inspector status: ' + inspectStatus, inspectStatus);
-        /* verified — inspect existing store state (reads only) */
-        return Promise.resolve(snapStore.get(identity.snapshotId)).catch(function () { return null; })
-          .then(function (existingCombined) {
-            var existingSnap = safeObject(existingCombined).snapshot;
-            if (existingSnap && snapshotRowId(existingSnap)) {
-              var storeDigest = cleanString(existingSnap.digest) || cleanString(safeObject(existingSnap.meta).digest);
-              var digestMatches = !!identity.digest && !!storeDigest && storeDigest === identity.digest;
-              /* unknown digest on either side -> trust the strong snapshotId key (no-op, never a write) */
-              var sameContent = digestMatches || !identity.digest || !storeDigest;
-              var store = { snapshotExists: true, chatExists: true, digestMatches: digestMatches, existingSnapshotId: snapshotRowId(existingSnap), existingChatId: cleanString(existingSnap.chatId) };
-              if (sameContent) return dryRunResult(packagePath, 'already-imported', identity, store, 'snapshotId already present in store', inspectStatus);
-              return dryRunResult(packagePath, 'conflict-snapshot-id', identity, store, 'snapshotId present with a different content digest; will not overwrite', inspectStatus);
-            }
-            /* snapshot absent — is the chat already present? */
-            return Promise.all([
-              Promise.resolve(chatStore.get(identity.chatId)).catch(function () { return null; }),
-              Promise.resolve(snapStore.listByChat(identity.chatId)).catch(function () { return []; }),
-            ]).then(function (pair) {
-              var existingChat = pair[0];
-              var snapsForChat = asArray(pair[1]);
-              var chatExists = !!(existingChat && cleanString(safeObject(existingChat).id)) || snapsForChat.length > 0;
-              var store = { snapshotExists: false, chatExists: chatExists, digestMatches: false, existingSnapshotId: '', existingChatId: chatExists ? identity.chatId : '' };
-              if (chatExists) return dryRunResult(packagePath, 'conflict-chat-id', identity, store, 'chatId already present; will not modify the existing chat. Import-as-new under a fresh recovered chat is deferred.', inspectStatus);
-              return dryRunResult(packagePath, 'import-ready', identity, store, 'verified and not present in store', inspectStatus);
-            });
-          });
-      })
-      .catch(function (err) {
-        return dryRunResult(packagePath, 'rejected', null, null, String((err && err.message) || err || 'dry-run threw'), '');
-      });
+  function dryRunImportZip(options) {
+    var opts = safeObject(options);
+    if (!isDesktopCapable() || !getPortableZip() || !getPackageByteValidator()) {
+      return Promise.resolve(dryRunResult(null, 'rejected', null, null, 'desktop-only or portable ZIP unavailable', ''));
+    }
+    return loadPortableCandidate(opts.zipBytes, opts.sourceName).then(dryRunCandidate).catch(function (err) {
+      var refused = dryRunResult(null, 'rejected', null, null,
+        cleanString(err && err.code) || String((err && err.message) || err || 'ZIP dry-run threw'), '');
+      refused.sourceKind = 'portable-zip';
+      refused.sourceName = cleanString(opts.sourceName);
+      return refused;
+    });
   }
 
   /* Fresh, collision-checked recovered chat id. NEVER derived from the package's
@@ -418,115 +544,145 @@
     };
   }
 
-  /* ── Step 2: EXPLICIT, verification-gated import ─────────────────────────────
-   * Allowed only when the dry-run is import-ready (writes a new recovered chat +
-   * snapshot) or already-imported (a NO-OP). Default mode import-as-new never
-   * reuses the package's original ids (no overwrite). restore/relink deferred. */
+  function importCandidate(candidate, dry, mode) {
+    var source = safeObject(candidate);
+    var packagePath = cleanString(source.packagePath);
+    if (mode === 'restore' || mode === 'relink') return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'restore-relink-deferred'));
+    if (mode !== DEFAULT_MODE) return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'unsupported-mode: ' + mode));
+    var snapStore = getSnapshotsStore();
+    var chatStore = getChatsStore();
+    return Promise.resolve(dry).then(function (dryResult) {
+      var decision = cleanString(dryResult.decision);
+      /* documented safe no-op: the snapshot is already in the store. */
+      if (decision === 'already-imported') {
+        return importResult(packagePath, 'already-imported', decision, {
+          newChatId: '', newSnapshotId: '',
+          originalChatId: dryResult.identity.chatId, originalSnapshotId: dryResult.identity.snapshotId,
+        }, 'snapshot already present in store; no write performed');
+      }
+      /* hard gate: only import-ready proceeds to a write. */
+      if (decision !== 'import-ready') {
+        var status = (decision === 'conflict-chat-id' || decision === 'conflict-snapshot-id') ? 'conflict' : 'rejected';
+        return importResult(packagePath, status, decision, null, dryResult.reason || ('not import-ready: ' + decision));
+      }
+      var identity = safeObject(source.identity);
+      var snapshotJson = source.snapshotJson;
+      var turns = buildTurnsFromPackageSnapshot(snapshotJson);
+      if (!turns.length) {
+        /* no partial / empty import */
+        return importResult(packagePath, 'rejected', decision, null, 'no turns to import (empty payload; refusing partial import)');
+      }
+      var title = cleanString(identity.title) || cleanString(safeObject(snapshotJson).title) || 'Recovered chat';
+      var recoveredTitle = RECOVERED_TITLE_PREFIX + title;
+      var provenance = {
+        recoveredFromPackage: true,
+        source: source.sourceKind === 'portable-zip' ? 'h2ochat-zip-recovery' : 'h2ochat-package-recovery',
+        importer: source.sourceKind === 'portable-zip' ? 'archive-importer-m08' : 'archive-importer-h4',
+        mode: DEFAULT_MODE,
+        originalChatId: identity.chatId,
+        originalSnapshotId: identity.snapshotId,
+        contentHash: identity.contentHash,
+        digest: identity.digest,
+        packageDirName: cleanString(source.packageDirName),
+        originalCapturedAt: identity.capturedAt,
+        recoveredAt: new Date().toISOString(),
+      };
+      if (source.sourceKind === 'archive-package') provenance.packagePath = packagePath;
+      if (source.sourceKind === 'portable-zip') provenance.portableZipName = cleanString(source.sourceName);
+
+      return ensureFreshRecoveredChatId(chatStore).then(function (freshChatId) {
+        if (!freshChatId) return importResult(packagePath, 'rejected', decision, null, 'could not allocate a fresh recovered chat id');
+        /* hard no-overwrite assertion: never reuse the package's original ids. */
+        if (freshChatId === identity.chatId || freshChatId === identity.snapshotId) {
+          return importResult(packagePath, 'rejected', decision, null, 'refusing to reuse original id');
+        }
+
+        /* (a) recovered chat — fresh id => INSERT (never UPDATE). */
+        var chatPatch = {
+          chatId: freshChatId,
+          title: recoveredTitle,
+          isSaved: true,
+          isLinked: false,
+          meta: { recovered: provenance },
+        };
+        return Promise.resolve(chatStore.upsert(chatPatch)).then(function () {
+          /* (b) recovered snapshot — NO snapshotId in the patch => the store
+           * generates a fresh id => INSERT (never an update). The
+           * overwrite-by-id store primitive is intentionally never used. */
+          var snapPatch = {
+            chatId: freshChatId,
+            title: recoveredTitle,
+            messageCount: turns.length,
+            turns: turns,
+            meta: { recovered: provenance },
+          };
+          return Promise.resolve(snapStore.create(snapPatch)).then(function (combined) {
+            var newSnapshotId = snapshotRowId(safeObject(combined).snapshot);
+            return importResult(packagePath, 'imported', decision, {
+              newChatId: freshChatId,
+              newSnapshotId: newSnapshotId,
+              originalChatId: identity.chatId,
+              originalSnapshotId: identity.snapshotId,
+              messageCount: turns.length,
+            }, 'recovered as a new chat + snapshot');
+          });
+        });
+      });
+    }).catch(function (err) {
+      return importResult(packagePath, 'rejected', '', null, String((err && err.message) || err || 'import threw'));
+    });
+  }
+
+  /* ── Step 2: EXPLICIT, verification-gated import ───────────────────────────── */
   function importVerifiedPackage(options) {
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     var mode = cleanString(opts.mode) || DEFAULT_MODE;
     if (!packagePath) return Promise.resolve(importResult(null, 'rejected', '', null, 'no package path'));
     if (!isDesktopCapable()) return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'desktop-only'));
-    /* restore / relink onto the package's original ids is deferred (too risky for H.4). */
-    if (mode === 'restore' || mode === 'relink') {
-      return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'restore-relink-deferred'));
-    }
-    if (mode !== DEFAULT_MODE) {
-      return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'unsupported-mode: ' + mode));
-    }
-
-    var snapStore = getSnapshotsStore();
-    var chatStore = getChatsStore();
-
+    if (!packagePathIsScoped(packagePath)) return Promise.resolve(importResult(packagePath, 'rejected', '', null, 'path-not-scoped'));
     return dryRunImportPackage({ packagePath: packagePath }).then(function (dry) {
-      var decision = cleanString(dry.decision);
-      /* documented safe no-op: the snapshot is already in the store. */
-      if (decision === 'already-imported') {
-        return importResult(packagePath, 'already-imported', decision, {
-          newChatId: '', newSnapshotId: '',
-          originalChatId: dry.identity.chatId, originalSnapshotId: dry.identity.snapshotId,
-        }, 'snapshot already present in store; no write performed');
+      if (cleanString(dry.decision) !== 'import-ready' && cleanString(dry.decision) !== 'already-imported') {
+        return importCandidate({ packagePath: packagePath }, dry, mode);
       }
-      /* hard gate: only import-ready proceeds to a write. */
-      if (decision !== 'import-ready') {
-        var status = (decision === 'conflict-chat-id' || decision === 'conflict-snapshot-id') ? 'conflict' : 'rejected';
-        return importResult(packagePath, status, decision, null, dry.reason || ('not import-ready: ' + decision));
-      }
-
-      var identity = safeObject(dry.identity);
-      var snapshotJson = null;
-      /* re-verify at write time (double gate) + read the recovery payload. */
-      return Promise.resolve(getInspector().inspectPackage({ packagePath: packagePath })).then(function (reInspect) {
-        if (cleanString(safeObject(reInspect).status) !== 'verified') {
-          return importResult(packagePath, 'rejected', decision, null, 'package no longer verified at write time');
+      /* Re-open and re-verify at the write gate; both adapters use this same
+       * candidate-to-mutation core. */
+      return loadArchiveCandidate(packagePath).then(function (candidate) {
+        if (cleanString(candidate.inspection && candidate.inspection.status) !== 'verified') {
+          return importResult(packagePath, 'rejected', cleanString(dry.decision), null, 'package no longer verified at write time');
         }
-        return readPackageSnapshotJson(packagePath).then(function (json) {
-          snapshotJson = json;
-          var turns = buildTurnsFromPackageSnapshot(snapshotJson);
-          if (!turns.length) {
-            /* no partial / empty import */
-            return importResult(packagePath, 'rejected', decision, null, 'no turns to import (empty payload; refusing partial import)');
-          }
-          var title = cleanString(identity.title) || cleanString(safeObject(snapshotJson).title) || 'Recovered chat';
-          var recoveredTitle = RECOVERED_TITLE_PREFIX + title;
-          var provenance = {
-            recoveredFromPackage: true,
-            source: 'h2ochat-package-recovery',
-            importer: 'archive-importer-h4',
-            mode: DEFAULT_MODE,
-            originalChatId: identity.chatId,
-            originalSnapshotId: identity.snapshotId,
-            contentHash: identity.contentHash,
-            digest: identity.digest,
-            packagePath: packagePath,
-            packageDirName: packageDirNameForPath(packagePath),
-            originalCapturedAt: identity.capturedAt,
-            recoveredAt: new Date().toISOString(),
-          };
-
-          return ensureFreshRecoveredChatId(chatStore).then(function (freshChatId) {
-            if (!freshChatId) return importResult(packagePath, 'rejected', decision, null, 'could not allocate a fresh recovered chat id');
-            /* hard no-overwrite assertion: never reuse the package's original ids. */
-            if (freshChatId === identity.chatId || freshChatId === identity.snapshotId) {
-              return importResult(packagePath, 'rejected', decision, null, 'refusing to reuse original id');
-            }
-
-            /* (a) recovered chat — fresh id => INSERT (never UPDATE). */
-            var chatPatch = {
-              chatId: freshChatId,
-              title: recoveredTitle,
-              isSaved: true,
-              isLinked: false,
-              meta: { recovered: provenance },
-            };
-            return Promise.resolve(chatStore.upsert(chatPatch)).then(function () {
-              /* (b) recovered snapshot — NO snapshotId in the patch => the store
-               * generates a fresh id => INSERT (never an update). The
-               * overwrite-by-id store primitive is intentionally never used. */
-              var snapPatch = {
-                chatId: freshChatId,
-                title: recoveredTitle,
-                messageCount: turns.length,
-                turns: turns,
-                meta: { recovered: provenance },
-              };
-              return Promise.resolve(snapStore.create(snapPatch)).then(function (combined) {
-                var newSnapshotId = snapshotRowId(safeObject(combined).snapshot);
-                return importResult(packagePath, 'imported', decision, {
-                  newChatId: freshChatId,
-                  newSnapshotId: newSnapshotId,
-                  originalChatId: identity.chatId,
-                  originalSnapshotId: identity.snapshotId,
-                  messageCount: turns.length,
-                }, 'recovered as a new chat + snapshot');
-              });
-            });
-          });
+        return dryRunCandidate(candidate).then(function (writeGateDryRun) {
+          return importCandidate(candidate, writeGateDryRun, mode);
         });
       });
     }).catch(function (err) {
       return importResult(packagePath, 'rejected', '', null, String((err && err.message) || err || 'import threw'));
+    });
+  }
+
+  function importVerifiedZip(options) {
+    var opts = safeObject(options);
+    var mode = cleanString(opts.mode) || DEFAULT_MODE;
+    if (!isDesktopCapable() || !getPortableZip() || !getPackageByteValidator()) {
+      return Promise.resolve(importResult(null, 'rejected', '', null, 'desktop-only or portable ZIP unavailable'));
+    }
+    return dryRunImportZip(opts).then(function (dry) {
+      if (cleanString(dry.decision) !== 'import-ready' && cleanString(dry.decision) !== 'already-imported') {
+        return importCandidate({}, dry, mode);
+      }
+      /* Re-decode and re-run the shared package verifier immediately before
+       * mutation, exactly mirroring the archive-path double gate. */
+      return loadPortableCandidate(opts.zipBytes, opts.sourceName).then(function (candidate) {
+        if (cleanString(candidate.inspection && candidate.inspection.status) !== 'verified') {
+          return importResult(null, 'rejected', cleanString(dry.decision), null, 'ZIP package no longer verified at write time');
+        }
+        return dryRunCandidate(candidate).then(function (writeGateDryRun) {
+          return importCandidate(candidate, writeGateDryRun, mode);
+        });
+      });
+    }).catch(function (err) {
+      return importResult(null, 'rejected', '', null,
+        cleanString(err && err.code) || String((err && err.message) || err || 'ZIP import threw'));
     });
   }
 
@@ -757,6 +913,8 @@
     isDesktopCapable: isDesktopCapable,
     dryRunImportPackage: dryRunImportPackage,
     importVerifiedPackage: importVerifiedPackage,
+    dryRunImportZip: dryRunImportZip,
+    importVerifiedZip: importVerifiedZip,
     buildTurnsFromPackageSnapshot: buildTurnsFromPackageSnapshot,
     renderArchiveImporterCard: renderArchiveImporterCard,
     mountArchiveImporterCard: mountArchiveImporterCard,
