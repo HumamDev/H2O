@@ -58,8 +58,8 @@ const RELINK_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-relink
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
 // Files that legitimately reference .h2ochat: the WRITER, the read-only DIAGNOSTICS,
 // the read-only INSPECTOR (H.2), the verification-gated IMPORTER (H.4), the bounded
-// Desktop EXPORTER (J.2), the verification-gated RESTORE module (K.2), and the
-// planned verification-gated RELINK module (K.4).
+// Desktop EXPORTER (J.2), the M08 portable ZIP wrapper codec, the verification-gated
+// RESTORE module (K.2), and the planned verification-gated RELINK module (K.4).
 // No other module may reference it.
 const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js',
@@ -72,6 +72,7 @@ const ALLOWED_H2OCHAT = new Set([
   'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js',
   'src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js',
+  'src-surfaces-base/studio/ingestion/saved-chat-portable-zip.studio.js',
   RESTORE_REL,
   RELINK_REL,
 ]);
@@ -233,7 +234,7 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/impo
    * sanctioned owner count is pinned so it cannot grow silently. */
   assert.equal(ALLOWED_H2OCHAT.has('src-surfaces-base/studio/ingestion/saved-chat-archive-materializer.tauri.js'), false);
   assert.equal(ALLOWED_H2OCHAT.has('src-surfaces-base/studio/ingestion/some-unrelated-module.js'), false);
-  assert.equal(ALLOWED_H2OCHAT.size, 8, 'sanctioned .h2ochat owner count changed');
+  assert.equal(ALLOWED_H2OCHAT.size, 9, 'sanctioned .h2ochat owner count changed');
   // Legacy placeholder names must not appear anywhere.
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
@@ -384,15 +385,23 @@ check('[H.4] importer reuses the read-only inspector for verification (archiveIn
   assert.ok(importerCode.includes('inspectPackage'), 'importer must verify via inspectPackage');
 });
 
-check('[H.4] dry-run is NON-MUTATING (no create/upsert/SQL/fs-write inside dryRunImportPackage)', () => {
-  const body = (importerCode.split(/function\s+dryRunImportPackage\s*\(/)[1] || '')
+check('[H.4] dry-run is NON-MUTATING (shared decision core and package/ZIP adapters perform no writes)', () => {
+  const sharedBody = (importerCode.split(/function\s+dryRunCandidate\s*\(/)[1] || '')
+    .split(/function\s+dryRunImportPackage\s*\(/)[0] || '';
+  const adapterBody = (importerCode.split(/function\s+dryRunImportPackage\s*\(/)[1] || '')
     .split(/function\s+generateRecoveredChatId\s*\(/)[0] || '';
-  assert.ok(body.length > 0, 'could not isolate dryRunImportPackage body');
+  assert.ok(sharedBody.length > 0, 'could not isolate shared dry-run decision core');
+  assert.ok(adapterBody.length > 0, 'could not isolate dry-run adapters');
   for (const banned of ['.create(', '.upsert(', 'plugin:sql|', 'plugin:fs|write', 'INSERT INTO', 'UPDATE ']) {
-    assert.ok(!body.includes(banned), 'dry-run must not write (found: ' + banned + ')');
+    assert.ok(!sharedBody.includes(banned) && !adapterBody.includes(banned),
+      'dry-run must not write (found: ' + banned + ')');
   }
-  // dry-run reads existing state only
-  assert.ok(/\.get\(|\.listByChat\(/.test(body), 'dry-run must read store state (get / listByChat)');
+  assert.ok(adapterBody.includes('loadArchiveCandidate(packagePath).then(dryRunCandidate)'),
+    'package dry-run must delegate to the shared non-mutating decision core');
+  assert.ok(adapterBody.includes('loadPortableCandidate(opts.zipBytes, opts.sourceName).then(dryRunCandidate)'),
+    'portable ZIP dry-run must delegate to the shared non-mutating decision core');
+  // The shared decision core reads existing state only.
+  assert.ok(/\.get\(|\.listByChat\(/.test(sharedBody), 'dry-run must read store state (get / listByChat)');
 });
 
 check('[H.4] import is verification-gated (requires import-ready, re-verifies, refuses partial/empty)', () => {

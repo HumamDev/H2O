@@ -27,6 +27,7 @@
   var PACKAGE_ROOT = 'archive/packages';
   var EXPORT_ROOT = 'H2O Studio Exports';
   var PACKAGE_SUFFIX = '.h2ochat';
+  var ZIP_SUFFIX = '.h2ochat.zip';
   var TMP_SUFFIX_PREFIX = '.tmp-';
   var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
 
@@ -73,6 +74,20 @@
     var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
     var renderers = ingestion.savedChatPackageRenderers;
     return renderers && typeof renderers.renderV3ExportCompanions === 'function' ? renderers : null;
+  }
+
+  function getPortableZip() {
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
+    var portable = ingestion.savedChatPortableZip;
+    return portable && portable.__installed === true &&
+      typeof portable.buildPortableZip === 'function' &&
+      typeof portable.readPortablePackageZip === 'function' ? portable : null;
+  }
+
+  function getPackageByteValidator() {
+    var ingestion = (H2O.Studio && H2O.Studio.ingestion) || {};
+    return typeof ingestion.validateSavedChatPackageBytesV1 === 'function'
+      ? ingestion.validateSavedChatPackageBytesV1 : null;
   }
 
   function getInvoke() {
@@ -229,6 +244,21 @@
     name = name.replace(/\.h2ochat$/i, PACKAGE_SUFFIX);
     if (!name || name === PACKAGE_SUFFIX || name.indexOf('..') >= 0 || /[\/\\]/.test(name)) {
       throw new Error('invalid exportName');
+    }
+    return name;
+  }
+
+  function sanitizeZipExportName(rawName, fallbackPackageName) {
+    var fallback = sanitizeExportName('', fallbackPackageName) + '.zip';
+    var name = cleanString(rawName) || fallback;
+    name = name.replace(/[\\\/]+/g, '-').replace(/^\.+/, '').replace(/\s+/g, ' ').trim();
+    name = name.replace(/[^A-Za-z0-9._ -]/g, '-');
+    if (!/\.h2ochat\.zip$/i.test(name)) {
+      name = name.replace(/\.h2ochat$/i, '') + ZIP_SUFFIX;
+    }
+    name = name.replace(/\.h2ochat\.zip$/i, ZIP_SUFFIX);
+    if (!name || name === ZIP_SUFFIX || name.indexOf('..') >= 0 || /[\/\\]/.test(name)) {
+      throw new Error('invalid ZIP exportName');
     }
     return name;
   }
@@ -411,6 +441,20 @@
     };
   }
 
+  function resolveZipExportDestination(options) {
+    var opts = safeObject(options);
+    var packagePath = cleanString(opts.packagePath);
+    var packageName = packageDirNameForPath(packagePath);
+    var exportName = sanitizeZipExportName(opts.exportName, packageName);
+    return {
+      exportRoot: EXPORT_ROOT,
+      exportName: exportName,
+      destinationPath: joinPath(EXPORT_ROOT, exportName),
+      tempPath: joinPath(EXPORT_ROOT, exportName + TMP_SUFFIX_PREFIX + Date.now().toString(36)),
+      packageDirName: packageName,
+    };
+  }
+
   async function inspectVerifiedPackage(packagePath) {
     if (!isDesktopCapable()) return { status: 'rejected', reason: 'desktop-only' };
     if (!packagePath || !packagePathIsScoped(packagePath)) return { status: 'rejected', reason: 'path-not-scoped' };
@@ -483,7 +527,16 @@
     };
   }
 
-  async function writeV3DerivedExportCompanions(manifest, copied, tempPath) {
+  async function readDeclaredFile(packagePath, desc) {
+    return {
+      relativePath: desc.path,
+      bytes: await fsReadFile(joinPath(packagePath, desc.path), appLocalOptions()),
+      expectedSha: desc.sha256,
+      expectedByteLength: desc.byteLength,
+    };
+  }
+
+  async function buildV3DerivedExportCompanions(manifest, copied) {
     var schemaVersion = isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : Number(manifest.schemaVersion);
     if (schemaVersion !== 3) return [];
     var snapshotDescriptor = safeObject(safeObject(manifest.files).snapshot);
@@ -522,6 +575,11 @@
       { relativePath: 'chat.md', bytes: new TextEncoder().encode(rendered.markdownText) },
       { relativePath: 'chat.html', bytes: new TextEncoder().encode(rendered.htmlText) },
     ];
+    return companions;
+  }
+
+  async function writeV3DerivedExportCompanions(manifest, copied, tempPath) {
+    var companions = await buildV3DerivedExportCompanions(manifest, copied);
     for (var ci = 0; ci < companions.length; ci += 1) {
       await fsWriteFile(joinPath(tempPath, companions[ci].relativePath), companions[ci].bytes, homeOptions());
     }
@@ -585,6 +643,168 @@
         try { await fsRemove(tempPath, homeOptions({ recursive: true })); } catch (_) { /* best-effort cleanup only */ }
       }
       return exportResult('write-error', { packagePath: packagePath, tempPath: tempPath, reason: String((err && err.message) || err || 'export failed') });
+    }
+  }
+
+  function zipExportResult(status, data) {
+    var d = safeObject(data);
+    var base = exportResult(status, d);
+    base.format = 'h2ochat-zip';
+    base.compressionMethod = 8;
+    base.entryCount = isFiniteNumber(d.entryCount) ? d.entryCount : 0;
+    base.zipByteLength = isFiniteNumber(d.zipByteLength) ? d.zipByteLength : 0;
+    base.packageDirName = cleanString(d.packageDirName) || null;
+    return base;
+  }
+
+  async function assemblePortablePackage(packagePath, verified) {
+    var declared = declaredFilesFromManifest(verified.manifest);
+    var copied = [];
+    for (var i = 0; i < declared.length; i += 1) copied.push(await readDeclaredFile(packagePath, declared[i]));
+    var postCopy = await verifyCopiedFiles(verified.manifest, copied);
+    var companions = await buildV3DerivedExportCompanions(verified.manifest, copied);
+    var packageEntries = copied.concat(companions).map(function (entry) {
+      return { name: entry.relativePath, bytes: bytesFor(entry.bytes) };
+    });
+    var packageDirName = packageDirNameForPath(packagePath);
+    return {
+      packageDirName: packageDirName,
+      packageEntries: packageEntries,
+      zipEntries: packageEntries.map(function (entry) {
+        return { name: joinPath(packageDirName, entry.name), bytes: entry.bytes };
+      }),
+      contentHash: postCopy.contentHash,
+      assetCount: asArray(verified.manifest.assets).length,
+      schemaVersion: verified.manifest.schemaVersion,
+      payloadVersion: verified.manifest.payloadVersion,
+      packageKind: cleanString(verifiedIdentity(verified).packageKind),
+    };
+  }
+
+  function bytesEqual(leftInput, rightInput) {
+    var left = bytesFor(leftInput);
+    var right = bytesFor(rightInput);
+    if (left.byteLength !== right.byteLength) return false;
+    for (var i = 0; i < left.byteLength; i += 1) if (left[i] !== right[i]) return false;
+    return true;
+  }
+
+  async function verifyPortableZipReadback(zipBytes, assembled) {
+    var portable = getPortableZip();
+    var validator = getPackageByteValidator();
+    if (!portable || !validator) throw new Error('portable ZIP read-back authority unavailable');
+    var decoded = await portable.readPortablePackageZip(zipBytes);
+    if (decoded.packageDirName !== assembled.packageDirName) throw new Error('portable ZIP package root changed during write');
+    var actual = Object.create(null);
+    decoded.entries.forEach(function (entry) { actual[entry.name] = entry.bytes; });
+    if (decoded.entries.length !== assembled.packageEntries.length) throw new Error('portable ZIP entry count changed during write');
+    assembled.packageEntries.forEach(function (entry) {
+      if (!actual[entry.name] || !bytesEqual(actual[entry.name], entry.bytes)) {
+        throw new Error('portable ZIP member read-back mismatch: ' + entry.name);
+      }
+    });
+    var diag = safeObject(await validator({
+      packageDirName: decoded.packageDirName,
+      entries: decoded.entries,
+      includeRendererChecks: true,
+    }));
+    if (asArray(diag.blockers).length || safeObject(diag.hashChecks).contentHashOk !== true ||
+        cleanString(safeObject(diag.hashChecks).expectedContentHash) !== assembled.contentHash) {
+      throw new Error('portable ZIP contained package failed governed read-back verification');
+    }
+    return decoded;
+  }
+
+  async function dryRunExportPackageZip(options) {
+    var opts = safeObject(options);
+    var packagePath = cleanString(opts.packagePath);
+    try {
+      var dest = resolveZipExportDestination(opts);
+      if (!getPortableZip() || !getPackageByteValidator()) {
+        return zipExportResult('rejected', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: 'portable ZIP authority unavailable' });
+      }
+      var verified = await inspectVerifiedPackage(packagePath);
+      if (verified.status !== 'verified') {
+        return zipExportResult(verified.status, { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: verified.reason, inspectionStatus: cleanString(verified.inspection && verified.inspection.status) });
+      }
+      if (await fsExists(dest.destinationPath, homeOptions())) {
+        return zipExportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, packageDirName: dest.packageDirName, inspectionStatus: 'verified', reason: 'destination already exists' });
+      }
+      var schemaVersion = Number(verified.manifest.schemaVersion);
+      var entryCount = declaredFilesFromManifest(verified.manifest).length + (schemaVersion === 3 ? 2 : 0);
+      return zipExportResult('export-ready', {
+        packagePath: packagePath,
+        exportName: dest.exportName,
+        destinationPath: dest.destinationPath,
+        packageDirName: dest.packageDirName,
+        inspectionStatus: 'verified',
+        schemaVersion: verified.manifest.schemaVersion,
+        payloadVersion: verified.manifest.payloadVersion,
+        contentHash: cleanString(verifiedIdentity(verified).contentHash),
+        contentHashVerified: verifiedIdentity(verified).contentHashVerified === true,
+        packageKind: cleanString(verifiedIdentity(verified).packageKind),
+        fileCount: entryCount,
+        entryCount: entryCount,
+        assetCount: asArray(verified.manifest.assets).length,
+        reason: 'verified and portable ZIP destination available',
+      });
+    } catch (error) {
+      return zipExportResult('read-error', { packagePath: packagePath, reason: String((error && error.message) || error || 'ZIP dry-run failed') });
+    }
+  }
+
+  async function exportVerifiedPackageZip(options) {
+    var opts = safeObject(options);
+    var packagePath = cleanString(opts.packagePath);
+    var tempPath = '';
+    try {
+      var dest = resolveZipExportDestination(opts);
+      tempPath = dest.tempPath;
+      var dry = await dryRunExportPackageZip(opts);
+      if (dry.status !== 'export-ready') return dry;
+      var verified = await inspectVerifiedPackage(packagePath);
+      if (verified.status !== 'verified') {
+        return zipExportResult(verified.status, { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: verified.reason, inspectionStatus: cleanString(verified.inspection && verified.inspection.status) });
+      }
+      var assembled = await assemblePortablePackage(packagePath, verified);
+      var portable = getPortableZip();
+      var zipBytes = await portable.buildPortableZip(assembled.zipEntries, { method: portable.METHOD_DEFLATE });
+      await fsMkdir(EXPORT_ROOT, homeOptions({ recursive: true }));
+      if (await fsExists(dest.destinationPath, homeOptions())) {
+        return zipExportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, packageDirName: dest.packageDirName, inspectionStatus: 'verified', reason: 'destination already exists' });
+      }
+      if (await fsExists(tempPath, homeOptions())) throw new Error('portable ZIP temp destination already exists');
+      await fsWriteFile(tempPath, zipBytes, homeOptions());
+      var readbackBytes = await fsReadFile(tempPath, homeOptions());
+      var decoded = await verifyPortableZipReadback(readbackBytes, assembled);
+      if (await fsExists(dest.destinationPath, homeOptions())) {
+        throw new Error('portable ZIP destination appeared before publication');
+      }
+      await fsRename(tempPath, dest.destinationPath, { oldPathBaseDir: HOME_BASE_DIR, newPathBaseDir: HOME_BASE_DIR });
+      tempPath = '';
+      return zipExportResult('exported', {
+        packagePath: packagePath,
+        exportName: dest.exportName,
+        destinationPath: dest.destinationPath,
+        packageDirName: assembled.packageDirName,
+        inspectionStatus: 'verified',
+        schemaVersion: assembled.schemaVersion,
+        payloadVersion: assembled.payloadVersion,
+        contentHash: assembled.contentHash,
+        contentHashVerified: true,
+        packageKind: assembled.packageKind,
+        fileCount: assembled.packageEntries.length,
+        entryCount: decoded.entryCount,
+        assetCount: assembled.assetCount,
+        zipByteLength: readbackBytes.byteLength,
+        exportedAt: nowIso(),
+        reason: 'portable ZIP exported and read-back verified',
+      });
+    } catch (error) {
+      if (tempPath) {
+        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
+      }
+      return zipExportResult('write-error', { packagePath: packagePath, tempPath: tempPath, reason: String((error && error.message) || error || 'ZIP export failed') });
     }
   }
 
@@ -785,12 +1005,16 @@
     detectTauri: detectTauri,
     isDesktopCapable: isDesktopCapable,
     resolveExportDestination: resolveExportDestination,
+    resolveZipExportDestination: resolveZipExportDestination,
     dryRunExportPackage: dryRunExportPackage,
     exportVerifiedPackage: exportVerifiedPackage,
+    dryRunExportPackageZip: dryRunExportPackageZip,
+    exportVerifiedPackageZip: exportVerifiedPackageZip,
     renderArchiveExporterCard: renderArchiveExporterCard,
     mountArchiveExporterCard: mountArchiveExporterCard,
     _private: {
       sanitizeExportName: sanitizeExportName,
+      sanitizeZipExportName: sanitizeZipExportName,
       assertSafeRelativePackagePath: assertSafeRelativePackagePath,
       declaredFilesFromManifest: declaredFilesFromManifest,
       canonicalJson: canonicalJson,

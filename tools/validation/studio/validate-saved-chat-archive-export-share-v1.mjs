@@ -25,8 +25,10 @@ const ARCHIVE_EXPORT_CAPABILITY = 'apps/studio/desktop/src-tauri/capabilities/ar
 const PACKAGE_OWNER = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
 const HTML_SANITIZER = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const CODEC = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
+const PORTABLE_ZIP = 'src-surfaces-base/studio/ingestion/saved-chat-portable-zip.studio.js';
 const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
 const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
+const IMPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const V3_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
 const V3_GZIP_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/gzip/t06-canonical-assets.h2ochat';
 const CAPABILITY_FILES = [
@@ -421,7 +423,19 @@ function installBehaviorPackage(mem, pkg, rootOverride) {
   return root;
 }
 
-function loadBehaviorRuntime(mem) {
+function loadBehaviorRuntime(mem, storeOverride) {
+  const defaultStore = {
+    chats: {
+      get: async (id) => ({ chatId: id }),
+      upsert: async (patch) => patch,
+    },
+    snapshots: {
+      get: async (id) => ({ snapshot: { snapshotId: id } }),
+      listByChat: async () => [],
+      create: async (patch) => ({ snapshot: { snapshotId: 'fixture-created-snapshot', chatId: patch.chatId } }),
+    },
+    assets: { listBySnapshot: async () => [] },
+  };
   const context = {
     console, setTimeout, clearTimeout, URL, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
     atob: globalThis.atob, crypto: globalThis.crypto || nodeCrypto.webcrypto,
@@ -430,11 +444,7 @@ function loadBehaviorRuntime(mem) {
     __TAURI_INTERNALS__: { invoke: mem.invoke },
     H2O: { Studio: {
       ingestion: { assetCas: { exists: async () => true, describe: async (id) => ({ exists: true, sha256: id }) } },
-      store: {
-        chats: { get: async (id) => ({ chatId: id }) },
-        snapshots: { get: async (id) => ({ snapshot: { snapshotId: id } }), listByChat: async () => [] },
-        assets: { listBySnapshot: async () => [] },
-      },
+      store: storeOverride || defaultStore,
     } },
   };
   context.globalThis = context; context.window = context;
@@ -443,7 +453,7 @@ function loadBehaviorRuntime(mem) {
    * mirroring the product load order in studio.html. The REAL codec source is
    * loaded here - never a mock - so this harness exercises the same single
    * gzip/verification authority that product consumers use. */
-  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, CODEC, DIAGNOSTICS, INSPECTOR, EXPORTER]) {
+  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, CODEC, PORTABLE_ZIP, DIAGNOSTICS, INSPECTOR, IMPORTER, EXPORTER]) {
     vm.runInContext(readRepo(relPath), sandbox, { filename: relPath });
   }
   return sandbox;
@@ -554,6 +564,21 @@ check('J.2 exporter module exists and registers H2O.Studio.archiveExporter APIs'
   ]) {
     assertIncludes(exporterSrc, name);
   }
+});
+
+check('M08 portable ZIP codec and round-trip APIs are shipped Desktop-side', () => {
+  assert.ok(existsRepo(PORTABLE_ZIP), `${PORTABLE_ZIP} does not exist`);
+  const zipSource = readRepo(PORTABLE_ZIP);
+  assertIncludes(zipSource, "CompressionStream('deflate-raw')");
+  assertIncludes(zipSource, "DecompressionStream('deflate-raw')");
+  assertIncludes(zipSource, 'readPortablePackageZip');
+  assertIncludes(exporterSrc, 'dryRunExportPackageZip');
+  assertIncludes(exporterSrc, 'exportVerifiedPackageZip');
+  const importerSource = readRepo(IMPORTER);
+  assertIncludes(importerSource, 'dryRunImportZip');
+  assertIncludes(importerSource, 'importVerifiedZip');
+  assertIncludes(readRepo(STUDIO_HTML), './ingestion/saved-chat-portable-zip.studio.js');
+  assertIncludes(readRepo(PACK_STUDIO), 'ingestion/saved-chat-portable-zip.studio.js');
 });
 
 check('J.2 exporter is Desktop-only and verification-gated through inspectPackage', () => {
@@ -953,6 +978,332 @@ checkAsync('M03 T04 corrupt gzip-v3 fails closed and creates no export', async (
   assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports'), []);
   /* Source archive package remains untouched. */
   assert.deepEqual(mem.inventory(mem.APP, sourceRoot), sourceBefore);
+});
+
+checkAsync('M08 method-8 codec emits deterministic canonical ZIP records and round-trips bytes', async () => {
+  const runtime = loadBehaviorRuntime(createBehaviorFs());
+  const portable = runtime.H2O.Studio.ingestion.savedChatPortableZip;
+  const entries = [
+    { name: 'probe.h2ochat/chat.html', bytes: Buffer.from('<p>portable</p>') },
+    { name: 'probe.h2ochat/manifest.json', bytes: Buffer.from('{"probe":true}') },
+    { name: 'probe.h2ochat/snapshot.json', bytes: Buffer.from('portable snapshot '.repeat(512)) },
+    { name: 'probe.h2ochat/chat.md', bytes: Buffer.from('# Portable\n') },
+  ];
+  const first = await portable.buildPortableZip(entries, { method: portable.METHOD_DEFLATE });
+  const second = await portable.buildPortableZip(entries.slice().reverse(), { method: portable.METHOD_DEFLATE });
+  assert.deepEqual(Buffer.from(first), Buffer.from(second), 'canonical order + fixed metadata must be deterministic in one runtime');
+  const decoded = await portable.readPortableZip(first);
+  assert.deepEqual(Array.from(decoded.entries, (entry) => entry.name), [
+    'probe.h2ochat/manifest.json',
+    'probe.h2ochat/snapshot.json',
+    'probe.h2ochat/chat.md',
+    'probe.h2ochat/chat.html',
+  ]);
+  assert.ok(decoded.entries.every((entry) => entry.method === 8));
+  const expected = Object.fromEntries(entries.map((entry) => [entry.name, Buffer.from(entry.bytes)]));
+  for (const entry of decoded.entries) assert.deepEqual(Buffer.from(entry.bytes), expected[entry.name]);
+
+  const view = new DataView(first.buffer, first.byteOffset, first.byteLength);
+  const eocd = first.byteLength - 22;
+  const centralOffset = view.getUint32(eocd + 16, true);
+  assert.equal(view.getUint32(0, true), 0x04034b50);
+  assert.equal(view.getUint16(8, true), 8, 'local method');
+  assert.equal(view.getUint32(centralOffset, true), 0x02014b50);
+  assert.equal(view.getUint16(centralOffset + 10, true), 8, 'central method');
+  assert.equal(view.getUint32(eocd, true), 0x06054b50);
+  assert.equal(view.getUint32(eocd + 16, true), centralOffset);
+
+  const firstNameLength = view.getUint16(26, true);
+  const compressedSize = view.getUint32(18, true);
+  const compressed = Buffer.from(first.slice(30 + firstNameLength, 30 + firstNameLength + compressedSize));
+  assert.deepEqual(zlib.inflateRawSync(compressed), expected['probe.h2ochat/manifest.json']);
+});
+
+checkAsync('M08 verified v1/v2 ZIP export is method-8, byte-faithful, deterministic and no-overwrite', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm08_zip_export', withAsset: true });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const sourceBefore = mem.inventory(mem.APP, sourceRoot);
+  const runtime = loadBehaviorRuntime(mem);
+  const exporter = runtime.H2O.Studio.archiveExporter;
+  const portable = runtime.H2O.Studio.ingestion.savedChatPortableZip;
+
+  const one = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: 'm08-one.h2ochat.zip' });
+  const two = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: 'm08-two.h2ochat.zip' });
+  assert.equal(one.status, 'exported', one.reason);
+  assert.equal(two.status, 'exported', two.reason);
+  assert.equal(one.contentHash, pkg.manifest.contentHash);
+  assert.equal(one.entryCount, 5);
+  const oneBytes = mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-one.h2ochat.zip'));
+  const twoBytes = mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-two.h2ochat.zip'));
+  assert.deepEqual(oneBytes, twoBytes, 'destination leaf must not participate in ZIP bytes');
+  const decoded = await portable.readPortablePackageZip(oneBytes);
+  assert.equal(decoded.packageDirName, 'm08_zip_export.h2ochat');
+  const sourceByLeaf = Object.fromEntries(sourceBefore.map((item) => [item.path.slice(sourceRoot.length + 1), item]));
+  for (const entry of decoded.entries) {
+    assert.ok(sourceByLeaf[entry.name], `unexpected ZIP entry ${entry.name}`);
+    assert.equal(sha256(entry.bytes), sourceByLeaf[entry.name].sha256, `${entry.name} changed in ZIP`);
+    assert.equal(entry.bytes.byteLength, sourceByLeaf[entry.name].byteLength);
+  }
+  assert.deepEqual(mem.inventory(mem.APP, sourceRoot), sourceBefore, 'source package changed during ZIP export');
+  const beforeCollision = Buffer.from(oneBytes);
+  const collision = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: 'm08-one.h2ochat.zip' });
+  assert.equal(collision.status, 'destination-exists');
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-one.h2ochat.zip')), beforeCollision);
+});
+
+checkAsync('M08 portable ZIP reaches the shared import-as-new core; failures and dry-run write nothing', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm08_zip_import', withAsset: true });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const chats = new Map();
+  const snapshots = new Map();
+  const writes = { chats: 0, snapshots: 0 };
+  const store = {
+    chats: {
+      get: async (id) => chats.get(id) || null,
+      upsert: async (patch) => { writes.chats += 1; chats.set(patch.chatId, JSON.parse(JSON.stringify(patch))); return patch; },
+    },
+    snapshots: {
+      get: async (id) => snapshots.has(id) ? { snapshot: snapshots.get(id) } : null,
+      listByChat: async (chatId) => [...snapshots.values()].filter((row) => row.chatId === chatId),
+      create: async (patch) => {
+        writes.snapshots += 1;
+        const row = { ...JSON.parse(JSON.stringify(patch)), snapshotId: `m08-created-${writes.snapshots}` };
+        snapshots.set(row.snapshotId, row);
+        return { snapshot: row };
+      },
+    },
+    assets: { listBySnapshot: async () => [] },
+  };
+  const runtime = loadBehaviorRuntime(mem, store);
+  const exported = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackageZip({
+    packagePath: sourceRoot,
+    exportName: 'm08-roundtrip.h2ochat.zip',
+  });
+  assert.equal(exported.status, 'exported', exported.reason);
+  const zipBytes = mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-roundtrip.h2ochat.zip'));
+  const zipBefore = Buffer.from(zipBytes);
+  const importer = runtime.H2O.Studio.archiveImporter;
+
+  const dry = await importer.dryRunImportZip({ zipBytes, sourceName: 'm08-roundtrip.h2ochat.zip' });
+  assert.equal(dry.decision, 'import-ready', dry.reason);
+  assert.deepEqual(writes, { chats: 0, snapshots: 0 }, 'ZIP dry-run mutated the store');
+  const decodedForStored = await runtime.H2O.Studio.ingestion.savedChatPortableZip.readPortablePackageZip(zipBytes);
+  const storedZip = await runtime.H2O.Studio.ingestion.savedChatPortableZip.buildPortableZip(
+    decodedForStored.entries.map((entry) => ({ name: `${decodedForStored.packageDirName}/${entry.name}`, bytes: entry.bytes })),
+    { method: runtime.H2O.Studio.ingestion.savedChatPortableZip.METHOD_STORED },
+  );
+  const storedDry = await importer.dryRunImportZip({ zipBytes: storedZip, sourceName: 'm08-stored.h2ochat.zip' });
+  assert.equal(storedDry.decision, 'import-ready', storedDry.reason);
+  assert.deepEqual(writes, { chats: 0, snapshots: 0 }, 'method-0 compatibility dry-run mutated the store');
+  const imported = await importer.importVerifiedZip({ zipBytes, sourceName: 'm08-roundtrip.h2ochat.zip', mode: 'import-as-new' });
+  assert.equal(imported.status, 'imported', imported.reason);
+  assert.deepEqual(writes, { chats: 1, snapshots: 1 });
+  assert.notEqual(imported.recovered.newChatId, pkg.chatId);
+  assert.notEqual(imported.recovered.newSnapshotId, pkg.snapshotId);
+  const recoveredChat = chats.get(imported.recovered.newChatId);
+  const recoveredSnapshot = snapshots.get(imported.recovered.newSnapshotId);
+  assert.equal(recoveredChat.meta.recovered.source, 'h2ochat-zip-recovery');
+  assert.equal(recoveredChat.meta.recovered.portableZipName, 'm08-roundtrip.h2ochat.zip');
+  assert.equal(recoveredChat.meta.recovered.packagePath, undefined, 'ZIP provenance must not invent an archive path');
+  assert.equal(recoveredSnapshot.turns.length, pkg.snapshot.messages.length);
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-roundtrip.h2ochat.zip')), zipBefore, 'source ZIP changed during import');
+
+  const corrupt = Uint8Array.from(zipBytes);
+  corrupt[0] ^= 0xff;
+  const refused = await importer.importVerifiedZip({ zipBytes: corrupt, sourceName: 'bad.h2ochat.zip' });
+  assert.equal(refused.status, 'rejected');
+  assert.deepEqual(writes, { chats: 1, snapshots: 1 }, 'bad ZIP caused persistent writes');
+
+  const badManifest = JSON.parse(pkg.manifestText);
+  badManifest.contentHash = `sha256-${'0'.repeat(64)}`;
+  const validPackageEntries = [
+    { name: `${pkg.chatId}.h2ochat/manifest.json`, bytes: Buffer.from(pkg.manifestText) },
+    { name: `${pkg.chatId}.h2ochat/snapshot.json`, bytes: pkg.snapshotBytes },
+    { name: `${pkg.chatId}.h2ochat/chat.md`, bytes: Buffer.from(pkg.files.__texts.markdownText) },
+    { name: `${pkg.chatId}.h2ochat/chat.html`, bytes: Buffer.from(pkg.files.__texts.htmlText) },
+    { name: `${pkg.chatId}.h2ochat/${pkg.assetPath}`, bytes: pkg.assetBytes },
+  ];
+  const packageEntries = validPackageEntries.map((entry) => ({ name: entry.name, bytes: Buffer.from(entry.bytes) }));
+  packageEntries.find((entry) => entry.name.endsWith('/manifest.json')).bytes = Buffer.from(`${JSON.stringify(badManifest)}\n`);
+  const invalidPackageZip = await runtime.H2O.Studio.ingestion.savedChatPortableZip.buildPortableZip(packageEntries);
+  const packageRefused = await importer.importVerifiedZip({ zipBytes: invalidPackageZip, sourceName: 'bad-package.h2ochat.zip' });
+  assert.equal(packageRefused.status, 'rejected');
+  assert.deepEqual(writes, { chats: 1, snapshots: 1 }, 'corrupt contained package caused persistent writes');
+
+  const corruptAssetEntries = validPackageEntries.map((entry) => ({ name: entry.name, bytes: Buffer.from(entry.bytes) }));
+  const corruptAsset = corruptAssetEntries.find((entry) => entry.name.endsWith(pkg.assetPath));
+  corruptAsset.bytes[0] ^= 0xff;
+  const corruptAssetZip = await runtime.H2O.Studio.ingestion.savedChatPortableZip.buildPortableZip(corruptAssetEntries);
+  const assetRefused = await importer.importVerifiedZip({ zipBytes: corruptAssetZip, sourceName: 'bad-asset.h2ochat.zip' });
+  assert.equal(assetRefused.status, 'rejected');
+  assert.deepEqual(writes, { chats: 1, snapshots: 1 }, 'corrupt contained asset caused persistent writes');
+
+  const corruptRendererEntries = validPackageEntries.map((entry) => ({ name: entry.name, bytes: Buffer.from(entry.bytes) }));
+  const corruptRenderer = corruptRendererEntries.find((entry) => entry.name.endsWith('/chat.md'));
+  corruptRenderer.bytes[0] ^= 0xff;
+  const corruptRendererZip = await runtime.H2O.Studio.ingestion.savedChatPortableZip.buildPortableZip(corruptRendererEntries);
+  const rendererRefused = await importer.importVerifiedZip({ zipBytes: corruptRendererZip, sourceName: 'bad-renderer.h2ochat.zip' });
+  assert.equal(rendererRefused.status, 'rejected');
+  assert.deepEqual(writes, { chats: 1, snapshots: 1 }, 'corrupt contained renderer caused persistent writes');
+});
+
+checkAsync('M08 hostile ZIP structure, paths and resource declarations fail closed', async () => {
+  const portable = loadBehaviorRuntime(createBehaviorFs()).H2O.Studio.ingestion.savedChatPortableZip;
+  const encoder = new TextEncoder();
+  const validName = 'a.h2ochat/manifest.json';
+  const valid = await portable.buildPortableZip([{ name: validName, bytes: encoder.encode('{}') }]);
+  const readU16 = (bytes, offset) => bytes[offset] | (bytes[offset + 1] << 8);
+  const readU32 = (bytes, offset) => (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+  const writeU16 = (bytes, offset, value) => { bytes[offset] = value & 255; bytes[offset + 1] = (value >>> 8) & 255; };
+  const writeU32 = (bytes, offset, value) => {
+    bytes[offset] = value & 255; bytes[offset + 1] = (value >>> 8) & 255;
+    bytes[offset + 2] = (value >>> 16) & 255; bytes[offset + 3] = (value >>> 24) & 255;
+  };
+  const centralOffsetOf = (bytes) => readU32(bytes, bytes.byteLength - 22 + 16);
+
+  for (const name of ['../x', 'a/../../x', '/absolute', '\\absolute', 'C:\\escape', 'a//b', 'a/./b']) {
+    await assert.rejects(() => portable.buildPortableZip([{ name, bytes: encoder.encode('x') }]), /unsafe|absolute|path|segment/i, name);
+  }
+  await assert.rejects(() => portable.buildPortableZip([
+    { name: validName, bytes: encoder.encode('a') },
+    { name: validName, bytes: encoder.encode('b') },
+  ]), /duplicate/i);
+  await assert.rejects(() => portable.buildPortableZip([
+    { name: `${'a'.repeat(portable.ZIP_FILENAME_BYTE_CAP + 1)}`, bytes: encoder.encode('x') },
+  ]), /byte cap|too long/i);
+
+  const badSignature = Uint8Array.from(valid); badSignature[0] ^= 0xff;
+  await assert.rejects(() => portable.readPortableZip(badSignature), /signature/i);
+  await assert.rejects(() => portable.readPortableZip(valid.slice(0, valid.byteLength - 1)), /End of Central Directory|EOCD/i);
+
+  const methodMismatch = Uint8Array.from(valid); writeU16(methodMismatch, 8, 0);
+  await assert.rejects(() => portable.readPortableZip(methodMismatch), /disagree/i);
+
+  const compressedSizeMismatch = Uint8Array.from(valid);
+  writeU32(compressedSizeMismatch, 18, readU32(compressedSizeMismatch, 18) + 1);
+  await assert.rejects(() => portable.readPortableZip(compressedSizeMismatch), /disagree/i);
+
+  const uncompressedSizeMismatch = Uint8Array.from(valid);
+  writeU32(uncompressedSizeMismatch, 22, readU32(uncompressedSizeMismatch, 22) + 1);
+  await assert.rejects(() => portable.readPortableZip(uncompressedSizeMismatch), /disagree/i);
+
+  const unsupportedMethod = Uint8Array.from(valid);
+  const unsupportedCentral = centralOffsetOf(unsupportedMethod);
+  writeU16(unsupportedMethod, 8, 99);
+  writeU16(unsupportedMethod, unsupportedCentral + 10, 99);
+  await assert.rejects(() => portable.readPortableZip(unsupportedMethod), /unsupported feature|compression method/i);
+
+  const encrypted = Uint8Array.from(valid);
+  const encryptedCentral = centralOffsetOf(encrypted);
+  writeU16(encrypted, 6, readU16(encrypted, 6) | 1);
+  writeU16(encrypted, encryptedCentral + 8, readU16(encrypted, encryptedCentral + 8) | 1);
+  await assert.rejects(() => portable.readPortableZip(encrypted), /Encrypted/i);
+
+  const dataDescriptor = Uint8Array.from(valid);
+  const descriptorCentral = centralOffsetOf(dataDescriptor);
+  writeU16(dataDescriptor, 6, readU16(dataDescriptor, 6) | 8);
+  writeU16(dataDescriptor, descriptorCentral + 8, readU16(dataDescriptor, descriptorCentral + 8) | 8);
+  await assert.rejects(() => portable.readPortableZip(dataDescriptor), /data descriptor/i);
+
+  const zip64 = Uint8Array.from(valid);
+  writeU32(zip64, centralOffsetOf(zip64) + 20, 0xffffffff);
+  await assert.rejects(() => portable.readPortableZip(zip64), /ZIP64/i);
+
+  const symlink = Uint8Array.from(valid);
+  const symlinkCentral = centralOffsetOf(symlink);
+  writeU16(symlink, symlinkCentral + 4, (3 << 8) | 20);
+  writeU32(symlink, symlinkCentral + 38, 0xa0000000);
+  await assert.rejects(() => portable.readPortableZip(symlink), /symlink/i);
+
+  const unsafe = Uint8Array.from(valid);
+  const unsafeCentral = centralOffsetOf(unsafe);
+  const slashIndex = validName.indexOf('/');
+  unsafe[30 + slashIndex] = '\\'.charCodeAt(0);
+  unsafe[unsafeCentral + 46 + slashIndex] = '\\'.charCodeAt(0);
+  await assert.rejects(() => portable.readPortableZip(unsafe), /path-ambiguous|unsafe/i);
+
+  const nameMismatch = Uint8Array.from(valid);
+  nameMismatch[30] = 'b'.charCodeAt(0);
+  await assert.rejects(() => portable.readPortableZip(nameMismatch), /names|disagree/i);
+
+  const duplicate = Uint8Array.from(await portable.buildPortableZip([
+    { name: 'a.h2ochat/one.json', bytes: encoder.encode('one') },
+    { name: 'a.h2ochat/two.json', bytes: encoder.encode('two') },
+  ]));
+  const duplicateCentral = centralOffsetOf(duplicate);
+  const duplicateCentralSecond = duplicateCentral + 46 + readU16(duplicate, duplicateCentral + 28);
+  const duplicateSecondLocal = readU32(duplicate, duplicateCentralSecond + 42);
+  const duplicateFirstName = duplicate.slice(duplicateCentral + 46,
+    duplicateCentral + 46 + readU16(duplicate, duplicateCentral + 28));
+  duplicate.set(duplicateFirstName, duplicateCentralSecond + 46);
+  duplicate.set(duplicateFirstName, duplicateSecondLocal + 30);
+  await assert.rejects(() => portable.readPortableZip(duplicate), /duplicate/i);
+
+  const truncatedCentral = Uint8Array.from(valid);
+  const truncatedCentralOffset = centralOffsetOf(truncatedCentral);
+  writeU16(truncatedCentral, truncatedCentralOffset + 28,
+    readU16(truncatedCentral, truncatedCentralOffset + 28) + 1);
+  await assert.rejects(() => portable.readPortableZip(truncatedCentral), /central entry is truncated/i);
+
+  const outOfRange = Uint8Array.from(valid);
+  writeU32(outOfRange, centralOffsetOf(outOfRange) + 42, 1);
+  await assert.rejects(() => portable.readPortableZip(outOfRange), /overlap|gaps|range/i);
+
+  const stored = await portable.buildPortableZip([{ name: validName, bytes: encoder.encode('{}') }], { method: portable.METHOD_STORED });
+  const crcMismatch = Uint8Array.from(stored);
+  crcMismatch[30 + readU16(crcMismatch, 26)] ^= 0xff;
+  await assert.rejects(() => portable.readPortableZip(crcMismatch), /CRC/i);
+
+  const declaredHuge = Uint8Array.from(valid);
+  const declaredCentral = centralOffsetOf(declaredHuge);
+  const tooLarge = portable.ZIP_UNCOMPRESSED_ENTRY_CAP_BYTES + 1;
+  writeU32(declaredHuge, 22, tooLarge);
+  writeU32(declaredHuge, declaredCentral + 24, tooLarge);
+  await assert.rejects(() => portable.readPortableZip(declaredHuge), /output exceeds|uncompressed cap/i);
+
+  const compressedHuge = Uint8Array.from(valid);
+  writeU32(compressedHuge, centralOffsetOf(compressedHuge) + 20, portable.ZIP_COMPRESSED_ENTRY_CAP_BYTES + 1);
+  await assert.rejects(() => portable.readPortableZip(compressedHuge), /compressed size exceeds|compressed cap/i);
+
+  const excessiveCount = Uint8Array.from(valid);
+  const excessiveCountEocd = excessiveCount.byteLength - 22;
+  writeU16(excessiveCount, excessiveCountEocd + 8, portable.ZIP_ENTRY_COUNT_CAP + 1);
+  writeU16(excessiveCount, excessiveCountEocd + 10, portable.ZIP_ENTRY_COUNT_CAP + 1);
+  await assert.rejects(() => portable.readPortableZip(excessiveCount), /entry count/i);
+
+  const cumulative = Uint8Array.from(await portable.buildPortableZip(
+    Array.from({ length: 5 }, (_, index) => ({ name: `a.h2ochat/file-${index}.json`, bytes: encoder.encode('{}') })),
+  ));
+  let cumulativeCentral = centralOffsetOf(cumulative);
+  for (let index = 0; index < 5; index += 1) {
+    const localOffset = readU32(cumulative, cumulativeCentral + 42);
+    writeU32(cumulative, localOffset + 22, portable.ZIP_UNCOMPRESSED_ENTRY_CAP_BYTES);
+    writeU32(cumulative, cumulativeCentral + 24, portable.ZIP_UNCOMPRESSED_ENTRY_CAP_BYTES);
+    cumulativeCentral += 46 + readU16(cumulative, cumulativeCentral + 28)
+      + readU16(cumulative, cumulativeCentral + 30) + readU16(cumulative, cumulativeCentral + 32);
+  }
+  await assert.rejects(() => portable.readPortableZip(cumulative), /cumulative declared output/i);
+
+  const smallDeclared = Uint8Array.from(await portable.buildPortableZip([
+    { name: validName, bytes: encoder.encode('decompression-bound '.repeat(200)) },
+  ]));
+  const smallCentral = centralOffsetOf(smallDeclared);
+  writeU32(smallDeclared, 22, 8);
+  writeU32(smallDeclared, smallCentral + 24, 8);
+  await assert.rejects(() => portable.readPortableZip(smallDeclared), /exceeds|size/i);
+
+  const multipleRoots = await portable.buildPortableZip([
+    { name: 'a.h2ochat/manifest.json', bytes: encoder.encode('{}') },
+    { name: 'b.h2ochat/snapshot.json', bytes: encoder.encode('{}') },
+  ]);
+  await assert.rejects(() => portable.readPortablePackageZip(multipleRoots), /exactly one/i);
+
+  const missingMember = await portable.buildPortableZip([
+    { name: 'a.h2ochat/manifest.json', bytes: encoder.encode(JSON.stringify({ schemaVersion: 1, files: {} })) },
+  ]);
+  await assert.rejects(() => portable.readPortablePackageZip(missingMember), /inventory/i);
 });
 
 let failures = 0;

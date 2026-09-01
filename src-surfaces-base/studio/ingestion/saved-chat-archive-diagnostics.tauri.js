@@ -186,6 +186,79 @@
     return bytesFor(await invoke('plugin:fs|read_file', { path: path, options: fsOptions() }));
   }
 
+  /* M08: the governed verifier operates over one read-only package source.
+   * The historical filesystem adapter remains the default; the portable-ZIP
+   * adapter supplies a bounded in-memory byte map after container admission.
+   * All package semantics below stay shared. */
+  function filesystemPackageSource() {
+    return {
+      memory: false,
+      exists: fsExists,
+      readBytes: fsReadBytes,
+      readDir: fsReadDir,
+    };
+  }
+
+  function safeMemoryMemberPath(value) {
+    var path = cleanString(value);
+    var parts = path.split('/');
+    return !!path && path.charAt(0) !== '/' && path.indexOf('\\') < 0 &&
+      path.indexOf(':') < 0 && !parts.some(function (part) {
+        return !part || part === '.' || part === '..';
+      });
+  }
+
+  function memoryPackageSource(packagePath, entries) {
+    var files = Object.create(null);
+    asArray(entries).forEach(function (entry) {
+      var rel = cleanString(entry && entry.name);
+      if (!safeMemoryMemberPath(rel)) throw new Error('portable package member path is unsafe');
+      if (Object.prototype.hasOwnProperty.call(files, rel)) throw new Error('portable package member path is duplicated');
+      var source = bytesFor(entry && entry.bytes);
+      var copy = new Uint8Array(source.byteLength);
+      copy.set(source);
+      files[rel] = copy;
+    });
+    function relative(fullPath) {
+      var prefix = packagePath + '/';
+      if (fullPath === packagePath) return '';
+      if (fullPath.indexOf(prefix) !== 0) throw new Error('portable package source path escaped its root');
+      return fullPath.slice(prefix.length);
+    }
+    function exists(fullPath) {
+      var rel = relative(fullPath);
+      if (!rel) return true;
+      if (Object.prototype.hasOwnProperty.call(files, rel)) return true;
+      var prefix = rel.replace(/\/$/, '') + '/';
+      return Object.keys(files).some(function (name) { return name.indexOf(prefix) === 0; });
+    }
+    function readBytes(fullPath) {
+      var rel = relative(fullPath);
+      var value = files[rel];
+      if (!value) return Promise.reject(new Error('portable package member not found'));
+      var copy = new Uint8Array(value.byteLength);
+      copy.set(value);
+      return Promise.resolve(copy);
+    }
+    function readDir(fullPath) {
+      var rel = relative(fullPath).replace(/\/$/, '');
+      var prefix = rel ? rel + '/' : '';
+      var children = Object.create(null);
+      Object.keys(files).forEach(function (name) {
+        if (name.indexOf(prefix) !== 0) return;
+        var rest = name.slice(prefix.length);
+        if (!rest) return;
+        var slash = rest.indexOf('/');
+        var child = slash >= 0 ? rest.slice(0, slash) : rest;
+        children[child] = slash >= 0
+          ? { name: child, isDirectory: true }
+          : { name: child, isFile: true };
+      });
+      return Promise.resolve(Object.keys(children).sort().map(function (name) { return children[name]; }));
+    }
+    return { memory: true, exists: exists, readBytes: readBytes, readDir: readDir };
+  }
+
   function bytesToHex(bytes) {
     var out = '';
     for (var i = 0; i < bytes.length; i += 1) {
@@ -740,6 +813,56 @@
     return /^sha256-[0-9a-f]{64}$/.test(cleanString(value));
   }
 
+  /* V1/v2 persistent renderers carry governed stored-byte descriptors in the
+   * package manifest. Verify those descriptors in this shared package
+   * authority so filesystem and portable byte-source admission cannot drift. */
+  async function verifyLegacyRendererDescriptors(packagePath, manifest, diag, packageSource) {
+    if (diag.schemaVersion !== 1 && diag.schemaVersion !== 2) return;
+    var source = packageSource || filesystemPackageSource();
+    var roles = [
+      { key: 'markdown', path: 'chat.md', present: diag.markdownPresent },
+      { key: 'html', path: 'chat.html', present: diag.htmlPresent },
+    ];
+    for (var i = 0; i < roles.length; i += 1) {
+      var role = roles[i];
+      var descriptor = safeObject(safeObject(manifest && manifest.files)[role.key]);
+      if (cleanString(descriptor.path) !== role.path) {
+        diag.blockers.push(makeIssue(role.key + '-path-invalid',
+          'files.' + role.key + '.path must be ' + role.path, descriptor.path));
+        continue;
+      }
+      if (!validSha256(descriptor.sha256)) {
+        diag.blockers.push(makeIssue(role.key + '-sha-invalid',
+          'files.' + role.key + '.sha256 must be a canonical SHA-256 identity', descriptor.sha256));
+        continue;
+      }
+      if (!Number.isSafeInteger(descriptor.byteLength) || descriptor.byteLength < 0) {
+        diag.blockers.push(makeIssue(role.key + '-byte-length-invalid',
+          'files.' + role.key + '.byteLength must be a non-negative safe integer', descriptor.byteLength));
+        continue;
+      }
+      if (!role.present) continue; /* the existing required-file blocker owns absence */
+      try {
+        var bytes = await source.readBytes(joinPath(packagePath, role.path));
+        var actualSha = await sha256Prefixed(bytes);
+        if (actualSha !== descriptor.sha256) {
+          diag.blockers.push(makeIssue(role.key + '-sha-mismatch',
+            'files.' + role.key + '.sha256 does not match stored ' + role.path + ' bytes',
+            { expected: actualSha, actual: descriptor.sha256 }));
+        }
+        if (bytes.byteLength !== descriptor.byteLength) {
+          diag.blockers.push(makeIssue(role.key + '-byte-length-mismatch',
+            'files.' + role.key + '.byteLength does not match stored ' + role.path + ' bytes',
+            { expected: descriptor.byteLength, actual: bytes.byteLength }));
+        }
+      } catch (error) {
+        diag.blockers.push(makeIssue(role.key + '-read-failed',
+          role.path + ' could not be read for descriptor verification',
+          String((error && error.message) || error)));
+      }
+    }
+  }
+
   async function verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag) {
     var descriptor = safeObject(manifest && manifest.files && manifest.files.snapshot);
     var encoding = firstString(descriptor.encoding);
@@ -952,11 +1075,12 @@
     return type === 'file';
   }
 
-  async function listPackageAssetRelativePaths(packagePath, diag) {
+  async function listPackageAssetRelativePaths(packagePath, diag, packageSource) {
     var out = [];
     if (!diag.assetsDirPresent) return out;
     try {
-      var entries = asArray(await fsReadDir(joinPath(packagePath, 'assets')));
+      var source = packageSource || filesystemPackageSource();
+      var entries = asArray(await source.readDir(joinPath(packagePath, 'assets')));
       entries.forEach(function (entry) {
         var name = entryName(entry);
         if (!name) return;
@@ -1197,8 +1321,9 @@
     return { list: out, bySha: bySha };
   }
 
-  async function validatePackageAssetFiles(packagePath, manifestAssets, diag) {
-    var actualPaths = await listPackageAssetRelativePaths(packagePath, diag);
+  async function validatePackageAssetFiles(packagePath, manifestAssets, diag, packageSource) {
+    var source = packageSource || filesystemPackageSource();
+    var actualPaths = await listPackageAssetRelativePaths(packagePath, diag, source);
     var manifestPathSet = Object.create(null);
     manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
     actualPaths.forEach(function (path) {
@@ -1211,7 +1336,7 @@
       var asset = manifestAssets[i];
       var fullPath = joinPath(packagePath, asset.path);
       var exists = false;
-      try { exists = await fsExists(fullPath); }
+      try { exists = await source.exists(fullPath); }
       catch (err) {
         addAssetBlocker(diag, 'missingPackageAssets', 'package-asset-exists-check-failed', 'package asset existence check failed', { sha256: asset.sha256, path: asset.path, error: String((err && err.message) || err) });
         continue;
@@ -1221,7 +1346,7 @@
         continue;
       }
       var bytes = null;
-      try { bytes = await fsReadBytes(fullPath); }
+      try { bytes = await source.readBytes(fullPath); }
       catch (err2) {
         addAssetBlocker(diag, 'unreadablePackageAssets', 'package-asset-unreadable', 'package asset file could not be read', { sha256: asset.sha256, path: asset.path, error: String((err2 && err2.message) || err2) });
         continue;
@@ -1269,7 +1394,8 @@
     });
   }
 
-  async function validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssets, diag) {
+  async function validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssets, diag, packageSource) {
+    var source = packageSource || filesystemPackageSource();
     var manifestPathSet = Object.create(null);
     manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
     var htmlTexts = snapshotHtmlTexts(snapshot);
@@ -1287,7 +1413,7 @@
           continue;
         }
         var exists = false;
-        try { exists = await fsExists(joinPath(packagePath, refPath)); }
+        try { exists = await source.exists(joinPath(packagePath, refPath)); }
         catch (err) {
           addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-exists-check-failed', 'renderer asset reference existence check failed', { location: item.label, path: refPath, error: String((err && err.message) || err) });
           continue;
@@ -1328,9 +1454,10 @@
     }
   }
 
-  async function validateSavedChatPackageV1(options) {
+  async function validateSavedChatPackageV1(options, packageSourceOverride) {
     var opts = safeObject(options);
     var packagePath = firstString(opts.packagePath, opts.path);
+    var packageSource = packageSourceOverride || filesystemPackageSource();
     var includeCasChecks = opts.includeCasChecks !== false;
     var includeRendererChecks = opts.includeRendererChecks !== false;
     var includeDbChecks = opts.includeDbChecks !== false;
@@ -1350,9 +1477,9 @@
       var snapshotBytes = null;
       var chatHtmlText = '';
       var v3SnapshotVerification = null;
-      diag.manifestPresent = await fsExists(joinPath(packagePath, 'manifest.json'));
+      diag.manifestPresent = await packageSource.exists(joinPath(packagePath, 'manifest.json'));
       if (diag.manifestPresent) {
-        manifest = parseJsonFile(bytesToText(await fsReadBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', diag);
+        manifest = parseJsonFile(bytesToText(await packageSource.readBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', diag);
       }
       if (manifest) {
         if (manifest.schema && manifest.schema !== PACKAGE_SCHEMA) {
@@ -1365,10 +1492,10 @@
 
       /* Manifest metadata selects the required inventory. A missing or
        * malformed manifest retains the frozen legacy fail-closed inventory. */
-      diag.snapshotPresent = await fsExists(joinPath(packagePath, 'snapshot.json'));
-      diag.markdownPresent = await fsExists(joinPath(packagePath, 'chat.md'));
-      diag.htmlPresent = await fsExists(joinPath(packagePath, 'chat.html'));
-      diag.assetsDirPresent = await fsExists(joinPath(packagePath, 'assets'));
+      diag.snapshotPresent = await packageSource.exists(joinPath(packagePath, 'snapshot.json'));
+      diag.markdownPresent = await packageSource.exists(joinPath(packagePath, 'chat.md'));
+      diag.htmlPresent = await packageSource.exists(joinPath(packagePath, 'chat.html'));
+      diag.assetsDirPresent = await packageSource.exists(joinPath(packagePath, 'assets'));
       addMissingRequiredFileIssues(diag, requiredFilesForManifest(manifest));
 
       if (diag.snapshotPresent) {
@@ -1384,19 +1511,26 @@
             diag.blockers.push(makeIssue('snapshot-codec-unavailable', 'governed saved-chat package codec is unavailable for v3 member reads'));
           } else {
             try {
-              var boundedSnapshot = await v3Codec.readBoundedPackageMemberBytes({
-                packagePath: packagePath,
-                memberPath: 'snapshot.json',
-                physicalByteCap: v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES,
-              });
-              snapshotBytes = bytesFor(boundedSnapshot.storedBytes);
+              if (packageSource.memory) {
+                snapshotBytes = bytesFor(await packageSource.readBytes(joinPath(packagePath, 'snapshot.json')));
+                if (snapshotBytes.byteLength > v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES) {
+                  throw new Error('portable v3 snapshot exceeds governed physical cap');
+                }
+              } else {
+                var boundedSnapshot = await v3Codec.readBoundedPackageMemberBytes({
+                  packagePath: packagePath,
+                  memberPath: 'snapshot.json',
+                  physicalByteCap: v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES,
+                });
+                snapshotBytes = bytesFor(boundedSnapshot.storedBytes);
+              }
             } catch (err) {
               diag.blockers.push(makeIssue('snapshot-bounded-read-failed', 'v3 snapshot.json failed the governed bounded member read', firstString(err && err.code) || String((err && err.message) || err)));
             }
           }
         } else {
           /* Preserve the historical v1/v2 read path unchanged. */
-          snapshotBytes = await fsReadBytes(joinPath(packagePath, 'snapshot.json'));
+          snapshotBytes = await packageSource.readBytes(joinPath(packagePath, 'snapshot.json'));
         }
         if (diag.schemaVersion === 3 && manifest && snapshotBytes) {
           v3SnapshotVerification = await verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag);
@@ -1415,10 +1549,13 @@
         }
       }
       if (includeRendererChecks && diag.htmlPresent) {
-        try { chatHtmlText = bytesToText(await fsReadBytes(joinPath(packagePath, 'chat.html'))); }
+        try { chatHtmlText = bytesToText(await packageSource.readBytes(joinPath(packagePath, 'chat.html'))); }
         catch (err) {
           addAssetBlocker(diag, 'rendererAssetRefMismatches', 'chat-html-unreadable', 'chat.html could not be read for renderer asset diagnostics', String((err && err.message) || err));
         }
+      }
+      if (manifest) {
+        await verifyLegacyRendererDescriptors(packagePath, manifest, diag, packageSource);
       }
 
       if (snapshot) {
@@ -1448,6 +1585,14 @@
           diag.hashChecks.snapshotShaOk = !!fileSnapshotSha && fileSnapshotSha === actualSnapshotSha;
           if (!diag.hashChecks.snapshotShaOk) {
             diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSnapshotSha, actual: fileSnapshotSha }));
+          }
+          var snapshotByteLength = safeObject(safeObject(manifest.files).snapshot).byteLength;
+          diag.hashChecks.snapshotByteLengthOk = Number.isSafeInteger(snapshotByteLength) &&
+            snapshotByteLength >= 0 && snapshotByteLength === snapshotBytes.byteLength;
+          if (!diag.hashChecks.snapshotByteLengthOk) {
+            diag.blockers.push(makeIssue('snapshot-byte-length-mismatch',
+              'files.snapshot.byteLength does not match stored snapshot.json bytes',
+              { expected: snapshotByteLength, actual: snapshotBytes.byteLength }));
           }
         }
         var expectedContentHash = '';
@@ -1499,14 +1644,14 @@
           diag.assetChecks.manifestAssetCount = asArray(manifest.assets).length;
           if (diag.assetsDirPresent) {
             addAssetWarning(diag, 'extraPackageAssets', 'unexpected-assets-dir-v1', 'v1 asset-less package should normally omit assets/');
-            diag.assetChecks.packageAssetCount = (await listPackageAssetRelativePaths(packagePath, diag)).length;
+            diag.assetChecks.packageAssetCount = (await listPackageAssetRelativePaths(packagePath, diag, packageSource)).length;
           }
           diag.assetChecks.packageAssetsOk = true;
         } else if (diag.schemaVersion === 2 || diag.schemaVersion === 3) {
           var manifestAssetInfo = validateManifestAssets(manifest, diag);
-          await validatePackageAssetFiles(packagePath, manifestAssetInfo.list, diag);
+          await validatePackageAssetFiles(packagePath, manifestAssetInfo.list, diag, packageSource);
           if (snapshot) validateSnapshotAssetRefs(snapshot, manifestAssetInfo.list, diag);
-          if (includeRendererChecks && snapshot) await validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssetInfo.list, diag);
+          if (includeRendererChecks && snapshot) await validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssetInfo.list, diag, packageSource);
           if (manifestAssetInfo.list.length) await compareLiveCasAssets(manifestAssetInfo.list, diag, includeCasChecks);
         }
       }
@@ -1552,6 +1697,36 @@
     return setAggregateStatus(result, true);
   }
 
+  /* M08 read-only byte-source adapter. The portable container has already
+   * bounded and normalized every entry, but this entry point still copies the
+   * byte map and runs the exact same verifier core used for archive paths. */
+  async function validateSavedChatPackageBytesV1(options) {
+    var opts = safeObject(options);
+    var packageDirName = cleanString(opts.packageDirName);
+    var virtualPath = joinPath(PACKAGE_ROOT, packageDirName);
+    if (!/^[A-Za-z0-9._-]+\.h2ochat$/.test(packageDirName) ||
+        packageDirName === '.h2ochat' || packageDirName.indexOf('..') >= 0) {
+      var invalid = packageDiagnostic(virtualPath);
+      invalid.blockers.push(makeIssue('package-byte-source-invalid', 'portable packageDirName is not a safe .h2ochat basename'));
+      invalid.status = statusFromIssues(invalid.blockers, invalid.warnings);
+      return invalid;
+    }
+    try {
+      var source = memoryPackageSource(virtualPath, opts.entries);
+      return validateSavedChatPackageV1({
+        packagePath: virtualPath,
+        includeCasChecks: false,
+        includeDbChecks: false,
+        includeRendererChecks: opts.includeRendererChecks !== false,
+      }, source);
+    } catch (error) {
+      var diag = packageDiagnostic(virtualPath);
+      diag.blockers.push(makeIssue('package-byte-source-invalid', 'portable package byte source is invalid', String((error && error.message) || error)));
+      diag.status = statusFromIssues(diag.blockers, diag.warnings);
+      return diag;
+    }
+  }
+
   function diagnoseSavedChatArchiveCapabilitiesV1() {
     return {
       installed: true,
@@ -1568,6 +1743,7 @@
         'diagnoseSavedChatArchiveCapabilitiesV1',
         'listSavedChatArchivePackagesV1',
         'validateSavedChatPackageV1',
+        'validateSavedChatPackageBytesV1',
         'diagnoseSavedChatArchiveV1',
       ],
       boundaries: {
@@ -1594,6 +1770,9 @@
   };
   H2O.Studio.ingestion.validateSavedChatPackageV1 = function (options) {
     return validateSavedChatPackageV1(options);
+  };
+  H2O.Studio.ingestion.validateSavedChatPackageBytesV1 = function (options) {
+    return validateSavedChatPackageBytesV1(options);
   };
   H2O.Studio.ingestion.diagnoseSavedChatArchiveV1 = function (options) {
     return diagnoseSavedChatArchiveV1(options);
