@@ -1,6 +1,6 @@
 # Saved Chat Portable ZIP Contract
 
-Status: Normative / M08 P0 contract freeze; P0–P3 COMPLETE; G0/G1 PASS; M08 ACTIVE / AWAITING INDEPENDENT G2
+Status: Normative / M08 COMPLETE / ACCEPTED; P0–P3 COMPLETE; G0/G1/G2 PASS; G2 passed 2026-09-01
 
 Date: 2026-09-01
 
@@ -13,6 +13,7 @@ Related:
 - [Saved Chat Package v3 Contract](saved-chat-package-v3.md)
 - [Saved Chat Archive Generations Contract](saved-chat-generations.md)
 - [Saved Chat Storage ↔ Transport Object Handoff Contract](saved-chat-transport-handoff.md)
+- [M08 acceptance record](../../../release-evidence/2026-09-01/saved-chat-storage-m08-acceptance.md)
 - [M08 P2/P3 runtime acceptance](../../../release-evidence/2026-09-01/saved-chat-storage-m08-p3-runtime-acceptance.md)
 - [Phase J.4 ZIP decision](../../../release-evidence/2026-06-24/saved-chat-archive-phase-j4-zip-format-decision.md)
 - [M01 storage decision memo](../../../release-evidence/2026-08-24/saved-chat-storage-m01-t05-decision-memo.md)
