@@ -539,6 +539,227 @@ fixture('control: nothing is cached across passes - a second pass measures again
 
 // ══ STRUCTURE ═════════════════════════════════════════════════════════════
 
+// Real ensure-path mini DOM. It models the browser's whitespace Text nodes and
+// one childList record per innerHTML replacement, while counting only writes
+// made by the extracted production function.
+function createRendererEnv() {
+  const counts = { ensure: 0, innerHTML: 0, childRemovals: 0, childAdditions: 0, recreatedElements: 0, attrWrites: 0, styleWrites: 0, raf: 0 };
+  const records = [], frames = [];
+  let seq = 0;
+
+  class TextNode {
+    constructor(text = '') { this.nodeType = 3; this.textContent = String(text); this.parentNode = null; }
+    get parentElement() { return this.parentNode; }
+    cloneNode() { return new TextNode(this.textContent); }
+    contains(node) { return node === this; }
+  }
+  const rawAttach = (parent, child) => { child.parentNode = parent; parent.childNodes.push(child); return child; };
+  const elementCount = (node) => node?.nodeType === 1 ? 1 + node.childNodes.reduce((n, child) => n + elementCount(child), 0) : 0;
+  const classHas = (node, name) => String(node.getAttribute('class') || '').split(/\s+/u).includes(name);
+
+  class El {
+    constructor(tag = 'div') {
+      this.tagName = String(tag).toUpperCase(); this.nodeType = 1; this.__id = ++seq;
+      this.__attrs = new Map(); this.__styles = new Map(); this.childNodes = []; this.parentNode = null;
+      this.__rect = { top: 0, left: 0, width: 24, height: 24 };
+      const self = this;
+      this.style = new Proxy({
+        setProperty(name, value) { counts.styleWrites += 1; self.__styles.set(String(name), String(value)); },
+        removeProperty(name) { counts.styleWrites += 1; self.__styles.delete(String(name)); },
+        getPropertyValue(name) { return self.__styles.get(String(name)) || ''; },
+      }, {
+        get(target, key) { return key in target ? target[key] : (self.__styles.get(String(key)) || ''); },
+        set(_target, key, value) { counts.styleWrites += 1; self.__styles.set(String(key), String(value)); return true; },
+      });
+    }
+    get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; }
+    get children() { return this.childNodes.filter((node) => node.nodeType === 1); }
+    get nextSibling() { const siblings = this.parentNode?.childNodes || []; return siblings[siblings.indexOf(this) + 1] || null; }
+    get isConnected() { let node = this; while (node) { if (node === documentElement) return true; node = node.parentNode; } return false; }
+    get className() { return this.getAttribute('class') || ''; }
+    get classList() { return { contains: (name) => classHas(this, String(name)) }; }
+    setAttribute(name, value) { counts.attrWrites += 1; this.__attrs.set(String(name), String(value)); }
+    removeAttribute(name) { counts.attrWrites += 1; this.__attrs.delete(String(name)); }
+    getAttribute(name) { const value = this.__attrs.get(String(name)); return value === undefined ? null : value; }
+    hasAttribute(name) { return this.__attrs.has(String(name)); }
+    addEventListener() {} removeEventListener() {}
+    appendChild(node) { if (node.parentNode) node.parentNode.removeChild(node); rawAttach(this, node); counts.childAdditions += 1; records.push({ type: 'childList', target: this, addedNodes: [node], removedNodes: [] }); return node; }
+    removeChild(node) { const i = this.childNodes.indexOf(node); if (i >= 0) { this.childNodes.splice(i, 1); node.parentNode = null; counts.childRemovals += 1; records.push({ type: 'childList', target: this, addedNodes: [], removedNodes: [node] }); } return node; }
+    remove() { this.parentNode?.removeChild(this); }
+    insertBefore(node, before) { if (node.parentNode) node.parentNode.removeChild(node); const i = this.childNodes.indexOf(before); node.parentNode = this; this.childNodes.splice(i < 0 ? this.childNodes.length : i, 0, node); counts.childAdditions += 1; records.push({ type: 'childList', target: this, addedNodes: [node], removedNodes: [] }); return node; }
+    get textContent() { return this.childNodes.map((node) => node.textContent || '').join(''); }
+    set textContent(value) { this.__replace(String(value) ? [new TextNode(value)] : []); }
+    get innerHTML() { return ''; }
+    set innerHTML(markup) {
+      counts.innerHTML += 1;
+      const width = /--cgxui-rail-btn-w:(\d+)px/u.exec(String(markup))?.[1] || '24';
+      const height = /--cgxui-rail-btn-h:(\d+)px/u.exec(String(markup))?.[1] || '24';
+      const added = canonicalNodes(width, height);
+      counts.recreatedElements += added.reduce((n, node) => n + elementCount(node), 0);
+      this.__replace(added);
+    }
+    __replace(added) { const removed = this.childNodes.slice(); for (const node of removed) node.parentNode = null; this.childNodes.length = 0; for (const node of added) rawAttach(this, node); counts.childRemovals += removed.length; counts.childAdditions += added.length; if (removed.length || added.length) records.push({ type: 'childList', target: this, addedNodes: added, removedNodes: removed }); }
+    __desc(out = []) { for (const child of this.childNodes) { if (child.nodeType !== 1) continue; out.push(child); child.__desc(out); } return out; }
+    contains(node) { let cur = node; while (cur) { if (cur === this) return true; cur = cur.parentNode; } return false; }
+    matches(selector) { return matches(this, selector); }
+    closest(selector) { let cur = this; while (cur) { if (cur.nodeType === 1 && matches(cur, selector)) return cur; cur = cur.parentNode; } return null; }
+    querySelector(selector) { return this.__desc().find((node) => matches(node, selector)) || null; }
+    querySelectorAll(selector) { return this.__desc().filter((node) => matches(node, selector)); }
+    getBoundingClientRect() { const r = this.__rect; return { ...r, right: r.left + r.width, bottom: r.top + r.height }; }
+    cloneNode(deep = false) { const clone = new El(this.tagName); clone.__attrs = new Map(this.__attrs); clone.__styles = new Map(this.__styles); clone.__rect = { ...this.__rect }; if (deep) for (const child of this.childNodes) rawAttach(clone, child.cloneNode(true)); return clone; }
+  }
+
+  function matches(node, selector) {
+    return String(selector).split(',').map((s) => s.trim()).filter(Boolean).some((part) => {
+      let source = part;
+      const not = /:not\(\[([\w:-]+)(?:="([^"]*)")?\]\)$/u.exec(source);
+      if (not) {
+        const value = node.getAttribute(not[1]);
+        if (value !== null && (not[2] === undefined || value === not[2])) return false;
+        source = source.slice(0, not.index);
+      }
+      const tag = /^[a-z]+/iu.exec(source); if (tag && node.tagName !== tag[0].toUpperCase()) return false;
+      const id = /#([\w-]+)/u.exec(source); if (id && node.getAttribute('id') !== id[1]) return false;
+      for (const match of source.matchAll(/\.([\w-]+)/gu)) if (!classHas(node, match[1])) return false;
+      for (const match of source.matchAll(/\[([\w:-]+)(?:="([^"]*)")?\]/gu)) { const value = node.getAttribute(match[1]); if (value === null || (match[2] !== undefined && value !== match[2])) return false; }
+      return true;
+    });
+  }
+  function rawEl(tag, attrs = {}, styles = {}) { const node = new El(tag); for (const [k, v] of Object.entries(attrs)) node.__attrs.set(k, String(v)); for (const [k, v] of Object.entries(styles)) node.__styles.set(k, String(v)); return node; }
+  function canonicalNodes(width = '24', height = '24') {
+    const outer = rawEl('span', { class: 'cgxui-dcpn-rail-nav-btn', 'aria-hidden': 'true' }, { '--cgxui-btn-bg': '#6b7280', '--cgxui-rail-btn-w': `${width}px`, '--cgxui-rail-btn-h': `${height}px` });
+    const inner = rawEl('span', { class: 'cgxui-dcpn-rail-nav-txt', 'aria-hidden': 'true' });
+    const svg = rawEl('svg', { xmlns: 'http://www.w3.org/2000/svg', width: '14', height: '14', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.9', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' });
+    rawAttach(svg, new TextNode('\n  ')); rawAttach(svg, rawEl('path', { d: 'M12 22a10 10 0 1 1 10-10c0 2.2-1.8 4-4 4h-1.5a2.5 2.5 0 0 0 0 5H12z' }));
+    for (const attrs of [{ cx: '7.5', cy: '10.5', r: '1' }, { cx: '12', cy: '8', r: '1' }, { cx: '16.5', cy: '10.5', r: '1' }, { cx: '9', cy: '15', r: '1' }]) { rawAttach(svg, new TextNode('\n  ')); rawAttach(svg, rawEl('circle', attrs)); }
+    rawAttach(svg, new TextNode('\n')); rawAttach(inner, new TextNode(' ')); rawAttach(inner, svg); rawAttach(inner, new TextNode(' ')); rawAttach(outer, new TextNode('\n ')); rawAttach(outer, inner); rawAttach(outer, new TextNode('\n'));
+    return [new TextNode('\n      '), outer, new TextNode('\n    ')];
+  }
+
+  const documentElement = rawEl('html'), body = rawEl('body'), nav = rawEl('nav', { 'aria-label': 'Chat history' });
+  rawAttach(documentElement, body); rawAttach(body, nav);
+  const STATE = { rafTinyRail: 0, tinyRailWrap: null, _tinyRailPosWired: true };
+  let scene = null;
+  const addRail = ({ owned = true } = {}) => {
+    const rail = rawEl('div', { id: 'stage-sidebar-tiny-bar' }); rail.__rect = { top: 0, left: 0, width: 56, height: 600 }; rawAttach(nav, rail);
+    const templateWrap = rawEl('div', { 'data-state': 'closed' }), templateBtn = rawEl('a', { class: '__menu-item', 'data-sidebar-item': 'true' }), templateIcon = rawEl('span', { class: 'icon' }); templateIcon.__rect = { top: 20, left: 12, width: 24, height: 24 }; rawAttach(templateBtn, templateIcon); rawAttach(templateWrap, templateBtn); rawAttach(rail, templateWrap);
+    const result = { rail, templateWrap, templateBtn, templateIcon };
+    if (owned) {
+      const wrap = rawEl('div', { 'data-state': 'closed', 'data-cgxui-owner': 'thpn', 'data-h2o-rail-view': 'themes' }, { position: '', zIndex: '', pointerEvents: '', width: '', height: '', left: '', top: '' });
+      const btn = rawEl('a', { role: 'button', tabindex: '0', 'data-sidebar-item': 'true', 'aria-label': 'Themes', title: 'Palette / Themes', 'data-cgxui': 'thpn-tinyrailbtn', 'data-cgxui-owner': 'thpn', 'data-owner': 'thpn', 'data-h2o-rail-view': 'themes' }, { cursor: 'pointer' });
+      const iconHost = rawEl('span', { class: 'icon' }, { display: 'flex', alignItems: 'center', justifyContent: 'center' }); for (const node of canonicalNodes()) rawAttach(iconHost, node); rawAttach(btn, iconHost); rawAttach(wrap, btn); rawAttach(rail, wrap); STATE.tinyRailWrap = wrap; Object.assign(result, { wrap, btn, iconHost });
+    }
+    return result;
+  };
+  scene = addRail();
+  const D = { documentElement, body, createElement: (tag) => new El(tag), getElementById: (id) => id === 'stage-sidebar-tiny-bar' ? scene.rail : null, querySelector: (selector) => selector === '#stage-sidebar-tiny-bar' ? scene.rail : (String(selector).includes('nav[') ? nav : null) };
+  const W = { requestAnimationFrame(fn) { counts.raf += 1; frames.push(fn); return frames.length; }, cancelAnimationFrame() {}, addEventListener() {}, removeEventListener() {}, visualViewport: { addEventListener() {} } };
+  const helpers = ['DOM_TP_tinyRailIconParts', 'DOM_TP_setAttrIfChanged', 'DOM_TP_setStyleIfChanged'].map((name) => extractFunction(name, { optional: true })).filter(Boolean);
+  let program = [...helpers, extractFunction('UI_TP_ensureTinyRailButton'), extractFunction('TIME_TP_scheduleEnsureTinyRail'), extractFunction('DOM_TP_ownedAdditionsOnly'), extractFunction('DOM_TP_inTinyRailDomain'), extractFunction('DOM_TP_carriesTinyRailCandidate'), extractFunction('DOM_TP_tinyRailInvalidated')].join('\n');
+  program = program.replace(/function UI_TP_ensureTinyRailButton\(\) \{/u, 'function UI_TP_ensureTinyRailButton() { __counts.ensure += 1;');
+  const sandbox = { D, W, STATE, document: D, window: W, __counts: counts, requestAnimationFrame: W.requestAnimationFrame.bind(W), UI_TP_activateRailThemesSurface() {}, UI_TP_findTinyRailEl: () => scene.rail, UI_TP_findTinyRailAvatarWrap: () => null, UI_TP_findTinyRailStack: () => scene.rail, DOM_selScoped: () => '[data-cgxui="thpn-tinyrailbtn"][data-cgxui-owner="thpn"]', SkID: 'thpn', ATTR_CGXUI: 'data-cgxui', ATTR_CGXUI_OWNER: 'data-cgxui-owner', ATTR_OWNER: 'data-owner', ATTR_TITLE: 'title', UI_TPANEL_TINY_RAIL: 'thpn-tinyrailbtn', SEL_TINY_RAIL: '#stage-sidebar-tiny-bar', SEL_CHATGPT_SIDEBAR: 'nav[aria-label="Chat history"]', SEL_TINY_RAIL_IMG: 'img', SEL_TINY_RAIL_ICON_HOST: '.icon, .icon-lg', SEL_TINY_RAIL_TEMPLATE_A: 'a[data-sidebar-item="true"]', ATTR_TINY_RAIL_VIEW: 'data-h2o-rail-view', TINY_RAIL_VIEW_THEMES: 'themes', CLS_DOCK_RAIL_NAV_BTN: 'cgxui-dcpn-rail-nav-btn', CLS_DOCK_RAIL_NAV_TXT: 'cgxui-dcpn-rail-nav-txt', CFG_TINY_RAIL_TTL: 'Palette / Themes', CFG_TINY_RAIL_MIN_W: 30, CFG_TINY_RAIL_MIN_H: 200, CFG_TINY_BTN_W: 24, CFG_TINY_BTN_H: 24, UI_TPANEL_SVG_ICON: '<svg></svg>', Array, Object, String, Number, Math, Boolean, Set, Map, JSON, Infinity };
+  vm.runInNewContext(program, sandbox, { filename: `${THEMES_PATH}:renderer` });
+
+  const reset = ({ keepFrames = false } = {}) => { for (const key of Object.keys(counts)) counts[key] = 0; records.length = 0; if (!keepFrames) frames.length = 0; };
+  const iconOuter = () => scene.iconHost?.children[0] || null;
+  const isCanonical = () => { const outer = iconOuter(), inner = outer?.children[0], svg = inner?.children[0]; return !!(outer && outer.className === 'cgxui-dcpn-rail-nav-btn' && inner?.className === 'cgxui-dcpn-rail-nav-txt' && svg?.tagName === 'SVG' && svg.children.length === 5 && svg.children[0]?.getAttribute('d') === 'M12 22a10 10 0 1 1 10-10c0 2.2-1.8 4-4 4h-1.5a2.5 2.5 0 0 0 0 5H12z'); };
+  reset();
+  return { counts, STATE, get scene() { return scene; }, reset, iconOuter, isCanonical, ensure: () => sandbox.UI_TP_ensureTinyRailButton(), takeRecords: () => records.splice(0), relevant: (batch) => sandbox.DOM_TP_tinyRailInvalidated(batch), schedule: () => sandbox.TIME_TP_scheduleEnsureTinyRail(), flushOneFrame() { frames.shift()?.(); }, flushFrames(limit = 8) { for (let i = 0; i < limit && frames.length; i += 1) this.flushOneFrame(); }, rawClear(node) { for (const child of node.childNodes) child.parentNode = null; node.childNodes.length = 0; }, rawRemove(node) { const parent = node?.parentNode, i = parent?.childNodes.indexOf(node) ?? -1; if (i >= 0) parent.childNodes.splice(i, 1); if (node) node.parentNode = null; }, rawAttr(node, name, value) { node.__attrs.set(String(name), String(value)); }, rawStyle(node, name, value) { node.__styles.set(String(name), String(value)); }, replaceRail() { scene.rail.parentNode?.removeChild(scene.rail); records.length = 0; scene = addRail({ owned: false }); return scene; }, disconnectOwned() { scene.wrap?.parentNode?.removeChild(scene.wrap); records.length = 0; } };
+}
+
+fixture('RED renderer A: stable canonical ensure performs no destructive or scalar writes', () => {
+  const env = createRendererEnv();
+  env.ensure();
+  eq({ innerHTML: env.counts.innerHTML, childRemovals: env.counts.childRemovals, childAdditions: env.counts.childAdditions, recreatedElements: env.counts.recreatedElements, attrWrites: env.counts.attrWrites, styleWrites: env.counts.styleWrites },
+    { innerHTML: 0, childRemovals: 0, childAdditions: 0, recreatedElements: 0, attrWrites: 0, styleWrites: 0 },
+    'canonical connected output is write-free');
+});
+
+fixture('RED renderer B: stable ensure emits no observer re-entry cause', () => {
+  const env = createRendererEnv();
+  env.ensure();
+  const output = env.takeRecords();
+  const admitted = output.length ? env.relevant(output) : false;
+  if (admitted) env.schedule();
+  env.flushFrames();
+  eq({ childList: output.length, admitted, raf: env.counts.raf, ensures: env.counts.ensure },
+    { childList: 0, admitted: false, raf: 0, ensures: 1 },
+    'stable output cannot re-arm the existing frame path');
+});
+
+fixture('control renderer C1: missing icon children repair once to canonical', () => {
+  const env = createRendererEnv(); env.rawClear(env.scene.iconHost); env.reset(); env.ensure();
+  eq(env.counts.innerHTML, 1, 'missing icon performs one repair');
+  ok(env.isCanonical(), 'missing icon repair is canonical');
+});
+
+fixture('control renderer C2: incomplete SVG repairs once to canonical', () => {
+  const env = createRendererEnv();
+  const svg = env.iconOuter().children[0].children[0]; env.rawRemove(svg.children[4]); env.reset(); env.ensure();
+  eq(env.counts.innerHTML, 1, 'incomplete SVG performs one repair');
+  ok(env.isCanonical(), 'incomplete SVG repair restores every child');
+});
+
+fixture('control renderer C3: stale palette path repairs once to canonical', () => {
+  const env = createRendererEnv(); env.iconOuter().children[0].children[0].children[0].__attrs.set('d', 'stale'); env.reset(); env.ensure();
+  eq(env.counts.innerHTML, 1, 'stale path performs one repair');
+  ok(env.isCanonical(), 'stale path is restored');
+});
+
+fixture('control renderer C4: disconnected rail replacement recovers output', () => {
+  const env = createRendererEnv(); const replacement = env.replaceRail(); env.reset(); env.ensure();
+  ok(env.STATE.tinyRailWrap?.isConnected, 'replacement rail receives a connected wrapper');
+  ok(replacement.rail.contains(env.STATE.tinyRailWrap), 'wrapper belongs to current rail');
+  const btn = env.STATE.tinyRailWrap.querySelector('[data-cgxui="thpn-tinyrailbtn"][data-cgxui-owner="thpn"]');
+  ok(btn?.querySelector('.cgxui-dcpn-rail-nav-btn'), 'replacement rail receives owned canonical button output');
+});
+
+fixture('control renderer C5: disconnected wrapper/button recover under live rail', () => {
+  const env = createRendererEnv(); env.disconnectOwned(); env.reset(); env.ensure();
+  ok(env.STATE.tinyRailWrap?.isConnected, 'wrapper is recreated');
+  ok(env.STATE.tinyRailWrap.querySelector('[data-cgxui="thpn-tinyrailbtn"][data-cgxui-owner="thpn"]'), 'button is recreated');
+});
+
+fixture('RED renderer B: one repair has one write-free follow-up and drains', () => {
+  const env = createRendererEnv(); env.rawClear(env.scene.iconHost); env.reset(); env.ensure();
+  const repairRecords = env.takeRecords(); if (env.relevant(repairRecords)) env.schedule();
+  env.reset({ keepFrames: true }); env.flushOneFrame();
+  const followRecords = env.takeRecords(); const followRelevant = followRecords.length ? env.relevant(followRecords) : false;
+  if (followRelevant) env.schedule();
+  eq({ followupEnsures: env.counts.ensure, followupInnerHTML: env.counts.innerHTML, followupStructuralWrites: env.counts.childRemovals + env.counts.childAdditions, furtherFrames: env.counts.raf },
+    { followupEnsures: 1, followupInnerHTML: 0, followupStructuralWrites: 0, furtherFrames: 0 },
+    'repair converges after one write-free observer follow-up');
+});
+
+fixture('RED renderer D: width-only change writes only the width variable', () => {
+  const env = createRendererEnv(); env.scene.templateIcon.__rect.width = 31; env.reset(); env.ensure();
+  eq({ innerHTML: env.counts.innerHTML, childChurn: env.counts.childRemovals + env.counts.childAdditions, attrWrites: env.counts.attrWrites, styleWrites: env.counts.styleWrites, width: env.iconOuter().style.getPropertyValue('--cgxui-rail-btn-w'), height: env.iconOuter().style.getPropertyValue('--cgxui-rail-btn-h') },
+    { innerHTML: 0, childChurn: 0, attrWrites: 0, styleWrites: 1, width: '31px', height: '24px' },
+    'dimension-only update preserves icon identity');
+});
+
+for (const scalar of [
+  { name: 'wrapper view', kind: 'attr', node: (env) => env.scene.wrap, key: 'data-h2o-rail-view' },
+  { name: 'button view', kind: 'attr', node: (env) => env.scene.btn, key: 'data-h2o-rail-view' },
+  { name: 'title', kind: 'attr', node: (env) => env.scene.btn, key: 'title' },
+  { name: 'aria-label', kind: 'attr', node: (env) => env.scene.btn, key: 'aria-label' },
+  { name: 'cursor', kind: 'style', node: (env) => env.scene.btn, key: 'cursor' },
+  { name: 'width variable', kind: 'style', node: (env) => env.iconOuter(), key: '--cgxui-rail-btn-w' },
+]) {
+  fixture(`RED renderer E: only stale ${scalar.name} is rewritten`, () => {
+    const env = createRendererEnv(), node = scalar.node(env);
+    if (scalar.kind === 'attr') env.rawAttr(node, scalar.key, 'stale'); else env.rawStyle(node, scalar.key, '99px');
+    env.reset(); env.ensure();
+    eq({ innerHTML: env.counts.innerHTML, childChurn: env.counts.childRemovals + env.counts.childAdditions, attrWrites: env.counts.attrWrites, styleWrites: env.counts.styleWrites },
+      { innerHTML: 0, childChurn: 0, attrWrites: scalar.kind === 'attr' ? 1 : 0, styleWrites: scalar.kind === 'style' ? 1 : 0 },
+      `only stale ${scalar.name} is normalized`);
+  });
+}
+
+fixture('correlation: stable 8A1b output creates no downstream sidebar childList cause', () => {
+  const env = createRendererEnv(); env.ensure(); eq(env.takeRecords().length, 0, 'stable ensure produces no childList output under nav');
+});
+
 fixture('structure: one tiny-rail observer, records consumed, no new authority', () => {
   ok(WIRING.observesDocumentElement, 'STATE.moTinyRail still observes D.documentElement');
   ok(WIRING.singleTinyRailObserver, 'exactly one tiny-rail MutationObserver is constructed');
@@ -574,7 +795,7 @@ fixture('anti-vacuity: the harness really drives the paths it measures', () => {
 const failed = fixtures.filter((f) => !f.ok);
 for (const f of fixtures) {
   console.log(`${f.ok ? 'PASS' : 'FAIL'} ${f.name}`);
-  if (!f.ok) console.log(f.error.split('\n').slice(0, 6).map((l) => `       ${l}`).join('\n'));
+  if (!f.ok) console.log(f.error.split('\n').slice(0, 14).map((l) => `       ${l}`).join('\n'));
 }
 console.log('');
 console.log(`Admission predicate present: ${[...present].join(', ') || '(none - base revision)'}`);

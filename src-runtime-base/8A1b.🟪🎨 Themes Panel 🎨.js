@@ -3841,6 +3841,86 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
     );
   }
 
+  function DOM_TP_tinyRailIconParts(iconHost) {
+    const elementChildren = (node) => {
+      if (!node?.childNodes) return null;
+      const elements = [];
+      for (const child of node.childNodes) {
+        if (child?.nodeType === 1) elements.push(child);
+        else if (child?.nodeType === 3 && !String(child.textContent || '').trim()) continue;
+        else return null;
+      }
+      return elements;
+    };
+    const attrIs = (node, name, value) => node?.getAttribute?.(name) === value;
+    const tagIs = (node, name) => String(node?.tagName || '').toLowerCase() === name;
+
+    const hostChildren = elementChildren(iconHost);
+    if (hostChildren?.length !== 1) return null;
+    const outer = hostChildren[0];
+    if (!tagIs(outer, 'span')
+      || !attrIs(outer, 'class', CLS_DOCK_RAIL_NAV_BTN)
+      || !attrIs(outer, 'aria-hidden', 'true')) return null;
+
+    const outerChildren = elementChildren(outer);
+    if (outerChildren?.length !== 1) return null;
+    const inner = outerChildren[0];
+    if (!tagIs(inner, 'span')
+      || !attrIs(inner, 'class', CLS_DOCK_RAIL_NAV_TXT)
+      || !attrIs(inner, 'aria-hidden', 'true')) return null;
+
+    const innerChildren = elementChildren(inner);
+    if (innerChildren?.length !== 1) return null;
+    const svg = innerChildren[0];
+    if (!tagIs(svg, 'svg')
+      || !attrIs(svg, 'xmlns', 'http://www.w3.org/2000/svg')
+      || !attrIs(svg, 'width', '14')
+      || !attrIs(svg, 'height', '14')
+      || !attrIs(svg, 'viewBox', '0 0 24 24')
+      || !attrIs(svg, 'fill', 'none')
+      || !attrIs(svg, 'stroke', 'currentColor')
+      || !attrIs(svg, 'stroke-width', '1.9')
+      || !attrIs(svg, 'stroke-linecap', 'round')
+      || !attrIs(svg, 'stroke-linejoin', 'round')
+      || !attrIs(svg, 'aria-hidden', 'true')) return null;
+
+    const iconChildren = elementChildren(svg);
+    if (iconChildren?.length !== 5) return null;
+    if (!tagIs(iconChildren[0], 'path')
+      || !attrIs(iconChildren[0], 'd', 'M12 22a10 10 0 1 1 10-10c0 2.2-1.8 4-4 4h-1.5a2.5 2.5 0 0 0 0 5H12z')) return null;
+    const circles = [
+      ['7.5', '10.5', '1'],
+      ['12', '8', '1'],
+      ['16.5', '10.5', '1'],
+      ['9', '15', '1'],
+    ];
+    for (let i = 0; i < circles.length; i += 1) {
+      const circle = iconChildren[i + 1];
+      const [cx, cy, r] = circles[i];
+      if (!tagIs(circle, 'circle')
+        || !attrIs(circle, 'cx', cx)
+        || !attrIs(circle, 'cy', cy)
+        || !attrIs(circle, 'r', r)) return null;
+    }
+    return { outer, inner, svg };
+  }
+
+  function DOM_TP_setAttrIfChanged(node, name, value) {
+    if (!node) return;
+    const desired = String(value);
+    if (node.getAttribute(name) !== desired) node.setAttribute(name, desired);
+  }
+
+  function DOM_TP_setStyleIfChanged(node, name, value) {
+    if (!node?.style) return;
+    const desired = String(value);
+    const custom = String(name).startsWith('--');
+    const current = custom ? node.style.getPropertyValue(name) : node.style[name];
+    if (String(current || '') === desired) return;
+    if (custom) node.style.setProperty(name, desired);
+    else node.style[name] = desired;
+  }
+
   function UI_TP_ensureTinyRailButton() {
     const rail = UI_TP_findTinyRailEl();
     if (!rail) return;
@@ -3942,30 +4022,39 @@ ${TINYBTN} .${CLS_DOCK_RAIL_NAV_TXT} svg{
       }
     }
 
-    wrap.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
-    wrap.style.position = '';
-    wrap.style.zIndex = '';
-    wrap.style.pointerEvents = '';
-    wrap.style.width = '';
-    wrap.style.height = '';
-    wrap.style.left = '';
-    wrap.style.top = '';
+    DOM_TP_setAttrIfChanged(wrap, ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
+    DOM_TP_setStyleIfChanged(wrap, 'position', '');
+    DOM_TP_setStyleIfChanged(wrap, 'zIndex', '');
+    DOM_TP_setStyleIfChanged(wrap, 'pointerEvents', '');
+    DOM_TP_setStyleIfChanged(wrap, 'width', '');
+    DOM_TP_setStyleIfChanged(wrap, 'height', '');
+    DOM_TP_setStyleIfChanged(wrap, 'left', '');
+    DOM_TP_setStyleIfChanged(wrap, 'top', '');
 
-    btn.setAttribute(ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
-    btn.setAttribute(ATTR_TITLE, CFG_TINY_RAIL_TTL);
-    btn.setAttribute('aria-label', 'Themes');
-    btn.style.cursor = 'pointer';
+    DOM_TP_setAttrIfChanged(btn, ATTR_TINY_RAIL_VIEW, TINY_RAIL_VIEW_THEMES);
+    DOM_TP_setAttrIfChanged(btn, ATTR_TITLE, CFG_TINY_RAIL_TTL);
+    DOM_TP_setAttrIfChanged(btn, 'aria-label', 'Themes');
+    DOM_TP_setStyleIfChanged(btn, 'cursor', 'pointer');
 
     const iconHost = btn.querySelector(SEL_TINY_RAIL_ICON_HOST) || btn;
-    iconHost.style.display = 'flex';
-    iconHost.style.alignItems = 'center';
-    iconHost.style.justifyContent = 'center';
-    iconHost.innerHTML = `
-      <span class="${CLS_DOCK_RAIL_NAV_BTN}" aria-hidden="true"
-        style="--cgxui-btn-bg:#6b7280; --cgxui-rail-btn-w:${railW}px; --cgxui-rail-btn-h:${railH}px;">
-        <span class="${CLS_DOCK_RAIL_NAV_TXT}" aria-hidden="true">${UI_TPANEL_SVG_ICON}</span>
-      </span>
-    `;
+    DOM_TP_setStyleIfChanged(iconHost, 'display', 'flex');
+    DOM_TP_setStyleIfChanged(iconHost, 'alignItems', 'center');
+    DOM_TP_setStyleIfChanged(iconHost, 'justifyContent', 'center');
+    let iconParts = DOM_TP_tinyRailIconParts(iconHost);
+    if (!iconParts) {
+      iconHost.innerHTML = `
+        <span class="${CLS_DOCK_RAIL_NAV_BTN}" aria-hidden="true"
+          style="--cgxui-btn-bg:#6b7280; --cgxui-rail-btn-w:${railW}px; --cgxui-rail-btn-h:${railH}px;">
+          <span class="${CLS_DOCK_RAIL_NAV_TXT}" aria-hidden="true">${UI_TPANEL_SVG_ICON}</span>
+        </span>
+      `;
+      iconParts = DOM_TP_tinyRailIconParts(iconHost);
+    }
+    if (iconParts) {
+      DOM_TP_setStyleIfChanged(iconParts.outer, '--cgxui-btn-bg', '#6b7280');
+      DOM_TP_setStyleIfChanged(iconParts.outer, '--cgxui-rail-btn-w', `${railW}px`);
+      DOM_TP_setStyleIfChanged(iconParts.outer, '--cgxui-rail-btn-h', `${railH}px`);
+    }
 
     const parent = avatarWrap?.parentElement && rail.contains(avatarWrap.parentElement)
       ? avatarWrap.parentElement
