@@ -1217,6 +1217,16 @@ checkAsync('M08 hostile ZIP structure, paths and resource declarations fail clos
   writeU32(symlink, symlinkCentral + 38, 0xa0000000);
   await assert.rejects(() => portable.readPortableZip(symlink), /symlink/i);
 
+  const unixDirectory = Uint8Array.from(valid);
+  const unixDirectoryCentral = centralOffsetOf(unixDirectory);
+  writeU16(unixDirectory, unixDirectoryCentral + 4, (3 << 8) | 20);
+  writeU32(unixDirectory, unixDirectoryCentral + 38, 0x40000000);
+  await assert.rejects(() => portable.readPortableZip(unixDirectory), /directory|special-file/i);
+
+  const dosDirectory = Uint8Array.from(valid);
+  writeU32(dosDirectory, centralOffsetOf(dosDirectory) + 38, 0x10);
+  await assert.rejects(() => portable.readPortableZip(dosDirectory), /directory|special-file/i);
+
   const unsafe = Uint8Array.from(valid);
   const unsafeCentral = centralOffsetOf(unsafe);
   const slashIndex = validName.indexOf('/');

@@ -433,7 +433,6 @@
       inspection: inspection,
       snapshotJson: snapshotJson,
       identity: packageIdentity(inspection, snapshotJson),
-      portablePackage: contained,
     };
   }
 

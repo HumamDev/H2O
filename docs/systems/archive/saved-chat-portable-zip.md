@@ -1,6 +1,6 @@
 # Saved Chat Portable ZIP Contract
 
-Status: Normative / M08 P0 contract freeze; M08 ACTIVE
+Status: Normative / M08 P0 contract freeze; P0–P3 COMPLETE; G0/G1 PASS; M08 ACTIVE / AWAITING INDEPENDENT G2
 
 Date: 2026-09-01
 
@@ -13,6 +13,7 @@ Related:
 - [Saved Chat Package v3 Contract](saved-chat-package-v3.md)
 - [Saved Chat Archive Generations Contract](saved-chat-generations.md)
 - [Saved Chat Storage ↔ Transport Object Handoff Contract](saved-chat-transport-handoff.md)
+- [M08 P2/P3 runtime acceptance](../../../release-evidence/2026-09-01/saved-chat-storage-m08-p3-runtime-acceptance.md)
 - [Phase J.4 ZIP decision](../../../release-evidence/2026-06-24/saved-chat-archive-phase-j4-zip-format-decision.md)
 - [M01 storage decision memo](../../../release-evidence/2026-08-24/saved-chat-storage-m01-t05-decision-memo.md)
 
@@ -142,6 +143,15 @@ range and cumulative total. Method-8 output is collected through a streaming
 decoder that cancels immediately when the actual output exceeds the declared
 or governed cap. No allocation is sized directly from an unchecked archive
 field.
+
+The P0–P3 reader is deliberately bounded in-memory, not an end-to-end streaming
+archive reader. Peak work can include the caller's admitted ZIP bytes, one
+private bounded archive copy, decoded members up to the cumulative limit, and
+the shared verifier's defensive package-byte copy. Compressed member ranges are
+views into the private archive copy and the package adapter reuses freshly
+decoded buffers, avoiding two otherwise redundant full-payload copies. These
+frozen physical and decoded limits are the memory authority; broader archives
+require a later explicit streaming redesign rather than a raised hidden cap.
 
 ## 7. DP-M08-E — package verification and import reuse
 

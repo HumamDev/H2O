@@ -469,8 +469,14 @@
       seen[validatedName.name] = true;
       var madeBySystem = versionMadeBy >>> 8;
       var unixMode = externalAttributes >>> 16;
-      if ((madeBySystem === 3 && (unixMode & 0xF000) === 0xA000) || validatedName.name.charAt(validatedName.name.length - 1) === '/') {
+      var unixFileType = unixMode & 0xF000;
+      var dosDirectory = (externalAttributes & 0x10) !== 0;
+      if (madeBySystem === 3 && unixFileType === 0xA000) {
         throw zipError('saved-chat-zip-symlink-unsupported', 'ZIP symlink or directory entries are not supported');
+      }
+      if (validatedName.name.charAt(validatedName.name.length - 1) === '/' || dosDirectory ||
+          (madeBySystem === 3 && unixFileType !== 0 && unixFileType !== 0x8000)) {
+        throw zipError('saved-chat-zip-entry-type-unsupported', 'ZIP directory or special-file entries are not supported');
       }
       records.push({
         name: validatedName.name,
@@ -515,7 +521,10 @@
       if (dataEnd > centralOffset || !sameBytes(bytes.slice(localNameStart, localNameStart + localNameLength), record.nameBytes)) {
         throw zipError('saved-chat-zip-local-central-mismatch', 'ZIP local and central names or ranges disagree');
       }
-      record.compressedBytes = bytes.slice(dataStart, dataEnd);
+      /* The admitted archive copy remains alive through decoding, so a view is
+       * sufficient here. Avoid duplicating the complete compressed payload in
+       * the bounded in-memory working set. */
+      record.compressedBytes = bytes.subarray(dataStart, dataEnd);
       expectedLocalOffset = dataEnd;
     }
     if (expectedLocalOffset !== centralOffset) {
@@ -608,7 +617,10 @@
         throw zipError('saved-chat-zip-package-root-invalid', 'ZIP package root is not a safe .h2ochat basename');
       }
       roots[root] = true;
-      relativeEntries.push({ name: relative, bytes: copyBytes(entry.bytes) });
+      /* readPortableZip already produced fresh verified output bytes. Keep
+       * those owned buffers instead of making a second full decoded-package
+       * copy; verifier adapters still defensively copy untrusted public input. */
+      relativeEntries.push({ name: relative, bytes: entry.bytes });
     });
     var rootNames = Object.keys(roots);
     if (rootNames.length !== 1) throw zipError('saved-chat-zip-package-root-invalid', 'ZIP must contain exactly one .h2ochat root');
