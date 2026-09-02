@@ -1,15 +1,13 @@
 // tools/validation/library/validate-title-spa-lifecycle-reversibility.mjs
 //
-// RED contract: 9A1b Chat List Decorator and 9A1c Chat Meta Enricher must treat
-// surface eligibility as LIVE route state, not as module-evaluation state.
+// Regression contract (historically introduced RED): 9A1b Chat List Decorator
+// and 9A1c Chat Meta Enricher must treat surface eligibility as LIVE route
+// state, not as module-evaluation state.
 //
-// Today both modules test location.pathname exactly once, inside their IIFE, and
-// terminally return on /auth, /settings and /admin. 9A1b assigns its boot
-// sentinel only at module completion, and 9A1c refuses to run unless that
-// sentinel is already set, so an initial load on an excluded surface kills both
-// for the lifetime of the document. Neither module subscribes to a route event
-// and neither owns any teardown, so the reverse transition never suspends the
-// expensive layer either.
+// The original defect evaluated location.pathname only at module load, making
+// an excluded-first document terminal and leaving no reversible teardown for
+// later SPA transitions. The product now implements the lifecycle below; this
+// file retains the original discriminating contract as regression protection.
 //
 // This validator executes the REAL production sources inside a faithful mock
 // window, then drives real SPA route transitions and asserts the lifecycle. It
@@ -17,9 +15,9 @@
 // activates on eligible routes, suspends the expensive layer off-route, and
 // resumes exactly once satisfies it.
 //
-// Expected: RED against current product. The compliant control fixture proves
-// the gate is capable of GREEN and therefore discriminates the missing
-// behaviour rather than failing unconditionally.
+// Expected now: GREEN against the current product. The compliant and vacuous
+// control fixtures prove the gate still discriminates the historical missing
+// behaviour rather than passing or failing unconditionally.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -208,7 +206,7 @@ function bootReal(env) {
    `subject` boots a document at a starting path and exposes the same probes.
    ───────────────────────────────────────────────────────────── */
 function assertReversibleLifecycle(makeSubject, tag) {
-  // RED A — document starts on an excluded surface.
+  // Contract A — document starts on an excluded surface.
   {
     const s = makeSubject(EXCLUDED);
     check(`${tag} / A1 excluded-first: expensive layer inactive on load`, () => {
@@ -231,7 +229,7 @@ function assertReversibleLifecycle(makeSubject, tag) {
     });
   }
 
-  // RED B — eligible, then excluded, then eligible again.
+  // Contract B — eligible, then excluded, then eligible again.
   {
     const s = makeSubject(ELIGIBLE_CHAT);
     const bootIntervals = s.liveIntervals();
@@ -487,7 +485,7 @@ let reentryVacuousRejected = 0;
   failures.length = before;
 }
 
-/* ── 3. The real subject: this is the RED contract. ────────────────────────── */
+/* ── 3. The real subject: current regression target, historically RED. ────── */
 const productFailuresStart = failures.length;
 assertReversibleLifecycle(realSubject, 'PRODUCT');
 assertDurableSuspension(realSubject, 'PRODUCT');
