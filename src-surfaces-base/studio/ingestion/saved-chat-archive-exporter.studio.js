@@ -10,7 +10,7 @@
  *   - No OS picker, no arbitrary caller-supplied destination root.
  *   - Manifest-driven copy only; no blind recursive copy.
  *   - No overwrite: existing final destination is rejected.
- *   - Folder export: temp .h2ochat directory under export root, then rename.
+ *   - Folder export: staged directory, then native atomic create-only publish.
  *   - ZIP export: verified staged file, then native atomic create-only publish.
  *   - No DB/store writes, no scanner/materializer/importer calls, no Chrome
  *     package-body authority, no sync/WebDAV/cloud/native messaging.
@@ -30,6 +30,8 @@
   var PACKAGE_SUFFIX = '.h2ochat';
   var ZIP_SUFFIX = '.h2ochat.zip';
   var TMP_SUFFIX_PREFIX = '.tmp-';
+  var FOLDER_STAGE_TOKEN_BYTES = 16;
+  var FOLDER_STAGE_CREATE_ATTEMPTS = 8;
   var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
 
   function detectTauri() {
@@ -182,14 +184,47 @@
     return invoke('plugin:fs|remove', { path: path, options: options || homeOptions({ recursive: true }) });
   }
 
-  function fsRename(oldPath, newPath, options) {
+  function publishFolderCreateOnly(stagedName, finalName) {
     var invoke = getInvoke();
-    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for fs rename'));
-    return invoke('plugin:fs|rename', {
-      oldPath: oldPath,
-      newPath: newPath,
-      options: options || { oldPathBaseDir: HOME_BASE_DIR, newPathBaseDir: HOME_BASE_DIR },
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for folder publication'));
+    return invoke('h2o_publish_saved_chat_folder_create_only', {
+      request: { stagedName: stagedName, finalName: finalName },
     });
+  }
+
+  function createFolderStage(finalName, token) {
+    var invoke = getInvoke();
+    if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for folder staging'));
+    return invoke('h2o_create_saved_chat_folder_stage', {
+      request: { finalName: finalName, token: token },
+    });
+  }
+
+  function randomFolderStageToken() {
+    if (!global.crypto || typeof global.crypto.getRandomValues !== 'function') {
+      throw new Error('crypto.getRandomValues unavailable for folder staging');
+    }
+    var bytes = new Uint8Array(FOLDER_STAGE_TOKEN_BYTES);
+    global.crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  async function createOwnedFolderStage(finalName) {
+    for (var attempt = 0; attempt < FOLDER_STAGE_CREATE_ATTEMPTS; attempt += 1) {
+      var token = randomFolderStageToken();
+      var expectedName = finalName + TMP_SUFFIX_PREFIX + token;
+      var result = safeObject(await createFolderStage(finalName, token));
+      var status = cleanString(result.status);
+      if (status === 'stage-exists') continue;
+      if (result.ok === true && result.owned === true && status === 'created' &&
+          cleanString(result.stagedName) === expectedName) {
+        return { stagedName: expectedName, stagedPath: joinPath(EXPORT_ROOT, expectedName) };
+      }
+      throw new Error('saved-chat-folder-stage-create-failed');
+    }
+    throw new Error('saved-chat-folder-stage-collision-exhausted');
   }
 
   function fsReadFile(path, options) {
@@ -446,7 +481,6 @@
       exportRoot: EXPORT_ROOT,
       exportName: exportName,
       destinationPath: joinPath(EXPORT_ROOT, exportName),
-      tempPath: joinPath(EXPORT_ROOT, exportName + TMP_SUFFIX_PREFIX + Date.now().toString(36)),
     };
   }
 
@@ -601,9 +635,10 @@
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     var tempPath = '';
+    var tempName = '';
+    var ownsStage = false;
     try {
       var dest = resolveExportDestination(opts);
-      tempPath = dest.tempPath;
       var dry = await dryRunExportPackage(opts);
       if (dry.status !== 'export-ready') return dry;
       var verified = await inspectVerifiedPackage(packagePath);
@@ -617,7 +652,10 @@
 
       var declared = declaredFilesFromManifest(verified.manifest);
       await fsMkdir(EXPORT_ROOT, homeOptions({ recursive: true }));
-      await fsMkdir(tempPath, homeOptions({ recursive: true }));
+      var ownedStage = await createOwnedFolderStage(dest.exportName);
+      tempName = ownedStage.stagedName;
+      tempPath = ownedStage.stagedPath;
+      ownsStage = true;
       if (asArray(verified.manifest.assets).length) {
         await fsMkdir(joinPath(tempPath, 'assets'), homeOptions({ recursive: true }));
       }
@@ -630,7 +668,32 @@
       /* Derived v3 companions are intentionally outside manifest.files and
        * contentHash. The source manifest is copied byte-for-byte and unchanged. */
       var derivedCompanions = await writeV3DerivedExportCompanions(verified.manifest, copied, tempPath);
-      await fsRename(tempPath, dest.destinationPath, { oldPathBaseDir: HOME_BASE_DIR, newPathBaseDir: HOME_BASE_DIR });
+      /* Advisory existence checks above improve UX but are not publication
+       * authority. This native operation performs the final existence test and
+       * create-only directory namespace mutation atomically under the fixed
+       * export root. */
+      var publication = safeObject(await publishFolderCreateOnly(tempName, dest.exportName));
+      if (cleanString(publication.status) === 'destination-exists') {
+        if (ownsStage) {
+          try { await fsRemove(tempPath, homeOptions({ recursive: true })); } catch (_) { /* best effort */ }
+        }
+        ownsStage = false;
+        tempPath = '';
+        return exportResult('destination-exists', {
+          packagePath: packagePath,
+          exportName: dest.exportName,
+          destinationPath: dest.destinationPath,
+          inspectionStatus: 'verified',
+          reason: 'destination already exists',
+        });
+      }
+      if (publication.ok !== true || cleanString(publication.status) !== 'published') {
+        throw new Error('saved-chat-folder-create-only-publication-failed');
+      }
+      if (publication.stagingRemoved !== true) {
+        throw new Error('saved-chat-folder-create-only-staging-not-removed');
+      }
+      ownsStage = false;
       tempPath = '';
       return exportResult('exported', {
         packagePath: packagePath,
@@ -650,7 +713,7 @@
         reason: 'exported to bounded Desktop export root',
       });
     } catch (err) {
-      if (tempPath) {
+      if (ownsStage && tempPath) {
         try { await fsRemove(tempPath, homeOptions({ recursive: true })); } catch (_) { /* best-effort cleanup only */ }
       }
       return exportResult('write-error', { packagePath: packagePath, tempPath: tempPath, reason: String((err && err.message) || err || 'export failed') });

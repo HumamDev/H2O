@@ -29,6 +29,7 @@ const PORTABLE_ZIP = 'src-surfaces-base/studio/ingestion/saved-chat-portable-zip
 const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
 const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const IMPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const FOLDER_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_folder_publish.rs';
 const ZIP_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_zip_publish.rs';
 const TAURI_LIB = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const V3_FIXTURE = 'tools/validation/fixtures/saved-chat-archive/v3/t06-canonical-assets.h2ochat';
@@ -201,6 +202,9 @@ function createBehaviorFs() {
   const files = new Map();
   const APP = 15;
   const HOME = 21;
+  const folderStageCreateNames = [];
+  let beforeFolderPublish = null;
+  let folderPublishCalls = 0;
   let beforeZipPublish = null;
   let zipPublishCalls = 0;
   const key = (baseDir, p) => `${baseDir}:${p}`;
@@ -262,10 +266,37 @@ function createBehaviorFs() {
       put(options.baseDir, p, body);
       return null;
     }
-    if (command === 'plugin:fs|rename') {
-      const options = body.options || {};
-      renameTree(options.oldPathBaseDir, body.oldPath, options.newPathBaseDir, body.newPath);
-      return null;
+    if (command === 'h2o_create_saved_chat_folder_stage') {
+      const request = body?.request || {};
+      const finalName = String(request.finalName || '');
+      const token = String(request.token || '');
+      const stagedName = `${finalName}.tmp-${token}`;
+      const stagedPath = `H2O Studio Exports/${stagedName}`;
+      folderStageCreateNames.push(stagedName);
+      if (exists(HOME, stagedPath)) {
+        return { schema: 'h2o.savedChatFolderStage.v1', ok: false, status: 'stage-exists', owned: false, stagedName: null };
+      }
+      mkdir(HOME, stagedPath);
+      return { schema: 'h2o.savedChatFolderStage.v1', ok: true, status: 'created', owned: true, stagedName };
+    }
+    if (command === 'h2o_publish_saved_chat_folder_create_only') {
+      folderPublishCalls += 1;
+      const request = body?.request || {};
+      const stagedPath = `H2O Studio Exports/${request.stagedName || ''}`;
+      const finalPath = `H2O Studio Exports/${request.finalName || ''}`;
+      if (beforeFolderPublish) {
+        const hook = beforeFolderPublish;
+        beforeFolderPublish = null;
+        await hook({ stagedPath, finalPath });
+      }
+      if (exists(HOME, finalPath)) {
+        return { schema: 'h2o.savedChatFolderPublish.v1', ok: false, status: 'destination-exists', stagingRemoved: false };
+      }
+      if (!dirs.has(key(HOME, stagedPath))) {
+        return { schema: 'h2o.savedChatFolderPublish.v1', ok: false, status: 'staged-missing', stagingRemoved: false };
+      }
+      renameTree(HOME, stagedPath, HOME, finalPath);
+      return { schema: 'h2o.savedChatFolderPublish.v1', ok: true, status: 'published', stagingRemoved: true };
     }
     if (command === 'h2o_publish_saved_chat_zip_create_only') {
       zipPublishCalls += 1;
@@ -324,6 +355,9 @@ function createBehaviorFs() {
   mkdir(APP, 'archive/packages');
   return {
     APP, HOME, dirs, files, invoke, mkdir, put, exists, inventory, key,
+    folderStageCreateNames() { return folderStageCreateNames.slice(); },
+    setBeforeFolderPublish(fn) { beforeFolderPublish = fn; },
+    folderPublishCallCount() { return folderPublishCalls; },
     setBeforeZipPublish(fn) { beforeZipPublish = fn; },
     zipPublishCallCount() { return zipPublishCalls; },
   };
@@ -452,7 +486,7 @@ function installBehaviorPackage(mem, pkg, rootOverride) {
   return root;
 }
 
-function loadBehaviorRuntime(mem, storeOverride) {
+function loadBehaviorRuntime(mem, storeOverride, cryptoOverride) {
   const defaultStore = {
     chats: {
       get: async (id) => ({ chatId: id }),
@@ -467,7 +501,7 @@ function loadBehaviorRuntime(mem, storeOverride) {
   };
   const context = {
     console, setTimeout, clearTimeout, URL, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
-    atob: globalThis.atob, crypto: globalThis.crypto || nodeCrypto.webcrypto,
+    atob: globalThis.atob, crypto: cryptoOverride || globalThis.crypto || nodeCrypto.webcrypto,
     /* Host Web Streams / compression primitives required by the governed codec. */
     ReadableStream, CompressionStream, DecompressionStream,
     __TAURI_INTERNALS__: { invoke: mem.invoke },
@@ -652,13 +686,62 @@ check('J.2 exporter guards package-relative paths and asset paths', () => {
   assertIncludes(exporterCode, 'asset path sha mismatch');
 });
 
-check('J.2 folder exporter remains no-overwrite and uses its existing temp-to-rename strategy', () => {
+check('M09 P0.1 folder final publication uses one bounded native atomic create-only command', () => {
+  assert.ok(existsRepo(FOLDER_PUBLISH_NATIVE), `${FOLDER_PUBLISH_NATIVE} does not exist`);
+  const native = readRepo(FOLDER_PUBLISH_NATIVE);
+  const tauriLib = readRepo(TAURI_LIB);
   assertIncludes(exporterCode, 'destination-exists');
   assertIncludes(exporterCode, 'fsExists(dest.destinationPath');
   assertIncludes(exporterCode, 'TMP_SUFFIX_PREFIX');
-  assertIncludes(exporterCode, 'fsRename(tempPath, dest.destinationPath');
-  assertIncludes(exporterCode, 'plugin:fs|rename');
+  assertIncludes(exporterCode, 'h2o_publish_saved_chat_folder_create_only');
+  assertIncludes(exporterCode, 'publishFolderCreateOnly(tempName, dest.exportName)');
+  assertIncludes(native, 'promote_dir_exclusive');
+  assertIncludes(native, 'destination-exists');
+  assertIncludes(native, 'H2O Studio Exports');
+  assertIncludes(tauriLib, 'pub mod saved_chat_folder_publish;');
+  assertIncludes(tauriLib, 'saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only');
+  assert.equal(
+    (tauriLib.match(/saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only/g) || []).length,
+    2,
+    'folder publication command must be registered in debug and release handlers',
+  );
+  const nativeProduction = native.slice(0, native.indexOf('#[cfg(test)]'));
+  const folderBody = exporterCode.slice(
+    exporterCode.indexOf('async function exportVerifiedPackage'),
+    exporterCode.indexOf('function zipExportResult'),
+  );
+  assert.doesNotMatch(folderBody, /fsRename|plugin:fs\|rename/);
+  assert.doesNotMatch(nativeProduction, /std::fs::rename|rename_within/);
   assert.doesNotMatch(exporterCode, /truncate:\s*true|overwrite:\s*true/);
+});
+
+check('M09 P0.1b folder staging uses bounded native exclusive creation and random retries', () => {
+  const native = readRepo(FOLDER_PUBLISH_NATIVE);
+  const tauriLib = readRepo(TAURI_LIB);
+  assertIncludes(exporterCode, 'h2o_create_saved_chat_folder_stage');
+  assertIncludes(exporterCode, 'crypto.getRandomValues');
+  assertIncludes(exporterCode, 'FOLDER_STAGE_CREATE_ATTEMPTS = 8');
+  assertIncludes(exporterCode, 'createOwnedFolderStage(dest.exportName)');
+  assertIncludes(native, 'mkdir_child_exclusive');
+  assertIncludes(native, 'stage-exists');
+  assertIncludes(native, 'STAGE_TOKEN_HEX_LENGTH');
+  assertIncludes(tauriLib, 'saved_chat_folder_publish::h2o_create_saved_chat_folder_stage');
+  assert.equal(
+    (tauriLib.match(/saved_chat_folder_publish::h2o_create_saved_chat_folder_stage/g) || []).length,
+    2,
+    'folder stage command must be registered in debug and release handlers',
+  );
+  const folderBody = exporterCode.slice(
+    exporterCode.indexOf('async function exportVerifiedPackage'),
+    exporterCode.indexOf('function zipExportResult'),
+  );
+  const folderResolver = exporterCode.slice(
+    exporterCode.indexOf('function resolveExportDestination'),
+    exporterCode.indexOf('function resolveZipExportDestination'),
+  );
+  assert.doesNotMatch(folderBody, /fsMkdir\(tempPath/);
+  assert.doesNotMatch(folderResolver, /Date\.now|tempPath|tempName/);
+  assertIncludes(folderBody, 'if (ownsStage && tempPath)');
 });
 
 check('M08 ZIP final publication uses one bounded native atomic create-only command', () => {
@@ -769,10 +852,10 @@ check('J.2 archive-export capability is dedicated and bounded to H2O Studio Expo
     'fs:allow-read-dir',
     'fs:allow-write-file',
     'fs:allow-remove',
-    'fs:allow-rename',
   ]) {
     assert.ok(raw.includes(permission), `${permission} missing from archive-export capability`);
   }
+  assert.ok(!raw.includes('fs:allow-rename'), 'folder export no longer needs renderer rename authority');
   const scopes = collectStrings(json);
   const pathScopes = scopes.filter((scope) => scope.startsWith('$'));
   for (const scope of pathScopes) {
@@ -900,6 +983,11 @@ checkAsync('M02 T05 v3 export regenerates deterministic renderers without mutati
   assert.equal(exportedManifest.files.snapshot.sha256, pkg.manifest.files.snapshot.sha256);
   assert.equal(exportedManifest.files.markdown, undefined);
   assert.equal(exportedManifest.files.html, undefined);
+  assert.deepEqual(
+    mem.inventory(mem.HOME, firstRoot).map((item) => item.path.slice(firstRoot.length + 1)).sort(),
+    before.map((item) => item.path.slice(sourceRoot.length + 1)).concat(['chat.md', 'chat.html']).sort(),
+    'v3 folder export inventory must be exactly source members plus governed companions',
+  );
 
   const htmlOnly = JSON.parse(JSON.stringify(pkg.snapshot));
   htmlOnly.messages = [{ id: 'html-only', role: 'assistant', turnIndex: 0, content: [{ type: 'html', html: '<p>Only <strong>governed HTML</strong></p>', sanitized: true }] }];
@@ -945,6 +1033,98 @@ checkAsync('M02 T05 preserves v1/v2 byte-copy and collision behavior', async () 
   const collision = await exporter.exportVerifiedPackage({ packagePath: v1Root, exportName: 'legacy-v1.h2ochat' });
   assert.equal(collision.status, 'destination-exists');
   assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports/legacy-v1.h2ochat'), exportedBeforeCollision);
+});
+
+checkAsync('M09 P0.1b staging collision is never adopted, cleaned or published', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm09_stage_ownership', withAsset: true });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const finalName = 'example.h2ochat';
+  const firstToken = '11'.repeat(16);
+  const secondToken = '22'.repeat(16);
+  const firstStageName = `${finalName}.tmp-${firstToken}`;
+  const secondStageName = `${finalName}.tmp-${secondToken}`;
+  const firstStagePath = `H2O Studio Exports/${firstStageName}`;
+  const secondStagePath = `H2O Studio Exports/${secondStageName}`;
+  const finalPath = `H2O Studio Exports/${finalName}`;
+  const foreignBytes = Buffer.from('foreign-owner-bytes');
+  mem.mkdir(mem.HOME, firstStagePath);
+  mem.put(mem.HOME, `${firstStagePath}/foreign.txt`, foreignBytes);
+
+  const tokenBytes = [Buffer.from(firstToken, 'hex'), Buffer.from(secondToken, 'hex')];
+  const deterministicCrypto = {
+    subtle: nodeCrypto.webcrypto.subtle,
+    getRandomValues(target) {
+      const bytes = tokenBytes.shift();
+      assert.ok(bytes, 'exporter requested more staging tokens than expected');
+      target.set(bytes);
+      return target;
+    },
+  };
+  const exporter = loadBehaviorRuntime(mem, undefined, deterministicCrypto).H2O.Studio.archiveExporter;
+
+  const result = await exporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: finalName });
+
+  assert.equal(result.status, 'exported', result.reason);
+  assert.deepEqual(mem.folderStageCreateNames(), [firstStageName, secondStageName]);
+  assert.equal(mem.exists(mem.HOME, firstStagePath), true, 'foreign stage was removed');
+  assert.deepEqual(
+    mem.files.get(mem.key(mem.HOME, `${firstStagePath}/foreign.txt`)),
+    foreignBytes,
+    'foreign staging bytes changed',
+  );
+  assert.deepEqual(
+    mem.inventory(mem.HOME, firstStagePath).map((item) => item.path.slice(firstStagePath.length + 1)),
+    ['foreign.txt'],
+    'exporter wrote into the colliding stage',
+  );
+  assert.equal(mem.exists(mem.HOME, secondStagePath), false, 'owned stage was not consumed by publication');
+  const expectedInventory = mem.inventory(mem.APP, sourceRoot)
+    .map((item) => item.path.slice(sourceRoot.length + 1))
+    .sort();
+  const finalInventory = mem.inventory(mem.HOME, finalPath)
+    .map((item) => item.path.slice(finalPath.length + 1))
+    .sort();
+  assert.deepEqual(finalInventory, expectedInventory, 'final v2 inventory contains foreign or missing members');
+  assert.ok(!finalInventory.includes('foreign.txt'));
+});
+
+checkAsync('M09 P0.1 folder publication refuses a race winner after advisory absence and cleans staging', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm09_folder_publish_race', withAsset: false });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const exporter = runtime.H2O.Studio.archiveExporter;
+  const finalPath = 'H2O Studio Exports/m09-race.h2ochat';
+  const winnerPath = `${finalPath}/payload`;
+  const sentinel = Buffer.from('independent-race-winner');
+
+  assert.equal(mem.exists(mem.HOME, finalPath), false, 'advisory pre-check begins absent');
+  mem.setBeforeFolderPublish(({ finalPath: publishingFinal }) => {
+    assert.equal(publishingFinal, finalPath);
+    mem.mkdir(mem.HOME, publishingFinal);
+    mem.put(mem.HOME, `${publishingFinal}/payload`, sentinel);
+  });
+
+  const result = await exporter.exportVerifiedPackage({
+    packagePath: sourceRoot,
+    exportName: 'm09-race.h2ochat',
+  });
+
+  assert.equal(mem.folderPublishCallCount(), 1, 'native create-only boundary invoked once');
+  assert.equal(result.status, 'destination-exists');
+  assert.equal(result.ok, false, 'collision must not be reported successful');
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, winnerPath)), sentinel, 'race winner bytes changed');
+  assert.equal(
+    [...mem.dirs].some((entry) => entry.includes('m09-race.h2ochat.tmp-')),
+    false,
+    'private staging folder was not cleaned',
+  );
+  assert.equal(
+    [...mem.files.keys()].some((entry) => entry.includes('m09-race.h2ochat.tmp-')),
+    false,
+    'private staging members were not cleaned',
+  );
 });
 
 checkAsync('M03 T04 exports a valid gzip-v3 package, preserving the durable member byte-identically', async () => {

@@ -115,6 +115,12 @@ pub mod archive_transport_handoff;
 /// export root; no arbitrary path or overwrite-capable operation is exposed.
 pub mod saved_chat_zip_publish;
 
+/// M09 P0.1 — bounded create-only staging and atomic publication for verified
+/// saved-chat folders. Renderer authority is a governed final leaf plus random
+/// token for stage creation, then the bound staged/final leaves for promotion;
+/// no arbitrary path or overwrite-capable operation is exposed.
+pub mod saved_chat_folder_publish;
+
 /// M06 T1.5 — trusted ordering foundation for verified generations. Pure:
 /// no filesystem, no database, no renderer input, and no command.
 pub mod archive_generation_order;
@@ -2587,6 +2593,8 @@ macro_rules! h2o_studio_invoke_handler {
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
+            saved_chat_folder_publish::h2o_create_saved_chat_folder_stage,
+            saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only,
             saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
@@ -2630,6 +2638,8 @@ macro_rules! h2o_studio_invoke_handler {
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
+            saved_chat_folder_publish::h2o_create_saved_chat_folder_stage,
+            saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only,
             saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
