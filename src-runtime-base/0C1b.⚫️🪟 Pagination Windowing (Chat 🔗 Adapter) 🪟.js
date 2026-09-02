@@ -3,40 +3,273 @@
 // @name               0C1b.⬛️🪟 Pagination Windowing (Chat Adapter) 🪟
 // @namespace          H2O.Premium.CGX.pagination.windowing.chat.adapter
 // @author             HumamDev
-// @version            1.1.0
-// @revision           002
-// @build              260328-002627
-// @description        Chat adapter for Pagination Windowing. Owns ChatGPT DOM discovery, page rendering, observer integration, style injection, and command-bar/feature surfaces while preserving the existing engine contract.
+// @version            2.0.0
+// @revision           003
+// @build              260902-000000
+// @description        One-time restore-first retirement transition and inert compatibility adapter for legacy physical Pagination sessions.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
 // ==/H2O Module==
 
-/*
-Usage:
-- `window.H2O_Pagination.getConfig()` exposes the live page/window settings.
-- Navigate with on-page controls or `window.H2O_Pagination.goOlder()/goNewer()/goToPage(index)`.
-- Works with Unmount Messages v1.3.1 by moving whole turn nodes as-is and emitting
-  `evt:h2o:pagination:pagechanged` after page swaps.
-
-Diagnostic controls:
-- `window.H2O_Pagination.getDiagConfig()` returns `{ styleMode, swapMode, debug }`.
-- `window.H2O_Pagination.setDiagConfig({ styleMode, swapMode, debug })` merges, persists, and reapplies.
-
-Self-check:
-- [x] rebuildIndex contains no self-recursion
-- [x] recovery uses fullRoot (not paged root)
-- [x] merge handles React replacement deterministically
-- [x] shortcuts ignore composer robustly
-- [x] zero-answer chats stable
-- [x] single swap per render
-- [x] view swap reliable
-- [x] diag.debug works
-- [x] idle does not increase swapCount
-*/
+/* Physical Pagination is retired. The public facade reports disabled/retired,
+ * and this adapter runs only the bounded transition needed to release an
+ * already-active legacy session without overruling a remounted host. */
 
 (() => {
   'use strict';
+
+  {
+    // P02A_PHYSICAL_PAGINATION_RETIRED
+    const PW_W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+    const PW_H2O = (PW_W.H2O = PW_W.H2O || {});
+    PW_H2O.PW = PW_H2O.PW || {};
+    const PW_VAULT = (PW_H2O.PW.pgnwndw = PW_H2O.PW.pgnwndw || {});
+    PW_VAULT.state = PW_VAULT.state || {};
+    const PW_STATE = PW_VAULT.state;
+    const PW_OWNER = 'pgnw';
+    const TURN_SELECTOR = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"], [data-message-author-role]';
+
+    const isElement = (node) => !!node && node.nodeType === 1;
+    function retiredStableHash36(input) {
+      const text = String(input || '');
+      let hash = 2166136261;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+      }
+      return (hash >>> 0).toString(36);
+    }
+    function currentChatIdentity() {
+      const path = String(PW_W.location?.pathname || '/');
+      const match = path.match(/\/c\/([^/?#]+)/i) || path.match(/\/g\/([^/?#]+)/i);
+      if (match?.[1]) {
+        try { return decodeURIComponent(match[1]); } catch (_) { return match[1]; }
+      }
+      return `path_${retiredStableHash36(`${PW_W.location?.origin || ''}${path}${PW_W.location?.search || ''}`)}`;
+    }
+    function findCurrentConversationRoot(root) {
+      try {
+        const observed = PW_W.H2O?.obs?.getRoot?.();
+        if (isElement(observed) && observed.isConnected) return observed;
+      } catch (_) {}
+      let turn = null;
+      try { turn = document.querySelector(TURN_SELECTOR); } catch (_) {}
+      if (!isElement(turn)) return null;
+      if (isElement(root) && root.contains?.(turn)) return root;
+      return isElement(turn.parentElement) ? turn.parentElement : null;
+    }
+    function legacyTurnRecords() {
+      if (Array.isArray(PW_STATE.masterTurns)) return PW_STATE.masterTurns;
+      if (Array.isArray(PW_STATE.turns)) return PW_STATE.turns;
+      return [];
+    }
+    function getOwnedScaffolds(root) {
+      const candidates = [PW_STATE.ui?.topBox, PW_STATE.ui?.viewBox, PW_STATE.ui?.bottomBox];
+      const out = [];
+      for (const node of candidates) {
+        if (!isElement(node) || out.includes(node)) continue;
+        if (node.getAttribute?.('data-cgxui-owner') !== PW_OWNER) continue;
+        if (isElement(root) && !root.contains?.(node) && node.parentElement !== root) continue;
+        out.push(node);
+      }
+      return out;
+    }
+    function retainedTurnProvenanceIsValid(root, records) {
+      if (!records.length) return false;
+      const recordedSet = PW_STATE.masterTurnNodeSet instanceof Set
+        ? PW_STATE.masterTurnNodeSet
+        : (PW_STATE.turnNodeSet instanceof Set ? PW_STATE.turnNodeSet : null);
+      const seen = new Set();
+      for (const record of records) {
+        const node = record?.node;
+        if (!isElement(node) || seen.has(node)) return false;
+        if (recordedSet?.size && !recordedSet.has(node)) return false;
+        if (node.isConnected && !root.contains?.(node)) return false;
+        seen.add(node);
+      }
+      return true;
+    }
+    function cancelLegacyAuthorities() {
+      for (const key of ['refreshTimer', 'deferredRefreshTimer', 'commandBarBindTimer']) {
+        const id = Number(PW_STATE[key] || 0);
+        if (id) {
+          try { PW_W.clearTimeout?.(id); } catch (_) {}
+          try { PW_W.clearInterval?.(id); } catch (_) {}
+        }
+        PW_STATE[key] = 0;
+      }
+      for (const key of ['rootObserver', 'startObserver', 'autoLoadObserver']) {
+        try { PW_STATE[key]?.disconnect?.(); } catch (_) {}
+        PW_STATE[key] = null;
+      }
+      for (const key of ['offObsReady', 'offObsMut']) {
+        try { PW_STATE[key]?.(); } catch (_) {}
+        PW_STATE[key] = null;
+      }
+      try { if (PW_STATE.onPopState) PW_W.removeEventListener?.('popstate', PW_STATE.onPopState); } catch (_) {}
+      try { if (PW_STATE.onHashChange) PW_W.removeEventListener?.('hashchange', PW_STATE.onHashChange); } catch (_) {}
+      try { if (PW_STATE.onVisibilityChange) document.removeEventListener?.('visibilitychange', PW_STATE.onVisibilityChange); } catch (_) {}
+      try { if (PW_STATE.onKeyDown) document.removeEventListener?.('keydown', PW_STATE.onKeyDown, true); } catch (_) {}
+      try { PW_STATE.commandBarApi?.removeOwner?.('pw'); } catch (_) {}
+      try { PW_W.H2O?.commandBar?.removeOwner?.('pw'); } catch (_) {}
+      try { document.getElementById?.('cgxui-pgnw-style')?.remove?.(); } catch (_) {}
+      try { delete PW_W['PW:pgnwndw:guard:booted']; } catch (_) {}
+    }
+    function restoreOwnedCurrentSession(root, records, scaffolds) {
+      const retainedSet = new Set(records.map((record) => record.node));
+      const scaffoldSet = new Set(scaffolds);
+      const extras = Array.from(root.children || []).filter((node) => (
+        isElement(node)
+        && !retainedSet.has(node)
+        && !scaffoldSet.has(node)
+        && node.getAttribute?.('data-cgxui-owner') !== PW_OWNER
+      ));
+      const fragment = document.createDocumentFragment();
+      for (const record of records) {
+        fragment.appendChild(record.node);
+        record.detached = false;
+      }
+      for (const extra of extras) fragment.appendChild(extra);
+      root.replaceChildren(fragment);
+      PW_STATE.transitionRestoreCount = Number(PW_STATE.transitionRestoreCount || 0) + 1;
+    }
+    function releaseLegacyState() {
+      Object.assign(PW_STATE, {
+        booted: false,
+        isRendering: false,
+        isRebuilding: false,
+        renderedOnce: false,
+        hasMaster: false,
+        transientWindowingActive: false,
+        root: null,
+        fullRoot: null,
+        rootObservedEl: null,
+        masterTurns: [],
+        masterAnswers: [],
+        masterTurnUnits: [],
+        masterTurnNodeSet: new Set(),
+        masterUidToTurn: new Map(),
+        viewTurnIndices: [],
+        viewTurnIndexSet: new Set(),
+        visibleTurnIndices: [],
+        visibleTurnStart: -1,
+        visibleTurnEnd: -1,
+        lastWindow: null,
+        pageIndex: 0,
+        pageCount: 1,
+        pendingAddedTurnNodes: new Set(),
+        turnRuntimeCanonicalSig: '',
+        turnRuntimePageStateSig: '',
+        ui: {},
+        commandBarApi: null,
+        commandBarBound: false,
+        onPopState: null,
+        onHashChange: null,
+        onVisibilityChange: null,
+        onKeyDown: null,
+        presentationFullFlowOwners: new Set(),
+        presentationFullFlowResumeRequested: false,
+        dividerPagination: { active: false, chatId: '', pageIndex: -1 },
+        retired: true,
+      });
+      PW_STATE.turns = PW_STATE.masterTurns;
+      PW_STATE.answers = PW_STATE.masterAnswers;
+      PW_STATE.turnUnits = PW_STATE.masterTurnUnits;
+      PW_STATE.canonicalTurns = PW_STATE.masterTurnUnits;
+      PW_STATE.turnNodeSet = PW_STATE.masterTurnNodeSet;
+      PW_STATE.uidToTurn = PW_STATE.masterUidToTurn;
+    }
+    function retireLegacySession(reason = 'p02a:retire') {
+      if (PW_STATE.retirementTransitionComplete) {
+        return { ok: true, status: 'retired', outcome: PW_STATE.retirementOutcome || 'already-retired', reason, restoreCount: Number(PW_STATE.transitionRestoreCount || 0) };
+      }
+      const records = legacyTurnRecords();
+      const root = isElement(PW_STATE.root) ? PW_STATE.root : null;
+      const currentRoot = findCurrentConversationRoot(root);
+      const currentChatId = currentChatIdentity();
+      const sessionChatId = String(PW_STATE.chatId || '').trim();
+      const scaffolds = getOwnedScaffolds(root);
+      const hasOwnedScaffold = scaffolds.length > 0;
+      const hasActiveSession = !!(PW_STATE.booted || PW_STATE.renderedOnce || PW_STATE.hasMaster || records.length);
+      const safeCurrentSession = !!(
+        hasActiveSession
+        && root
+        && root.isConnected
+        && (!PW_STATE.fullRoot || PW_STATE.fullRoot === root)
+        && currentRoot === root
+        && currentChatId
+        && sessionChatId
+        && currentChatId === sessionChatId
+        && hasOwnedScaffold
+        && retainedTurnProvenanceIsValid(root, records)
+      );
+      cancelLegacyAuthorities();
+      if (safeCurrentSession) {
+        restoreOwnedCurrentSession(root, records, scaffolds);
+        PW_STATE.retirementOutcome = 'restored-current-owned-session';
+        PW_STATE.transitionStaleReferenceCount = 0;
+      } else if (hasActiveSession) {
+        for (const node of scaffolds) { try { node.remove?.(); } catch (_) {} }
+        PW_STATE.retirementOutcome = 'host-remounted-or-stale';
+        PW_STATE.transitionStaleReferenceCount = records.length;
+      } else {
+        PW_STATE.retirementOutcome = 'no-active-session';
+        PW_STATE.transitionStaleReferenceCount = 0;
+      }
+      releaseLegacyState();
+      PW_STATE.retirementTransitionComplete = true;
+      return { ok: true, status: 'retired', outcome: PW_STATE.retirementOutcome, reason, restoreCount: Number(PW_STATE.transitionRestoreCount || 0), staleReferenceCount: Number(PW_STATE.transitionStaleReferenceCount || 0) };
+    }
+    const inertAction = () => false;
+    const retiredConfig = () => ({ enabled: false, retired: true, status: 'retired', pageSize: 25, bufferAnswers: 0, autoLoadSentinel: false, shortcutsEnabled: false, styleMode: 'off', swapMode: 'retired', debug: false });
+    const retiredPageInfo = () => ({ chatId: currentChatIdentity(), pageIndex: 0, pageCount: 1, enabled: false, retired: true, status: 'retired', totalTurns: 0, totalAnswers: 0 });
+    function removeLegacyFeatureSurfaces() {
+      for (const host of [PW_W.h2oConfig, PW_W.hoConfig]) {
+        try { if (host?.features) delete host.features.paginationWindowing; } catch (_) {}
+      }
+      try { PW_W.H2O?.commandBar?.removeOwner?.('pw'); } catch (_) {}
+    }
+    const PW_ADAPTER = Object.freeze({
+      retired: true,
+      retireLegacySession,
+      getPageInfo: retiredPageInfo,
+      getConfig: retiredConfig,
+      applySetting: inertAction,
+      getDiagConfig: () => ({ retired: true, status: 'retired', styleMode: 'off', swapMode: 'retired', debug: false }),
+      setDiagConfig: () => ({ retired: true, status: 'retired', styleMode: 'off', swapMode: 'retired', debug: false }),
+      setEnabled: inertAction,
+      getSummary: () => 'Retired • ChatGPT owns physical transcript windowing',
+      goToAnswerGid: inertAction,
+      ensureVisibleById: (anyId) => Promise.resolve({ ok: false, reason: 'pagination-retired', id: String(anyId || '').trim() }),
+      setPresentationFullFlowHold: () => ({ ok: true, status: 'retired', active: false, owners: 0, resumed: false }),
+      getPresentationFullFlowHoldStatus: () => ({ active: false, owners: 0, resumeRequested: false, retired: true }),
+      goToPage: inertAction,
+      goToPageStart: inertAction,
+      getDividerPaginationState: () => ({ active: false, transient: false, enabled: false, retired: true, chatId: currentChatIdentity(), pageIndex: -1 }),
+      goOlder: inertAction,
+      goNewer: inertAction,
+      goFirst: inertAction,
+      goLast: inertAction,
+      resolveAnyIdToTurnRecord: () => null,
+      resolveAnyIdToPage: () => null,
+      rebuildIndex: inertAction,
+      boot: inertAction,
+      dispose: retireLegacySession,
+      registerFeatureSurfaces: removeLegacyFeatureSurfaces,
+      syncCommandBarControls: removeLegacyFeatureSurfaces,
+      syncShortcutBinding: inertAction,
+      teardownRuntimeSession: retireLegacySession,
+      refreshWindowing: inertAction,
+      emitConfigChanged: () => null,
+    });
+    retireLegacySession('p02a:module-init');
+    removeLegacyFeatureSurfaces();
+    PW_VAULT.chatAdapter = PW_ADAPTER;
+    try { PW_VAULT.engine?.attachChatAdapter?.(PW_ADAPTER); } catch (_) {}
+  }
+  return;
+  // P02A_UNREACHABLE_LEGACY_IMPLEMENTATION
 
   const TOK = 'PW';
   const PID = 'pgnwndw';

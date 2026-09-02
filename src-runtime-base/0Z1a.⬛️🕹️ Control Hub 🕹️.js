@@ -378,12 +378,12 @@ const CFG_CH = {
       description:{default:'Switch current-chat tagging between manual and automatic modes from the Library tab.', focus:'Keep tag mode close to Categories while working on the active chat.', review:'Change tagging behavior without opening the Categories page first.', performance:'Use a lightweight toggle for current-chat tag mode.'},
       hidden:true},
     { key:FEATURE_KEY_CHAT_PERFORMANCE, label:'Performance', icon:'⚡️',
-      subtitle:'Unmounting and pagination tools for long chats.',
+      subtitle:'Chat mechanisms and legacy Unmount diagnostics for long chats.',
       description:{
-        default:'Tune unmounting and pagination windowing from one place.',
-        focus:'Switch between unmounting and pagination controls without leaving the performance area.',
-        review:'Keep long threads manageable with either remounting or page windowing.',
-        performance:'Centralized controls for keeping heavy chats responsive.',
+        default:'Tune chat mechanisms and inspect the remaining legacy Unmount diagnostics from one place.',
+        focus:'Keep physical transcript lifecycle under ChatGPT while tuning H2O logical presentation.',
+        review:'Review logical page behavior without exposing retired physical Pagination controls.',
+        performance:'ChatGPT owns physical transcript windowing; H2O retains logical page and mechanism controls.',
       }},
     { key:'chatMechanisms',   label:'Mechanisms',   icon:'🔀',
       subtitle:'Title, page, and divider gesture behavior plus chat visit state.',
@@ -397,10 +397,6 @@ const CFG_CH = {
     { key:'unmountMessages',   label:'Unmounting (Advanced)',   icon:'⛰️',
       subtitle:'Legacy physical optimizer — diagnostics only.',
       description:{default:'Legacy body-unmount engine. ChatGPT now virtualizes message bodies natively; use these controls for diagnostics only.', focus:'Diagnostics for the legacy unmount engine.', review:'Verify the legacy engine stays inert while disabled.', performance:'Native virtualization owns physical performance; this engine is a diagnostic fallback.'},
-      hidden:true},
-    { key:'paginationWindowing', label:'Pagination Windowing (Advanced)', icon:'🪟',
-      subtitle:'Legacy physical windowing — diagnostics only.',
-      description:{default:'Legacy whole-turn windowing engine. ChatGPT now virtualizes message bodies natively; use these controls for diagnostics only.', focus:'Diagnostics for the legacy windowing engine.', review:'Verify windowing stays inert while disabled.', performance:'Native virtualization owns physical performance; this engine is a diagnostic fallback.'},
       hidden:true},
     { key:FEATURE_KEY_THEMES,  label:'Appearance',         icon:'🎨',
       subtitle:'Visual theme, Control Hub accents, and surface tuning.',
@@ -1250,7 +1246,6 @@ __ROOT__ .cgxui-qbig-number{
 	  const FEATURE_CHAT_PERFORMANCE_SUBTABS = Object.freeze([
 	    'chatMechanisms',
 	    'unmountMessages',
-	    'paginationWindowing',
 	  ]);
 
 		  const FEATURE_CONTROL_SUBTABS = Object.freeze([
@@ -2473,34 +2468,15 @@ __ROOT__ .cgxui-qbig-number{
   }
 
   function CHUB_PW_setSetting(key, val) {
-    const api = CHUB_PW_api();
-    const changed = SAFE_call('pagination.applySetting', () => api?.applySetting?.(key, val));
-    return !!changed;
+    return false;
   }
 
   function CHUB_PW_go(direction) {
-    const api = CHUB_PW_api();
-    if (!api) return { message: 'Pagination module unavailable.' };
-    const infoBefore = CHUB_PW_getPageInfo();
-    const handlers = {
-      first: () => api.goFirst?.('control-hub:first'),
-      older: () => api.goOlder?.('control-hub:older'),
-      newer: () => api.goNewer?.('control-hub:newer'),
-      last: () => api.goLast?.('control-hub:last'),
-    };
-    const run = handlers[String(direction || '')];
-    const ok = !!SAFE_call(`pagination.go:${String(direction || '')}`, () => run?.());
-    if (!ok) {
-      const enabled = CHUB_PW_getSetting('pwEnabled', true);
-      return { message: enabled ? 'No page change.' : 'Pagination is disabled.' };
-    }
-    return { message: CHUB_PW_pageLabel(infoBefore) === CHUB_PW_pageLabel() ? 'Already there.' : CHUB_PW_pageLabel() };
+    return { message: 'Physical Pagination is retired.' };
   }
 
   function CHUB_PW_rebuild(reason = 'control-hub:rebuild') {
-    const api = CHUB_PW_api();
-    const ok = !!SAFE_call('pagination.rebuild', () => api?.rebuildIndex?.(reason));
-    return { message: ok ? CHUB_PW_pageLabel() : 'Pagination rebuild failed or is unavailable.' };
+    return { message: 'Physical Pagination is retired.' };
   }
 
   function CHUB_TREE_api() {
