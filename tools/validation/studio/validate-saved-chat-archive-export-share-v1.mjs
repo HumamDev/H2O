@@ -207,6 +207,9 @@ function createBehaviorFs() {
   let folderPublishCalls = 0;
   let beforeZipPublish = null;
   let zipPublishCalls = 0;
+  const zipStageNames = [];
+  const zipPublishOptions = [];
+  let zipIdentityFault = '';
   const key = (baseDir, p) => `${baseDir}:${p}`;
   const splitKey = (entry) => {
     const index = entry.indexOf(':');
@@ -298,26 +301,51 @@ function createBehaviorFs() {
       renameTree(HOME, stagedPath, HOME, finalPath);
       return { schema: 'h2o.savedChatFolderPublish.v1', ok: true, status: 'published', stagingRemoved: true };
     }
-    if (command === 'h2o_publish_saved_chat_zip_create_only') {
+    if (command === 'h2o_publish_saved_chat_zip_bytes_create_only') {
       zipPublishCalls += 1;
-      const request = body?.request || {};
-      const stagedPath = `H2O Studio Exports/${request.stagedName || ''}`;
-      const finalPath = `H2O Studio Exports/${request.finalName || ''}`;
+      const options = JSON.parse(decodeURIComponent(metadata?.headers?.options || ''));
+      const finalName = String(options.finalName || '');
+      const token = String(options.token || '');
+      const stagedName = `${finalName}.tmp-${token}`;
+      const stagedPath = `H2O Studio Exports/${stagedName}`;
+      const finalPath = `H2O Studio Exports/${finalName}`;
+      zipStageNames.push(stagedName);
+      zipPublishOptions.push({ ...options });
+      if (exists(HOME, stagedPath)) {
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'stage-exists', stagingRemoved: false, byteLength: 0, sha256: '', fullFsync: false };
+      }
+      const ownedBytes = Buffer.from(body);
+      put(HOME, stagedPath, ownedBytes);
+      /* Buffer object identity models the retained native descriptor versus
+       * the no-follow pathname identity checked immediately before promotion. */
+      const ownedEntry = files.get(key(HOME, stagedPath));
+      const actualLength = zipIdentityFault === 'length' ? ownedEntry.length + 1 : ownedEntry.length;
+      const actualSha = zipIdentityFault === 'hash'
+        ? sha256(Buffer.concat([ownedEntry, Buffer.from('mismatch')]))
+        : sha256(ownedEntry);
+      if (Number(options.expectedByteLength) !== actualLength) {
+        if (files.get(key(HOME, stagedPath)) === ownedEntry) files.delete(key(HOME, stagedPath));
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-length-mismatch', stagingRemoved: true, byteLength: 0, sha256: '', fullFsync: false };
+      }
+      if (String(options.expectedSha256 || '') !== actualSha) {
+        if (files.get(key(HOME, stagedPath)) === ownedEntry) files.delete(key(HOME, stagedPath));
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-hash-mismatch', stagingRemoved: true, byteLength: 0, sha256: '', fullFsync: false };
+      }
       if (beforeZipPublish) {
         const hook = beforeZipPublish;
         beforeZipPublish = null;
-        await hook({ stagedPath, finalPath });
+        await hook({ stagedName, stagedPath, finalPath });
+      }
+      if (files.get(key(HOME, stagedPath)) !== ownedEntry) {
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staging-identity-mismatch', stagingRemoved: false, byteLength: 0, sha256: '', fullFsync: false };
       }
       if (exists(HOME, finalPath)) {
-        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'destination-exists', stagingRemoved: false };
+        files.delete(key(HOME, stagedPath));
+        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'destination-exists', stagingRemoved: true, byteLength: 0, sha256: '', fullFsync: false };
       }
-      const stagedBytes = files.get(key(HOME, stagedPath));
-      if (!stagedBytes) {
-        return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-missing', stagingRemoved: false };
-      }
-      files.set(key(HOME, finalPath), stagedBytes);
+      files.set(key(HOME, finalPath), ownedEntry);
       files.delete(key(HOME, stagedPath));
-      return { schema: 'h2o.savedChatZipPublish.v1', ok: true, status: 'published', stagingRemoved: true };
+      return { schema: 'h2o.savedChatZipPublish.v1', ok: true, status: 'published', stagingRemoved: true, byteLength: ownedEntry.length, sha256: actualSha, fullFsync: true };
     }
     const p = body?.path;
     const options = body?.options || {};
@@ -360,6 +388,9 @@ function createBehaviorFs() {
     folderPublishCallCount() { return folderPublishCalls; },
     setBeforeZipPublish(fn) { beforeZipPublish = fn; },
     zipPublishCallCount() { return zipPublishCalls; },
+    zipStageNames() { return zipStageNames.slice(); },
+    zipPublishOptions() { return zipPublishOptions.map((item) => ({ ...item })); },
+    setZipIdentityFault(value) { zipIdentityFault = String(value || ''); },
   };
 }
 
@@ -744,22 +775,52 @@ check('M09 P0.1b folder staging uses bounded native exclusive creation and rando
   assertIncludes(folderBody, 'if (ownsStage && tempPath)');
 });
 
-check('M08 ZIP final publication uses one bounded native atomic create-only command', () => {
+check('M09 P0.3a ZIP bytes use one native-owned staging and create-only publication transaction', () => {
   assert.ok(existsRepo(ZIP_PUBLISH_NATIVE), `${ZIP_PUBLISH_NATIVE} does not exist`);
   const native = readRepo(ZIP_PUBLISH_NATIVE);
   const tauriLib = readRepo(TAURI_LIB);
-  assertIncludes(exporterCode, 'h2o_publish_saved_chat_zip_create_only');
-  assertIncludes(exporterCode, 'publishZipCreateOnly(dest.tempName, dest.exportName)');
+  assertIncludes(exporterCode, 'h2o_publish_saved_chat_zip_bytes_create_only');
+  assertIncludes(exporterCode, 'publishOwnedZipBytes(');
+  assertIncludes(exporterCode, 'ZIP_STAGE_CREATE_ATTEMPTS = 8');
+  assertIncludes(exporterCode, 'crypto.getRandomValues');
   assertIncludes(native, 'promote_exclusive');
+  assertIncludes(native, 'create_new_child');
+  assertIncludes(native, 'sync_file_contents');
+  assertIncludes(native, 'hash_owned_file');
+  assertIncludes(native, 'libc::fstat');
+  assertIncludes(native, 'st_dev');
+  assertIncludes(native, 'st_ino');
+  assertIncludes(native, 'stat_child_nofollow');
+  assertIncludes(native, 'required_options');
+  assertIncludes(native, 'body_bytes');
   assertIncludes(native, 'destination-exists');
+  assertIncludes(native, 'stage-exists');
+  assertIncludes(native, 'staging-identity-mismatch');
   assertIncludes(native, 'H2O Studio Exports');
-  assertIncludes(tauriLib, 'saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only');
+  assertIncludes(tauriLib, 'saved_chat_zip_publish::h2o_publish_saved_chat_zip_bytes_create_only');
+  assert.equal(
+    (tauriLib.match(/saved_chat_zip_publish::h2o_publish_saved_chat_zip_bytes_create_only/g) || []).length,
+    2,
+    'ZIP bytes transaction must be registered in debug and release handlers',
+  );
   const nativeProduction = native.slice(0, native.indexOf('#[cfg(test)]'));
   const zipBody = exporterCode.slice(
     exporterCode.indexOf('async function exportVerifiedPackageZip'),
     exporterCode.indexOf('var TEXT =', exporterCode.indexOf('async function exportVerifiedPackageZip')),
   );
-  assert.doesNotMatch(zipBody, /fsRename|plugin:fs\|rename/);
+  const zipResolver = exporterCode.slice(
+    exporterCode.indexOf('function resolveZipExportDestination'),
+    exporterCode.indexOf('async function inspectVerifiedPackage'),
+  );
+  assert.ok(
+    zipBody.indexOf('verifyPortableZipReadback(zipBytes, assembled)') < zipBody.indexOf('publishOwnedZipBytes('),
+    'in-memory package/ZIP semantic proof must precede native filesystem publication',
+  );
+  assertIncludes(zipBody, 'expectedZipSha256 = await sha256Prefixed(zipBytes)');
+  assert.doesNotMatch(zipBody, /fsWriteFile|fsReadFile|fsRemove|fsRename|plugin:fs\|(?:write_file|read_file|remove|rename)/);
+  assert.doesNotMatch(zipResolver, /Date\.now|tempPath|tempName/);
+  assert.doesNotMatch(exporterCode, /h2o_publish_saved_chat_zip_create_only/);
+  assert.doesNotMatch(tauriLib, /h2o_publish_saved_chat_zip_create_only/);
   assert.doesNotMatch(nativeProduction, /std::fs::rename|rename_within/);
 });
 
@@ -1264,6 +1325,12 @@ checkAsync('M08 verified v1/v2 ZIP export is method-8, byte-faithful, determinis
   assert.equal(one.entryCount, 5);
   const oneBytes = mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-one.h2ochat.zip'));
   const twoBytes = mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-two.h2ochat.zip'));
+  const publicationOptions = mem.zipPublishOptions();
+  assert.equal(publicationOptions.length, 2, 'each successful ZIP used one native bytes transaction');
+  assert.equal(publicationOptions[0].expectedByteLength, oneBytes.length);
+  assert.equal(publicationOptions[0].expectedSha256, sha256(oneBytes));
+  assert.equal(publicationOptions[1].expectedByteLength, twoBytes.length);
+  assert.equal(publicationOptions[1].expectedSha256, sha256(twoBytes));
   assert.deepEqual(oneBytes, twoBytes, 'destination leaf must not participate in ZIP bytes');
   const decoded = await portable.readPortablePackageZip(oneBytes);
   assert.equal(decoded.packageDirName, 'm08_zip_export.h2ochat');
@@ -1278,6 +1345,46 @@ checkAsync('M08 verified v1/v2 ZIP export is method-8, byte-faithful, determinis
   const collision = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: 'm08-one.h2ochat.zip' });
   assert.equal(collision.status, 'destination-exists');
   assert.deepEqual(mem.files.get(mem.key(mem.HOME, 'H2O Studio Exports/m08-one.h2ochat.zip')), beforeCollision);
+});
+
+checkAsync('M09 P0.3a ZIP staging collision preserves the foreign stage and retries with fresh ownership', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm09_zip_stage_ownership', withAsset: true });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const finalName = 'm09-stage.h2ochat.zip';
+  const firstToken = '33'.repeat(16);
+  const secondToken = '44'.repeat(16);
+  const firstStageName = `${finalName}.tmp-${firstToken}`;
+  const secondStageName = `${finalName}.tmp-${secondToken}`;
+  const firstStagePath = `H2O Studio Exports/${firstStageName}`;
+  const secondStagePath = `H2O Studio Exports/${secondStageName}`;
+  const finalPath = `H2O Studio Exports/${finalName}`;
+  const foreignBytes = Buffer.from('foreign-zip-stage-owner-bytes');
+  mem.put(mem.HOME, firstStagePath, foreignBytes);
+
+  const tokenBytes = [Buffer.from(firstToken, 'hex'), Buffer.from(secondToken, 'hex')];
+  const deterministicCrypto = {
+    subtle: nodeCrypto.webcrypto.subtle,
+    getRandomValues(target) {
+      const bytes = tokenBytes.shift();
+      assert.ok(bytes, 'exporter requested more ZIP staging tokens than expected');
+      target.set(bytes);
+      return target;
+    },
+  };
+  const exporter = loadBehaviorRuntime(mem, undefined, deterministicCrypto).H2O.Studio.archiveExporter;
+  const result = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: finalName });
+
+  assert.equal(result.status, 'exported', result.reason);
+  assert.equal(mem.zipPublishCallCount(), 2, 'stage collision was not retried exactly once');
+  assert.deepEqual(mem.zipStageNames(), [firstStageName, secondStageName]);
+  assert.deepEqual(mem.files.get(mem.key(mem.HOME, firstStagePath)), foreignBytes, 'foreign stage bytes changed');
+  assert.equal(mem.exists(mem.HOME, firstStagePath), true, 'foreign stage was removed');
+  assert.equal(mem.exists(mem.HOME, secondStagePath), false, 'owned retry stage was not consumed');
+  const finalBytes = mem.files.get(mem.key(mem.HOME, finalPath));
+  assert.ok(finalBytes, 'fresh owned stage was not published');
+  assert.equal(sha256(finalBytes), mem.zipPublishOptions()[1].expectedSha256);
+  assert.equal(finalBytes.length, mem.zipPublishOptions()[1].expectedByteLength);
 });
 
 checkAsync('M08 ZIP publication refuses a race winner after advisory absence and cleans staging', async () => {
@@ -1309,6 +1416,55 @@ checkAsync('M08 ZIP publication refuses a race winner after advisory absence and
     false,
     'private staging artifact was not cleaned',
   );
+});
+
+checkAsync('M09 P0.3a ZIP pathname substitution is refused after native byte verification', async () => {
+  const mem = createBehaviorFs();
+  const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: 'm09_zip_identity_binding', withAsset: false });
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const finalPath = 'H2O Studio Exports/m09-substitution.h2ochat.zip';
+  const substitutedBytes = Buffer.from('foreign-substituted-stage-bytes');
+  let substitutedStagePath = '';
+  mem.setBeforeZipPublish(({ stagedPath }) => {
+    substitutedStagePath = stagedPath;
+    mem.put(mem.HOME, stagedPath, substitutedBytes);
+  });
+  const exporter = loadBehaviorRuntime(mem).H2O.Studio.archiveExporter;
+  const result = await exporter.exportVerifiedPackageZip({
+    packagePath: sourceRoot,
+    exportName: 'm09-substitution.h2ochat.zip',
+  });
+
+  assert.equal(result.status, 'write-error');
+  assert.match(result.reason, /staging-identity-mismatch/);
+  assert.equal(mem.exists(mem.HOME, finalPath), false, 'substituted bytes reached the final destination');
+  assert.deepEqual(
+    mem.files.get(mem.key(mem.HOME, substitutedStagePath)),
+    substitutedBytes,
+    'foreign substituted pathname was cleaned or modified',
+  );
+});
+
+checkAsync('M09 P0.3a ZIP staged hash and length mismatches both fail closed', async () => {
+  for (const fault of ['hash', 'length']) {
+    const mem = createBehaviorFs();
+    const pkg = makeBehaviorPackage({ schemaVersion: 2, chatId: `m09_zip_${fault}_binding`, withAsset: false });
+    const sourceRoot = installBehaviorPackage(mem, pkg);
+    const finalName = `m09-${fault}.h2ochat.zip`;
+    const finalPath = `H2O Studio Exports/${finalName}`;
+    mem.setZipIdentityFault(fault);
+    const exporter = loadBehaviorRuntime(mem).H2O.Studio.archiveExporter;
+    const result = await exporter.exportVerifiedPackageZip({ packagePath: sourceRoot, exportName: finalName });
+
+    assert.equal(result.status, 'write-error', `${fault} mismatch reported success`);
+    assert.match(result.reason, new RegExp(`staged-${fault}-mismatch`));
+    assert.equal(mem.exists(mem.HOME, finalPath), false, `${fault} mismatch created a final ZIP`);
+    assert.equal(
+      [...mem.files.keys()].some((entry) => entry.includes(`${finalName}.tmp-`)),
+      false,
+      `${fault} mismatch left an owned staging file`,
+    );
+  }
 });
 
 checkAsync('M08 portable ZIP reaches the shared import-as-new core; failures and dry-run write nothing', async () => {

@@ -11,7 +11,8 @@
  *   - Manifest-driven copy only; no blind recursive copy.
  *   - No overwrite: existing final destination is rejected.
  *   - Folder export: staged directory, then native atomic create-only publish.
- *   - ZIP export: verified staged file, then native atomic create-only publish.
+ *   - ZIP export: semantic verification in memory, then one native-owned
+ *     exclusive stage/write/identity-check/create-only publication transaction.
  *   - No DB/store writes, no scanner/materializer/importer calls, no Chrome
  *     package-body authority, no sync/WebDAV/cloud/native messaging.
  */
@@ -32,6 +33,8 @@
   var TMP_SUFFIX_PREFIX = '.tmp-';
   var FOLDER_STAGE_TOKEN_BYTES = 16;
   var FOLDER_STAGE_CREATE_ATTEMPTS = 8;
+  var ZIP_STAGE_TOKEN_BYTES = 16;
+  var ZIP_STAGE_CREATE_ATTEMPTS = 8;
   var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
 
   function detectTauri() {
@@ -245,12 +248,46 @@
     });
   }
 
-  function publishZipCreateOnly(stagedName, finalName) {
+  function randomZipStageToken() {
+    if (!global.crypto || typeof global.crypto.getRandomValues !== 'function') {
+      throw new Error('crypto.getRandomValues unavailable for ZIP staging');
+    }
+    var bytes = new Uint8Array(ZIP_STAGE_TOKEN_BYTES);
+    global.crypto.getRandomValues(bytes);
+    return Array.prototype.map.call(bytes, function (byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function publishZipBytesCreateOnly(finalName, token, expectedSha256, expectedByteLength, bytes) {
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for ZIP publication'));
-    return invoke('h2o_publish_saved_chat_zip_create_only', {
-      request: { stagedName: stagedName, finalName: finalName },
+    return invoke('h2o_publish_saved_chat_zip_bytes_create_only', bytesFor(bytes), {
+      headers: {
+        options: encodeURIComponent(JSON.stringify({
+          finalName: finalName,
+          token: token,
+          expectedSha256: expectedSha256,
+          expectedByteLength: expectedByteLength,
+        })),
+      },
     });
+  }
+
+  async function publishOwnedZipBytes(finalName, expectedSha256, expectedByteLength, bytes) {
+    for (var attempt = 0; attempt < ZIP_STAGE_CREATE_ATTEMPTS; attempt += 1) {
+      var token = randomZipStageToken();
+      var result = safeObject(await publishZipBytesCreateOnly(
+        finalName,
+        token,
+        expectedSha256,
+        expectedByteLength,
+        bytes
+      ));
+      if (cleanString(result.status) === 'stage-exists') continue;
+      return result;
+    }
+    throw new Error('saved-chat-zip-stage-collision-exhausted');
   }
 
   async function sha256Prefixed(bytes) {
@@ -489,13 +526,10 @@
     var packagePath = cleanString(opts.packagePath);
     var packageName = packageDirNameForPath(packagePath);
     var exportName = sanitizeZipExportName(opts.exportName, packageName);
-    var tempName = exportName + TMP_SUFFIX_PREFIX + Date.now().toString(36);
     return {
       exportRoot: EXPORT_ROOT,
       exportName: exportName,
       destinationPath: joinPath(EXPORT_ROOT, exportName),
-      tempName: tempName,
-      tempPath: joinPath(EXPORT_ROOT, tempName),
       packageDirName: packageName,
     };
   }
@@ -830,10 +864,8 @@
   async function exportVerifiedPackageZip(options) {
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
-    var tempPath = '';
     try {
       var dest = resolveZipExportDestination(opts);
-      tempPath = dest.tempPath;
       var dry = await dryRunExportPackageZip(opts);
       if (dry.status !== 'export-ready') return dry;
       var verified = await inspectVerifiedPackage(packagePath);
@@ -843,21 +875,23 @@
       var assembled = await assemblePortablePackage(packagePath, verified);
       var portable = getPortableZip();
       var zipBytes = await portable.buildPortableZip(assembled.zipEntries, { method: portable.METHOD_DEFLATE });
-      await fsMkdir(EXPORT_ROOT, homeOptions({ recursive: true }));
+      var decoded = await verifyPortableZipReadback(zipBytes, assembled);
+      var expectedZipSha256 = await sha256Prefixed(zipBytes);
       if (await fsExists(dest.destinationPath, homeOptions())) {
         return zipExportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, packageDirName: dest.packageDirName, inspectionStatus: 'verified', reason: 'destination already exists' });
       }
-      if (await fsExists(tempPath, homeOptions())) throw new Error('portable ZIP temp destination already exists');
-      await fsWriteFile(tempPath, zipBytes, homeOptions());
-      var readbackBytes = await fsReadFile(tempPath, homeOptions());
-      var decoded = await verifyPortableZipReadback(readbackBytes, assembled);
       /* Advisory existence checks above improve UX but are not publication
-       * authority. This native operation performs the final existence test and
-       * create-only namespace mutation atomically under the fixed export root. */
-      var publication = safeObject(await publishZipCreateOnly(dest.tempName, dest.exportName));
+       * authority. This native transaction exclusively creates and owns the
+       * stage, writes and verifies these exact bytes through its retained
+       * handle, binds the stage pathname to that handle, and atomically performs
+       * the final create-only namespace mutation under the fixed export root. */
+      var publication = safeObject(await publishOwnedZipBytes(
+        dest.exportName,
+        expectedZipSha256,
+        zipBytes.byteLength,
+        zipBytes
+      ));
       if (cleanString(publication.status) === 'destination-exists') {
-        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
-        tempPath = '';
         return zipExportResult('destination-exists', {
           packagePath: packagePath,
           exportName: dest.exportName,
@@ -868,12 +902,13 @@
         });
       }
       if (publication.ok !== true || cleanString(publication.status) !== 'published') {
-        throw new Error('saved-chat-zip-create-only-publication-failed');
+        throw new Error('saved-chat-zip-create-only-publication-failed:' + cleanString(publication.status));
       }
-      if (publication.stagingRemoved !== true) {
-        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
+      if (publication.stagingRemoved !== true ||
+          Number(publication.byteLength) !== zipBytes.byteLength ||
+          cleanString(publication.sha256) !== expectedZipSha256) {
+        throw new Error('saved-chat-zip-publication-identity-mismatch');
       }
-      tempPath = '';
       return zipExportResult('exported', {
         packagePath: packagePath,
         exportName: dest.exportName,
@@ -888,15 +923,12 @@
         fileCount: assembled.packageEntries.length,
         entryCount: decoded.entryCount,
         assetCount: assembled.assetCount,
-        zipByteLength: readbackBytes.byteLength,
+        zipByteLength: zipBytes.byteLength,
         exportedAt: nowIso(),
         reason: 'portable ZIP exported and read-back verified',
       });
     } catch (error) {
-      if (tempPath) {
-        try { await fsRemove(tempPath, homeOptions({ recursive: false })); } catch (_) { /* best effort */ }
-      }
-      return zipExportResult('write-error', { packagePath: packagePath, tempPath: tempPath, reason: String((error && error.message) || error || 'ZIP export failed') });
+      return zipExportResult('write-error', { packagePath: packagePath, reason: String((error && error.message) || error || 'ZIP export failed') });
     }
   }
 

@@ -505,14 +505,16 @@ pub(crate) mod confined {
             Ok(Some(st))
         }
 
-        /// Exclusively creates a file relative to this descriptor.
+        /// Exclusively creates a read/write file relative to this descriptor.
+        /// The retained read side lets a purpose-bounded owner verify the exact
+        /// bytes held by the descriptor without reopening a pathname.
         pub fn create_new_child(&self, name: &[u8]) -> io::Result<File> {
             let c = cstr(name)?;
             let fd = unsafe {
                 libc::openat(
                     self.0.as_raw_fd(),
                     c.as_ptr(),
-                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
+                    libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC,
                     0o644 as libc::c_uint,
                 )
             };

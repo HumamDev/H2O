@@ -110,9 +110,10 @@ pub mod archive_package_scan;
 /// carry no remote, path, credential, outbox, ledger or destructive authority.
 pub mod archive_transport_handoff;
 
-/// M08 — bounded atomic create-only publication for verified portable ZIPs.
-/// Renderer authority is two governed leaf names under the fixed Desktop
-/// export root; no arbitrary path or overwrite-capable operation is exposed.
+/// M09 P0.3a — native-owned staging and atomic create-only publication for
+/// verified portable ZIP bytes. Renderer authority is one governed final leaf,
+/// one bounded token, expected byte identity, and the raw body; no arbitrary
+/// path or overwrite-capable operation is exposed.
 pub mod saved_chat_zip_publish;
 
 /// M09 P0.1 — bounded create-only staging and atomic publication for verified
@@ -2595,7 +2596,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_transport_handoff::h2o_archive_transport_handoff_end,
             saved_chat_folder_publish::h2o_create_saved_chat_folder_stage,
             saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only,
-            saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only,
+            saved_chat_zip_publish::h2o_publish_saved_chat_zip_bytes_create_only,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
             archive_reclaim_execute::h2o_archive_reclamation_execute,
@@ -2640,7 +2641,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_transport_handoff::h2o_archive_transport_handoff_end,
             saved_chat_folder_publish::h2o_create_saved_chat_folder_stage,
             saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only,
-            saved_chat_zip_publish::h2o_publish_saved_chat_zip_create_only,
+            saved_chat_zip_publish::h2o_publish_saved_chat_zip_bytes_create_only,
             archive_residue_probe::h2o_archive_durable_temp_residue,
             archive_reclamation_preview::h2o_archive_reclamation_preview,
             archive_reclaim_execute::h2o_archive_reclamation_execute,
