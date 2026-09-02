@@ -22,6 +22,7 @@ const PATHS = Object.freeze({
   logicalPages: 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js',
   threadPages: 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js',
   minimap: 'src-runtime-base/1A1c.🟥🗺️ MiniMap Engine 🚀🗺️.js',
+  folders: 'src-runtime-base/0F3a.⬛️🗂️ Folders 🗂️.js',
 });
 
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
@@ -169,6 +170,37 @@ check('K2 Thread Pages logical behavior remains present', () => {
 check('K3 MiniMap materialization/navigation remains present', () => {
   present(source.minimap, /MINI_materializeTarget/, 'MiniMap materialization path missing');
   present(source.minimap, /finishSmoothScroll/, 'MiniMap native/logical navigation fallback missing');
+});
+
+check('P02C-TP-C1 detached-host map and detach helper authority are absent', () => {
+  absent(source.threadPages, /detachedPageHostsByChat|function\s+detachPageHostsFromChat\b/, 'Thread Pages detached-host retention authority remains');
+});
+
+check('P02C-TP-C2 generic engine-pagination calls cannot select physical detach', () => {
+  absent(source.threadPages, /wrappedByPagination\s*=|if\s*\(\s*wrappedByPagination\s*\)|detachPageHostsFromChat\s*\(/, 'forceable engine-pagination physical branch remains');
+});
+
+check('P02C-TP-C3 retained page hosts cannot be physically reinserted', () => {
+  absent(source.threadPages, /function\s+restoreDetachedPageHosts\b|insertBefore\s*\(\s*host\s*,\s*placeholder\s*\)/, 'Thread Pages retained-host restore authority remains');
+});
+
+check('P02C-FO-C1 local page-host fragment retention is absent', () => {
+  absent(source.folders, /function\s+PAGEHOST_enterPage_LOCAL\b|createDocumentFragment\s*\(|previousNodes\s*=|STATE\.pageSession\s*=\s*\{[\s\S]{0,800}?fragment\b/, 'Folders local fragment/session retention fallback remains');
+});
+
+check('P02C-FO-C2 local retained-native restore is absent', () => {
+  absent(source.folders, /function\s+PAGEHOST_restorePreviousPage_LOCAL\b|fragment\s+instanceof\s+DocumentFragment|fragment\.firstChild[\s\S]{0,160}?appendChild\s*\(\s*fragment\.firstChild\s*\)/, 'Folders local retained-node restoration remains');
+});
+
+check('P02C-FO-C3 canonical page-host delegation remains explicit', () => {
+  present(source.folders, /svc\?\.UI_restoreInShellPage[\s\S]{0,120}?svc\.UI_restoreInShellPage\s*\(\s*LIBCORE_ENV\(\)/, 'canonical restore delegation missing');
+  present(source.folders, /svc\?\.UI_mountInShellPage[\s\S]{0,120}?svc\.UI_mountInShellPage\s*\(\s*LIBCORE_ENV\(\)/, 'canonical mount delegation missing');
+});
+
+check('P02C-FO-C4 absent canonical page-host service fails closed', () => {
+  present(source.folders, /function\s+UI_restoreInShellPage[\s\S]{0,300}?return\s+false\s*;/, 'missing restore service does not fail closed');
+  present(source.folders, /function\s+UI_mountInShellPage[\s\S]{0,300}?return\s+false\s*;/, 'missing mount service does not fail closed');
+  absent(source.folders, /return\s+PAGEHOST_(?:restorePreviousPage|enterPage)_LOCAL\s*\(/, 'local physical page-host fallback remains callable');
 });
 
 check('UM-A automatic Global Unmount boot and startup waiter are retired', () => {

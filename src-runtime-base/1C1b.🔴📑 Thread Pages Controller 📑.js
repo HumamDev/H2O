@@ -104,7 +104,6 @@
     collapsedPageDriversByChat: new Map(),
     chatPageRevsByChat: new Map(),
     collapsedPageModesByChat: new Map(),
-    detachedPageHostsByChat: new Map(),
     bridgeOff: null,
     listenersBound: false,
     lastAppliedChatId: '',
@@ -408,15 +407,6 @@
     }
   }
 
-  function isPageWrappedByPagination(pageNum = 0, chatId = '') {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const id = String(chatId || resolveChatId()).trim();
-    if (!num || !id) return false;
-    return isPageCollapsed(num, id)
-      && getPageCollapseDriver(num, id) === 'engine'
-      && getPageCollapseMode(num, id) === 'pagination';
-  }
-
   function isDividerTitleCollapsed(pageNum = 0, chatId = '') {
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
@@ -452,7 +442,6 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const id = String(chatId || resolveChatId()).trim();
     if (!num || !id) return 'normal';
-    if (isPageWrappedByPagination(num, id)) return 'page_collapsed';
     if (isDividerTitleCollapsed(num, id)) return 'all_collapsed';
     return 'normal';
   }
@@ -696,7 +685,7 @@
     ensureDividerStyle();
     const mode = getDividerUiMode(num, chatId);
     const state = getDividerCircleState(num, chatId);
-    const wrapped = isPageWrappedByPagination(num, chatId);
+    const wrapped = false;
     const roots = getDividerRoots(num);
     for (const divider of roots) applyDividerVisualsToRoot(divider, state, { wrapped });
     const collapseControl = syncCollapsedBoundaryControlForPage(num, chatId);
@@ -749,7 +738,7 @@
     // correct list to be overwritten by a later divider-repair cadence.
     const mode = getDividerUiMode(num, id);
     const state = String(opts?.state || getDividerCircleState(num, id) || 'expanded').trim() || 'expanded';
-    const wrapped = opts?.wrapped == null ? isPageWrappedByPagination(num, id) : !!opts.wrapped;
+    const wrapped = false;
     const result = applyDividerVisualsToRoot(divider, state, { wrapped });
     return {
       ok: !!result?.ok,
@@ -1881,34 +1870,6 @@
     return getPageCollapseMode(num, entry.chatId);
   }
 
-  function _detachedPageStoreGet(chatId = '') {
-    const id = String(chatId || resolveChatId()).trim();
-    if (!id) return { chatId: '', map: new Map() };
-    let map = S.detachedPageHostsByChat.get(id);
-    if (!(map instanceof Map)) {
-      map = new Map();
-      S.detachedPageHostsByChat.set(id, map);
-    }
-    return { chatId: id, map };
-  }
-
-  function getDetachedPageRecord(pageNum = 0, chatId = '') {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    if (!num) return null;
-    const entry = _detachedPageStoreGet(chatId);
-    return entry.map.get(num) || null;
-  }
-
-  function clearDetachedPageRecord(pageNum = 0, chatId = '') {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const entry = _detachedPageStoreGet(chatId);
-    if (!entry.chatId || !num) return null;
-    const prev = entry.map.get(num) || null;
-    entry.map.delete(num);
-    if (!entry.map.size) S.detachedPageHostsByChat.delete(entry.chatId);
-    return prev;
-  }
-
   function isChatPageDividerHost(host = null) {
     if (!host) return false;
     try {
@@ -1922,50 +1883,6 @@
 
   function getPageBodyHosts(hosts = []) {
     return Array.from(new Set((Array.isArray(hosts) ? hosts : []).filter((host) => host && !isChatPageDividerHost(host))));
-  }
-
-  function detachPageHostsFromChat(pageNum = 0, chatId = '', hosts = []) {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const id = String(chatId || resolveChatId()).trim();
-    if (!num || !id) return { ok: false, status: 'page-or-chat-missing', items: [] };
-    const existing = getDetachedPageRecord(num, id);
-    if (existing?.items?.length) return { ok: true, status: 'already-detached', items: existing.items.slice() };
-
-    const uniqueHosts = getPageBodyHosts(hosts);
-    const items = [];
-    for (const host of uniqueHosts) {
-      const parent = host?.parentNode || null;
-      if (!host || !parent) continue;
-      const placeholder = document.createComment(`cgxui-chat-page-detached:${id}:${num}`);
-      try { parent.insertBefore(placeholder, host); } catch { continue; }
-      try { parent.removeChild(host); } catch {
-        try { placeholder.remove(); } catch {}
-        continue;
-      }
-      items.push({ host, placeholder });
-    }
-
-    const entry = _detachedPageStoreGet(id);
-    entry.map.set(num, { pageNum: num, chatId: id, items });
-    return { ok: true, status: items.length ? 'detached' : 'empty', items: items.slice() };
-  }
-
-  function restoreDetachedPageHosts(pageNum = 0, chatId = '') {
-    const num = Math.max(1, Number(pageNum || 0) || 0);
-    const id = String(chatId || resolveChatId()).trim();
-    const record = clearDetachedPageRecord(num, id);
-    if (!record?.items?.length) return { ok: true, status: 'nothing-detached', items: [] };
-
-    for (const item of record.items) {
-      const host = item?.host || null;
-      const placeholder = item?.placeholder || null;
-      const parent = placeholder?.parentNode || null;
-      if (host && parent) {
-        try { parent.insertBefore(host, placeholder); } catch {}
-      }
-      try { placeholder?.remove?.(); } catch {}
-    }
-    return { ok: true, status: 'restored', items: record.items.slice() };
   }
 
   function findRowByAnswerId(answerId = '') {
@@ -2401,7 +2318,6 @@
     const titleState = getTitleState(num, id);
     const summary = getPageCollapsedRowSummary(num, id);
     const collapsedRows = summary.collapsedRows;
-    const detachedHosts = getDetachedPageRecord(num, id)?.items?.length || 0;
     const routes = getConfiguredDividerRoutes();
     let hiddenQuestionHosts = 0;
     for (const row of rows) {
@@ -2428,14 +2344,14 @@
       hoverInfoBoxEnabled: routes.hoverInfoBoxEnabled,
       mode: getDividerUiMode(num, id),
       titleListActive: isTitleListActive(num, id),
-      pageWrappedByPagination: isPageWrappedByPagination(num, id),
+      pageWrappedByPagination: false,
       pageCollapsed: !!pageCollapsed,
       pageCollapseDriver,
       pageCollapseMode,
       titleState,
       collapsedRows,
       totalRows: rows.length,
-      detachedHosts,
+      detachedHosts: 0,
       hiddenQuestionHosts,
     };
   }
@@ -9860,35 +9776,23 @@
     const collapsed = isPageCollapsed(num, id);
     const driver = normalizeVisualDriver(opts?.driver || getPageCollapseDriver(num, id));
     const mode = String(opts?.mode || getPageCollapseMode(num, id) || '').trim().toLowerCase();
-    const wrappedByPagination = driver === 'engine' && mode === 'pagination';
     const payload = getSections(id);
     const section = payload?.sections?.get?.(num) || null;
     const hosts = Array.isArray(section?.hosts) ? section.hosts : [];
     const bodyHosts = getPageBodyHosts(hosts);
 
-    if (wrappedByPagination) {
-      if (collapsed) {
-        detachPageHostsFromChat(num, id, bodyHosts);
-      } else {
-        restoreDetachedPageHosts(num, id);
-      }
-      for (const host of bodyHosts) setChatPageTurnHostDomState(host, num, false);
-    } else {
-      restoreDetachedPageHosts(num, id);
-      for (const host of bodyHosts) setChatPageTurnHostDomState(host, num, driver === 'engine' ? false : collapsed);
-      // Expand must not depend on the freshly rebuilt host list: hydration
-      // churn can leave it incomplete and strand hidden sections/wrappers.
-      // Collapse stamped every host it hid with page-num + hidden attrs, so
-      // restore sweeps those stamps directly.
-      if (!collapsed) sweepPageHiddenDomState(num);
-      const pushSource = String(opts?.source || 'chat-sync').trim() || 'chat-sync';
-      const chatRev = chatPageRevFor(num, id, { source: pushSource });
-      try { MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, collapsed, id, { source: pushSource, mode: 'chat-sync', chatRev, propagate: true }); } catch {}
-    }
+    for (const host of bodyHosts) setChatPageTurnHostDomState(host, num, collapsed);
+    // Expand must not depend on the freshly rebuilt host list: hydration
+    // churn can leave it incomplete and strand hidden sections/wrappers.
+    // Collapse stamped every host it hid with page-num + hidden attrs, so
+    // restore sweeps those stamps directly.
+    if (!collapsed) sweepPageHiddenDomState(num);
+    const pushSource = String(opts?.source || 'chat-sync').trim() || 'chat-sync';
+    const chatRev = chatPageRevFor(num, id, { source: pushSource });
+    try { MM_CORE_PAGES()?.setMiniMapPageCollapsed?.(num, collapsed, id, { source: pushSource, mode: 'chat-sync', chatRev, propagate: true }); } catch {}
     try { MM_CORE_PAGES()?.renderDividers?.(id); } catch {}
     scheduleDividerVisualRefresh(id, 0);
-    const detachedCount = getDetachedPageRecord(num, id)?.items?.length || 0;
-    return { ok: true, status: 'ok', chatId: id, pageNum: num, collapsed, hosts: bodyHosts.length || detachedCount, driver, mode, wrappedByPagination };
+    return { ok: true, status: 'ok', chatId: id, pageNum: num, collapsed, hosts: bodyHosts.length, driver, mode, wrappedByPagination: false };
   }
 
   function applyPageVisuals(pageNum = 0, opts = {}) {
@@ -9912,33 +9816,21 @@
     const driver = normalizeVisualDriver(opts?.driver);
     const mode = String(opts?.mode || '').trim().toLowerCase();
     const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
-    // The atomic rendered-boundary transaction owns ordinary page collapse.
-    // Only the pagination/unmount engine driver keeps the legacy detach-based
-    // path — a different mechanism, not a second collapse implementation.
-    if (driver !== 'engine' && mode !== 'pagination') {
-      const transaction = executeAtomicPageCollapseTransaction(num, source, {
-        chatId: id,
-        desired: collapsed ? 'collapsed' : 'expanded',
-      });
-      return {
-        ok: transaction?.ok === true,
-        status: transaction?.status || 'ok',
-        chatId: id,
-        pageNum: num,
-        collapsed: !!collapsed,
-        source,
-        driver,
-        mode,
-        transaction,
-      };
-    }
-    const next = localReadCollapsedPagesSet(id);
-    if (collapsed) next.add(num); else next.delete(num);
-    localWriteCollapsedPagesSet(id, Array.from(next));
-    setPageCollapseDriver(num, !!collapsed, driver, id);
-    setPageCollapseMode(num, !!collapsed && mode === 'pagination', mode, id);
-    const visual = applyPageCollapsedVisuals(num, { chatId: id, source, driver, mode });
-    return { ok: true, status: 'ok', chatId: id, pageNum: num, collapsed: !!collapsed, source, driver, mode, visual };
+    const transaction = executeAtomicPageCollapseTransaction(num, source, {
+      chatId: id,
+      desired: collapsed ? 'collapsed' : 'expanded',
+    });
+    return {
+      ok: transaction?.ok === true,
+      status: transaction?.status || 'ok',
+      chatId: id,
+      pageNum: num,
+      collapsed: !!collapsed,
+      source,
+      driver,
+      mode,
+      transaction,
+    };
   }
 
   function togglePageCollapsed(pageNum = 0, opts = {}) {
@@ -9946,19 +9838,18 @@
     const num = Math.max(1, Number(pageNum || 0) || 0);
     const driver = normalizeVisualDriver(opts?.driver);
     const mode = String(opts?.mode || '').trim().toLowerCase();
-    if (driver !== 'engine' && mode !== 'pagination') {
-      const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
-      const transaction = executeAtomicPageCollapseTransaction(num, source, { chatId: id });
-      return {
-        ok: transaction?.ok === true,
-        status: transaction?.status || 'ok',
-        chatId: id,
-        pageNum: num,
-        source,
-        transaction,
-      };
-    }
-    return setPageCollapsed(num, !isPageCollapsed(num, id), Object.assign({}, opts, { chatId: id }));
+    const source = String(opts?.source || 'chat-pages-controller').trim() || 'chat-pages-controller';
+    const transaction = executeAtomicPageCollapseTransaction(num, source, { chatId: id });
+    return {
+      ok: transaction?.ok === true,
+      status: transaction?.status || 'ok',
+      chatId: id,
+      pageNum: num,
+      source,
+      driver,
+      mode,
+      transaction,
+    };
   }
 
   function resetAllMechanisms(chatId = '') {
@@ -10065,7 +9956,6 @@
     S.collapsedPageDriversByChat.delete(id);
     S.collapsedPageModesByChat.delete(id);
     for (const pageNum of pageNums) {
-      restoreDetachedPageHosts(pageNum, id);
       applyPageVisuals(pageNum, { chatId: id, source: 'reset-all-mechanisms' });
     }
 
@@ -10192,7 +10082,7 @@
       intentRaw: storageGetRaw(intentKey),
       liveDrivers: S.collapsedPageDriversByChat.get(id)?.size || 0,
       liveModes: S.collapsedPageModesByChat.get(id)?.size || 0,
-      detachedPages: S.detachedPageHostsByChat.get(id)?.size || 0,
+      detachedPages: 0,
       paginationActive: (() => {
         try {
           const paginationState = PG_ADAPTER()?.getDividerPaginationState?.() || null;
@@ -10221,7 +10111,6 @@
     S.collapsedPagesByChat.set(id, new Set());
     S.collapsedPageDriversByChat.delete(id);
     S.collapsedPageModesByChat.delete(id);
-    S.detachedPageHostsByChat.delete(id);
     cacheTitleIntentLedger(id, createEmptyTitleIntentLedger());
     S.titleIntentLastAppliedByAnswer.clear();
 
@@ -10607,16 +10496,7 @@
     }
     if (unmountEnabled === LP_DIAG_UNKNOWN) warnings.push('unmount-enabled-unknown');
 
-    let detachedHostCount = 0;
-    try {
-      const detachedByPage = S.detachedPageHostsByChat.get(String(context?.chatId || '').trim()) || null;
-      for (const record of detachedByPage?.values?.() || []) {
-        detachedHostCount += Array.isArray(record?.items) ? record.items.length : 0;
-      }
-    } catch {
-      detachedHostCount = LP_DIAG_UNKNOWN;
-      warnings.push('detached-host-count-unknown');
-    }
+    const detachedHostCount = 0;
 
     let paginationPlaceholderCount = LP_DIAG_UNKNOWN;
     let unmountPlaceholderCount = LP_DIAG_UNKNOWN;
