@@ -28,7 +28,9 @@
     PW_VAULT.state = PW_VAULT.state || {};
     const PW_STATE = PW_VAULT.state;
     const PW_OWNER = 'pgnw';
-    const TURN_SELECTOR = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"], [data-message-author-role]';
+    const TURN_WRAPPER_SELECTOR = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
+    const TURN_ROLE_SELECTOR = '[data-message-author-role]';
+    const TURN_SELECTOR = `${TURN_WRAPPER_SELECTOR}, ${TURN_ROLE_SELECTOR}`;
 
     const isElement = (node) => !!node && node.nodeType === 1;
     function retiredStableHash36(input) {
@@ -92,9 +94,21 @@
     }
     function rootMatchesOwnedDisplacedSession(root, records) {
       const retainedSet = new Set(records.map((record) => record.node));
-      let currentNativeTurns = [];
-      try { currentNativeTurns = Array.from(root.querySelectorAll?.(TURN_SELECTOR) || []); } catch (_) { return false; }
-      return currentNativeTurns.every((node) => retainedSet.has(node));
+      let currentTurnWrappers = [];
+      let currentRoleMarkers = [];
+      try {
+        currentTurnWrappers = Array.from(root.querySelectorAll?.(TURN_WRAPPER_SELECTOR) || []);
+        currentRoleMarkers = Array.from(root.querySelectorAll?.(TURN_ROLE_SELECTOR) || []);
+      } catch (_) {
+        return false;
+      }
+      if (!currentTurnWrappers.every((node) => retainedSet.has(node))) return false;
+      for (const marker of currentRoleMarkers) {
+        let wrapper = null;
+        try { wrapper = marker.closest?.(TURN_WRAPPER_SELECTOR) || null; } catch (_) { return false; }
+        if (!isElement(wrapper) || !root.contains?.(wrapper) || !retainedSet.has(wrapper)) return false;
+      }
+      return true;
     }
     function cancelLegacyAuthorities() {
       for (const key of ['refreshTimer', 'deferredRefreshTimer', 'commandBarBindTimer']) {

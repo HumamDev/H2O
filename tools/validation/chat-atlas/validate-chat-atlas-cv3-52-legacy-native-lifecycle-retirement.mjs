@@ -181,6 +181,25 @@ class ElementMock {
   getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
   setAttribute(name, value) { this.attrs.set(name, String(value)); }
   removeAttribute(name) { this.attrs.delete(name); }
+  matches(selector) {
+    return selector.split(',').some((part) => {
+      const candidate = part.trim();
+      const testId = this.getAttribute('data-testid') || '';
+      if (candidate === '[data-testid="conversation-turn"]') return testId === 'conversation-turn';
+      if (candidate === '[data-testid^="conversation-turn-"]') return testId.startsWith('conversation-turn-');
+      if (candidate === '[data-message-author-role]') return this.getAttribute('data-message-author-role') !== null;
+      const roleMatch = candidate.match(/^\[data-message-author-role="([^"]+)"\]$/);
+      return !!roleMatch && this.getAttribute('data-message-author-role') === roleMatch[1];
+    });
+  }
+  closest(selector) {
+    let cursor = this;
+    while (cursor) {
+      if (cursor.matches?.(selector)) return cursor;
+      cursor = cursor.parentElement;
+    }
+    return null;
+  }
   appendChild(child) {
     if (child?.nodeType === 11) {
       for (const nested of [...child.children]) this.appendChild(nested);
@@ -215,16 +234,9 @@ class ElementMock {
     return this.children.some((child) => child.contains?.(node));
   }
   querySelectorAll(selector) {
-    const wantsTurns = selector.includes('conversation-turn') || selector.includes('data-message-author-role');
     const matches = [];
     for (const child of this.children) {
-      const testId = child.getAttribute?.('data-testid') || '';
-      const isTurn = wantsTurns && (
-        testId === 'conversation-turn'
-        || testId.startsWith('conversation-turn-')
-        || child.getAttribute?.('data-message-author-role') !== null
-      );
-      if (isTurn) matches.push(child);
+      if (child.matches?.(selector)) matches.push(child);
       matches.push(...(child.querySelectorAll?.(selector) || []));
     }
     return matches;
@@ -257,6 +269,13 @@ function makeHarness(kind, options = {}) {
   const nativeA = new ElementMock('native-a', { 'data-testid': 'conversation-turn-1' }, counters);
   const nativeB = new ElementMock('native-b', { 'data-testid': 'conversation-turn-2' }, counters);
   const nativeC = new ElementMock('native-c', { 'data-testid': 'conversation-turn-3' }, counters);
+  const roleA = new ElementMock('role-a', { 'data-message-author-role': 'user' }, counters);
+  const roleB = new ElementMock('role-b', { 'data-message-author-role': 'assistant' }, counters);
+  const roleC = new ElementMock('role-c', { 'data-message-author-role': 'assistant' }, counters);
+  const ambiguousRole = new ElementMock('ambiguous-role', { 'data-message-author-role': 'assistant' }, counters);
+  nativeA.appendChild(roleA);
+  nativeB.appendChild(roleB);
+  nativeC.appendChild(roleC);
   const top = new ElementMock('top', { 'data-cgxui-owner': 'pgnw', 'data-cgxui': 'pagination-top' }, counters);
   const bottom = new ElementMock('bottom', { 'data-cgxui-owner': 'pgnw', 'data-cgxui': 'pagination-bottom' }, counters);
   const oldRoot = new ElementMock('old-root', {}, counters);
@@ -269,6 +288,10 @@ function makeHarness(kind, options = {}) {
   } else if (kind === 'same-root-rehydrated') {
     oldRoot.appendChild(top);
     oldRoot.appendChild(nativeC);
+    oldRoot.appendChild(bottom);
+  } else if (kind === 'ambiguous') {
+    oldRoot.appendChild(top);
+    oldRoot.appendChild(ambiguousRole);
     oldRoot.appendChild(bottom);
   } else if (kind === 'remounted') {
     oldRoot.appendChild(top);
@@ -313,7 +336,9 @@ function makeHarness(kind, options = {}) {
     body: currentRoot,
     querySelector(selector) {
       if (selector.includes('conversation-turn') || selector.includes('data-message-author-role')) {
-        return kind === 'owned' ? nativeB : nativeC;
+        if (kind === 'owned') return nativeB;
+        if (kind === 'ambiguous') return ambiguousRole;
+        return nativeC;
       }
       return null;
     },
@@ -364,7 +389,7 @@ function makeHarness(kind, options = {}) {
     clearTimeout: window.clearTimeout,
     clearInterval: window.clearInterval,
   });
-  return { context, window, state, storage, counters, nativeA, nativeB, nativeC, oldRoot, currentRoot };
+  return { context, window, state, storage, counters, nativeA, nativeB, nativeC, ambiguousRole, oldRoot, currentRoot };
 }
 
 function runRetiredRuntime(kind, options = {}) {
@@ -380,7 +405,9 @@ if (retiredCandidate) {
   const owned = runRetiredRuntime('owned');
   const remounted = runRetiredRuntime('remounted');
   const sameRootRehydrated = runRetiredRuntime('same-root-rehydrated');
+  const ambiguous = runRetiredRuntime('ambiguous');
   const writeFailure = runRetiredRuntime('none', { storageWriteFails: true });
+  const ownedTransitionReplaceCount = owned.counters.replaceChildren;
 
   check('R1 legacy enabled=true migrates to disabled retired state', () => {
     const migrated = JSON.parse(fresh.storage.get('h2o:prm:cgx:pgnwndw:pagination:cfg:v1'));
@@ -433,25 +460,36 @@ if (retiredCandidate) {
     assert.equal(sameRootRehydrated.state.booted, false);
   });
 
-  check('R7 post-transition façade stays inert', () => {
+  check('R7 ambiguous current role markup fails closed to host ownership', () => {
+    assert.equal(ambiguous.counters.replaceChildren, 0);
+    assert.deepEqual(ambiguous.currentRoot.children.map((node) => node.name), ['ambiguous-role']);
+    assert.equal(ambiguous.currentRoot.contains(ambiguous.nativeA), false);
+    assert.equal(ambiguous.currentRoot.contains(ambiguous.nativeB), false);
+    assert.equal(ambiguous.currentRoot.contains(ambiguous.ambiguousRole), true);
+    assert.equal(ambiguous.counters.scaffoldRemovals, 2);
+    assert.equal(ambiguous.state.masterTurns.length, 0);
+    assert.equal(ambiguous.state.booted, false);
+  });
+
+  check('R8 post-transition façade stays inert', () => {
     assert.equal(owned.window.H2O_Pagination.boot('test'), false);
     assert.equal(owned.window.H2O_Pagination.goOlder('test'), false);
     assert.equal(owned.window.H2O_Pagination.goToPage(2, 'test'), false);
     assert.equal(owned.window.H2O_Pagination.rebuildIndex('test'), false);
     assert.equal(owned.window.H2O_Pagination.teardownRuntimeSession('test').status, 'retired');
-    assert.equal(owned.counters.replaceChildren, 1);
+    assert.equal(owned.counters.replaceChildren, ownedTransitionReplaceCount);
     assert.equal(owned.counters.timersScheduled, 0);
     assert.equal(owned.counters.publicationCalls, 0);
   });
 
-  check('R8 migration-write failure stays physically disabled', () => {
+  check('R9 migration-write failure stays physically disabled', () => {
     assert.equal(writeFailure.window.H2O_Pagination.getConfig().enabled, false);
     assert.equal(writeFailure.window.H2O_Pagination.getConfig().retired, true);
     assert.equal(writeFailure.window.H2O_Pagination.setEnabled(true), false);
     assert.equal(writeFailure.counters.timersScheduled, 0);
   });
 
-  check('R9 Governor retirement adapter consumes plans without activation', () => {
+  check('R10 Governor retirement adapter consumes plans without activation', () => {
     const calls = { setEnabled: 0, applySetting: 0, timers: 0, settled: 0 };
     const governorWindow = {
       H2O: {},
@@ -478,7 +516,7 @@ if (retiredCandidate) {
     physicalRootViewSwapCount: 0,
     physicalTranscriptReplaceChildrenCount: 0,
     boundedTransitionReplaceChildrenCount: owned.counters.replaceChildren,
-    restoreCurrentNativeRestoreCount: owned.state.transitionRestoreCount,
+    restoreCurrentNativeRestoreCount: Number(owned.state.transitionRestoreCount || 0),
     restoreCurrentStaleReferenceCount: owned.state.transitionStaleReferenceCount,
     hostRemountedStaleNativeInsertCount: Number(remounted.currentRoot.contains(remounted.nativeA)) + Number(remounted.currentRoot.contains(remounted.nativeB)),
     hostRemountedBlindReplaceChildrenCount: remounted.counters.replaceChildren,
@@ -487,6 +525,10 @@ if (retiredCandidate) {
     sameRootRehydratedHostContentPreserved: sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeC),
     sameRootRehydratedScaffoldRemovalCount: sameRootRehydrated.counters.scaffoldRemovals,
     sameRootRehydratedStaleRefsReleased: sameRootRehydrated.state.masterTurns.length === 0 && sameRootRehydrated.state.masterTurnNodeSet.size === 0,
+    ambiguousProvenanceRestoreCount: Number(ambiguous.state.transitionRestoreCount || 0),
+    ambiguousProvenanceNativeMutationCount: ambiguous.counters.replaceChildren,
+    ambiguousProvenanceHostContentPreserved: ambiguous.currentRoot.contains(ambiguous.ambiguousRole),
+    ambiguousProvenanceStaleRefsReleased: ambiguous.state.masterTurns.length === 0 && ambiguous.state.masterTurnNodeSet.size === 0,
     noActiveSessionNativeMutationCount: fresh.counters.replaceChildren,
     postTransitionRetainedNativeReferenceCount: owned.state.masterTurnNodeSet.size,
     postTransitionPhysicalSchedulerCount: owned.counters.timersScheduled,
