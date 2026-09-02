@@ -1,15 +1,16 @@
-//! M09 P0.3a — native-owned portable saved-chat ZIP publication.
+//! M09 P0.3c — FD-bound portable saved-chat ZIP publication.
 //!
 //! The renderer supplies verified ZIP bytes plus an expected SHA-256/length,
 //! one governed final leaf, and a 128-bit lowercase-hex operation token. This
-//! module resolves `$HOME/H2O Studio Exports` itself, derives the staging leaf,
-//! exclusively creates it relative to the export-root descriptor, retains the
-//! created handle through write/sync/readback, proves the pathname still names
-//! that same regular file, and atomically promotes it without replacement.
+//! module resolves both `$HOME/H2O Studio Exports` and a fixed native-only
+//! sibling staging root, derives the staging leaf, exclusively creates it,
+//! retains the created handle through write/sync/readback, and atomically
+//! creates the final name from that verified descriptor with `fclonefileat`.
 //!
 //! No renderer-callable operation accepts a pre-existing staged pathname. The
-//! only cleanup target is the inode this transaction exclusively created, and
-//! a pathname substitution is therefore refused and never removed.
+//! publication syscall never resolves the staging pathname, so a post-check
+//! substitution cannot redirect the published bytes. Cleanup touches the
+//! staging pathname only while it still identifies the owned inode.
 
 use serde::Serialize;
 use std::fs::File;
@@ -18,6 +19,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 
 const EXPORT_ROOT: &str = "H2O Studio Exports";
+const STAGING_ROOT: &str = ".H2O Studio Saved Chat ZIP Staging";
 const FINAL_SUFFIX: &str = ".h2ochat.zip";
 const TEMP_SUFFIX_PREFIX: &str = ".tmp-";
 const TOKEN_HEX_LENGTH: usize = 32;
@@ -41,6 +43,8 @@ pub struct SavedChatZipPublishResult {
     ok: bool,
     status: &'static str,
     staging_removed: bool,
+    committed: bool,
+    durability_complete: bool,
     byte_length: u64,
     sha256: String,
     full_fsync: bool,
@@ -52,12 +56,15 @@ impl SavedChatZipPublishResult {
         byte_length: u64,
         sha256: String,
         full_fsync: bool,
+        durability_complete: bool,
     ) -> Self {
         Self {
             schema: RESULT_SCHEMA,
             ok: true,
             status: "published",
             staging_removed,
+            committed: true,
+            durability_complete,
             byte_length,
             sha256,
             full_fsync,
@@ -70,6 +77,8 @@ impl SavedChatZipPublishResult {
             ok: false,
             status,
             staging_removed,
+            committed: false,
+            durability_complete: false,
             byte_length: 0,
             sha256: String::new(),
             full_fsync: false,
@@ -202,16 +211,25 @@ fn cleanup_owned_stage(
     }
 }
 
-fn publish_bytes_within_root_with<B, P>(
-    root: &Path,
+fn publication_is_unsupported(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Unsupported
+        || error.raw_os_error() == Some(libc::ENOTSUP)
+        || error.raw_os_error() == Some(libc::EXDEV)
+}
+
+fn publish_bytes_within_roots_with<B, P, S>(
+    final_root: &Path,
+    staging_root: &Path,
     options: &SavedChatZipPublishOptions,
     bytes: &[u8],
-    before_identity_check: B,
-    promote: P,
+    after_path_check_before_publish: B,
+    publish: P,
+    sync_final_parent: S,
 ) -> SavedChatZipPublishResult
 where
     B: FnOnce(&crate::archive_durable_write::confined::Dir, &[u8]) -> io::Result<()>,
-    P: FnOnce(&crate::archive_durable_write::confined::Dir, &[u8], &[u8]) -> io::Result<bool>,
+    P: FnOnce(&crate::archive_durable_write::confined::Dir, &File, &[u8]) -> io::Result<bool>,
+    S: FnOnce(&crate::archive_durable_write::confined::Dir) -> io::Result<()>,
 {
     if !final_name_is_governed(&options.final_name) {
         return SavedChatZipPublishResult::refused("invalid-name", false);
@@ -226,13 +244,17 @@ where
         return SavedChatZipPublishResult::refused("invalid-expected-length", false);
     }
 
-    let dir = match crate::archive_durable_write::confined::Dir::open_root(root) {
+    let final_dir = match crate::archive_durable_write::confined::Dir::open_root(final_root) {
+        Ok(dir) => dir,
+        Err(_) => return SavedChatZipPublishResult::refused("publish-root-unavailable", false),
+    };
+    let staging_dir = match crate::archive_durable_write::confined::Dir::open_root(staging_root) {
         Ok(dir) => dir,
         Err(_) => return SavedChatZipPublishResult::refused("stage-create-failed", false),
     };
     let staged_name = stage_name(&options.final_name, &options.token);
     let staged_bytes = staged_name.as_bytes();
-    let mut handle = match dir.create_new_child(staged_bytes) {
+    let mut handle = match staging_dir.create_new_child(staged_bytes) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
             return SavedChatZipPublishResult::refused("stage-exists", false);
@@ -255,7 +277,7 @@ where
         Ok(full_fsync) => full_fsync,
         Err(_) => {
             drop(handle);
-            let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+            let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
             return SavedChatZipPublishResult::refused("stage-write-failed", removed);
         }
     };
@@ -264,7 +286,7 @@ where
         Ok(identity) => identity,
         Err(_) => {
             drop(handle);
-            let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+            let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
             return SavedChatZipPublishResult::refused("stage-readback-failed", removed);
         }
     };
@@ -274,73 +296,97 @@ where
     );
     if staged_length != bytes.len() as u64 || staged_sha256 != received_sha256 {
         drop(handle);
-        let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+        let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
         return SavedChatZipPublishResult::refused("staged-bytes-mismatch", removed);
     }
     if staged_length != options.expected_byte_length {
         drop(handle);
-        let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+        let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
         return SavedChatZipPublishResult::refused("staged-length-mismatch", removed);
     }
     if staged_sha256 != options.expected_sha256 {
         drop(handle);
-        let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+        let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
         return SavedChatZipPublishResult::refused("staged-hash-mismatch", removed);
     }
 
-    if before_identity_check(&dir, staged_bytes).is_err()
-        || !matches!(
-            path_still_names_owned_file(&dir, staged_bytes, owned),
-            Ok(true)
-        )
-    {
+    // This check remains useful for refusing an already-displaced stage, but
+    // it is deliberately NOT publication authority. The deterministic seam
+    // runs after this check: even if the path is replaced at the former
+    // Prompt-132 race point, the following syscall selects `handle` itself.
+    if !matches!(
+        path_still_names_owned_file(&staging_dir, staged_bytes, owned),
+        Ok(true)
+    ) {
         drop(handle);
-        let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+        let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
         return SavedChatZipPublishResult::refused("staging-identity-mismatch", removed);
     }
+    if after_path_check_before_publish(&staging_dir, staged_bytes).is_err() {
+        drop(handle);
+        let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
+        return SavedChatZipPublishResult::refused("pre-publication-failed", removed);
+    }
 
-    // The retained handle remains open across the final identity check and the
-    // immediate descriptor-relative promotion. No pathname readback or caller-
-    // supplied staged path participates in this boundary.
-    match promote(&dir, staged_bytes, options.final_name.as_bytes()) {
+    // Class A commit point: Darwin atomically clones the exact vnode selected
+    // by this retained descriptor into an absent final name. The staging path
+    // is not an input and cannot redirect the namespace mutation.
+    match publish(&final_dir, &handle, options.final_name.as_bytes()) {
         Ok(false) => {
             drop(handle);
-            let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
+            let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
             SavedChatZipPublishResult::refused("destination-exists", removed)
         }
-        Err(_) => {
+        Err(error) => {
             drop(handle);
-            let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
-            SavedChatZipPublishResult::refused("publish-failed", removed)
+            let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
+            let status = if publication_is_unsupported(&error) {
+                "unsupported-platform"
+            } else {
+                "publish-failed"
+            };
+            SavedChatZipPublishResult::refused(status, removed)
         }
         Ok(true) => {
+            // Publication is already committed. A parent fence failure is
+            // reported separately and never rewritten as "nothing happened".
+            let durability_complete = sync_final_parent(&final_dir).is_ok();
             drop(handle);
-            let removed = cleanup_owned_stage(&dir, staged_bytes, owned);
-            SavedChatZipPublishResult::published(removed, staged_length, staged_sha256, full_fsync)
+            let removed = cleanup_owned_stage(&staging_dir, staged_bytes, owned);
+            SavedChatZipPublishResult::published(
+                removed,
+                staged_length,
+                staged_sha256,
+                full_fsync,
+                durability_complete,
+            )
         }
     }
 }
 
-pub fn publish_saved_chat_zip_bytes_within_root(
-    root: &Path,
+pub fn publish_saved_chat_zip_bytes_within_roots(
+    final_root: &Path,
+    staging_root: &Path,
     options: &SavedChatZipPublishOptions,
     bytes: &[u8],
 ) -> SavedChatZipPublishResult {
-    publish_bytes_within_root_with(
-        root,
+    publish_bytes_within_roots_with(
+        final_root,
+        staging_root,
         options,
         bytes,
         |_dir, _staged| Ok(()),
-        |dir, from, to| dir.promote_exclusive(from, to),
+        |dir, source, to| dir.publish_open_file_clone_exclusive(source, to),
+        |dir| dir.sync(),
     )
 }
 
-fn export_root(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
+fn roots(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), &'static str> {
     use tauri::Manager;
 
     app.path()
         .home_dir()
-        .map(|home| home.join(EXPORT_ROOT))
+        .map(|home| (home.join(EXPORT_ROOT), home.join(STAGING_ROOT)))
         .map_err(|_| "home-unavailable")
 }
 
@@ -362,12 +408,15 @@ pub async fn h2o_publish_saved_chat_zip_bytes_create_only(
         Ok(bytes) => bytes,
         Err(_) => return Ok(SavedChatZipPublishResult::refused("invalid-body", false)),
     };
-    let root = match export_root(&app) {
-        Ok(root) => root,
+    let (final_root, staging_root) = match roots(&app) {
+        Ok(roots) => roots,
         Err(status) => return Ok(SavedChatZipPublishResult::refused(status, false)),
     };
-    Ok(publish_saved_chat_zip_bytes_within_root(
-        &root, &options, &bytes,
+    Ok(publish_saved_chat_zip_bytes_within_roots(
+        &final_root,
+        &staging_root,
+        &options,
+        &bytes,
     ))
 }
 
@@ -381,15 +430,17 @@ mod tests {
     const FINAL_NAME: &str = "round-trip.h2ochat.zip";
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-    fn scratch_root(name: &str) -> PathBuf {
+    fn scratch_roots(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let parent = std::env::temp_dir().join(format!(
             "h2o-saved-chat-zip-publish-{name}-{}-{counter}",
             std::process::id()
         ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).expect("scratch root");
-        root
+        let _ = fs::remove_dir_all(&parent);
+        fs::create_dir_all(&parent).expect("scratch parent");
+        let final_root = parent.join("exports");
+        let staging_root = parent.join("native-only-staging");
+        (parent, final_root, staging_root)
     }
 
     fn options_for(bytes: &[u8]) -> SavedChatZipPublishOptions {
@@ -407,41 +458,83 @@ mod tests {
 
     #[test]
     fn normal_transaction_publishes_exact_verified_bytes_and_consumes_stage() {
-        let root = scratch_root("normal");
+        let (parent, final_root, staging_root) = scratch_roots("normal");
         let bytes = b"verified-portable-zip-bytes";
         let options = options_for(bytes);
-        let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+        let result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
         assert_eq!(result.status, "published");
         assert!(result.ok);
+        assert!(result.committed);
+        assert!(result.durability_complete);
         assert!(result.staging_removed);
         assert_eq!(result.byte_length, bytes.len() as u64);
         assert_eq!(result.sha256, options.expected_sha256);
-        assert_eq!(fs::read(root.join(FINAL_NAME)).unwrap(), bytes);
-        assert!(!staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert_eq!(fs::read(final_root.join(FINAL_NAME)).unwrap(), bytes);
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn staging_collision_preserves_foreign_bytes_and_creates_no_final() {
-        let root = scratch_root("stage-collision");
+        let (parent, final_root, staging_root) = scratch_roots("stage-collision");
         let bytes = b"our-zip-bytes";
         let options = options_for(bytes);
-        let staged = staged_path(&root, &options);
+        fs::create_dir_all(&staging_root).unwrap();
+        let staged = staged_path(&staging_root, &options);
         fs::write(&staged, b"foreign-stage-bytes").unwrap();
-        let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+        let result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
         assert_eq!(result.status, "stage-exists");
         assert!(!result.ok);
         assert!(!result.staging_removed);
         assert_eq!(fs::read(staged).unwrap(), b"foreign-stage-bytes");
-        assert!(!root.join(FINAL_NAME).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(!final_root.join(FINAL_NAME).exists());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn directory_and_symlink_stage_collisions_are_never_followed_or_removed() {
+        use std::os::unix::fs::symlink;
+
+        let (parent, final_root, staging_root) = scratch_roots("wrong-type-collision");
+        let bytes = b"our-zip-bytes";
+        let options = options_for(bytes);
+        let staged = staged_path(&staging_root, &options);
+
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("foreign.txt"), b"foreign-directory-bytes").unwrap();
+        let directory_result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
+        assert_eq!(directory_result.status, "stage-exists");
+        assert!(!directory_result.staging_removed);
+        assert_eq!(
+            fs::read(staged.join("foreign.txt")).unwrap(),
+            b"foreign-directory-bytes"
+        );
+
+        fs::remove_dir_all(&staged).unwrap();
+        let foreign = parent.join("foreign-target");
+        fs::write(&foreign, b"foreign-symlink-target").unwrap();
+        symlink(&foreign, &staged).unwrap();
+        let symlink_result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
+        assert_eq!(symlink_result.status, "stage-exists");
+        assert!(!symlink_result.staging_removed);
+        assert!(fs::symlink_metadata(&staged)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(foreign).unwrap(), b"foreign-symlink-target");
+        assert!(!final_root.join(FINAL_NAME).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn two_creators_with_the_same_token_cannot_both_own_the_stage() {
-        let root = scratch_root("two-creators");
+        let (parent, _final_root, staging_root) = scratch_roots("two-creators");
         let options = options_for(b"bytes");
-        let dir = crate::archive_durable_write::confined::Dir::open_root(&root).unwrap();
+        let dir = crate::archive_durable_write::confined::Dir::open_root(&staging_root).unwrap();
         let staged = stage_name(&options.final_name, &options.token);
         let first = dir
             .create_new_child(staged.as_bytes())
@@ -449,116 +542,130 @@ mod tests {
         let second = dir.create_new_child(staged.as_bytes()).unwrap_err();
         assert_eq!(second.kind(), io::ErrorKind::AlreadyExists);
         drop(first);
-        assert!(staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn expected_hash_mismatch_refuses_and_cleans_only_owned_stage() {
-        let root = scratch_root("hash-mismatch");
+        let (parent, final_root, staging_root) = scratch_roots("hash-mismatch");
         let bytes = b"verified-zip-bytes";
         let mut options = options_for(bytes);
         options.expected_sha256 = format!("sha256-{}", "0".repeat(64));
-        let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+        let result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
         assert_eq!(result.status, "staged-hash-mismatch");
         assert!(result.staging_removed);
-        assert!(!root.join(FINAL_NAME).exists());
-        assert!(!staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(!result.committed);
+        assert!(!final_root.join(FINAL_NAME).exists());
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn expected_length_mismatch_refuses_and_cleans_only_owned_stage() {
-        let root = scratch_root("length-mismatch");
+        let (parent, final_root, staging_root) = scratch_roots("length-mismatch");
         let bytes = b"verified-zip-bytes";
         let mut options = options_for(bytes);
         options.expected_byte_length += 1;
-        let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+        let result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
         assert_eq!(result.status, "staged-length-mismatch");
         assert!(result.staging_removed);
-        assert!(!root.join(FINAL_NAME).exists());
-        assert!(!staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(!result.committed);
+        assert!(!final_root.join(FINAL_NAME).exists());
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn final_destination_collision_preserves_winner_and_cleans_owned_stage() {
-        let root = scratch_root("final-collision");
+        let (parent, final_root, staging_root) = scratch_roots("final-collision");
         let bytes = b"our-verified-zip";
         let options = options_for(bytes);
-        fs::write(root.join(FINAL_NAME), b"independent-winner").unwrap();
-        let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+        fs::create_dir_all(&final_root).unwrap();
+        fs::write(final_root.join(FINAL_NAME), b"independent-winner").unwrap();
+        let result =
+            publish_saved_chat_zip_bytes_within_roots(&final_root, &staging_root, &options, bytes);
         assert_eq!(result.status, "destination-exists");
         assert!(!result.ok);
         assert!(result.staging_removed);
         assert_eq!(
-            fs::read(root.join(FINAL_NAME)).unwrap(),
+            fs::read(final_root.join(FINAL_NAME)).unwrap(),
             b"independent-winner"
         );
-        assert!(!staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
-    fn substituted_regular_file_is_refused_and_never_removed_or_published() {
-        let root = scratch_root("substituted-file");
+    fn post_check_regular_path_substitution_cannot_redirect_fd_bound_publication() {
+        let (parent, final_root, staging_root) = scratch_roots("substituted-file");
         let bytes = b"verified-owned-bytes";
         let options = options_for(bytes);
-        let staged = staged_path(&root, &options);
-        let result = publish_bytes_within_root_with(
-            &root,
+        let staged = staged_path(&staging_root, &options);
+        let result = publish_bytes_within_roots_with(
+            &final_root,
+            &staging_root,
             &options,
             bytes,
             |_dir, staged_name| {
                 fs::remove_file(&staged)?;
                 fs::write(
-                    root.join(std::str::from_utf8(staged_name).unwrap()),
+                    staging_root.join(std::str::from_utf8(staged_name).unwrap()),
                     b"substitute",
                 )
             },
-            |dir, from, to| dir.promote_exclusive(from, to),
+            |dir, source, to| dir.publish_open_file_clone_exclusive(source, to),
+            |dir| dir.sync(),
         );
-        assert_eq!(result.status, "staging-identity-mismatch");
+        assert_eq!(result.status, "published");
+        assert!(result.ok);
+        assert!(result.committed);
         assert!(!result.staging_removed);
         assert_eq!(fs::read(staged).unwrap(), b"substitute");
-        assert!(!root.join(FINAL_NAME).exists());
-        let _ = fs::remove_dir_all(root);
+        assert_eq!(fs::read(final_root.join(FINAL_NAME)).unwrap(), bytes);
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
-    fn substituted_symlink_is_refused_and_never_followed_or_removed() {
+    fn post_check_symlink_substitution_is_not_followed_or_published() {
         use std::os::unix::fs::symlink;
 
-        let root = scratch_root("substituted-symlink");
+        let (parent, final_root, staging_root) = scratch_roots("substituted-symlink");
         let bytes = b"verified-owned-bytes";
         let options = options_for(bytes);
-        let staged = staged_path(&root, &options);
-        let foreign = root.join("foreign-bytes");
+        let staged = staged_path(&staging_root, &options);
+        let foreign = parent.join("foreign-bytes");
         fs::write(&foreign, b"foreign-target").unwrap();
-        let result = publish_bytes_within_root_with(
-            &root,
+        let result = publish_bytes_within_roots_with(
+            &final_root,
+            &staging_root,
             &options,
             bytes,
             |_dir, _staged_name| {
                 fs::remove_file(&staged)?;
                 symlink(&foreign, &staged)
             },
-            |dir, from, to| dir.promote_exclusive(from, to),
+            |dir, source, to| dir.publish_open_file_clone_exclusive(source, to),
+            |dir| dir.sync(),
         );
-        assert_eq!(result.status, "staging-identity-mismatch");
+        assert_eq!(result.status, "published");
+        assert!(result.ok);
+        assert!(result.committed);
         assert!(!result.staging_removed);
         assert!(fs::symlink_metadata(&staged)
             .unwrap()
             .file_type()
             .is_symlink());
         assert_eq!(fs::read(foreign).unwrap(), b"foreign-target");
-        assert!(!root.join(FINAL_NAME).exists());
-        let _ = fs::remove_dir_all(root);
+        assert_eq!(fs::read(final_root.join(FINAL_NAME)).unwrap(), bytes);
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn path_token_and_identity_confinement_rejects_unsafe_inputs() {
-        let root = scratch_root("confinement");
+        let (parent, final_root, staging_root) = scratch_roots("confinement");
         let bytes = b"bytes";
         let valid = options_for(bytes);
         let invalid = [
@@ -612,35 +719,66 @@ mod tests {
             },
         ];
         for options in invalid {
-            let result = publish_saved_chat_zip_bytes_within_root(&root, &options, bytes);
+            let result = publish_saved_chat_zip_bytes_within_roots(
+                &final_root,
+                &staging_root,
+                &options,
+                bytes,
+            );
             assert!(!result.ok, "unsafe input was admitted: {options:?}");
         }
-        assert!(fs::read_dir(&root).unwrap().next().is_none());
-        let _ = fs::remove_dir_all(root);
+        assert!(fs::read_dir(&parent).unwrap().next().is_none());
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]
     fn non_collision_publication_error_fails_closed_without_fallback() {
-        let root = scratch_root("fail-closed");
+        let (parent, final_root, staging_root) = scratch_roots("fail-closed");
         let bytes = b"verified-staged-bytes";
         let options = options_for(bytes);
         let mut calls = 0;
-        let result = publish_bytes_within_root_with(
-            &root,
+        let result = publish_bytes_within_roots_with(
+            &final_root,
+            &staging_root,
             &options,
             bytes,
             |_dir, _staged| Ok(()),
-            |_dir, _from, _to| {
+            |_dir, _source, _to| {
                 calls += 1;
                 Err(io::Error::from(io::ErrorKind::PermissionDenied))
             },
+            |_dir| panic!("parent sync must not follow failed publication"),
         );
         assert_eq!(calls, 1);
         assert_eq!(result.status, "publish-failed");
         assert!(!result.ok);
         assert!(result.staging_removed);
-        assert!(!root.join(FINAL_NAME).exists());
-        assert!(!staged_path(&root, &options).exists());
-        let _ = fs::remove_dir_all(root);
+        assert!(!result.committed);
+        assert!(!final_root.join(FINAL_NAME).exists());
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn post_commit_parent_fence_failure_is_reported_without_retracting_publication() {
+        let (parent, final_root, staging_root) = scratch_roots("parent-fence-failure");
+        let bytes = b"verified-and-committed";
+        let options = options_for(bytes);
+        let result = publish_bytes_within_roots_with(
+            &final_root,
+            &staging_root,
+            &options,
+            bytes,
+            |_dir, _staged| Ok(()),
+            |dir, source, to| dir.publish_open_file_clone_exclusive(source, to),
+            |_dir| Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+        );
+        assert_eq!(result.status, "published");
+        assert!(result.ok);
+        assert!(result.committed);
+        assert!(!result.durability_complete);
+        assert_eq!(fs::read(final_root.join(FINAL_NAME)).unwrap(), bytes);
+        assert!(!staged_path(&staging_root, &options).exists());
+        let _ = fs::remove_dir_all(parent);
     }
 }

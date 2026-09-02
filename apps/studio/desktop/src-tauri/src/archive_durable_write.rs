@@ -628,6 +628,45 @@ pub(crate) mod confined {
             Ok(true)
         }
 
+        /// Atomically creates `to` as a copy-on-write clone of the regular
+        /// file selected by `source`'s retained descriptor. Unlike
+        /// `promote_exclusive`, no source pathname is resolved by the
+        /// publication syscall, so replacing a staging name cannot redirect
+        /// which object is published. The destination must be absent.
+        ///
+        /// Darwin's `fclonefileat(2)` creates an independent inode whose bytes
+        /// are an atomic snapshot of the source descriptor. It requires source
+        /// and destination on one clone-capable filesystem. Every other target
+        /// fails closed; there is deliberately no pathname-based fallback.
+        #[cfg(target_os = "macos")]
+        pub fn publish_open_file_clone_exclusive(
+            &self,
+            source: &File,
+            to: &[u8],
+        ) -> io::Result<bool> {
+            let to_c = cstr(to)?;
+            let rc = unsafe {
+                libc::fclonefileat(source.as_raw_fd(), self.0.as_raw_fd(), to_c.as_ptr(), 0)
+            };
+            if rc < 0 {
+                let err = io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EEXIST) {
+                    return Ok(false);
+                }
+                return Err(err);
+            }
+            Ok(true)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        pub fn publish_open_file_clone_exclusive(
+            &self,
+            _source: &File,
+            _to: &[u8],
+        ) -> io::Result<bool> {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+
         /// Unlinks a child of this directory. Only ever called on this
         /// operation's own private temp artifact.
         pub fn unlink_child(&self, name: &[u8]) -> io::Result<()> {

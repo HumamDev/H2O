@@ -882,9 +882,9 @@
       }
       /* Advisory existence checks above improve UX but are not publication
        * authority. This native transaction exclusively creates and owns the
-       * stage, writes and verifies these exact bytes through its retained
-       * handle, binds the stage pathname to that handle, and atomically performs
-       * the final create-only namespace mutation under the fixed export root. */
+       * stage outside renderer mutation authority, writes and verifies these
+       * exact bytes through its retained handle, then atomically creates the
+       * final name from that handle rather than from the staging pathname. */
       var publication = safeObject(await publishOwnedZipBytes(
         dest.exportName,
         expectedZipSha256,
@@ -904,7 +904,10 @@
       if (publication.ok !== true || cleanString(publication.status) !== 'published') {
         throw new Error('saved-chat-zip-create-only-publication-failed:' + cleanString(publication.status));
       }
-      if (publication.stagingRemoved !== true ||
+      /* Publication is the commit point. Native staging cleanup and the final
+       * parent durability fence are reported separately and must never turn an
+       * already-created final object into an apparent no-commit failure. */
+      if (publication.committed !== true ||
           Number(publication.byteLength) !== zipBytes.byteLength ||
           cleanString(publication.sha256) !== expectedZipSha256) {
         throw new Error('saved-chat-zip-publication-identity-mismatch');
