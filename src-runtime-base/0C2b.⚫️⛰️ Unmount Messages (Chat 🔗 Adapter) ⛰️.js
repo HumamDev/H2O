@@ -60,6 +60,323 @@
   const VAULT = (H2O[TOK][BrID] = H2O[TOK][BrID] || {});
   VAULT.meta = VAULT.meta || { tok: TOK, pid: PID, cid: CID, skid: SkID, modtag: MODTAG, suite: SUITE, host: HOST };
 
+  {
+    // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED
+    // This is the sole transition boundary for records produced by the retired
+    // physical Global Unmount implementation. It performs one synchronous,
+    // hydration-aware drain and installs an inert compatibility adapter. It
+    // creates no observer, listener, timer, frame, fragment, or retained node.
+    const S_RETIRED = (VAULT.state && typeof VAULT.state === 'object') ? VAULT.state : (VAULT.state = {});
+    const OWNED_SELECTOR = '[data-cgxui-owner="nmms"], .cgxui-nmms-ph, .cgxui-unmounted-placeholder';
+
+    const asMap = (value) => (value instanceof Map ? value : new Map());
+    const childNodes = (node) => Array.from(node?.childNodes || []);
+    const getAttr = (node, name) => {
+      try { return node?.getAttribute?.(name); } catch (_) { return null; }
+    };
+    const removeAttr = (node, name) => {
+      try { node?.removeAttribute?.(name); } catch (_) {}
+      if (node?.dataset) {
+        const prop = String(name).replace(/^data-/, '').replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+        try { delete node.dataset[prop]; } catch (_) {}
+      }
+    };
+    const isOwnedScaffold = (node) => {
+      if (!node || node.nodeType !== 1) return false;
+      if (getAttr(node, 'data-cgxui-owner') === 'nmms') return true;
+      try {
+        if (node.classList?.contains?.('cgxui-nmms-ph')) return true;
+        if (node.classList?.contains?.('cgxui-unmounted-placeholder')) return true;
+      } catch (_) {}
+      return false;
+    };
+    const ownedScaffolds = (body) => {
+      const out = [];
+      for (const node of childNodes(body)) {
+        if (isOwnedScaffold(node)) out.push(node);
+        try {
+          for (const nested of Array.from(node?.querySelectorAll?.(OWNED_SELECTOR) || [])) {
+            if (isOwnedScaffold(nested) && !out.includes(nested)) out.push(nested);
+          }
+        } catch (_) {}
+      }
+      return out;
+    };
+    const bodyHasForeignCurrentContent = (body, ignore = null) => {
+      for (const node of childNodes(body)) {
+        if (!node || node === ignore) continue;
+        if (node.nodeType === 3) {
+          if (String(node.nodeValue || '').trim()) return true;
+          continue;
+        }
+        if (node.nodeType !== 1) continue;
+        if (isOwnedScaffold(node)) continue;
+        return true;
+      }
+      return false;
+    };
+    const resolveBody = (entry) => {
+      const el = entry?.el || null;
+      if (!el) return null;
+      let under = null;
+      try { under = el.querySelector?.('.cgxui-under-ui') || null; } catch (_) {}
+      if (!under) return el;
+      try { return el.querySelector?.('.cgxui-answer-body') || null; } catch (_) { return null; }
+    };
+    const discardFragment = (frag) => {
+      if (!frag) return;
+      try {
+        while (frag.firstChild) frag.removeChild(frag.firstChild);
+      } catch (_) {
+        try {
+          for (const node of childNodes(frag)) node?.remove?.();
+        } catch (_) {}
+      }
+    };
+    const removeOwnedScaffolds = (body) => {
+      for (const node of ownedScaffolds(body)) {
+        try { node.remove?.(); } catch (_) {}
+      }
+    };
+    const clearEntryPresentation = (entry) => {
+      const el = entry?.el;
+      if (!el) return;
+      removeAttr(el, 'data-h2o-unmounted');
+      removeAttr(el, 'data-ho-unmounted');
+      removeAttr(el, 'data-h2o-um-turn-hidden');
+      try { el.style.display = String(entry?.displayBefore || ''); } catch (_) {}
+    };
+
+    let transitionRestoreCount = 0;
+    let transitionStaleInsertCount = 0;
+    let transitionBodyFragReferenceCount = 0;
+    let hadRecord = false;
+    let rejectedRecord = false;
+
+    const backgroundMap = asMap(S_RETIRED.unmountMap);
+    const uniqueBackgroundRecords = Array.from(new Set(Array.from(backgroundMap.values()).filter(Boolean)));
+    for (const record of uniqueBackgroundRecords) {
+      hadRecord = true;
+      const entries = Array.isArray(record?.items) ? record.items.filter(Boolean) : [];
+      const resolved = entries.map((entry) => ({ entry, body: resolveBody(entry) }));
+      const primaryEntry = resolved.find(({ entry }) => entry?.el === record?.primaryEl) || resolved[0] || null;
+      const primaryScaffolds = ownedScaffolds(primaryEntry?.body);
+      const positivelyOwned = !!(
+        entries.length
+        && primaryEntry?.entry?.el?.isConnected
+        && primaryEntry?.body?.isConnected
+        && primaryScaffolds.length
+        && resolved.every(({ entry, body }) => (
+          entry?.el?.isConnected
+          && body?.isConnected
+          && entry?.frag?.nodeType === 11
+          && !bodyHasForeignCurrentContent(body)
+        ))
+      );
+
+      if (positivelyOwned) {
+        for (const { entry, body } of resolved) {
+          removeOwnedScaffolds(body);
+          try { body.appendChild(entry.frag); } catch (_) { discardFragment(entry.frag); }
+          entry.frag = null;
+          clearEntryPresentation(entry);
+        }
+        transitionRestoreCount += 1;
+      } else {
+        rejectedRecord = true;
+        for (const { entry, body } of resolved) {
+          removeOwnedScaffolds(body);
+          discardFragment(entry?.frag);
+          if (entry) entry.frag = null;
+          clearEntryPresentation(entry);
+        }
+      }
+      try { record.items = []; } catch (_) {}
+      try { record.primaryEl = null; } catch (_) {}
+    }
+
+    const manualMap = asMap(S_RETIRED.manualCollapseById);
+    const uniqueManualRecords = Array.from(new Set(Array.from(manualMap.values()).filter(Boolean)));
+    for (const record of uniqueManualRecords) {
+      hadRecord = true;
+      const body = record?.body || null;
+      const msgEl = record?.msgEl || null;
+      const preserved = record?.preservedBodySubtree || null;
+      const positivelyOwned = !!(
+        body?.isConnected
+        && msgEl?.isConnected
+        && record?.bodyFrag?.nodeType === 11
+        && getAttr(msgEl, 'data-at-collapsed') === '1'
+        && !bodyHasForeignCurrentContent(body, preserved)
+      );
+
+      if (positivelyOwned) {
+        try {
+          const before = preserved?.parentNode === body ? preserved : null;
+          if (before && typeof body.insertBefore === 'function') {
+            const moved = childNodes(record.bodyFrag);
+            const beforeCount = Math.max(0, Math.min(Number(record?.preservedBodyIndex) || 0, moved.length));
+            const bodyChildren = childNodes(body);
+            const after = bodyChildren[bodyChildren.indexOf(before) + 1] || null;
+            moved.forEach((node, index) => {
+              if (index < beforeCount) body.insertBefore(node, before);
+              else if (after) body.insertBefore(node, after);
+              else body.appendChild(node);
+            });
+          } else {
+            body.appendChild(record.bodyFrag);
+          }
+          transitionRestoreCount += 1;
+        } catch (_) {
+          discardFragment(record.bodyFrag);
+        }
+      } else {
+        rejectedRecord = true;
+        discardFragment(record?.bodyFrag);
+      }
+      record.bodyFrag = null;
+      removeAttr(msgEl, 'data-at-collapsed');
+      for (const snapshot of Array.from(record?.hiddenNodes || [])) {
+        const el = snapshot?.el;
+        if (!el?.isConnected) continue;
+        removeAttr(el, 'data-cgxui-at-hidden');
+        const externallyHidden = [
+          'data-cgxui-chat-page-hidden',
+          'data-cgxui-chat-page-question-hidden',
+          'data-cgxui-chat-page-no-answer-question-hidden',
+          'data-cgxui-chat-page-title-list-hidden',
+        ].some((name) => getAttr(el, name) === '1');
+        if (!externallyHidden) {
+          try { el.style.display = String(snapshot?.displayBefore || ''); } catch (_) {}
+        }
+      }
+      try { record.hiddenNodes = []; } catch (_) {}
+      try { record.sources?.clear?.(); record.sourceMeta?.clear?.(); } catch (_) {}
+      try { record.msgEl = null; record.body = null; record.preservedBodySubtree = null; } catch (_) {}
+    }
+
+    // Cancel every source-supported legacy authority before releasing state.
+    const removeWindowListener = (name, fn, capture) => {
+      if (!fn) return;
+      try { W.removeEventListener?.(name, fn, capture); } catch (_) {}
+    };
+    const removeDocumentListener = (name, fn, capture) => {
+      if (!fn) return;
+      try { document.removeEventListener?.(name, fn, capture); } catch (_) {}
+    };
+    removeWindowListener('scroll', S_RETIRED.onScroll);
+    removeWindowListener('resize', S_RETIRED.onResize);
+    removeDocumentListener('visibilitychange', S_RETIRED.onVis);
+    removeWindowListener('focus', S_RETIRED.onFocus);
+    removeWindowListener('h2o:index:updated', S_RETIRED.onIndexUpdated);
+    removeWindowListener('h2o:turn:updated', S_RETIRED.onTurnUpdated);
+    for (const name of ['evt:h2o:inline:changed', 'h2o:inline:changed', 'h2o-inline:changed']) removeWindowListener(name, S_RETIRED.onInlineChanged);
+    for (const name of ['evt:h2o:message:remounted', 'h2o:message:remounted', 'h2o:message-remounted']) removeWindowListener(name, S_RETIRED.onRemounted);
+    for (const name of ['h2o:message:mount:request', 'h2o:message-mount-request']) removeWindowListener(name, S_RETIRED.onMountReq);
+    try { S_RETIRED.hubMutOff?.(); } catch (_) {}
+    try { S_RETIRED.rootMO?.disconnect?.(); } catch (_) {}
+    try { S_RETIRED.startMO?.disconnect?.(); } catch (_) {}
+    try { if (S_RETIRED.intervalT) W.clearInterval?.(S_RETIRED.intervalT); } catch (_) {}
+    for (const timer of [S_RETIRED.manualRestoreTimer, S_RETIRED.commandBarBindTimer]) {
+      try { if (timer) W.clearTimeout?.(timer); } catch (_) {}
+      try { if (timer) W.clearInterval?.(timer); } catch (_) {}
+    }
+    try { S_RETIRED.offPageChanged?.(); } catch (_) {}
+    try { S_RETIRED.commandBarApi?.removeOwner?.('um'); } catch (_) {}
+    try { H2O.commandBar?.removeOwner?.('um'); } catch (_) {}
+    try { document.getElementById?.('cgxui-nmms-style')?.remove?.(); } catch (_) {}
+
+    for (const key of [
+      'UM:nmntmssgs:guard:booted', 'UM:nmntmssgs:guard:style',
+      'UM:nmntmssgs:guard:events', 'UM:nmntmssgs:guard:startMO',
+      'UM:nmntmssgs:guard:interval', 'UM:nmntmssgs:guard:pendingBoot',
+    ]) {
+      try { delete W[key]; } catch (_) {}
+    }
+
+    backgroundMap.clear();
+    manualMap.clear();
+    asMap(S_RETIRED.uidAliasToPrimary).clear();
+    asMap(S_RETIRED.remountWaiters).clear();
+    asMap(S_RETIRED.protectUntil).clear();
+    asMap(S_RETIRED.presentationMountGuardsByOwner).clear();
+    S_RETIRED.unmountMap = backgroundMap;
+    S_RETIRED.manualCollapseById = manualMap;
+    S_RETIRED.uidAliasToPrimary = asMap(S_RETIRED.uidAliasToPrimary);
+    S_RETIRED.remountWaiters = asMap(S_RETIRED.remountWaiters);
+    S_RETIRED.protectUntil = asMap(S_RETIRED.protectUntil);
+    S_RETIRED.presentationMountGuardsByOwner = asMap(S_RETIRED.presentationMountGuardsByOwner);
+    S_RETIRED.msgsCache = [];
+    S_RETIRED.scheduled = false;
+    S_RETIRED.lastPassAt = 0;
+    S_RETIRED.booted = false;
+    S_RETIRED.retired = true;
+    S_RETIRED.status = 'retired';
+    S_RETIRED.intervalT = 0;
+    S_RETIRED.manualRestoreTimer = 0;
+    S_RETIRED.commandBarBindTimer = 0;
+    S_RETIRED.rootMO = null;
+    S_RETIRED.startMO = null;
+    S_RETIRED.hubMutOff = null;
+    S_RETIRED.offPageChanged = null;
+    S_RETIRED.pageChangedBound = false;
+    S_RETIRED.commandBarApi = null;
+    S_RETIRED.commandBarBound = false;
+    S_RETIRED.transitionRestoreCount = transitionRestoreCount;
+    S_RETIRED.transitionStaleInsertCount = transitionStaleInsertCount;
+    S_RETIRED.transitionBodyFragReferenceCount = transitionBodyFragReferenceCount;
+    S_RETIRED.retirementOutcome = !hadRecord
+      ? 'no-active-records'
+      : (rejectedRecord ? 'retired-fail-closed' : 'retired-restored-owned');
+
+    const retiredSingle = (id) => ({ ok: false, status: 'unmount-retired', id: String(id || '').replace(/^conversation-turn-/, '').trim(), collapsed: false, retired: true });
+    const retiredMany = (ids) => ({ ok: false, status: 'unmount-retired', ids: Array.isArray(ids) ? ids.slice() : [], changed: 0, retired: true });
+    const RETIRED_ADAPTER = Object.freeze({
+      retired: true,
+      boot: () => false,
+      dispose: () => false,
+      forceRemountByUid: () => false,
+      collapseById: retiredSingle,
+      expandById: retiredSingle,
+      toggleById: retiredSingle,
+      collapseManyByIds: retiredMany,
+      expandManyByIds: retiredMany,
+      isCollapsedById: () => false,
+      getManualCollapsedIds: () => [],
+      getRestoreGuardStats: () => ({}),
+      clearManualCollapsedForCurrentChat: () => false,
+      getVisitResetState: () => ({ status: 'retired' }),
+      requestMountByUid: () => false,
+      requestMountPairByUid: () => false,
+      setPresentationMountGuard: () => false,
+      getPresentationMountGuardStatus: () => ({ active: false, retired: true }),
+      remountAll: () => 0,
+      waitUntilRemounted: (uid) => Promise.resolve({ ok: false, reason: 'unmount-retired', uid: String(uid || ''), retired: true }),
+      resolvePrimaryUid: (id) => String(id || '').replace(/^conversation-turn-/, '').trim(),
+      getConfig: () => ({ enabled: false, umEnabled: false, retired: true, status: 'retired' }),
+      applySetting: () => false,
+      setEnabled: () => false,
+      runPass: () => false,
+      getCollapsedGroupCount: () => 0,
+      syncCommandBarControls: () => false,
+      emitConfigChanged: () => ({ source: 'unmount-messages', status: 'retired' }),
+      waitForMessagesThenBoot: () => false,
+    });
+
+    H2O.msg = H2O.msg || {};
+    H2O.msg.ensureMountedById = () => false;
+    H2O.msg.requestMountById = () => false;
+    for (const host of [W.h2oConfig, W.hoConfig]) {
+      try { if (host?.features) delete host.features.unmountMessages; } catch (_) {}
+    }
+    VAULT.api = RETIRED_ADAPTER;
+    VAULT.chatAdapter = RETIRED_ADAPTER;
+    try { VAULT.engine?.attachChatAdapter?.(RETIRED_ADAPTER); } catch (_) {}
+    return;
+  }
+
+  // P02B_UNREACHABLE_LEGACY_IMPLEMENTATION
+
   // Optional ecosystem registries (MODE B: warn + keep first)
   H2O.KEYS = H2O.KEYS || {};
   H2O.EV = H2O.EV || {};

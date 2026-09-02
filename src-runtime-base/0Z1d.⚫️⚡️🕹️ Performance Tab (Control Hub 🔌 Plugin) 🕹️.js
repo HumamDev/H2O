@@ -125,30 +125,13 @@
     }
   }
 
-  function setUnmountSetting(key, val) {
-    const api = getUnmountApi();
-    return !!safeCall(() => api?.applySetting?.(key, val));
-  }
-
-  function runUnmountPass(reason = 'control-hub') {
-    const api = getUnmountApi();
-    const ok = !!safeCall(() => api?.runPass?.(reason));
-    return { message: ok ? 'Pass completed.' : 'Unmount module unavailable.' };
-  }
-
-  function remountAll(reason = 'control-hub') {
-    const api = getUnmountApi();
-    const count = Number(safeCall(() => api?.remountAll?.(reason)) || 0);
-    return { message: count > 0 ? `Remounted ${count} turn(s).` : 'No collapsed turns were found.' };
-  }
-
   function getChatMechanismsApi() {
     return TOPW.H2O?.CM?.chtmech?.api || W.H2O?.CM?.chtmech?.api || null;
   }
 
   function readLiveGlobals() {
     return {
-      globalUnmount: getUnmountSetting('umEnabled', false),
+      globalUnmount: false,
       globalPagination: false,
     };
   }
@@ -159,24 +142,24 @@
   }
 
   function defaultEngineActionMode(gestureBackend) {
-    return gestureBackend === 'engine' ? 'unmount-engine' : 'local-dom';
+    return 'local-dom';
   }
 
   function normalizeAnswerTitleMode(raw, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const val = String(raw || fallback).trim().toLowerCase();
-    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
+    return val === 'unmount-engine' ? 'local-dom' : (val === 'local-dom' ? val : fallback);
   }
 
   function normalizeDividerDotMode(raw, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const val = String(raw || fallback).trim().toLowerCase();
-    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
+    return val === 'unmount-engine' ? 'local-dom' : (val === 'local-dom' ? val : fallback);
   }
 
   function normalizeDividerMode(raw) {
     const val = String(raw || 'pagination-focus-page').trim().toLowerCase();
-    return (val === 'pagination-focus-page' || val === 'unmount-page-collapse') ? val : 'pagination-focus-page';
+    return val === 'unmount-page-collapse' ? 'pagination-focus-page' : 'pagination-focus-page';
   }
 
   function normalizeOnOff(raw, fallback = 'on') {
@@ -435,23 +418,11 @@
   function renderAnswerTitleModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.answerTitleDblClickMode || 'local-dom';
-    // Labels describe user-visible behavior (§1A / §8G). The backend choice
-    // is an Advanced routing detail: in Default view the select shows only
-    // the behavior label for the stored value (no engine wording); the
-    // backend variants appear once Advanced Diagnostics is revealed.
-    // Internal option VALUES are unchanged — stored preferences keep working.
     return buildMechanismsSelect({
       value: current,
       disabled: state.isActionsOff,
-      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
-      options: advanced
-        ? [
-          ['local-dom', 'Collapse/Expand This Q&A'],
-          ['unmount-engine', 'Collapse/Expand This Q&A (engine-assisted)'],
-        ]
-        : [[current, 'Collapse/Expand This Q&A']],
+      options: [['local-dom', 'Collapse/Expand This Q&A']],
       note: 'Double-clicking an answer’s title bar folds or unfolds that question-and-answer pair.',
       onChange(value) {
         setChatMechanismsConfig({ answerTitleDblClickMode: value });
@@ -462,18 +433,11 @@
   function renderDividerDotModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.dividerDotClickMode || 'local-dom';
     return buildMechanismsSelect({
       value: current,
       disabled: state.isActionsOff,
-      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
-      options: advanced
-        ? [
-          ['local-dom', 'Show/Hide Page Title List'],
-          ['unmount-engine', 'Show/Hide Page Title List (engine-assisted)'],
-        ]
-        : [[current, 'Show/Hide Page Title List']],
+      options: [['local-dom', 'Show/Hide Page Title List']],
       note: 'The page divider’s circle lists every title in the page. Double-click a listed title to open just that turn.',
       onChange(value) {
         setChatMechanismsConfig({ dividerDotClickMode: value });
@@ -490,23 +454,12 @@
     // CSS/logical page lightening (the router never detaches or focuses).
     // Only the user-facing label is corrected here; renaming the mode id
     // requires a versioned config migration (deferred).
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.dividerDblClickMode || 'pagination-focus-page';
-    const note = current === 'pagination-focus-page'
-      ? 'Folds the whole page to lighten the chat. The page divider stays visible so the page can be expanded again.'
-      : 'Folds the page by collapsing each turn individually. The page divider stays visible as the restore handle.';
-    const behaviorLabel = current === 'unmount-page-collapse'
-      ? 'Collapse/Expand Page (fold each turn)'
-      : 'Collapse/Expand Page (lightening)';
+    const note = 'Folds the whole page to lighten the chat. The page divider stays visible so the page can be expanded again.';
     return buildMechanismsSelect({
       value: current,
       disabled,
-      options: advanced
-        ? [
-          ['unmount-page-collapse', 'Collapse/Expand Page (fold each turn)'],
-          ['pagination-focus-page', 'Collapse/Expand Page (lightening)'],
-        ]
-        : [[current, behaviorLabel]],
+      options: [['pagination-focus-page', 'Collapse/Expand Page (lightening)']],
       note,
       onChange(value) {
         setChatMechanismsConfig({ dividerDblClickMode: value });
@@ -526,19 +479,6 @@
       note: 'Shows or hides the page-state info box when hovering over a Chat Page Divider.',
       onChange(value) {
         setChatMechanismsConfig({ chatPageDividerHoverInfoBox: value });
-      },
-    });
-  }
-
-  function renderGlobalUnmountControl({ row }) {
-    const state = getMechanismsUiState();
-    markMechanismRowDisabled(row, state.isLocalRouting);
-    return buildMechanismsToggle({
-      enabled: !!state.globalUnmount,
-      disabled: state.isLocalRouting,
-      note: 'Advanced: ChatGPT now virtualizes message bodies natively. This legacy optimizer detaches body content into cached fragments — enable for diagnostics only.',
-      onToggle(next) {
-        setUnmountSetting('umEnabled', !!next);
       },
     });
   }
@@ -697,17 +637,13 @@
       group: 'Advanced / Diagnostics',
       render(ctx) { return renderMasterRoutingControl(ctx); },
     },
-    {
-      type: 'custom',
-      key: 'cmGlobalUnmount',
-      stackBelowLabel: true,
-      label: 'Global Unmount (legacy physical optimizer)',
-      group: 'Advanced / Diagnostics',
-      render(ctx) { return renderGlobalUnmountControl(ctx); },
-    },
   ];
 
-  const UNMOUNT_CONTROLS = [
+  // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED: same-page re-registration drains
+  // controls held by the Hub without exposing a physical mutation surface.
+  const RETIRED_UNMOUNT_CONTROLS = Object.freeze([]);
+  /* P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS
+  const LEGACY_UNMOUNT_CONTROLS = [
     {
       type: 'toggle',
       key: 'umEnabled',
@@ -827,6 +763,7 @@
       ],
     },
   ];
+  P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS */
 
   const RETIRED_PAGINATION_CONTROLS = Object.freeze([]);
   /* P02A_UNREACHABLE_LEGACY_PAGINATION_CONTROLS
@@ -971,8 +908,9 @@
       });
       api.registerPlugin({
         key: 'unmountMessages',
+        retired: true,
         getControls() {
-          return UNMOUNT_CONTROLS;
+          return RETIRED_UNMOUNT_CONTROLS;
         },
       });
       // Re-registering the retired key drains any controls retained by a

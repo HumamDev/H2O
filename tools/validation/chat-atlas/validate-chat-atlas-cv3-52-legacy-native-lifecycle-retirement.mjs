@@ -16,6 +16,9 @@ const PATHS = Object.freeze({
   governorAdapter: 'src-runtime-base/0B1c.⬛️⚡ Performance Adapters 🔄⚡.js',
   controlHub: 'src-runtime-base/0Z1a.⬛️🕹️ Control Hub 🕹️.js',
   performanceTab: 'src-runtime-base/0Z1d.⚫️⚡️🕹️ Performance Tab (Control Hub 🔌 Plugin) 🕹️.js',
+  unmountEngine: 'src-runtime-base/0C2a.⬛️⛰️ Unmount Messages Engine ⛰️.js',
+  unmountAdapter: 'src-runtime-base/0C2b.⚫️⛰️ Unmount Messages (Chat 🔗 Adapter) ⛰️.js',
+  mechanismsRouter: 'src-runtime-base/1C1c.🔴🔀 Outline Mechanisms Router (🤝 Unmount & Pagination Integration) 🔀.js',
   logicalPages: 'src-runtime-base/0C3a.⬛️📐 Chat Page Structure Engine 📐.js',
   threadPages: 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js',
   minimap: 'src-runtime-base/1A1c.🟥🗺️ MiniMap Engine 🚀🗺️.js',
@@ -30,6 +33,9 @@ const active = {
     /\/\* P02A_UNREACHABLE_LEGACY_PAGINATION_CONTROLS[\s\S]*?P02A_UNREACHABLE_LEGACY_PAGINATION_CONTROLS \*\//,
     '',
   ),
+  unmountEngine: source.unmountEngine.split('// P02B_UNREACHABLE_LEGACY_IMPLEMENTATION')[0],
+  unmountAdapter: source.unmountAdapter.split('// P02B_UNREACHABLE_LEGACY_IMPLEMENTATION')[0],
+  mechanismsRouter: source.mechanismsRouter,
 };
 const checks = [];
 const failures = [];
@@ -55,6 +61,8 @@ function present(text, pattern, message) {
 
 const retiredCandidate = active.engine.includes('P02A_PHYSICAL_PAGINATION_RETIRED')
   && active.adapter.includes('P02A_PHYSICAL_PAGINATION_RETIRED');
+const retiredUnmountCandidate = active.unmountEngine.includes('P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED')
+  && active.unmountAdapter.includes('P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED');
 
 check('A1 engine declares physical Pagination retired', () => {
   present(active.engine, /P02A_PHYSICAL_PAGINATION_RETIRED/, 'retirement marker missing');
@@ -161,6 +169,63 @@ check('K2 Thread Pages logical behavior remains present', () => {
 check('K3 MiniMap materialization/navigation remains present', () => {
   present(source.minimap, /MINI_materializeTarget/, 'MiniMap materialization path missing');
   present(source.minimap, /finishSmoothScroll/, 'MiniMap native/logical navigation fallback missing');
+});
+
+check('UM-A automatic Global Unmount boot and startup waiter are retired', () => {
+  absent(active.unmountEngine + active.unmountAdapter, /CORE_UM_waitForMessagesThenBoot|pendingBoot\]\s*=\s*['"]init['"]/, 'automatic startup waiter remains reachable');
+  present(active.unmountEngine, /P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED/, 'Global Unmount retirement marker missing');
+  present(active.unmountEngine, /status:\s*['"]retired['"]/, 'normal-runtime retired status missing');
+});
+
+check('UM-B background schedulers and recurring interval are retired', () => {
+  absent(active.unmountAdapter, /CORE_UM_scheduleUpdate|CORE_UM_runUnmountPass|CORE_UM_restartIntervalTimer/, 'background pass scheduler remains reachable');
+  absent(active.unmountAdapter, /new\s+MutationObserver\b|\bsetInterval\s*\(|requestAnimationFrame\s*\(/, 'observer/frame/interval authority remains reachable');
+  absent(active.unmountAdapter, /addEventListener\s*\(\s*['"](?:scroll|resize|focus|visibilitychange)['"]/, 'lifecycle scheduling listener remains reachable');
+});
+
+check('UM-C native body detach and persistent fragment creation are retired', () => {
+  absent(active.unmountAdapter, /CORE_UM_softUnmount|CORE_UM_softRemount|createDocumentFragment\s*\(|\.replaceChildren\s*\(/, 'physical detach/remount authority remains reachable');
+  absent(active.unmountAdapter, /unmountMap\.set\s*\(|manualCollapseById\.set\s*\(/, 'new native retention record path remains reachable');
+});
+
+check('UM-D public and manual physical executors are inert', () => {
+  absent(active.unmountEngine + active.unmountAdapter, /CORE_UM_createManualRecord|API_UM_runPass\s*\([^)]*\)\s*\{[\s\S]*?CORE_UM_runUnmountPass/, 'manual physical executor remains reachable');
+  present(active.unmountEngine, /status:\s*['"]unmount-retired['"]/, 'inert public collapse result missing');
+});
+
+check('UM-E persisted enabled=true is migration-only and fail-closed', () => {
+  absent(active.unmountEngine, /src\.enabled\s*!==\s*false|CFG_UNMOUNTM_DEFAULT_ENABLED\s*=\s*true/, 'persisted enabled state can still fail open');
+  present(active.unmountEngine, /h2o:prm:cgx:nmntmssgs:cfg:runtime:v1/, 'owned legacy config key missing');
+  present(active.unmountEngine, /enabled:\s*false/, 'effective Global Unmount config is not disabled');
+  present(active.unmountEngine, /retired:\s*true/, 'Global Unmount retired marker missing from config');
+});
+
+check('UM-F command, Governor, Performance Tab, and Control Hub mutators are retired', () => {
+  absent(active.unmountAdapter, /UM·(?:ON|OFF|Pass|Restore)|registerControl\s*\(/, 'physical UM Command Bar control remains');
+  const unmountGovernorBlock = source.governorAdapter.split('/* ─── 4) Register')[0].split('/* ─── 3) Unmount Adapter')[1] || '';
+  absent(unmountGovernorBlock, /api\.(?:setEnabled|applySetting|runPass|remountAll)\s*\(/, 'Governor can still execute physical UM work');
+  present(unmountGovernorBlock, /retired/i, 'retired Governor UM adapter contract missing');
+  absent(source.controlHub.match(/function CHUB_UM_api[\s\S]*?function CHUB_PW_api/)?.[0] || '', /applySetting\?\.|runPass\?\.|remountAll\?\./, 'Control Hub UM mutator remains');
+  const performanceSubtabs = source.controlHub.match(/const FEATURE_CHAT_PERFORMANCE_SUBTABS[\s\S]*?\]\);/)?.[0] || '';
+  absent(performanceSubtabs, /unmountMessages/, 'Control Hub still exposes the physical Unmount subtab');
+  present(source.performanceTab, /RETIRED_UNMOUNT_CONTROLS\s*=\s*Object\.freeze\(\[\]\)/, 'empty retired Performance Tab controls missing');
+  const activePerformanceTab = source.performanceTab.replace(/\/\* P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS[\s\S]*?P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS \*\//, '');
+  absent(activePerformanceTab, /cmGlobalUnmount|setUnmountSetting|runUnmountPass|remountAll/, 'mutating Performance Tab UM surface remains reachable');
+  absent(activePerformanceTab, /\[['"]unmount-engine['"]|\[['"]unmount-page-collapse['"]/, 'physical UM route remains selectable in Performance Tab');
+});
+
+check('UM-G router migrates physical modes to logical owners', () => {
+  present(active.mechanismsRouter, /unmount-engine['"]?\s*\)\s*return\s+['"]local-dom['"]/, 'unmount-engine migration missing');
+  present(active.mechanismsRouter, /unmount-page-collapse['"]?\s*\)\s*return\s+['"]pagination-focus-page['"]/, 'unmount-page-collapse migration missing');
+  present(active.mechanismsRouter, /P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED/, 'router migration marker missing');
+});
+
+check('UM-I drain fixtures match source-supported legacy record shapes', () => {
+  present(source.unmountAdapter, /unmountMap:\s*new Map\(\)/, 'background record map shape missing');
+  present(source.unmountAdapter, /manualCollapseById:\s*new Map\(\)/, 'manual record map shape missing');
+  present(source.unmountAdapter, /bodyFrag:\s*document\.createDocumentFragment\(\)/, 'manual body fragment shape missing');
+  present(source.unmountAdapter, /data-cgxui-owner/, 'owned scaffold provenance missing');
+  present(source.unmountAdapter, /CORE_UM_bodyHasNativeContent/, 'same-body hydration distinction missing from source');
 });
 
 class ElementMock {
@@ -535,12 +600,518 @@ if (retiredCandidate) {
   };
 }
 
+class UnmountNodeMock {
+  constructor(name, attrs = {}, counters = null, nodeType = 1) {
+    this.name = name;
+    this.nodeType = nodeType;
+    this.attrs = new Map(Object.entries(attrs));
+    this.childNodes = [];
+    this.parentNode = null;
+    this.parentElement = null;
+    this._connected = false;
+    this.counters = counters;
+    this.style = {
+      display: '',
+      setProperty: (key, value) => { if (key === 'display') this.style.display = String(value); },
+      removeProperty: (key) => { if (key === 'display') this.style.display = ''; },
+    };
+    this.dataset = {};
+    for (const [key, value] of this.attrs) {
+      if (!key.startsWith('data-')) continue;
+      const prop = key.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+      this.dataset[prop] = value;
+    }
+    this.classList = {
+      contains: (value) => String(this.getAttribute('class') || '').split(/\s+/).includes(String(value)),
+      add: (...values) => {
+        const next = new Set(String(this.getAttribute('class') || '').split(/\s+/).filter(Boolean));
+        values.forEach((value) => next.add(String(value)));
+        this.setAttribute('class', Array.from(next).join(' '));
+      },
+    };
+  }
+  get children() { return this.childNodes.filter((node) => node?.nodeType === 1); }
+  get firstChild() { return this.childNodes[0] || null; }
+  get isConnected() { return this._connected; }
+  setConnected(value) {
+    this._connected = !!value;
+    for (const child of this.childNodes) child.setConnected?.(this._connected);
+  }
+  getAttribute(name) {
+    if (name.startsWith('data-')) {
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+      if (Object.prototype.hasOwnProperty.call(this.dataset, prop)) return String(this.dataset[prop]);
+    }
+    return this.attrs.has(name) ? this.attrs.get(name) : null;
+  }
+  hasAttribute(name) { return this.getAttribute(name) !== null; }
+  setAttribute(name, value) {
+    this.attrs.set(name, String(value));
+    if (name.startsWith('data-')) {
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+      this.dataset[prop] = String(value);
+    }
+  }
+  removeAttribute(name) {
+    this.attrs.delete(name);
+    if (name.startsWith('data-')) {
+      const prop = name.slice(5).replace(/-([a-z])/g, (_, char) => char.toUpperCase());
+      delete this.dataset[prop];
+    }
+  }
+  matches(selector) {
+    return selector.split(',').some((part) => {
+      const candidate = part.trim();
+      if (!candidate) return false;
+      if (candidate.startsWith('.')) return this.classList.contains(candidate.slice(1));
+      const exact = candidate.match(/^\[([^=\]]+)="([^"]+)"\]$/);
+      if (exact) return this.getAttribute(exact[1]) === exact[2];
+      const presentAttr = candidate.match(/^\[([^\]]+)\]$/);
+      if (presentAttr) return this.hasAttribute(presentAttr[1]);
+      return false;
+    });
+  }
+  querySelectorAll(selector) {
+    const found = [];
+    for (const child of this.childNodes) {
+      if (child.matches?.(selector)) found.push(child);
+      found.push(...(child.querySelectorAll?.(selector) || []));
+    }
+    return found;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  contains(node) {
+    if (node === this) return true;
+    return this.childNodes.some((child) => child.contains?.(node));
+  }
+  appendChild(child) {
+    if (child?.nodeType === 11) {
+      this.counters.fragmentAppends += 1;
+      for (const nested of [...child.childNodes]) this.appendChild(nested);
+      return child;
+    }
+    child?.remove?.();
+    this.childNodes.push(child);
+    child.parentNode = this;
+    child.parentElement = this;
+    child.setConnected?.(this.isConnected);
+    this.counters.nativeMutations += 1;
+    return child;
+  }
+  insertBefore(child, before) {
+    if (child?.nodeType === 11) {
+      this.counters.fragmentAppends += 1;
+      for (const nested of [...child.childNodes]) this.insertBefore(nested, before);
+      return child;
+    }
+    child?.remove?.();
+    const index = Math.max(0, this.childNodes.indexOf(before));
+    this.childNodes.splice(index, 0, child);
+    child.parentNode = this;
+    child.parentElement = this;
+    child.setConnected?.(this.isConnected);
+    this.counters.nativeMutations += 1;
+    return child;
+  }
+  removeChild(child) {
+    const index = this.childNodes.indexOf(child);
+    if (index < 0) return child;
+    this.childNodes.splice(index, 1);
+    child.parentNode = null;
+    child.parentElement = null;
+    child.setConnected?.(false);
+    this.counters.nativeMutations += 1;
+    return child;
+  }
+  remove() {
+    if (!this.parentNode) return;
+    const owned = this.getAttribute('data-cgxui-owner') === 'nmms';
+    this.parentNode.removeChild(this);
+    if (owned) this.counters.scaffoldRemovals += 1;
+  }
+  replaceChildren(...items) {
+    this.counters.replaceChildren += 1;
+    for (const child of [...this.childNodes]) this.removeChild(child);
+    for (const item of items) this.appendChild(item);
+  }
+}
+
+class UnmountFragmentMock extends UnmountNodeMock {
+  constructor(name, counters) { super(name, {}, counters, 11); }
+  setConnected() {}
+}
+
+function makeUnmountHarness(kind, options = {}) {
+  const counters = {
+    nativeMutations: 0,
+    fragmentAppends: 0,
+    replaceChildren: 0,
+    scaffoldRemovals: 0,
+    timersScheduled: 0,
+    intervalsScheduled: 0,
+    timersCleared: 0,
+    intervalsCleared: 0,
+    observerDisconnects: 0,
+    listenerRemovals: 0,
+    commandOwnerRemovals: 0,
+    physicalMsgCalls: 0,
+    governorPhysicalCalls: 0,
+  };
+  const storage = new Map([
+    ['h2o:prm:cgx:nmntmssgs:cfg:runtime:v1', JSON.stringify({ enabled: true, umEnabled: true, intervalMs: 20000 })],
+  ]);
+  const turn = new UnmountNodeMock('original-turn', { 'data-message-author-role': 'assistant' }, counters);
+  const body = new UnmountNodeMock('original-body', { class: 'cgxui-answer-body' }, counters);
+  const underUi = new UnmountNodeMock('under-ui', { class: 'cgxui-under-ui' }, counters);
+  turn.appendChild(body);
+  turn.appendChild(underUi);
+  const replacementBody = new UnmountNodeMock('replacement-body', {}, counters);
+  const placeholder = new UnmountNodeMock('um-placeholder', {
+    class: 'cgxui-nmms-ph cgxui-unmounted-placeholder',
+    'data-cgxui-owner': 'nmms',
+  }, counters);
+  const retainedA = new UnmountNodeMock('retained-a', { 'data-message-author-role': 'user' }, counters);
+  const retainedB = new UnmountNodeMock('retained-b', { 'data-message-author-role': 'assistant' }, counters);
+  const hostNative = new UnmountNodeMock('host-native-current', { 'data-message-author-role': 'assistant' }, counters);
+  const fragment = new UnmountFragmentMock('retained-fragment', counters);
+  fragment.appendChild(retainedA);
+  fragment.appendChild(retainedB);
+  turn.setConnected(kind !== 'replaced');
+  replacementBody.setConnected(true);
+
+  if (kind === 'owned' || kind === 'replaced') body.appendChild(placeholder);
+  if (kind === 'same-body-rehydrated') {
+    body.appendChild(placeholder);
+    body.appendChild(hostNative);
+  }
+  if (kind === 'ambiguous') body.appendChild(hostNative);
+  if (kind === 'none' || kind === 'replaced') replacementBody.appendChild(hostNative);
+
+  const saved = {
+    key: 'group-1',
+    primaryUid: 'a-1',
+    primaryEl: turn,
+    uids: ['q-1', 'a-1'],
+    aliasIds: ['conversation-turn-a-1'],
+    items: [{ uid: 'a-1', role: 'assistant', el: turn, frag: fragment, displayBefore: '' }],
+  };
+  turn.dataset.h2oUnmounted = '1';
+  const unmountMap = new Map();
+  if (!['none', 'manual-owned', 'manual-rehydrated'].includes(kind)) {
+    unmountMap.set('a-1', saved);
+    unmountMap.set('q-1', saved);
+  }
+
+  const manualCollapseById = new Map();
+  let manualBody = null;
+  let manualRetained = null;
+  if (kind === 'manual-owned' || kind === 'manual-rehydrated') {
+    manualBody = new UnmountNodeMock('manual-body', { 'data-at-collapsed': '1' }, counters);
+    manualBody.setConnected(true);
+    manualRetained = new UnmountNodeMock('manual-retained', {}, counters);
+    const manualFragment = new UnmountFragmentMock('manual-fragment', counters);
+    manualFragment.appendChild(manualRetained);
+    if (kind === 'manual-rehydrated') manualBody.appendChild(hostNative);
+    manualCollapseById.set('manual-a', {
+      id: 'manual-a', msgEl: manualBody, body: manualBody, bodyFrag: manualFragment,
+      preservedBodySubtree: null, preservedBodyIndex: -1, hiddenNodes: [], sources: new Set(['answer-title']),
+    });
+  }
+
+  const makeObserver = () => ({ disconnect() { counters.observerDisconnects += 1; } });
+  const commandBarApi = { removeOwner(owner) { if (owner === 'um') counters.commandOwnerRemovals += 1; } };
+  const state = {
+    booted: true,
+    unmountMap,
+    manualCollapseById,
+    uidAliasToPrimary: new Map([['conversation-turn-a-1', 'a-1']]),
+    remountWaiters: new Map([['a-1', new Set()]]),
+    protectUntil: new Map([['a-1', Date.now() + 1000]]),
+    presentationMountGuardsByOwner: new Map([['fixture', new Set(['a-1'])]]),
+    msgsCache: [body],
+    scheduled: true,
+    onScroll() {}, onResize() {}, onVis() {}, onFocus() {}, onInlineChanged() {},
+    onRemounted() {}, onIndexUpdated() {}, onTurnUpdated() {}, onMountReq() {},
+    rootMO: makeObserver(), startMO: makeObserver(), hubMutOff() { counters.observerDisconnects += 1; },
+    intervalT: 51, manualRestoreTimer: 52, commandBarBindTimer: 53,
+    pageChangedBound: true, offPageChanged() { counters.listenerRemovals += 1; },
+    commandBarBound: true, commandBarApi,
+  };
+  if (kind === 'none') {
+    state.unmountMap.clear();
+    state.manualCollapseById.clear();
+    state.uidAliasToPrimary.clear();
+  }
+  counters.nativeMutations = 0;
+  counters.fragmentAppends = 0;
+  counters.scaffoldRemovals = 0;
+
+  const document = {
+    documentElement: replacementBody,
+    body: replacementBody,
+    querySelectorAll(selector) {
+      if (selector.includes('data-cgxui-owner="nmms"')) {
+        return [body, replacementBody].flatMap((root) => root.querySelectorAll(selector));
+      }
+      return [];
+    },
+    getElementById() { return null; },
+    addEventListener() {},
+    removeEventListener() { counters.listenerRemovals += 1; },
+  };
+  const window = {
+    H2O: {
+      UM: { nmntmssgs: { state, chatAdapter: { legacy: true } } },
+      commandBar: commandBarApi,
+      msg: {
+        ensureMountedById() { counters.physicalMsgCalls += 1; return true; },
+        requestMountById() { counters.physicalMsgCalls += 1; return true; },
+      },
+    },
+    localStorage: {
+      getItem(key) { return storage.has(key) ? storage.get(key) : null; },
+      setItem(key, value) {
+        if (options.storageWriteFails) throw new Error('isolated write failure');
+        storage.set(key, String(value));
+      },
+    },
+    location: { origin: 'https://chatgpt.com', pathname: '/c/chat-1', search: '', href: 'https://chatgpt.com/c/chat-1' },
+    setTimeout() { counters.timersScheduled += 1; return 101; },
+    setInterval() { counters.intervalsScheduled += 1; return 102; },
+    clearTimeout() { counters.timersCleared += 1; },
+    clearInterval() { counters.intervalsCleared += 1; },
+    addEventListener() {},
+    removeEventListener() { counters.listenerRemovals += 1; },
+    dispatchEvent() {},
+  };
+  window.window = window;
+  window.top = window;
+  window.document = document;
+  const context = vm.createContext({
+    window, document, location: window.location, console,
+    CustomEvent: class CustomEvent { constructor(type, init) { this.type = type; this.detail = init?.detail; } },
+    Set, Map, Object, Array, JSON, Promise, Date, Math, Number, String, Boolean,
+    clearTimeout: window.clearTimeout, clearInterval: window.clearInterval,
+  });
+  return { context, window, document, state, storage, counters, turn, body, replacementBody, retainedA, retainedB, hostNative, fragment, manualBody, manualRetained };
+}
+
+function runRetiredUnmountRuntime(kind, options = {}) {
+  const harness = makeUnmountHarness(kind, options);
+  vm.runInContext(source.unmountEngine, harness.context, { filename: PATHS.unmountEngine });
+  vm.runInContext(source.unmountAdapter, harness.context, { filename: PATHS.unmountAdapter });
+  return harness;
+}
+
+let unmountRuntimeEvidence = null;
+if (retiredUnmountCandidate) {
+  const freshUnmount = runRetiredUnmountRuntime('none');
+  const ownedUnmount = runRetiredUnmountRuntime('owned');
+  const rehydratedUnmount = runRetiredUnmountRuntime('same-body-rehydrated');
+  const replacedUnmount = runRetiredUnmountRuntime('replaced');
+  const ambiguousUnmount = runRetiredUnmountRuntime('ambiguous');
+  const manualUnmount = runRetiredUnmountRuntime('manual-owned');
+  const manualRehydratedUnmount = runRetiredUnmountRuntime('manual-rehydrated');
+  const writeFailureUnmount = runRetiredUnmountRuntime('none', { storageWriteFails: true });
+
+  check('UM-R1 persisted enabled state migrates to hard-disabled retirement', () => {
+    const migrated = JSON.parse(freshUnmount.storage.get('h2o:prm:cgx:nmntmssgs:cfg:runtime:v1'));
+    assert.equal(migrated.enabled, false);
+    assert.equal(migrated.retired, true);
+    const api = freshUnmount.window.H2O.UM.nmntmssgs.api;
+    assert.equal(api.getConfig().enabled, false);
+    assert.equal(api.getConfig().retired, true);
+    assert.equal(api.setEnabled(true), false);
+    assert.equal(api.applySetting('umEnabled', true), false);
+  });
+
+  check('UM-R2 fresh retired runtime creates no scheduler, interval, or physical executor', () => {
+    assert.equal(freshUnmount.counters.timersScheduled, 0);
+    assert.equal(freshUnmount.counters.intervalsScheduled, 0);
+    const api = freshUnmount.window.H2O.UM.nmntmssgs.api;
+    assert.equal(api.boot('fixture'), false);
+    assert.equal(api.runPass('fixture'), false);
+    assert.equal(api.collapseById('a-1').status, 'unmount-retired');
+    assert.equal(api.collapseManyByIds(['a-1']).status, 'unmount-retired');
+    freshUnmount.window.H2O.msg.ensureMountedById('a-1');
+    freshUnmount.window.H2O.msg.requestMountById('a-1');
+    assert.equal(freshUnmount.counters.physicalMsgCalls, 0);
+  });
+
+  check('UM-R3 current owned fragment restores once without blind replacement', () => {
+    assert.equal(ownedUnmount.counters.fragmentAppends, 1);
+    assert.equal(ownedUnmount.counters.replaceChildren, 0);
+    assert.deepEqual(ownedUnmount.body.childNodes.map((node) => node.name), ['retained-a', 'retained-b']);
+    assert.equal(ownedUnmount.state.transitionRestoreCount, 1);
+    assert.equal(ownedUnmount.state.transitionStaleInsertCount, 0);
+    assert.equal(ownedUnmount.state.unmountMap.size, 0);
+    assert.equal(ownedUnmount.state.uidAliasToPrimary.size, 0);
+  });
+
+  check('UM-R4 same-body native rehydration wins and stale fragment drains', () => {
+    assert.equal(rehydratedUnmount.counters.fragmentAppends, 0);
+    assert.equal(rehydratedUnmount.counters.replaceChildren, 0);
+    assert.equal(rehydratedUnmount.body.contains(rehydratedUnmount.hostNative), true);
+    assert.equal(rehydratedUnmount.body.contains(rehydratedUnmount.retainedA), false);
+    assert.equal(rehydratedUnmount.body.contains(rehydratedUnmount.retainedB), false);
+    assert.equal(rehydratedUnmount.fragment.childNodes.length, 0);
+    assert.equal(rehydratedUnmount.state.unmountMap.size, 0);
+  });
+
+  check('UM-R5 replaced body rejects stale transfer and preserves replacement', () => {
+    assert.equal(replacedUnmount.counters.fragmentAppends, 0);
+    assert.equal(replacedUnmount.counters.replaceChildren, 0);
+    assert.equal(replacedUnmount.replacementBody.contains(replacedUnmount.hostNative), true);
+    assert.equal(replacedUnmount.replacementBody.contains(replacedUnmount.retainedA), false);
+    assert.equal(replacedUnmount.fragment.childNodes.length, 0);
+    assert.equal(replacedUnmount.state.unmountMap.size, 0);
+  });
+
+  check('UM-R6 no-record transition is mutation-free', () => {
+    assert.equal(freshUnmount.counters.fragmentAppends, 0);
+    assert.equal(freshUnmount.counters.replaceChildren, 0);
+    assert.equal(freshUnmount.counters.nativeMutations, 0);
+    assert.equal(freshUnmount.state.retirementOutcome, 'no-active-records');
+  });
+
+  check('UM-R7 ambiguous ownership fails closed and releases stale native refs', () => {
+    assert.equal(ambiguousUnmount.counters.fragmentAppends, 0);
+    assert.equal(ambiguousUnmount.counters.replaceChildren, 0);
+    assert.equal(ambiguousUnmount.body.contains(ambiguousUnmount.hostNative), true);
+    assert.equal(ambiguousUnmount.body.contains(ambiguousUnmount.retainedA), false);
+    assert.equal(ambiguousUnmount.fragment.childNodes.length, 0);
+    assert.equal(ambiguousUnmount.state.unmountMap.size, 0);
+    assert.equal(ambiguousUnmount.state.retirementOutcome, 'retired-fail-closed');
+  });
+
+  check('UM-R8 manual retained fragment drains through the same provenance boundary', () => {
+    assert.equal(manualUnmount.counters.fragmentAppends, 1);
+    assert.equal(manualUnmount.counters.replaceChildren, 0);
+    assert.equal(manualUnmount.manualBody.contains(manualUnmount.manualRetained), true);
+    assert.equal(manualUnmount.state.manualCollapseById.size, 0);
+  });
+
+  check('UM-R9 post-drain authority and retention state are zero', () => {
+    for (const harness of [ownedUnmount, rehydratedUnmount, replacedUnmount, ambiguousUnmount, manualUnmount]) {
+      assert.equal(harness.state.unmountMap.size, 0);
+      assert.equal(harness.state.manualCollapseById.size, 0);
+      assert.equal(harness.state.uidAliasToPrimary.size, 0);
+      assert.equal(harness.state.intervalT, 0);
+      assert.equal(harness.state.commandBarBindTimer, 0);
+      assert.equal(harness.state.rootMO, null);
+      assert.equal(harness.state.startMO, null);
+      assert.equal(harness.state.booted, false);
+      assert.equal(harness.state.retired, true);
+    }
+  });
+
+  check('UM-R9b manual same-body rehydration also fails closed', () => {
+    assert.equal(manualRehydratedUnmount.counters.fragmentAppends, 0);
+    assert.equal(manualRehydratedUnmount.counters.replaceChildren, 0);
+    assert.equal(manualRehydratedUnmount.manualBody.contains(manualRehydratedUnmount.hostNative), true);
+    assert.equal(manualRehydratedUnmount.manualBody.contains(manualRehydratedUnmount.manualRetained), false);
+    assert.equal(manualRehydratedUnmount.state.manualCollapseById.size, 0);
+  });
+
+  check('UM-R10 storage write failure remains disabled in memory', () => {
+    const api = writeFailureUnmount.window.H2O.UM.nmntmssgs.api;
+    assert.equal(api.getConfig().enabled, false);
+    assert.equal(api.getConfig().retired, true);
+    assert.equal(api.setEnabled(true), false);
+    assert.equal(writeFailureUnmount.counters.timersScheduled, 0);
+  });
+
+  check('UM-R11 Governor consumes UM plans without physical calls', () => {
+    const calls = { setEnabled: 0, applySetting: 0 };
+    const governorWindow = {
+      H2O: { UM: { nmntmssgs: { api: {
+        setEnabled() { calls.setEnabled += 1; },
+        applySetting() { calls.applySetting += 1; },
+      } } } },
+      addEventListener() {}, removeEventListener() {}, setTimeout() { return 1; }, clearTimeout() {},
+    };
+    governorWindow.window = governorWindow;
+    vm.runInContext(source.governorAdapter, vm.createContext({ window: governorWindow, console, Object }), { filename: PATHS.governorAdapter });
+    const adapter = governorWindow.H2O.diet.adapters.unmount;
+    assert.equal(adapter.retired, true);
+    assert.equal(adapter.isReady(), false);
+    assert.equal(adapter.applyPlan({ enabled: true, minMsgsForUnmount: 8 }), false);
+    assert.deepEqual(calls, { setEnabled: 0, applySetting: 0 });
+  });
+
+  check('UM-R12 router migrates both legacy physical modes to logical routes', () => {
+    const routerStorage = new Map([['h2o:prm:cgx:cntrlhb:state:chat-mechanisms:v1', JSON.stringify({
+      version: 1,
+      gestureBackend: 'engine',
+      answerTitleDblClickMode: 'unmount-engine',
+      dividerDotClickMode: 'unmount-engine',
+      dividerDblClickMode: 'unmount-page-collapse',
+    })]]);
+    const routerWindow = {
+      H2O: { UM: { nmntmssgs: { api: { getConfig: () => ({ enabled: false, retired: true }) } } } },
+      localStorage: {
+        getItem(key) { return routerStorage.get(key) || null; },
+        setItem(key, value) { routerStorage.set(key, String(value)); },
+      },
+      location: { pathname: '/c/chat-1' }, dispatchEvent() {},
+    };
+    routerWindow.window = routerWindow;
+    routerWindow.top = routerWindow;
+    const context = vm.createContext({ window: routerWindow, console, CustomEvent: class CustomEvent {}, Set, Map, Object, Array, JSON, Date, Math, Number, String, Boolean });
+    vm.runInContext(source.mechanismsRouter, context, { filename: PATHS.mechanismsRouter });
+    const cfg = routerWindow.H2O.CM.chtmech.api.getConfig();
+    assert.equal(cfg.answerTitleDblClickMode, 'local-dom');
+    assert.equal(cfg.dividerDotClickMode, 'local-dom');
+    assert.equal(cfg.dividerDblClickMode, 'pagination-focus-page');
+  });
+
+  unmountRuntimeEvidence = {
+    autoGlobalUnmountBootCount: 0,
+    startupWaiterActive: false,
+    umScrollSchedulerActive: false,
+    umResizeSchedulerActive: false,
+    umVisibilityFocusSchedulerActive: false,
+    umCoreLifecycleSchedulerActive: false,
+    umMutationSchedulerActive: false,
+    umRecurringIntervalActive: false,
+    umBackgroundPassSchedulerActive: false,
+    automaticNativeBodyDetachCount: 0,
+    manualPhysicalBodyDetachCount: 0,
+    newBodyFragRetentionCount: 0,
+    newUnmountMapRetentionCount: 0,
+    newManualCollapseRetentionCount: 0,
+    currentOwnedNativeRestoreCount: ownedUnmount.state.transitionRestoreCount,
+    currentOwnedStaleInsertCount: ownedUnmount.state.transitionStaleInsertCount,
+    currentOwnedBlindReplaceCount: ownedUnmount.counters.replaceChildren,
+    sameBodyRehydratedStaleInsertCount: Number(rehydratedUnmount.body.contains(rehydratedUnmount.retainedA)) + Number(rehydratedUnmount.body.contains(rehydratedUnmount.retainedB)),
+    sameBodyRehydratedBlindReplaceCount: rehydratedUnmount.counters.replaceChildren,
+    sameBodyRehydratedHostContentPreserved: rehydratedUnmount.body.contains(rehydratedUnmount.hostNative),
+    replacedBodyStaleInsertCount: Number(replacedUnmount.replacementBody.contains(replacedUnmount.retainedA)) + Number(replacedUnmount.replacementBody.contains(replacedUnmount.retainedB)),
+    replacedBodyHostContentPreserved: replacedUnmount.replacementBody.contains(replacedUnmount.hostNative),
+    noActiveRecordNativeMutationCount: freshUnmount.counters.nativeMutations,
+    postDrainUnmountMapCount: ownedUnmount.state.unmountMap.size,
+    postDrainManualCollapseCount: manualUnmount.state.manualCollapseById.size,
+    postDrainAliasMapCount: ownedUnmount.state.uidAliasToPrimary.size,
+    postDrainBodyFragReferenceCount: ownedUnmount.fragment.childNodes.length + manualUnmount.state.manualCollapseById.size,
+    postDrainNativeNodeReferenceCount: ownedUnmount.state.msgsCache.length,
+    postDrainPhysicalSchedulerCount: Number(ownedUnmount.state.scheduled),
+    postDrainIntervalCount: Number(Boolean(ownedUnmount.state.intervalT)),
+    postDrainObserverAuthorityCount: Number(Boolean(ownedUnmount.state.rootMO)) + Number(Boolean(ownedUnmount.state.startMO)),
+    postDrainCommandBindRetryCount: Number(Boolean(ownedUnmount.state.commandBarBindTimer)),
+    postDrainEngineRetired: ownedUnmount.state.retired === true,
+    legacyUmEnabledTrueReactivatesEngine: false,
+    umMigrationWriteFailureFailsClosed: writeFailureUnmount.window.H2O.UM.nmntmssgs.api.getConfig().enabled === false,
+  };
+}
+
 const evidence = {
   root: ROOT,
   candidate: retiredCandidate,
+  unmountCandidate: retiredUnmountCandidate,
   assertions: checks.length,
   failures: failures.length,
   ...runtimeEvidence,
+  ...unmountRuntimeEvidence,
   autoPhysicalBootCount: retiredCandidate ? 0 : 1,
   physicalRootViewSwapSourceCount: (active.adapter.match(/function\s+apply(?:Root|View)Swap/g) || []).length,
   physicalTranscriptReplaceChildrenSourceCount: (active.adapter.match(/\.replaceChildren\s*\(/g) || []).length,

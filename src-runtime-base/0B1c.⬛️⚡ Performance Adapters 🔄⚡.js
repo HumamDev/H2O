@@ -68,52 +68,20 @@
 
   /* ─── 3) Unmount Adapter ─────────────────────────────────────────────────── */
 
-  /*
-   * Owns: thin normalization of Governor UnmountPlan → H2O.UM.nmntmssgs.api calls.
-   *
-   * UnmountPlan shape (from Store):
-   *   { enabled: bool, minMsgsForUnmount?: number, unmountMarginPx?: number }
-   *
-   * Maps to executor applySetting keys:
-   *   enabled            → setEnabled()
-   *   minMsgsForUnmount  → applySetting('umMinMessages', val)
-   *   unmountMarginPx    → applySetting('umMarginPx', val)
-   */
-
-  function PA_UM_getApi() {
-    // Unmount vault: H2O['UM']['nmntmssgs'].api  (TOK='UM', PID='nmntmssgs')
-    return (W.H2O && W.H2O.UM && W.H2O.UM.nmntmssgs && W.H2O.UM.nmntmssgs.api) || null;
-  }
-
+  /* P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED
+   * Consume legacy Governor plans without exposing an activation path. */
   function PA_UM_isReady() {
-    const api = PA_UM_getApi();
-    if (!api || typeof api !== 'object') return false;
-    return (typeof api.setEnabled === 'function' && typeof api.applySetting === 'function');
+    return false;
   }
 
-  function PA_UM_applyPlan(plan) {
-    if (!plan || typeof plan !== 'object') return false;
-    if (!PA_UM_isReady()) return false;
-
-    const api = PA_UM_getApi();
-
-    if (plan.enabled === false) {
-      // Disable first — settings are irrelevant on a torn-down executor
-      api.setEnabled(false);
-      return true;
-    }
-
-    // Apply settings before (re-)enabling so executor activates with the correct config
-    if (plan.minMsgsForUnmount !== undefined) api.applySetting('umMinMessages', plan.minMsgsForUnmount);
-    if (plan.unmountMarginPx !== undefined)   api.applySetting('umMarginPx', plan.unmountMarginPx);
-    if (plan.enabled === true)                api.setEnabled(true);
-
-    return true;
+  function PA_UM_applyPlan() {
+    return false;
   }
 
   const UnmountAdapter = Object.freeze({
-    isReady:    PA_UM_isReady,
-    applyPlan:  PA_UM_applyPlan,
+    retired:   true,
+    isReady:   PA_UM_isReady,
+    applyPlan: PA_UM_applyPlan,
   });
 
   /* ─── 4) Register ────────────────────────────────────────────────────────── */

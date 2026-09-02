@@ -1245,7 +1245,6 @@ __ROOT__ .cgxui-qbig-number{
 
 	  const FEATURE_CHAT_PERFORMANCE_SUBTABS = Object.freeze([
 	    'chatMechanisms',
-	    'unmountMessages',
 	  ]);
 
 		  const FEATURE_CONTROL_SUBTABS = Object.freeze([
@@ -2389,44 +2388,11 @@ __ROOT__ .cgxui-qbig-number{
 		    });
 		  }
 
-	  function CHUB_UM_api() {
-	    return W.H2O?.UM?.nmntmssgs?.api || null;
-	  }
-
+  // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED: retained read helpers are inert;
+  // Control Hub owns no physical Global Unmount mutation or action surface.
   function CHUB_UM_getSetting(key, fallback) {
-    const api = CHUB_UM_api();
-    const cfg = SAFE_call('unmount.getConfig', () => api?.getConfig?.()) || null;
-    if (!cfg || typeof cfg !== 'object') return fallback;
-
-    switch (String(key || '')) {
-      case 'umEnabled': return cfg.enabled !== false;
-      case 'umMinMessages': return Number(cfg.minMsgsForUnmount) || fallback;
-      case 'umMarginPx': return Number(cfg.unmountMarginPx) || fallback;
-      case 'umRestoreMode': return String(cfg.restoreMode || fallback || 'both');
-      case 'umIntervalSec': return Math.round((Number(cfg.intervalMs) || 0) / 1000) || fallback;
-      case 'umMountProtectMs': return Number(cfg.mountProtectMs) || fallback;
-      case 'umKeepQuoteCache': return cfg.keepQuoteCache !== false;
-      case 'umKeepRevisionMeta': return cfg.keepRevisionMeta !== false;
-      default: return fallback;
-    }
-  }
-
-  function CHUB_UM_setSetting(key, val) {
-    const api = CHUB_UM_api();
-    const changed = SAFE_call('unmount.applySetting', () => api?.applySetting?.(key, val));
-    return !!changed;
-  }
-
-  function CHUB_UM_runPass(reason = 'control-hub') {
-    const api = CHUB_UM_api();
-    const ok = !!SAFE_call('unmount.runPass', () => api?.runPass?.(reason));
-    return { message: ok ? 'Pass completed.' : 'Unmount module unavailable.' };
-  }
-
-  function CHUB_UM_remountAll(reason = 'control-hub') {
-    const api = CHUB_UM_api();
-    const count = Number(SAFE_call('unmount.remountAll', () => api?.remountAll?.(reason)) || 0);
-    return { message: count > 0 ? `Remounted ${count} turn(s).` : 'No collapsed turns were found.' };
+    if (String(key || '') === 'umEnabled') return false;
+    return fallback;
   }
 
   function CHUB_PW_api() {
