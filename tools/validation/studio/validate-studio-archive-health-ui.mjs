@@ -460,15 +460,36 @@ function domStub() {
   function make(tag) {
     const node = {
       tagName: String(tag).toUpperCase(),
-      textContent: '',
+      _text: '',
       children: [],
       attrs: {},
+      style: {},
+      parentNode: null,
       disabled: false,
       listeners: {},
-      appendChild(child) { this.children.push(child); return child; },
+      set textContent(value) {
+        this._text = String(value == null ? '' : value);
+        this.children.forEach((child) => { child.parentNode = null; });
+        this.children = [];
+      },
+      get textContent() { return this._text; },
+      appendChild(child) { child.parentNode = this; this.children.push(child); return child; },
       setAttribute(k, v) { this.attrs[k] = v; },
       getAttribute(k) { return this.attrs[k]; },
       addEventListener(name, fn) { this.listeners[name] = fn; },
+      querySelector(selector) {
+        const match = /^\[([^=]+)="([^"]+)"\]$/.exec(selector);
+        if (!match) return null;
+        const visit = (parent) => {
+          for (const child of parent.children || []) {
+            if (String(child.attrs?.[match[1]] || '') === match[2]) return child;
+            const nested = visit(child);
+            if (nested) return nested;
+          }
+          return null;
+        };
+        return visit(this);
+      },
     };
     created.push(node);
     return node;
@@ -487,24 +508,25 @@ function allText(node) {
 
 const PREVIEW_FIXTURE = {
   schema: 'h2o.m06.reclamationPreview',
-  schemaVersion: 1,
+  schema_version: 1,
   sources: {
-    packageScanComplete: true, packageScanBlockers: [],
-    dbProbeComplete: true, dbProbeBlockers: [],
-    casInventoryComplete: true, casInventoryBlockers: [],
+    package_scan_complete: true, package_scan_blockers: [],
+    db_probe_complete: true, db_probe_blockers: [],
+    cas_inventory_complete: true, cas_inventory_blockers: [],
   },
   plan: {
-    complete: true, retentionFloor: 3, blockers: [],
-    totals: { occupants: 3, protected: 2, candidates: 1, excluded: 0, chatsInScope: 1 },
+    schema: 'h2o.m06.reclamationPlan', schema_version: 1,
+    complete: true, retention_floor: 3, blockers: [],
+    totals: { occupants: 3, protected: 2, candidates: 1, excluded: 0, chats_in_scope: 1, referenced_cas_objects: 1 },
     decisions: [
-      { path: 'archive/packages/c.g11.h2ochat', name: 'c.g11.h2ochat', chatId: 'c',
+      { path: 'archive/packages/c.g11.h2ochat', name: 'c.g11.h2ochat', chat_id: 'c', content_hash: '11',
         decision: 'protected', reasons: ['stranded-writing', 'import-provenance', 'retention-floor'] },
-      { path: 'archive/packages/c.g22.h2ochat', name: 'c.g22.h2ochat', chatId: 'c',
-        decision: 'candidate', evidence: { savedAt: '2026-01-01T00:00:00.000Z', familyRank: 4 } },
-      { path: 'archive/packages/c.g33.h2ochat', name: 'c.g33.h2ochat', chatId: 'c',
+      { path: 'archive/packages/c.g22.h2ochat', name: 'c.g22.h2ochat', chat_id: 'c', content_hash: '22',
+        decision: 'candidate', evidence: { saved_at: '2026-01-01T00:00:00.000Z', family_rank: 4, retention_floor: 3, content_obsolete: true, current_projection_content_hash: '11' } },
+      { path: 'archive/packages/c.g33.h2ochat', name: 'c.g33.h2ochat', chat_id: 'c', content_hash: '',
         decision: 'excluded', reason: 'indeterminate' },
     ],
-    cas: { complete: true, observed: ['aa', 'bb'], referenced: ['aa'], observedUnreferenced: ['bb'], incompleteReasons: [] },
+    cas: { complete: true, observed: ['aa', 'bb'], referenced: ['aa'], observed_unreferenced: ['bb'], incomplete_reasons: [] },
   },
 };
 
@@ -649,7 +671,7 @@ check('T2.4 overview model is derived only from the trusted Preview', () => {
   blocked.plan.complete = false;
   blocked.plan.blockers = ['plan-package-scan-incomplete'];
   blocked.plan.totals.candidates = 0;
-  blocked.sources.packageScanComplete = false;
+  blocked.sources.package_scan_complete = false;
   const b = api.formatPreviewOverview(blocked);
   assert.equal(b.state, 'incomplete');
   assert.notEqual(b.state, 'clean', 'incomplete must not read as clean');
@@ -737,6 +759,82 @@ await checkAsync('T2.4 one Analyze click = one Preview invocation, none on mount
   assert.equal(handle.canReclaim(), true, 'a complete Analyze arms Reclaim');
 });
 
+await checkAsync('M09 P0.2 Archive Health rerender preserves exactly one functional reclamation sibling', async () => {
+  const stub = domStub();
+  const parent = stub.document.createElement('div');
+  const healthContainer = stub.document.createElement('div');
+  let healthHtml = '';
+  Object.defineProperty(healthContainer, 'innerHTML', {
+    configurable: true,
+    get() { return healthHtml; },
+    set(value) {
+      healthHtml = String(value == null ? '' : value);
+      this.children.forEach((child) => { child.parentNode = null; });
+      this.children = [];
+    },
+  });
+  parent.appendChild(healthContainer);
+  const wire = JSON.parse(JSON.stringify(PREVIEW_FIXTURE));
+  wire.plan.decisions[2].occupant_remedy = { chat_id: 'c' };
+  const calls = [];
+  const global = {
+    console,
+    document: stub.document,
+    confirm: () => true,
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd) => {
+        calls.push(cmd);
+        if (cmd === 'h2o_archive_occupant_quarantine') {
+          return { state: 'quarantined', occupantName: 'c.g33.h2ochat', classification: 'partial', quarantined: true, purged: false, dwell: 'one-run', blockers: [] };
+        }
+        return wire;
+      },
+    },
+  };
+  global.window = global;
+  global.globalThis = global;
+  const context = vm.createContext(global);
+  vm.runInContext(reclaimSrc, context, { filename: RECLAIM_REL });
+  context.H2O.Studio.ingestion = {
+    diagnoseSavedChatArchiveV1: async () => DIAGNOSTICS_FIXTURE,
+    probeCurrentSavedChatProjectionV1: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+  };
+  vm.runInContext(helperSrc, context, { filename: HELPER_REL });
+
+  const health = context.H2O.Studio.archiveHealthUi.renderArchiveHealthCard(healthContainer, {
+    diagnose: async () => ({ status: 'ok', packages: [] }),
+  });
+  const cards = () => flatten(parent).filter((node) => node.attrs?.['data-h2o-card'] === 'saved-chat-reclamation');
+  assert.equal(cards().length, 1, 'Archive Health mounts exactly one reclamation card');
+  assert.equal(healthContainer.children.length, 0, 'reclamation card is not owned by the health render container');
+  const analyze = flatten(parent).find((node) => node.attrs?.['data-h2o-action'] === 'analyze-archive');
+  assert.ok(analyze && typeof analyze.listeners.click === 'function', 'Analyze control is functional');
+  analyze.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(flatten(parent).some((node) => node.attrs?.['data-h2o-action'] === 'quarantine-occupant'),
+    'Analyze rendered the governed occupant control');
+
+  /* The REAL Archive Health run() renders loading and result states, clearing
+     its own container both times. The sibling must remain outside that exact
+     destructive render boundary. */
+  health.run();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(cards().length, 1, 'Archive Health rerender did not destroy or duplicate the reclamation card');
+
+  const action = flatten(parent).find((node) => node.attrs?.['data-h2o-action'] === 'quarantine-occupant');
+  assert.ok(action && typeof action.listeners.click === 'function', 'control remains functional after the real rerender');
+  action.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.filter((cmd) => cmd === 'h2o_archive_occupant_quarantine').length, 1,
+    'one click invokes the occupant control exactly once');
+
+  context.H2O.Studio.reclamationUi.mountReclamationCard(healthContainer);
+  assert.equal(cards().length, 1, 'an explicit remount remains idempotent');
+});
+
 await checkAsync('T2.4 in-flight guard: rapid Analyze cannot double-invoke or overwrite', async () => {
   const stub = domStub();
   const api = loadReclamationApi(stub.document);
@@ -820,9 +918,9 @@ await checkAsync('T2.4 empty archive renders a truthful complete-empty state', a
     diagnose: async () => ({ packages: [], residue: { complete: true, count: 0, entries: [], unscanned: [] } }),
     probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
     invoke: async () => ({
-      schema: 'h2o.m06.reclamationPreview', schemaVersion: 1,
-      sources: { packageScanComplete: true, packageScanBlockers: [], dbProbeComplete: true, dbProbeBlockers: [], casInventoryComplete: true, casInventoryBlockers: [] },
-      plan: { complete: true, retentionFloor: 3, blockers: [], totals: { occupants: 0, protected: 0, candidates: 0, excluded: 0, chatsInScope: 0 }, decisions: [], cas: { complete: true, observed: [], referenced: [], observedUnreferenced: [], incompleteReasons: [] } },
+      schema: 'h2o.m06.reclamationPreview', schema_version: 1,
+      sources: { package_scan_complete: true, package_scan_blockers: [], db_probe_complete: true, db_probe_blockers: [], cas_inventory_complete: true, cas_inventory_blockers: [] },
+      plan: { schema: 'h2o.m06.reclamationPlan', schema_version: 1, complete: true, retention_floor: 3, blockers: [], totals: { occupants: 0, protected: 0, candidates: 0, excluded: 0, chats_in_scope: 0, referenced_cas_objects: 0 }, decisions: [], cas: { complete: true, observed: [], referenced: [], observed_unreferenced: [], incomplete_reasons: [] } },
     }),
   });
   await handle.analyze();

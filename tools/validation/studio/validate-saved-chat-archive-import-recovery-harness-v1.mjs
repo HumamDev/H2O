@@ -135,6 +135,10 @@ function check(label, fn) {
   try { fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
   catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
 }
+async function checkAsync(label, fn) {
+  try { await fn(); PASS.push(label); console.log(`  ✓ ${label}`); }
+  catch (e) { const m = e && e.message ? e.message : String(e); FAIL.push({ label, m }); console.log(`  ✗ ${label}`); console.log(`      ${m}`); }
+}
 function readRepo(rel) { return fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8'); }
 function exists(rel) { return fs.existsSync(path.join(REPO_ROOT, rel)); }
 function stripComments(src) { return String(src).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/.*$/gm, '$1'); }
@@ -975,6 +979,144 @@ async function runHarness() {
 
 let H = null, harnessError = null;
 try { H = await runHarness(); } catch (e) { harnessError = e; }
+
+function importerCardContainer() {
+  let html = '';
+  let nodes = new Map();
+  const selectorFor = {
+    select: '[data-archive-importer-select="1"]',
+    dry: '[data-archive-importer-dry="1"]',
+    import: '[data-archive-importer-import="1"]',
+    load: '[data-archive-importer-load="1"]',
+  };
+  const container = {
+    set innerHTML(value) {
+      html = String(value || '');
+      nodes = new Map();
+      for (const [kind, selector] of Object.entries(selectorFor)) {
+        if (!html.includes(`data-archive-importer-${kind}="1"`)) continue;
+        const listeners = {};
+        const node = {
+          value: '',
+          listeners,
+          addEventListener(name, fn) { listeners[name] = fn; },
+        };
+        if (kind === 'select') {
+          const selected = /<option value="([^"]*)" selected>/.exec(html);
+          if (selected) node.value = selected[1];
+        }
+        nodes.set(selector, node);
+      }
+    },
+    get innerHTML() { return html; },
+    querySelector(selector) { return nodes.get(selector) || null; },
+  };
+  return container;
+}
+
+async function settleImporterCard() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+async function renderImporterOutcome(result, dryDecision) {
+  const importer = globalThis.H2O?.Studio?.archiveImporter;
+  assert.equal(typeof importer?.renderArchiveImporterCard, 'function');
+  const packagePath = 'archive/packages/ui-result.h2ochat';
+  const container = importerCardContainer();
+  const previousDocument = globalThis.document;
+  globalThis.document = {};
+  try {
+    const handle = importer.renderArchiveImporterCard(container, {
+      isDesktop: true,
+      listPackages: async () => [{
+        packagePath,
+        packageDirName: 'ui-result.h2ochat',
+        status: 'verified',
+      }],
+      dryRunImportPackage: async () => ({
+        ok: dryDecision === 'import-ready' || dryDecision === 'already-imported',
+        status: dryDecision,
+        decision: dryDecision,
+        packagePath,
+        packageDirName: 'ui-result.h2ochat',
+        identity: {
+          chatId: 'source-chat', snapshotId: 'source-snapshot',
+          title: 'Recovered fixture', contentHash: 'sha256-' + 'a'.repeat(64),
+        },
+        reason: '',
+      }),
+      importVerifiedPackage: async () => result,
+    });
+    handle.load();
+    await settleImporterCard();
+    let select = container.querySelector('[data-archive-importer-select="1"]');
+    assert.ok(select, 'package select did not render');
+    select.value = packagePath;
+    handle.dryRun();
+    await settleImporterCard();
+    select = container.querySelector('[data-archive-importer-select="1"]');
+    assert.ok(select, 'package select disappeared after dry-run');
+    select.value = packagePath;
+    handle.doImport();
+    await settleImporterCard();
+    return container.innerHTML;
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+}
+
+await checkAsync('[M09 P0.2] one-package importer UI reports imported chat + snapshot from the actual recovered result', async () => {
+  const html = await renderImporterOutcome({
+    ok: true,
+    status: 'imported',
+    decision: 'import-ready',
+    packagePath: 'archive/packages/ui-result.h2ochat',
+    recovered: {
+      newChatId: 'recovered-chat-id', newSnapshotId: 'recovered-snapshot-id',
+      originalChatId: 'source-chat', originalSnapshotId: 'source-snapshot', messageCount: 2,
+    },
+    reason: 'recovered as a new chat + snapshot',
+  }, 'import-ready');
+  assert.match(html, /Imported/);
+  assert.match(html, /Recovered as a NEW chat \+ snapshot/);
+  assert.match(html, /recovered chatId[\s\S]*recovered-chat-id/);
+  assert.match(html, /recovered snapshotId[\s\S]*recovered-snapshot-id/);
+  assert.doesNotMatch(html, /0 imported|0 snapshots/);
+});
+
+await checkAsync('[M09 P0.2] one-package importer UI reports already-imported as a no-op with no new ids', async () => {
+  const html = await renderImporterOutcome({
+    ok: true,
+    status: 'already-imported',
+    decision: 'already-imported',
+    packagePath: 'archive/packages/ui-result.h2ochat',
+    recovered: {
+      newChatId: '', newSnapshotId: '',
+      originalChatId: 'source-chat', originalSnapshotId: 'source-snapshot',
+    },
+    reason: 'snapshot already present in store; no write performed',
+  }, 'already-imported');
+  assert.match(html, /Already imported/);
+  assert.match(html, /no-op; nothing is written or overwritten/);
+  assert.doesNotMatch(html, /Recovered as a NEW chat \+ snapshot/);
+  assert.doesNotMatch(html, /recovered chatId|recovered snapshotId/);
+});
+
+await checkAsync('[M09 P0.2] one-package importer UI never renders a rejected result as success', async () => {
+  const html = await renderImporterOutcome({
+    ok: false,
+    status: 'rejected',
+    decision: 'import-ready',
+    packagePath: 'archive/packages/ui-result.h2ochat',
+    recovered: null,
+    reason: 'package no longer verified at write time',
+  }, 'import-ready');
+  assert.match(html, /Rejected/);
+  assert.match(html, /package no longer verified at write time/);
+  assert.doesNotMatch(html, /Recovered as a NEW chat \+ snapshot|recovered chatId|recovered snapshotId/);
+});
 
 check('[M02 T06] v3 canonical typed parts reconstruct exact importer turns and metadata', () => {
   assert.ok(!harnessError, 'harness runtime unavailable');

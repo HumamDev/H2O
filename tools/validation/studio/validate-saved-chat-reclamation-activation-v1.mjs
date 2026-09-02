@@ -44,6 +44,11 @@ const EXPECTED_ARCHIVE_COMMANDS = [
   'h2o_archive_occupant_quarantine',
   'h2o_archive_reclamation_execute',
   'h2o_archive_reclamation_preview',
+  /* M07 commands already present at this checkpoint; none is reclamation
+     mutation authority. Keep the exact-vocabulary seal current. */
+  'h2o_archive_transport_handoff_begin',
+  'h2o_archive_transport_handoff_end',
+  'h2o_archive_transport_handoff_read',
 ];
 
 const PASS = [];
@@ -112,22 +117,26 @@ function loadUi(document) {
 
 const PREVIEW_FIXTURE = {
   schema: 'h2o.m06.reclamationPreview',
-  schemaVersion: 1,
-  sources: { packageScanComplete: true, dbProbeComplete: true, casInventoryComplete: true },
+  schema_version: 1,
+  sources: {
+    package_scan_complete: true, package_scan_blockers: [],
+    db_probe_complete: true, db_probe_blockers: [],
+    cas_inventory_complete: true, cas_inventory_blockers: [],
+  },
   plan: {
-    schema: 'h2o.m06.reclamationPlan', complete: true, retentionFloor: 3, blockers: [],
-    totals: { chatsInScope: 1, occupants: 3, protected: 1, candidates: 1, excluded: 1, referencedCasObjects: 0 },
+    schema: 'h2o.m06.reclamationPlan', schema_version: 1, complete: true, retention_floor: 3, blockers: [],
+    totals: { chats_in_scope: 1, occupants: 3, protected: 1, candidates: 1, excluded: 1, referenced_cas_objects: 0 },
     decisions: [
-      { path: 'archive/packages/chat_a.g' + 'aa'.repeat(32) + '.h2ochat', name: 'chat_a.g' + 'aa'.repeat(32) + '.h2ochat', chatId: 'chat_a', decision: 'candidate', evidence: { savedAt: '2026-01-01T00:00:00.000Z' } },
-      { path: 'archive/packages/chat_a.g' + 'bb'.repeat(32) + '.h2ochat', name: 'chat_a.g' + 'bb'.repeat(32) + '.h2ochat', chatId: 'chat_a', decision: 'protected', reasons: ['newest-overall'] },
+      { path: 'archive/packages/chat_a.g' + 'aa'.repeat(32) + '.h2ochat', name: 'chat_a.g' + 'aa'.repeat(32) + '.h2ochat', chat_id: 'chat_a', content_hash: 'aa'.repeat(32), decision: 'candidate', evidence: { saved_at: '2026-01-01T00:00:00.000Z', family_rank: 4, retention_floor: 3, content_obsolete: true, current_projection_content_hash: 'bb'.repeat(32) } },
+      { path: 'archive/packages/chat_a.g' + 'bb'.repeat(32) + '.h2ochat', name: 'chat_a.g' + 'bb'.repeat(32) + '.h2ochat', chat_id: 'chat_a', content_hash: 'bb'.repeat(32), decision: 'protected', reasons: ['newest-overall'] },
       /* The trusted engine marks exactly one row as the governed remedy class
          and supplies the identity; the damaged LEGACY row below classifies
          identically and is deliberately left unmarked. */
-      { path: 'archive/packages/chat_x.g' + 'cc'.repeat(32) + '.h2ochat', name: 'chat_x.g' + 'cc'.repeat(32) + '.h2ochat', chatId: '', decision: 'excluded', reason: 'indeterminate', occupant_remedy: { chat_id: 'chat_x' } },
-      { path: 'archive/packages/chat_leg.h2ochat', name: 'chat_leg.h2ochat', chatId: '', decision: 'excluded', reason: 'indeterminate' },
-      { path: 'archive/packages/.h2o-genstage-a1', name: '.h2o-genstage-a1', chatId: '', decision: 'excluded', reason: 'reserved-infrastructure' },
+      { path: 'archive/packages/chat_x.g' + 'cc'.repeat(32) + '.h2ochat', name: 'chat_x.g' + 'cc'.repeat(32) + '.h2ochat', chat_id: '', content_hash: '', decision: 'excluded', reason: 'indeterminate', occupant_remedy: { chat_id: 'chat_x' } },
+      { path: 'archive/packages/chat_leg.h2ochat', name: 'chat_leg.h2ochat', chat_id: '', content_hash: '', decision: 'excluded', reason: 'indeterminate' },
+      { path: 'archive/packages/.h2o-genstage-a1', name: '.h2o-genstage-a1', chat_id: '', content_hash: '', decision: 'excluded', reason: 'reserved-infrastructure' },
     ],
-    cas: { complete: true, observed: [], referenced: [], observedUnreferenced: ['sha256-' + 'ee'.repeat(32)], incompleteReasons: [] },
+    cas: { complete: true, observed: [], referenced: [], observed_unreferenced: ['sha256-' + 'ee'.repeat(32)], incomplete_reasons: [] },
   },
 };
 const DIAGNOSTICS_FIXTURE = {
@@ -196,7 +205,7 @@ await checkAsync('2+3+10 Analyze does not auto-execute, and Reclaim needs a comp
 await checkAsync('3b an incomplete or failed Analyze leaves Reclaim disabled', async () => {
   for (const [label, preview] of [
     ['incomplete', (() => { const p = JSON.parse(JSON.stringify(PREVIEW_FIXTURE)); p.plan.complete = false; return p; })()],
-    ['sources-incomplete', (() => { const p = JSON.parse(JSON.stringify(PREVIEW_FIXTURE)); p.sources.dbProbeComplete = false; return p; })()],
+    ['sources-incomplete', (() => { const p = JSON.parse(JSON.stringify(PREVIEW_FIXTURE)); p.sources.db_probe_complete = false; return p; })()],
   ]) {
     const stub = domStub();
     const api = loadUi(stub.document);
@@ -228,6 +237,45 @@ await checkAsync('3b an incomplete or failed Analyze leaves Reclaim disabled', a
   assert.equal(handle.canReclaim(), false, 'a failed Analyze disarms Reclaim');
 });
 
+await checkAsync('3c actual snake_case Preview wire values render exactly and missing never defaults complete', async () => {
+  const wire = JSON.parse(JSON.stringify(PREVIEW_FIXTURE));
+  wire.plan.complete = false;
+  wire.plan.blockers = ['plan-package-scan-incomplete'];
+  wire.sources.package_scan_complete = false;
+  wire.sources.package_scan_blockers = ['package-scan-packages-unreadable'];
+  wire.sources.db_probe_complete = true;
+  wire.sources.cas_inventory_complete = false;
+  wire.sources.cas_inventory_blockers = ['cas-inventory-incomplete'];
+
+  const stub = domStub();
+  const api = loadUi(stub.document);
+  const overview = api.formatPreviewOverview(wire);
+  assert.equal(overview.sources.packageScanComplete, false);
+  assert.equal(overview.sources.dbProbeComplete, true);
+  assert.equal(overview.sources.casInventoryComplete, false);
+  assert.equal(overview.complete, false);
+
+  const missing = JSON.parse(JSON.stringify(wire));
+  delete missing.sources.db_probe_complete;
+  assert.equal(api.formatPreviewOverview(missing).sources.dbProbeComplete, false,
+    'missing trusted completeness evidence must fail closed in presentation');
+
+  const container = stub.document.createElement('div');
+  const handle = api.mountReclamationCard(container, {
+    diagnose: async () => DIAGNOSTICS_FIXTURE,
+    probeProjection: async () => ({ status: 'ok', contentHash: 'a'.repeat(64) }),
+    invoke: async () => wire,
+    confirm: () => true,
+  });
+  await handle.analyze();
+  const text = allText(container);
+  assert.ok(text.includes('Package scan: incomplete'));
+  assert.ok(text.includes('Database probe: complete'));
+  assert.ok(text.includes('CAS inventory: incomplete'));
+  assert.ok(text.includes('package-scan-packages-unreadable'));
+  assert.equal(handle.canReclaim(), false);
+});
+
 // ── 4 / 5. execution invokes only the approved command, with no plan ────────
 await checkAsync('4+5 Reclaim invokes only the approved command and sends no plan or path', async () => {
   const stub = domStub();
@@ -244,6 +292,8 @@ await checkAsync('4+5 Reclaim invokes only the approved command and sends no pla
     confirm: () => true,
   });
   await handle.analyze();
+  const staleCandidatePath = 'archive/packages/chat_a.g' + 'aa'.repeat(32) + '.h2ochat';
+  assert.ok(allText(container).includes(staleCandidatePath), 'Analyze rendered the candidate row');
   await handle.execute();
 
   const exec = calls.filter((c) => c.cmd === 'h2o_archive_reclamation_execute');
@@ -255,6 +305,9 @@ await checkAsync('4+5 Reclaim invokes only the approved command and sends no pla
   }
   /* The confirmation is consumed: a second Reclaim needs a new Analyze. */
   assert.equal(handle.canReclaim(), false, 'confirmation does not persist');
+  assert.equal(handle.getState().state, 'stale', 'a completed run invalidates the prior plan');
+  assert.ok(!allText(container).includes(staleCandidatePath), 'old candidate rows are removed after execution');
+  assert.ok(allText(container).includes('Run Analyze again'), 'the card requires a fresh read-only Analyze');
   await handle.execute();
   assert.equal(calls.filter((c) => c.cmd === 'h2o_archive_reclamation_execute').length, 1,
     'no second run without a new Analyze');
@@ -299,6 +352,8 @@ await checkAsync('6 the occupant action sends chatId + occupantName and nothing 
   const action = findByAction(container, 'quarantine-occupant');
   assert.ok(action, 'the governed remedy is offered on the indeterminate generation-path row');
   assert.equal(action.getAttribute('data-h2o-occupant'), 'chat_x.g' + 'cc'.repeat(32) + '.h2ochat');
+  assert.ok(allText(container).includes('archive/packages/chat_a.g' + 'aa'.repeat(32) + '.h2ochat'),
+    'Analyze candidate rows are visible before the action');
   /* The handler takes the TRUSTED ROW, so both halves of the payload come from
      Analyze output rather than from anything the renderer derived. */
   const trustedRow = api.formatDecisionRows(PREVIEW_FIXTURE)
@@ -309,6 +364,10 @@ await checkAsync('6 the occupant action sends chatId + occupantName and nothing 
   assert.equal(occ.length, 1);
   assert.deepEqual(Object.keys(occ[0].args.request).sort(), ['chatId', 'occupantName']);
   assert.equal(occ[0].args.request.chatId, 'chat_x');
+  assert.equal(handle.getState().state, 'stale', 'occupant action invalidates the prior plan');
+  assert.ok(!allText(container).includes('archive/packages/chat_a.g' + 'aa'.repeat(32) + '.h2ochat'),
+    'old Analyze rows are removed after the occupant action');
+  assert.ok(allText(container).includes('Run Analyze again'));
   const payload = JSON.stringify(occ[0].args).toLowerCase();
   for (const forbidden of ['path', 'root', 'runid', 'run_id', 'destination', 'classification', 'force']) {
     assert.ok(!payload.includes(forbidden), `occupant payload must not carry ${forbidden}`);
@@ -519,7 +578,7 @@ check('14+15 exactly two new destructive commands; raw purge and recovery stay u
   const found = [...libSrc.matchAll(/h2o_archive_[a-z_]+/g)].map((m) => m[0]);
   const unique = [...new Set(found)].sort();
   assert.deepEqual(unique, EXPECTED_ARCHIVE_COMMANDS, 'the archive command vocabulary is exact');
-  assert.equal(unique.length, 10, 'eight pre-G02 commands plus exactly two');
+  assert.equal(unique.length, 13, 'current archive vocabulary plus exactly two G02 destructive commands');
   for (const command of APPROVED_COMMANDS) {
     assert.equal((libSrc.match(new RegExp(command, 'g')) || []).length, 2,
       `${command} is registered in BOTH invoke-handler variants`);

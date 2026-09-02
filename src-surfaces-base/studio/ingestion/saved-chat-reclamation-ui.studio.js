@@ -67,6 +67,7 @@
     unavailable: 'Archive analysis is available in Desktop Studio only.',
     analyzeButton: 'Analyze archive',
     error: 'Could not complete the analysis.',
+    stale: 'Archive state may have changed. Run Analyze again to see current eligibility.',
     incomplete: 'This analysis is incomplete. The results below are not authoritative.',
     completeEmpty: 'Analysis complete. Nothing is currently eligible under the retention policy.',
     noPackages: 'No saved chat packages found yet.',
@@ -101,6 +102,79 @@
   }
   function cleanString(value) {
     return (typeof value === 'string') ? value.trim() : '';
+  }
+
+  /* The trusted Preview command serializes its response with Rust field names,
+   * so every multi-word key on the wire is snake_case. Normalize that exact
+   * production shape once here; render code below consumes only this camelCase
+   * view model and never guesses between wire spellings. Missing completeness
+   * evidence remains false rather than being defaulted to apparent success. */
+  function normalizePreviewWire(preview) {
+    var p = safeObject(preview);
+    var sources = safeObject(p.sources);
+    var plan = safeObject(p.plan);
+    var totals = safeObject(plan.totals);
+    var cas = safeObject(plan.cas);
+    function count(value) {
+      return (typeof value === 'number' && isFinite(value)) ? value : 0;
+    }
+    return {
+      schema: cleanString(p.schema),
+      schemaVersion: p.schema_version,
+      sources: {
+        packageScanComplete: sources.package_scan_complete === true,
+        packageScanBlockers: asArray(sources.package_scan_blockers),
+        dbProbeComplete: sources.db_probe_complete === true,
+        dbProbeBlockers: asArray(sources.db_probe_blockers),
+        casInventoryComplete: sources.cas_inventory_complete === true,
+        casInventoryBlockers: asArray(sources.cas_inventory_blockers),
+      },
+      plan: {
+        schema: cleanString(plan.schema),
+        schemaVersion: plan.schema_version,
+        complete: plan.complete === true,
+        retentionFloor: count(plan.retention_floor),
+        blockers: asArray(plan.blockers),
+        totals: {
+          occupants: count(totals.occupants),
+          protected: count(totals.protected),
+          candidates: count(totals.candidates),
+          excluded: count(totals.excluded),
+          chatsInScope: count(totals.chats_in_scope),
+          referencedCasObjects: count(totals.referenced_cas_objects),
+        },
+        decisions: asArray(plan.decisions).map(function (entry) {
+          var d = safeObject(entry);
+          var evidence = safeObject(d.evidence);
+          var remedy = safeObject(d.occupant_remedy);
+          var remedyChatId = cleanString(remedy.chat_id);
+          return {
+            path: cleanString(d.path),
+            name: cleanString(d.name),
+            chatId: cleanString(d.chat_id),
+            contentHash: cleanString(d.content_hash),
+            decision: cleanString(d.decision),
+            reasons: asArray(d.reasons),
+            reason: cleanString(d.reason),
+            evidence: {
+              currentProjectionContentHash: cleanString(evidence.current_projection_content_hash),
+              contentObsolete: evidence.content_obsolete === true,
+              familyRank: count(evidence.family_rank),
+              retentionFloor: count(evidence.retention_floor),
+              savedAt: cleanString(evidence.saved_at),
+            },
+            occupantRemedy: remedyChatId ? { chatId: remedyChatId } : null,
+          };
+        }),
+        cas: {
+          complete: cas.complete === true,
+          observed: asArray(cas.observed),
+          referenced: asArray(cas.referenced),
+          observedUnreferenced: asArray(cas.observed_unreferenced),
+          incompleteReasons: asArray(cas.incomplete_reasons),
+        },
+      },
+    };
   }
 
   /* Every value that came back from a trusted command is DATA. It is written
@@ -169,15 +243,15 @@
    * Derived ONLY from fields the trusted Preview actually returned. No
    * classification, retention or candidacy is recomputed here. */
   function formatPreviewOverview(preview) {
-    var p = safeObject(preview);
+    var p = normalizePreviewWire(preview);
     var plan = safeObject(p.plan);
     var sources = safeObject(p.sources);
     var totals = safeObject(plan.totals);
     var cas = safeObject(plan.cas);
     var blockers = asArray(plan.blockers).map(cleanString).filter(Boolean);
 
-    var sourcesComplete = sources.packageScanComplete !== false
-      && sources.dbProbeComplete !== false;
+    var sourcesComplete = sources.packageScanComplete === true
+      && sources.dbProbeComplete === true;
     var complete = plan.complete === true && sourcesComplete;
 
     return {
@@ -196,9 +270,9 @@
         chatsInScope: totals.chatsInScope || 0,
       },
       sources: {
-        packageScanComplete: sources.packageScanComplete !== false,
-        dbProbeComplete: sources.dbProbeComplete !== false,
-        casInventoryComplete: sources.casInventoryComplete !== false,
+        packageScanComplete: sources.packageScanComplete === true,
+        dbProbeComplete: sources.dbProbeComplete === true,
+        casInventoryComplete: sources.casInventoryComplete === true,
         blockers: []
           .concat(asArray(sources.packageScanBlockers).map(cleanString))
           .concat(asArray(sources.dbProbeBlockers).map(cleanString))
@@ -219,7 +293,7 @@
   /* One row per decision, preserving EVERY protection reason. Writing +
    * Import + Floor must not collapse into a generic "protected". */
   function formatDecisionRows(preview) {
-    var plan = safeObject(safeObject(preview).plan);
+    var plan = safeObject(normalizePreviewWire(preview).plan);
     return asArray(plan.decisions).map(function (entry) {
       var d = safeObject(entry);
       var evidence = safeObject(d.evidence);
@@ -237,8 +311,8 @@
          * the governed remedy class, and it carries the identity the command
          * needs. Absent means: offer nothing. */
         occupantRemedy: (function () {
-          var hint = safeObject(d.occupant_remedy);
-          var chatId = cleanString(hint.chat_id);
+          var hint = safeObject(d.occupantRemedy);
+          var chatId = cleanString(hint.chatId);
           return chatId ? { chatId: chatId } : null;
         }()),
       };
@@ -439,8 +513,24 @@
     return cleanString(safeObject(safeObject(row).occupantRemedy).chatId);
   }
 
-  function mountReclamationCard(container, options) {
-    if (!container || !global.document) return null;
+  function mountReclamationCard(healthContainer, options) {
+    if (!healthContainer || !global.document) return null;
+    var container = healthContainer;
+    var parent = healthContainer.parentNode;
+    if (parent && typeof parent.appendChild === 'function') {
+      var mount = (typeof parent.querySelector === 'function')
+        ? parent.querySelector('[data-h2o-reclamation-mount="1"]') : null;
+      if (!mount) {
+        mount = global.document.createElement('div');
+        mount.setAttribute('data-h2o-reclamation-mount', '1');
+        mount.style.marginTop = '12px';
+        parent.appendChild(mount);
+      }
+      /* Idempotent remount: the stable sibling owns exactly one card and one
+       * set of controls/listeners even if the outer Settings mount re-enters. */
+      mount.textContent = '';
+      container = mount;
+    }
     var opts = safeObject(options);
     var ingestion = safeObject(safeObject(H2O.Studio).ingestion);
     var diagnose = typeof opts.diagnose === 'function'
@@ -506,6 +596,13 @@
       enablingRequest = null;
       reclaim.disabled = true;
       reclaim.title = reason || TEXT.reclaimNeedsAnalyze;
+    }
+
+    function invalidateAnalysis() {
+      disarm();
+      body.textContent = '';
+      body.appendChild(el('div', TEXT.stale, 'color:#d29922'));
+      state = { state: 'stale', preview: null };
     }
 
     async function analyze() {
@@ -601,7 +698,12 @@
       result.textContent = TEXT.reclaimRunning;
       try {
         var outcome = await invoke(EXECUTE_COMMAND, { request: request });
-        return renderRunResult(outcome);
+        var view = renderRunResult(outcome);
+        /* A completed state-changing command makes every old Analyze row a
+         * historical snapshot. Keep the command result, but remove the stale
+         * plan and require a fresh read-only Analyze before showing rows. */
+        invalidateAnalysis();
+        return view;
       } catch (err) {
         result.textContent = '';
         result.appendChild(el('div', TEXT.error, 'color:#f85149'));
@@ -652,8 +754,10 @@
         view.blockers.forEach(function (blocker) {
           result.appendChild(el('div', 'blocker: ' + blocker, 'color:#f85149'));
         });
-        /* The displayed analysis is now stale with respect to the archive. */
-        disarm();
+        /* Whether changed or freshly refused, the command observed a newer
+         * archive state than the displayed plan. Never leave old rows visible
+         * as current truth. */
+        invalidateAnalysis();
         return view;
       } catch (err) {
         result.textContent = '';
@@ -686,6 +790,7 @@
     EXECUTE_COMMAND: EXECUTE_COMMAND,
     OCCUPANT_COMMAND: OCCUPANT_COMMAND,
     mountReclamationCard: mountReclamationCard,
+    normalizePreviewWire: normalizePreviewWire,
     formatRunOutcome: formatRunOutcome,
     formatOccupantOutcome: formatOccupantOutcome,
     occupantRemedyRows: occupantRemedyRows,
