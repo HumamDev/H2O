@@ -159,37 +159,36 @@
       hadRecord = true;
       const entries = Array.isArray(record?.items) ? record.items.filter(Boolean) : [];
       const resolved = entries.map((entry) => ({ entry, body: resolveBody(entry) }));
-      const primaryEntry = resolved.find(({ entry }) => entry?.el === record?.primaryEl) || resolved[0] || null;
-      const primaryScaffolds = ownedScaffolds(primaryEntry?.body);
-      const positivelyOwned = !!(
-        entries.length
-        && primaryEntry?.entry?.el?.isConnected
-        && primaryEntry?.body?.isConnected
-        && primaryScaffolds.length
-        && resolved.every(({ entry, body }) => (
-          entry?.el?.isConnected
+      if (!entries.length) rejectedRecord = true;
+      for (const { entry, body } of resolved) {
+        // Legacy background records prove body ownership only for their primary
+        // entry through its surviving UM scaffold. Wrapper continuity does not
+        // prove an unanchored secondary body's identity.
+        const positivelyOwned = !!(
+          entries.length
+          && entry?.el === record?.primaryEl
+          && entry?.el?.isConnected
           && body?.isConnected
           && entry?.frag?.nodeType === 11
+          && ownedScaffolds(body).length
           && !bodyHasForeignCurrentContent(body)
-        ))
-      );
+        );
 
-      if (positivelyOwned) {
-        for (const { entry, body } of resolved) {
+        if (positivelyOwned) {
           removeOwnedScaffolds(body);
-          try { body.appendChild(entry.frag); } catch (_) { discardFragment(entry.frag); }
-          entry.frag = null;
-          clearEntryPresentation(entry);
-        }
-        transitionRestoreCount += 1;
-      } else {
-        rejectedRecord = true;
-        for (const { entry, body } of resolved) {
+          try {
+            body.appendChild(entry.frag);
+            transitionRestoreCount += 1;
+          } catch (_) {
+            discardFragment(entry.frag);
+          }
+        } else {
+          rejectedRecord = true;
           removeOwnedScaffolds(body);
           discardFragment(entry?.frag);
-          if (entry) entry.frag = null;
-          clearEntryPresentation(entry);
         }
+        if (entry) entry.frag = null;
+        clearEntryPresentation(entry);
       }
       try { record.items = []; } catch (_) {}
       try { record.primaryEl = null; } catch (_) {}

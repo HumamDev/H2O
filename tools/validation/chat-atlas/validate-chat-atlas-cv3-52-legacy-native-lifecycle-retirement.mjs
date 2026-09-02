@@ -779,7 +779,30 @@ function makeUnmountHarness(kind, options = {}) {
   turn.setConnected(kind !== 'replaced');
   replacementBody.setConnected(true);
 
-  if (kind === 'owned' || kind === 'replaced') body.appendChild(placeholder);
+  let secondaryTurn = null;
+  let secondaryOriginalBody = null;
+  let secondaryCurrentBody = null;
+  let secondaryRetained = null;
+  let secondaryFragment = null;
+  if (kind === 'mixed-secondary-replaced') {
+    secondaryTurn = new UnmountNodeMock('secondary-turn', { 'data-message-author-role': 'assistant' }, counters);
+    secondaryOriginalBody = new UnmountNodeMock('secondary-original-body', { class: 'cgxui-answer-body' }, counters);
+    const secondaryUnderUi = new UnmountNodeMock('secondary-under-ui', { class: 'cgxui-under-ui' }, counters);
+    secondaryTurn.appendChild(secondaryOriginalBody);
+    secondaryTurn.appendChild(secondaryUnderUi);
+    secondaryTurn.setConnected(true);
+    secondaryOriginalBody.remove();
+    secondaryCurrentBody = new UnmountNodeMock('secondary-current-host-body', { class: 'cgxui-answer-body' }, counters);
+    secondaryTurn.insertBefore(secondaryCurrentBody, secondaryUnderUi);
+    secondaryRetained = new UnmountNodeMock('secondary-stale-retained', { 'data-message-author-role': 'assistant' }, counters);
+    secondaryFragment = new UnmountFragmentMock('secondary-retained-fragment', counters);
+    secondaryFragment.appendChild(secondaryRetained);
+    secondaryTurn.dataset.h2oUnmounted = '1';
+    secondaryTurn.dataset.h2oUmTurnHidden = '1';
+    secondaryTurn.style.display = 'none';
+  }
+
+  if (kind === 'owned' || kind === 'replaced' || kind === 'mixed-secondary-replaced') body.appendChild(placeholder);
   if (kind === 'same-body-rehydrated') {
     body.appendChild(placeholder);
     body.appendChild(hostNative);
@@ -795,6 +818,11 @@ function makeUnmountHarness(kind, options = {}) {
     aliasIds: ['conversation-turn-a-1'],
     items: [{ uid: 'a-1', role: 'assistant', el: turn, frag: fragment, displayBefore: '' }],
   };
+  if (secondaryTurn) {
+    saved.uids.push('a-2');
+    saved.aliasIds.push('conversation-turn-a-2');
+    saved.items.push({ uid: 'a-2', role: 'assistant', el: secondaryTurn, frag: secondaryFragment, displayBefore: '' });
+  }
   turn.dataset.h2oUnmounted = '1';
   const unmountMap = new Map();
   if (!['none', 'manual-owned', 'manual-rehydrated'].includes(kind)) {
@@ -893,7 +921,12 @@ function makeUnmountHarness(kind, options = {}) {
     Set, Map, Object, Array, JSON, Promise, Date, Math, Number, String, Boolean,
     clearTimeout: window.clearTimeout, clearInterval: window.clearInterval,
   });
-  return { context, window, document, state, storage, counters, turn, body, replacementBody, retainedA, retainedB, hostNative, fragment, manualBody, manualRetained };
+  return {
+    context, window, document, state, storage, counters,
+    turn, body, replacementBody, retainedA, retainedB, hostNative, fragment,
+    secondaryTurn, secondaryOriginalBody, secondaryCurrentBody, secondaryRetained, secondaryFragment,
+    manualBody, manualRetained,
+  };
 }
 
 function runRetiredUnmountRuntime(kind, options = {}) {
@@ -910,6 +943,7 @@ if (retiredUnmountCandidate) {
   const rehydratedUnmount = runRetiredUnmountRuntime('same-body-rehydrated');
   const replacedUnmount = runRetiredUnmountRuntime('replaced');
   const ambiguousUnmount = runRetiredUnmountRuntime('ambiguous');
+  const mixedSecondaryUnmount = runRetiredUnmountRuntime('mixed-secondary-replaced');
   const manualUnmount = runRetiredUnmountRuntime('manual-owned');
   const manualRehydratedUnmount = runRetiredUnmountRuntime('manual-rehydrated');
   const writeFailureUnmount = runRetiredUnmountRuntime('none', { storageWriteFails: true });
@@ -984,6 +1018,26 @@ if (retiredUnmountCandidate) {
     assert.equal(ambiguousUnmount.state.retirementOutcome, 'retired-fail-closed');
   });
 
+  check('UM-R7b unproven secondary entry fails closed independently', () => {
+    assert.equal(mixedSecondaryUnmount.secondaryTurn.querySelector('.cgxui-answer-body'), mixedSecondaryUnmount.secondaryCurrentBody);
+    assert.equal(mixedSecondaryUnmount.secondaryCurrentBody.contains(mixedSecondaryUnmount.secondaryRetained), false);
+    assert.equal(mixedSecondaryUnmount.secondaryFragment.childNodes.length, 0);
+    assert.equal(mixedSecondaryUnmount.counters.replaceChildren, 0);
+  });
+
+  check('UM-R7c mixed record restores proven primary without restoring unproven secondary', () => {
+    assert.equal(mixedSecondaryUnmount.body.contains(mixedSecondaryUnmount.retainedA), true);
+    assert.equal(mixedSecondaryUnmount.state.transitionRestoreCount, 1);
+    assert.equal(mixedSecondaryUnmount.secondaryCurrentBody.contains(mixedSecondaryUnmount.secondaryRetained), false);
+    assert.equal(mixedSecondaryUnmount.secondaryTurn.contains(mixedSecondaryUnmount.secondaryCurrentBody), true);
+    assert.equal(mixedSecondaryUnmount.fragment.childNodes.length, 0);
+    assert.equal(mixedSecondaryUnmount.secondaryFragment.childNodes.length, 0);
+    assert.equal(mixedSecondaryUnmount.state.unmountMap.size, 0);
+    assert.equal(mixedSecondaryUnmount.state.manualCollapseById.size, 0);
+    assert.equal(mixedSecondaryUnmount.state.uidAliasToPrimary.size, 0);
+    assert.equal(mixedSecondaryUnmount.state.msgsCache.length, 0);
+  });
+
   check('UM-R8 manual retained fragment drains through the same provenance boundary', () => {
     assert.equal(manualUnmount.counters.fragmentAppends, 1);
     assert.equal(manualUnmount.counters.replaceChildren, 0);
@@ -992,7 +1046,7 @@ if (retiredUnmountCandidate) {
   });
 
   check('UM-R9 post-drain authority and retention state are zero', () => {
-    for (const harness of [ownedUnmount, rehydratedUnmount, replacedUnmount, ambiguousUnmount, manualUnmount]) {
+    for (const harness of [ownedUnmount, rehydratedUnmount, replacedUnmount, ambiguousUnmount, mixedSecondaryUnmount, manualUnmount]) {
       assert.equal(harness.state.unmountMap.size, 0);
       assert.equal(harness.state.manualCollapseById.size, 0);
       assert.equal(harness.state.uidAliasToPrimary.size, 0);
@@ -1089,6 +1143,14 @@ if (retiredUnmountCandidate) {
     replacedBodyStaleInsertCount: Number(replacedUnmount.replacementBody.contains(replacedUnmount.retainedA)) + Number(replacedUnmount.replacementBody.contains(replacedUnmount.retainedB)),
     replacedBodyHostContentPreserved: replacedUnmount.replacementBody.contains(replacedUnmount.hostNative),
     noActiveRecordNativeMutationCount: freshUnmount.counters.nativeMutations,
+    unprovenEntryRestoreCount: Number(mixedSecondaryUnmount.secondaryCurrentBody.contains(mixedSecondaryUnmount.secondaryRetained)),
+    unprovenEntryHostBodyPreserved: mixedSecondaryUnmount.secondaryTurn.querySelector('.cgxui-answer-body') === mixedSecondaryUnmount.secondaryCurrentBody,
+    unprovenEntryFragmentRefsReleased: mixedSecondaryUnmount.secondaryFragment.childNodes.length === 0,
+    mixedPrimaryRestoreCount: Number(mixedSecondaryUnmount.state.transitionRestoreCount || 0),
+    mixedSecondaryStaleInsertCount: Number(mixedSecondaryUnmount.secondaryCurrentBody.contains(mixedSecondaryUnmount.secondaryRetained)),
+    mixedSecondaryBlindReplaceCount: mixedSecondaryUnmount.counters.replaceChildren,
+    mixedSecondaryHostBodyPreserved: mixedSecondaryUnmount.secondaryTurn.contains(mixedSecondaryUnmount.secondaryCurrentBody),
+    mixedSecondaryFragmentRefsReleased: mixedSecondaryUnmount.secondaryFragment.childNodes.length === 0,
     postDrainUnmountMapCount: ownedUnmount.state.unmountMap.size,
     postDrainManualCollapseCount: manualUnmount.state.manualCollapseById.size,
     postDrainAliasMapCount: ownedUnmount.state.uidAliasToPrimary.size,
