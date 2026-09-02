@@ -214,6 +214,21 @@ class ElementMock {
     if (node === this) return true;
     return this.children.some((child) => child.contains?.(node));
   }
+  querySelectorAll(selector) {
+    const wantsTurns = selector.includes('conversation-turn') || selector.includes('data-message-author-role');
+    const matches = [];
+    for (const child of this.children) {
+      const testId = child.getAttribute?.('data-testid') || '';
+      const isTurn = wantsTurns && (
+        testId === 'conversation-turn'
+        || testId.startsWith('conversation-turn-')
+        || child.getAttribute?.('data-message-author-role') !== null
+      );
+      if (isTurn) matches.push(child);
+      matches.push(...(child.querySelectorAll?.(selector) || []));
+    }
+    return matches;
+  }
 }
 
 class FragmentMock {
@@ -250,6 +265,10 @@ function makeHarness(kind, options = {}) {
   if (kind === 'owned') {
     oldRoot.appendChild(top);
     oldRoot.appendChild(nativeB);
+    oldRoot.appendChild(bottom);
+  } else if (kind === 'same-root-rehydrated') {
+    oldRoot.appendChild(top);
+    oldRoot.appendChild(nativeC);
     oldRoot.appendChild(bottom);
   } else if (kind === 'remounted') {
     oldRoot.appendChild(top);
@@ -360,6 +379,7 @@ if (retiredCandidate) {
   const fresh = runRetiredRuntime('none');
   const owned = runRetiredRuntime('owned');
   const remounted = runRetiredRuntime('remounted');
+  const sameRootRehydrated = runRetiredRuntime('same-root-rehydrated');
   const writeFailure = runRetiredRuntime('none', { storageWriteFails: true });
 
   check('R1 legacy enabled=true migrates to disabled retired state', () => {
@@ -402,7 +422,18 @@ if (retiredCandidate) {
     assert.equal(fresh.state.retirementOutcome, 'no-active-session');
   });
 
-  check('R6 post-transition façade stays inert', () => {
+  check('R6 same-root host rehydration wins over stale retained turns', () => {
+    assert.equal(sameRootRehydrated.counters.replaceChildren, 0);
+    assert.deepEqual(sameRootRehydrated.currentRoot.children.map((node) => node.name), ['native-c']);
+    assert.equal(sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeA), false);
+    assert.equal(sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeB), false);
+    assert.equal(sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeC), true);
+    assert.equal(sameRootRehydrated.counters.scaffoldRemovals, 2);
+    assert.equal(sameRootRehydrated.state.masterTurns.length, 0);
+    assert.equal(sameRootRehydrated.state.booted, false);
+  });
+
+  check('R7 post-transition façade stays inert', () => {
     assert.equal(owned.window.H2O_Pagination.boot('test'), false);
     assert.equal(owned.window.H2O_Pagination.goOlder('test'), false);
     assert.equal(owned.window.H2O_Pagination.goToPage(2, 'test'), false);
@@ -413,14 +444,14 @@ if (retiredCandidate) {
     assert.equal(owned.counters.publicationCalls, 0);
   });
 
-  check('R7 migration-write failure stays physically disabled', () => {
+  check('R8 migration-write failure stays physically disabled', () => {
     assert.equal(writeFailure.window.H2O_Pagination.getConfig().enabled, false);
     assert.equal(writeFailure.window.H2O_Pagination.getConfig().retired, true);
     assert.equal(writeFailure.window.H2O_Pagination.setEnabled(true), false);
     assert.equal(writeFailure.counters.timersScheduled, 0);
   });
 
-  check('R8 Governor retirement adapter consumes plans without activation', () => {
+  check('R9 Governor retirement adapter consumes plans without activation', () => {
     const calls = { setEnabled: 0, applySetting: 0, timers: 0, settled: 0 };
     const governorWindow = {
       H2O: {},
@@ -451,6 +482,11 @@ if (retiredCandidate) {
     restoreCurrentStaleReferenceCount: owned.state.transitionStaleReferenceCount,
     hostRemountedStaleNativeInsertCount: Number(remounted.currentRoot.contains(remounted.nativeA)) + Number(remounted.currentRoot.contains(remounted.nativeB)),
     hostRemountedBlindReplaceChildrenCount: remounted.counters.replaceChildren,
+    sameRootRehydratedStaleNativeInsertCount: Number(sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeA)) + Number(sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeB)),
+    sameRootRehydratedBlindReplaceChildrenCount: sameRootRehydrated.counters.replaceChildren,
+    sameRootRehydratedHostContentPreserved: sameRootRehydrated.currentRoot.contains(sameRootRehydrated.nativeC),
+    sameRootRehydratedScaffoldRemovalCount: sameRootRehydrated.counters.scaffoldRemovals,
+    sameRootRehydratedStaleRefsReleased: sameRootRehydrated.state.masterTurns.length === 0 && sameRootRehydrated.state.masterTurnNodeSet.size === 0,
     noActiveSessionNativeMutationCount: fresh.counters.replaceChildren,
     postTransitionRetainedNativeReferenceCount: owned.state.masterTurnNodeSet.size,
     postTransitionPhysicalSchedulerCount: owned.counters.timersScheduled,

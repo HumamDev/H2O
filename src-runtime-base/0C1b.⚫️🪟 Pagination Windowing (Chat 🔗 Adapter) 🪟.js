@@ -90,6 +90,12 @@
       }
       return true;
     }
+    function rootMatchesOwnedDisplacedSession(root, records) {
+      const retainedSet = new Set(records.map((record) => record.node));
+      let currentNativeTurns = [];
+      try { currentNativeTurns = Array.from(root.querySelectorAll?.(TURN_SELECTOR) || []); } catch (_) { return false; }
+      return currentNativeTurns.every((node) => retainedSet.has(node));
+    }
     function cancelLegacyAuthorities() {
       for (const key of ['refreshTimer', 'deferredRefreshTimer', 'commandBarBindTimer']) {
         const id = Number(PW_STATE[key] || 0);
@@ -203,6 +209,7 @@
         && currentChatId === sessionChatId
         && hasOwnedScaffold
         && retainedTurnProvenanceIsValid(root, records)
+        && rootMatchesOwnedDisplacedSession(root, records)
       );
       cancelLegacyAuthorities();
       if (safeCurrentSession) {
