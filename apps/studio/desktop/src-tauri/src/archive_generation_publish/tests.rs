@@ -214,6 +214,79 @@ fn staging_uses_the_literal_dot_leading_reserved_prefix() {
 }
 
 #[test]
+fn existing_stage_entries_are_never_adopted_or_removed() {
+    use std::os::unix::fs::symlink;
+
+    let p = publisher("stage-collision");
+    let token = 0x1020_3040_5060_7081;
+    p.registry
+        .next_token
+        .store(token, std::sync::atomic::Ordering::SeqCst);
+
+    let packages = p.root.join(PACKAGES_DIR);
+    std::fs::create_dir_all(&packages).expect("packages");
+    let names: Vec<String> = (0..4)
+        .map(|attempt| String::from_utf8(staging_name(token, attempt)).expect("ASCII stage"))
+        .collect();
+
+    // Occupy three consecutive attempts with every relevant foreign entry
+    // shape. BEGIN must retry past all of them; it may neither adopt nor clean
+    // an entry it did not create.
+    let foreign_dir = packages.join(&names[0]);
+    std::fs::create_dir(&foreign_dir).expect("foreign directory");
+    std::fs::write(foreign_dir.join("witness"), b"foreign directory").expect("witness");
+
+    let foreign_file = packages.join(&names[1]);
+    std::fs::write(&foreign_file, b"foreign file").expect("foreign file");
+
+    let symlink_target = p.root.join("outside-stage-target");
+    std::fs::create_dir(&symlink_target).expect("symlink target");
+    std::fs::write(symlink_target.join("witness"), b"outside").expect("outside witness");
+    let foreign_symlink = packages.join(&names[2]);
+    symlink(&symlink_target, &foreign_symlink).expect("foreign symlink");
+
+    let begun = begin(&p, "chat_stage_collision");
+    assert!(
+        begun.ok,
+        "BEGIN must retry collisions: {:?}",
+        begun.blockers
+    );
+    assert_eq!(begun.token, token);
+    assert!(
+        packages.join(&names[3]).is_dir(),
+        "the fourth attempt is owned"
+    );
+
+    assert_eq!(
+        std::fs::read(foreign_dir.join("witness")).unwrap(),
+        b"foreign directory"
+    );
+    assert_eq!(std::fs::read(&foreign_file).unwrap(), b"foreign file");
+    assert!(std::fs::symlink_metadata(&foreign_symlink)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    assert_eq!(
+        std::fs::read(symlink_target.join("witness")).unwrap(),
+        b"outside"
+    );
+
+    assert!(abort(&p, begun.token).ok);
+    assert!(
+        !packages.join(&names[3]).exists(),
+        "only the owned stage is cleaned"
+    );
+    assert!(foreign_dir.is_dir());
+    assert_eq!(std::fs::read(&foreign_file).unwrap(), b"foreign file");
+    assert!(std::fs::symlink_metadata(&foreign_symlink)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+
+    let _ = std::fs::remove_dir_all(p.root.parent().unwrap());
+}
+
+#[test]
 fn the_dot_leading_prefix_is_not_matched_by_a_non_literal_dot_glob() {
     // Pins the assumption §R.1 declares load-bearing: a `**`-style match that
     // requires a literal leading dot does NOT admit the staging component.

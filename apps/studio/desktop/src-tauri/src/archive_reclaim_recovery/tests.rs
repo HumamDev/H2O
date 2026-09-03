@@ -509,20 +509,23 @@ fn no_m06_module_holds_a_cas_destructive_route() {
     }
 }
 
-/// AC-M06-13 — GATE ORDERING, now transitioned. This is the authoritative
-/// command-vocabulary pin, and it is an EXACT SET, not a token-absence check.
+/// AC-M06-13 — GATE ORDERING, now transitioned. This is a source-level
+/// command-registration tripwire, and it is an EXACT SET, not behavioral
+/// filesystem evidence.
 ///
 /// Before G02 it asserted that not one destructive authority was registered.
 /// Human Decision Authority passed G02, so it now asserts the other half of the
-/// same rule: exactly the two approved destructive commands are reachable, and
-/// nothing else became reachable with them. A third destructive command, a
-/// recovery command, a raw purge command or a CAS command all fail here — as
-/// does dropping one of the two, or registering in only one build variant.
+/// same rule: exactly the two approved destructive commands are reachable.
+/// The later read-only transport handoff commands are pinned separately within
+/// the same set. A third destructive command, a recovery command, a raw purge
+/// command or a CAS command all fail here — as does dropping one of the two, or
+/// registering in only one build variant.
 #[test]
 fn exactly_the_two_g02_approved_destructive_commands_are_registered() {
     let lib = include_str!("../lib.rs");
 
-    /* THE EXACT ARCHIVE COMMAND SET. Anything added or removed fails. */
+    /* THE EXACT ARCHIVE COMMAND SET. Anything added or removed fails. This is
+       a wiring tripwire; behavioral tests establish filesystem semantics. */
     let mut registered: Vec<&str> = vec![];
     let mut rest = lib;
     while let Some(at) = rest.find("h2o_archive_") {
@@ -550,10 +553,18 @@ fn exactly_the_two_g02_approved_destructive_commands_are_registered() {
             "h2o_archive_reclamation_execute",
             // ──────────────────────────────────────────────
             "h2o_archive_reclamation_preview",
+            // ── Later read-only transport handoff surface ──
+            "h2o_archive_transport_handoff_begin",
+            "h2o_archive_transport_handoff_end",
+            "h2o_archive_transport_handoff_read",
         ],
-        "the archive command vocabulary is exactly the G02-approved set"
+        "the archive command vocabulary is exactly the reviewed set"
     );
-    assert_eq!(registered.len(), 10, "eight pre-G02 commands plus exactly two");
+    assert_eq!(
+        registered.len(),
+        13,
+        "eight pre-G02 commands, exactly two destructive commands, and three read-only handoff commands"
+    );
 
     /* BOTH invoke-handler variants. A command registered in only the debug or
        only the release macro would ship a different surface than it was
