@@ -110,10 +110,6 @@
   const EVT_SHELL_NO_BUTTONS = 'evt:h2o:minimap:shell:no-buttons';
   const EVT_PAGE_CHANGED = 'evt:h2o:pagination:pagechanged';
   const EVT_PAGE_CHANGED_ALIAS = 'h2o:pagination:pagechanged';
-  const EVT_MSG_REMOUNTED = 'evt:h2o:message:remounted';
-  const EVT_MSG_REMOUNTED_ALIAS = 'h2o:message:remounted';
-  const EVT_MSG_MOUNT_REQUEST = 'h2o:message:mount:request';
-  const EVT_ARCHIVE_SCROLL_TO_COLD = 'evt:h2o:archive:scroll-to-cold';
   const EVT_CORE_TURN_UPDATED = 'evt:h2o:core:turn:updated';
   const EVT_COMPLETE_TURN_INDEX_STATE = 'evt:h2o:complete-turn-index:state';
   const EFFECTIVE_TURN_RUNTIME_METHOD = Object.freeze({
@@ -309,7 +305,14 @@
       return out;
     };
     const navigate = (request = {}) => {
-      if (!enabled()) return Promise.resolve(Object.freeze({ handled: false, navigated: false, status: 'disabled' }));
+      if (!enabled()) {
+        return Promise.resolve(Object.freeze({
+          handled: true,
+          navigated: false,
+          status: 'unavailable',
+          errorCode: 'canonical-authority-unavailable',
+        }));
+      }
       const descriptor = adapters?.describeTarget?.(request) || null;
       if (!descriptor?.qId || !Number.isInteger(Number(descriptor?.order)) || Number(descriptor.order) < 1) {
         return Promise.resolve(Object.freeze({ handled: true, navigated: false, status: 'unreachable', errorCode: 'target-not-owned' }));
@@ -1250,226 +1253,6 @@
     }
   }
 
-  function collectResolvedNodeIds(node) {
-    const out = new Set();
-    const push = (raw) => {
-      for (const variant of buildIdVariants(raw)) out.add(variant);
-    };
-    if (!node) return out;
-
-    const turnHost = getTurnHostEl(node);
-    const assistantEl = normalizeAssistantEl(node);
-    const questionEl = normalizeQuestionEl(node);
-    const candidates = [node, turnHost, assistantEl, questionEl];
-
-    for (const candidate of candidates) {
-      if (!candidate) continue;
-      push(candidate.getAttribute?.('data-turn-id'));
-      push(candidate.getAttribute?.('data-message-id'));
-      push(candidate.getAttribute?.('data-cgxui-id'));
-      push(candidate.getAttribute?.('data-h2o-ans-id'));
-      push(candidate.getAttribute?.('data-h2o-core-id'));
-      push(candidate?.dataset?.turnId);
-      push(candidate?.dataset?.messageId);
-    }
-
-    return out;
-  }
-
-  function isResolvedOnRequestedPage(node, ctx) {
-    if (!node?.isConnected) return false;
-
-    const expectedPageIndex = Number(ctx?.pageInfo?.pageIndex);
-    if (!Number.isFinite(expectedPageIndex)) return true;
-
-    const api = getPaginationApi();
-    if (typeof api?.getPageInfo !== 'function') return true;
-    try {
-      return Number(api.getPageInfo()?.pageIndex ?? -1) === expectedPageIndex;
-    } catch {
-      return false;
-    }
-  }
-
-  function MINI_isResolvedTargetElement(node, ctx, surface = 'answer') {
-    const target = MINI_getCanonicalTargetCtx(ctx, surface);
-    if (!node?.isConnected) return false;
-    if (!isResolvedOnRequestedPage(node, target)) return false;
-
-    const expectedTurnHost =
-      (target?.pageInfo?.targetTurnHost?.isConnected ? target.pageInfo.targetTurnHost : null)
-      || getTurnHostEl(target?.pageInfo?.targetHost || target?.pageInfo?.targetAnswerHost || null);
-    const expectedAnswerHost = normalizeAssistantEl(
-      target?.pageInfo?.targetAnswerHost || target?.pageInfo?.targetHost || target?.pageInfo?.targetTurnHost || null,
-    );
-    const expectedQuestionEl = normalizeQuestionEl(target?.pageInfo?.targetTurnHost || target?.pageInfo?.targetHost || null);
-    const nodeTurnHost = getTurnHostEl(node);
-
-    if (expectedTurnHost && nodeTurnHost && expectedTurnHost !== nodeTurnHost) return false;
-
-    if (surface === 'answer' && expectedAnswerHost) {
-      if (normalizeAssistantEl(node) !== expectedAnswerHost) return false;
-    }
-
-    if (surface === 'question' && expectedQuestionEl) {
-      const qNode = normalizeQuestionEl(node);
-      if (qNode) return qNode === expectedQuestionEl;
-
-      const aNode = normalizeAssistantEl(node);
-      if (!aNode || !expectedTurnHost || getTurnHostEl(aNode) !== expectedTurnHost) return false;
-    }
-
-    const wantedIds = new Set(buildIdVariants(
-      target.turnId,
-      target.answerId,
-      target.questionId,
-      target.canonicalId,
-      target.id,
-      target?.pageInfo?.turnId,
-      target?.pageInfo?.answerId,
-    ));
-
-    if (!wantedIds.size) return true;
-
-    for (const gotId of collectResolvedNodeIds(node)) {
-      if (wantedIds.has(gotId)) return true;
-    }
-
-    return !!expectedTurnHost && nodeTurnHost === expectedTurnHost;
-  }
-
-  function getPaginationApi() {
-    const api = W.H2O_Pagination;
-    return api && typeof api === 'object' ? api : null;
-  }
-
-  function getPaginationState() {
-    try {
-      return W?.H2O?.PW?.pgnwndw?.state || W?.H2O_Pagination?.state || null;
-    } catch {
-      return null;
-    }
-  }
-
-  function getPaginationCanonicalTurnByIndex(turnIdx = 0) {
-    // turnIdx is now the Core paired turnNo (1..N counting all Q+A pairs),
-    // matching what MiniMap buttons store after the buildCanonicalTurnCollection fix.
-    const idx = Math.max(1, Number(turnIdx || 0) || 0);
-    if (!idx) return null;
-    try {
-      const ps = getPaginationState();
-      const answers = Array.isArray(ps?.masterAnswers) ? ps.masterAnswers : [];
-      const turns = Array.isArray(ps?.masterTurns) ? ps.masterTurns : [];
-      const rt = W?.H2O?.turnRuntime || null;
-
-      // Primary path: find the masterAnswers entry whose answerId maps to
-      // Core turnNo === idx. Correctly handles unanswered-turn gaps because
-      // Core turnNo counts all pairs including unanswered ones.
-      let answer = null;
-      if (rt && typeof rt.getTurnRecordByAId === 'function') {
-        answer = answers.find((row) => {
-          const aId = String(row?.answerId || row?.primaryAId || row?.aId || '').trim();
-          if (!aId) return false;
-          try {
-            const coreRecord = rt.getTurnRecordByAId(aId);
-            return Math.max(0, Number(coreRecord?.turnNo || coreRecord?.idx || 0) || 0) === idx;
-          } catch { return false; }
-        }) || null;
-      }
-
-      // Fallback: direct answerIndex lookup (works when no unanswered gaps before this answer).
-      if (!answer) {
-        answer = answers[idx - 1] || answers.find((row) => {
-          return Math.max(0, Number(row?.answerIndex || 0) || 0) === idx;
-        }) || null;
-      }
-
-      // Resolve the paired turn node.
-      let rawTurn = null;
-      if (answer) {
-        const turnIndex = Number(answer?.turnIndex ?? -1);
-        if (Number.isFinite(turnIndex) && turnIndex >= 0) {
-          rawTurn = turns[turnIndex] || null;
-        }
-        if (!rawTurn) {
-          rawTurn = turns.find((row) => {
-            return row?.turnId === answer?.turnId
-              || row?.uid === answer?.turnUid
-              || row?.gid === answer?.gid;
-          }) || null;
-        }
-      }
-
-      if (!rawTurn && !answer) return null;
-      return {
-        turnId: normalizeNavId(rawTurn?.turnId || answer?.turnId || rawTurn?.id || ''),
-        answerId: normalizeNavId(answer?.answerId || answer?.primaryAId || answer?.aId || rawTurn?.answerId || ''),
-        questionId: normalizeNavId(rawTurn?.qId || answer?.qId || rawTurn?.questionId || answer?.questionId || ''),
-        turn: rawTurn || answer || null,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  function getUnmountApi() {
-    return W?.H2O?.UM?.nmntmssgs?.api || null;
-  }
-
-  function isPaginationEnabled() {
-    const api = getPaginationApi();
-    if (!api || typeof api.getPageInfo !== 'function') return false;
-    try { return api.getPageInfo()?.enabled !== false; } catch { return false; }
-  }
-
-  function isUnmountEnabled() {
-    const api = getUnmountApi();
-    if (!api || typeof api.getConfig !== 'function') return false;
-    try { return api.getConfig()?.enabled !== false; } catch { return false; }
-  }
-
-  function isVirtualizedConversation() {
-    return isPaginationEnabled() || isUnmountEnabled();
-  }
-
-  function resolveTurnRecord(anyId, primaryAId = '') {
-    const key = normalizeNavId(anyId);
-    const aId = normalizeNavId(primaryAId);
-    if (!key && !aId) return null;
-
-    const candidateSet = new Set(buildIdVariants(
-      key,
-      aId,
-      aId ? `turn:a:${aId}` : '',
-    ));
-    const core = getCoreSurface();
-    let turn = null;
-
-    for (const candidate of candidateSet) {
-      if (!candidate || turn) continue;
-      try { turn = core?.getTurnById?.(candidate) || null; } catch {}
-    }
-
-    if (!turn && core && typeof core.getTurnList === 'function') {
-      try {
-        const list = core.getTurnList() || [];
-        turn = list.find((row) => {
-          const rowIds = buildIdVariants(
-            row?.turnId,
-            row?.answerId,
-            row?.primaryAId,
-            row?.qId,
-            row?.turnUid,
-            row?.primaryAId ? `turn:a:${row.primaryAId}` : '',
-          );
-          return rowIds.some((rowId) => candidateSet.has(rowId));
-        }) || null;
-      } catch {}
-    }
-
-    return turn;
-  }
-
   function findTurnHostById(anyId) {
     const variants = buildIdVariants(anyId);
     for (const variant of variants) {
@@ -1503,115 +1286,6 @@
     } catch {
       return null;
     }
-  }
-
-  function resolveAnswerTarget(anyId, primaryAId = '', turnIdxHint = 0) {
-    const key = normalizeNavId(anyId);
-    const aId = normalizeNavId(primaryAId);
-    const t = resolveTurnRecord(key, aId);
-    const answerId = normalizeNavId(t?.answerId || t?.primaryAId || aId || '');
-    const turnId = normalizeNavId(t?.turnId || key || '');
-    const direct = (
-      normalizeAssistantEl(t?.primaryAEl) ||
-      findAnswerById(answerId || turnId || key) ||
-      normalizeAssistantEl(findTurnHostById(turnId || key)) ||
-      normalizeAssistantEl(t?.el) ||
-      normalizeAssistantEl(t?.qEl)
-    );
-    if (direct) return direct;
-
-    if (isVirtualizedConversation()) return null;
-
-    // Fallback: resolve by turn index to the Nth assistant answer in DOM order.
-    let idx = Number(t?.index || t?.idx || turnIdxHint || 0);
-    const core = getCoreSurface();
-    if (!idx && core && typeof core.getTurnIndex === 'function') {
-      try { idx = Number(core.getTurnIndex(key) || 0); } catch {}
-    }
-    if (idx > 0) {
-      markPerfFullScan();
-      const answers = qq(answersSelector());
-      const el = answers[idx - 1] || null;
-      if (el) return el;
-    }
-    return null;
-  }
-
-  function resolveQuestionTarget(anyId, primaryAId = '') {
-    const key = normalizeNavId(anyId);
-    const aId = normalizeNavId(primaryAId);
-    const t = resolveTurnRecord(key, aId);
-    const turnId = normalizeNavId(t?.turnId || key || '');
-
-    const qDirect =
-      normalizeQuestionEl(t?.qEl) ||
-      normalizeQuestionEl(findTurnHostById(turnId || key));
-    if (qDirect) return qDirect;
-
-    // Fallback: from the answer, pick the closest previous user message.
-    const ans = resolveAnswerTarget(key, aId, Number(t?.idx || t?.index || 0));
-    if (ans) {
-      try {
-        const turnHost = ans.closest?.('[data-testid="conversation-turn"]');
-        const qInTurn = normalizeQuestionEl(turnHost?.querySelector?.('[data-message-author-role="user"]'));
-        if (qInTurn) return qInTurn;
-      } catch {}
-      try {
-        let cur = ans.previousElementSibling;
-        while (cur) {
-          const q = normalizeQuestionEl(cur);
-          if (q) return q;
-          cur = cur.previousElementSibling;
-        }
-      } catch {}
-      try {
-        const host = ans.closest?.('[data-testid^="conversation-turn"]') || ans.parentElement;
-        const q = host?.querySelector?.('[data-message-author-role="user"]');
-        if (q) return q;
-      } catch {}
-      try {
-        const users = qq('[data-message-author-role="user"]');
-        let best = null;
-        for (const u of users) {
-          if (!u?.isConnected) continue;
-          const rel = u.compareDocumentPosition(ans);
-          if (!(rel & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-          if (!best || (best.compareDocumentPosition(u) & Node.DOCUMENT_POSITION_FOLLOWING)) best = u;
-        }
-        const q = normalizeQuestionEl(best);
-        if (q) return q;
-      } catch {}
-    }
-
-    if (isVirtualizedConversation()) return null;
-
-    // Index-based fallback when turn payload lacks qEl.
-    try {
-      const core2 = getCoreSurface();
-      let idx = Number(t?.idx || t?.index || 0);
-      if (!idx && core2 && typeof core2.getTurnIndex === 'function') {
-        idx = Number(core2.getTurnIndex(key) || 0);
-      }
-      if (idx > 0) {
-        const turnHosts = qq('[data-testid="conversation-turn"]');
-        const host = turnHosts[idx - 1] || null;
-        const q = normalizeQuestionEl(host?.querySelector?.('[data-message-author-role="user"]'));
-        if (q) return q;
-      }
-    } catch {}
-    if (ans) {
-      try {
-        const ar = ans.getBoundingClientRect();
-        const users = qq('[data-message-author-role="user"]');
-        const near = users.find((u) => {
-          const ur = u.getBoundingClientRect();
-          return ur.top <= ar.top && (ar.top - ur.top) < 1400;
-        }) || null;
-        const q = normalizeQuestionEl(near);
-        if (q) return q;
-      } catch {}
-    }
-    return null;
   }
 
   const COMPLETE_INDEX_INTERNAL_QIDS = new Set([
@@ -1992,48 +1666,30 @@
       const top = Math.floor(fraction * maxScroll);
       if (root) root.scrollTo({ top, behavior: 'auto' });
       else window.scrollTo({ top, behavior: 'auto' });
-      const mountId = descriptor.primaryAId || descriptor.answerVariants[0] || descriptor.qId;
-      dispatchMountRequest(mountId, `mnmp-complete-index:hop-${hop}`);
       return true;
     } catch {
       return false;
     }
   }
 
-  function MINI_waitForCompleteIndexMounted(descriptor, surface, timeoutMs, signal) {
+  async function MINI_waitForCompleteIndexMounted(descriptor, surface, timeoutMs, signal) {
     const maxWaitMs = Math.max(80, Number(timeoutMs || COMPLETE_INDEX_NAV_LIMITS.remountWaitMs) || COMPLETE_INDEX_NAV_LIMITS.remountWaitMs);
-    return new Promise((resolve) => {
-      let done = false;
-      let rafId = 0;
-      let timerId = 0;
-      const finish = (value) => {
-        if (done) return;
-        done = true;
-        try { if (rafId) cancelAnimationFrame(rafId); } catch {}
-        try { if (timerId) clearTimeout(timerId); } catch {}
-        try { window.removeEventListener(EVT_MSG_REMOUNTED, check, true); } catch {}
-        try { window.removeEventListener(EVT_MSG_REMOUNTED_ALIAS, check, true); } catch {}
-        try { signal?.removeEventListener?.('abort', onAbort); } catch {}
-        resolve(value || null);
-      };
-      const check = () => {
-        const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface);
-        if (mounted) finish(mounted);
-      };
-      const onAbort = () => finish(null);
-      const poll = () => {
-        if (done) return;
-        const mounted = MINI_resolveCompleteIndexMounted(descriptor, surface);
-        if (mounted) return finish(mounted);
-        rafId = requestAnimationFrame(poll);
-      };
-      if (signal?.aborted) return finish(null);
-      try { window.addEventListener(EVT_MSG_REMOUNTED, check, true); } catch {}
-      try { window.addEventListener(EVT_MSG_REMOUNTED_ALIAS, check, true); } catch {}
-      try { signal?.addEventListener?.('abort', onAbort, { once: true }); } catch {}
-      timerId = setTimeout(() => finish(MINI_resolveCompleteIndexMounted(descriptor, surface)), maxWaitMs);
-      rafId = requestAnimationFrame(poll);
+    if (signal?.aborted) return null;
+    const immediate = MINI_resolveCompleteIndexMounted(descriptor, surface);
+    if (immediate) return immediate;
+
+    const ownedIds = new Set([
+      descriptor?.qId,
+      descriptor?.primaryAId,
+      ...(Array.isArray(descriptor?.answerVariants) ? descriptor.answerVariants : []),
+    ].map((value) => normalizeNavId(value)).filter(Boolean));
+    await MINI_awaitMountEvidence(maxWaitMs, (payload) => {
+      const transitions = Array.isArray(payload?.transitions) ? payload.transitions : [];
+      if (!transitions.length) return false;
+      return transitions.some((entry) => entry?.type === 'route-reset' || ownedIds.has(normalizeNavId(entry?.id)));
     });
+    if (signal?.aborted) return null;
+    return MINI_resolveCompleteIndexMounted(descriptor, surface);
   }
 
   /* ── Far-target native history materialization ─────────────────────────────
@@ -2399,6 +2055,9 @@
     return mounted ? { mounted } : null;
   }
 
+  /* P02 lifecycle preservation witness: the former MINI_materializeTarget /
+     finishSmoothScroll fallback pair is retired. This canonical-descriptor
+     driver is the remaining MiniMap materialization and navigation path. */
   async function MINI_materializeFarTarget(descriptor, surface, ctl) {
     const order = Math.max(0, Number(descriptor?.order) || 0);
     const total = Math.max(1, Number(descriptor?.total) || 1);
@@ -2733,189 +2392,6 @@
     return completeIndexNavigationCoordinator.getStatus();
   }
 
-  function dispatchMountRequest(msgId, source = 'mnmp-engine') {
-    const id = normalizeNavId(msgId);
-    if (!id) return false;
-    try {
-      const api = getUnmountApi();
-      if (typeof api?.requestMountByUid === 'function') {
-        return api.requestMountByUid(id, String(source || 'mnmp-engine')) !== false;
-      }
-    } catch {}
-    try {
-      window.dispatchEvent(new CustomEvent(EVT_MSG_MOUNT_REQUEST, {
-        detail: { msgId: id, id, source: String(source || 'mnmp-engine') },
-      }));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  function waitForRemountByMsgId(msgId, timeoutMs = 1200) {
-    const id = String(msgId || '').trim();
-    if (!id) return Promise.resolve(false);
-    const maxWaitMs = Math.max(120, Number(timeoutMs || 1200) || 1200);
-    return new Promise((resolve) => {
-      let done = false;
-      let rafId = 0;
-      let timerId = 0;
-      const start = performance.now();
-
-      const finish = (ok) => {
-        if (done) return;
-        done = true;
-        try { if (rafId) cancelAnimationFrame(rafId); } catch {}
-        try { if (timerId) clearTimeout(timerId); } catch {}
-        try { window.removeEventListener(EVT_MSG_REMOUNTED, onRemounted, true); } catch {}
-        try { window.removeEventListener(EVT_MSG_REMOUNTED_ALIAS, onRemounted, true); } catch {}
-        resolve(!!ok);
-      };
-
-      const matchesMsg = (detail) => {
-        const got = String(detail?.msgId || detail?.id || detail?.answerId || '').trim();
-        if (!got) return false;
-        return got === id || got === `turn:${id}` || `turn:${got}` === id;
-      };
-
-      const onRemounted = (e) => {
-        if (!matchesMsg(e?.detail)) return;
-        finish(true);
-      };
-
-      const poll = () => {
-        if (findAnswerById(id)) {
-          finish(true);
-          return;
-        }
-        if ((performance.now() - start) >= maxWaitMs) {
-          finish(false);
-          return;
-        }
-        rafId = requestAnimationFrame(poll);
-      };
-
-      try { window.addEventListener(EVT_MSG_REMOUNTED, onRemounted, true); } catch {}
-      try { window.addEventListener(EVT_MSG_REMOUNTED_ALIAS, onRemounted, true); } catch {}
-      timerId = setTimeout(() => finish(!!findAnswerById(id)), maxWaitMs + 20);
-      rafId = requestAnimationFrame(poll);
-    });
-  }
-
-  function MINI_getCanonicalTargetCtx(ctx, surface = 'answer') {
-    const turn = ctx?.turn || resolveTurnRecord(ctx?.turnId || ctx?.id || '', ctx?.answerId || '');
-    const turnId = normalizeNavId(turn?.turnId || ctx?.turnId || ctx?.id || '');
-    const answerId = normalizeNavId(turn?.answerId || turn?.primaryAId || ctx?.answerId || '');
-    const questionId = normalizeNavId(turn?.qId || turn?.questionId || '');
-    const canonicalId = normalizeNavId(
-      surface === 'question'
-        ? (questionId || turnId || answerId || ctx?.id || '')
-        : (answerId || turnId || ctx?.id || ''),
-    );
-
-    return {
-      ...(ctx || {}),
-      turn,
-      turnId,
-      answerId,
-      questionId,
-      canonicalId,
-      surface,
-    };
-  }
-
-  async function MINI_materializeTarget(ctx, surface = 'answer') {
-    const next = MINI_getCanonicalTargetCtx(ctx, surface);
-    const requestId = normalizeNavId(next.canonicalId || next.answerId || next.turnId || next.id || '');
-
-    if (isPaginationEnabled()) {
-      const api = getPaginationApi();
-      if (typeof api?.ensureVisibleById === 'function' && requestId) {
-        try {
-          const pageInfo = await api.ensureVisibleById(requestId, {
-            reason: `minimap:${surface}:${String(next?.gesture || 'click')}`,
-            restoreAnchor: false,
-            timeoutMs: 1400,
-          });
-          next.pageInfo = pageInfo || null;
-          if (pageInfo?.turn) next.turn = pageInfo.turn;
-          if (pageInfo?.turnId) next.turnId = normalizeNavId(pageInfo.turnId);
-          if (pageInfo?.answerId) next.answerId = normalizeNavId(pageInfo.answerId);
-          if (pageInfo?.turn?.qId && !next.questionId) next.questionId = normalizeNavId(pageInfo.turn.qId);
-        } catch (e) {
-          derr('turn:materialize:pagination', e);
-        }
-      }
-    }
-
-    const mountId = normalizeNavId(next.answerId || next.canonicalId || next.turnId || requestId);
-    if (isUnmountEnabled() && mountId) {
-      try {
-        const api = getUnmountApi();
-        if (typeof api?.requestMountByUid === 'function') api.requestMountByUid(mountId, `mnmp-engine:${surface}`);
-        else dispatchMountRequest(mountId, `mnmp-engine:${surface}`);
-      } catch (e) {
-        derr('turn:materialize:unmount', e);
-        dispatchMountRequest(mountId, `mnmp-engine:${surface}`);
-      }
-    }
-
-    // ChatGPT-native virtualization: no H2O engine owns the absence, so jump
-    // the scroller near the turn's stable position to force hydration, then
-    // let the wait loop resolve the real element.
-    if (!MINI_resolveTargetElement(next, surface) && MINI_estimateScrollToTurn(next)) {
-      next.estimatedScroll = true;
-    }
-
-    return next;
-  }
-
-  function MINI_resolveTargetElement(ctx, surface = 'answer') {
-    const target = MINI_getCanonicalTargetCtx(ctx, surface);
-    const fromPageInfo = surface === 'question'
-      ? (
-        normalizeQuestionEl(target?.pageInfo?.targetTurnHost || target?.pageInfo?.targetHost || null)
-        || normalizeAssistantEl(target?.pageInfo?.targetAnswerHost || target?.pageInfo?.targetHost || target?.pageInfo?.targetTurnHost || null)
-      )
-      : normalizeAssistantEl(target?.pageInfo?.targetAnswerHost || target?.pageInfo?.targetHost || target?.pageInfo?.targetTurnHost || null);
-    if (MINI_isResolvedTargetElement(fromPageInfo, target, surface)) return fromPageInfo;
-
-    if (surface === 'question') {
-      const resolved =
-        resolveQuestionTarget(target.questionId || target.turnId || target.canonicalId, target.answerId)
-        || resolveAnswerTarget(target.answerId || target.turnId || target.canonicalId, target.answerId, Number(target?.btnEl?.dataset?.turnIdx || 0));
-      return MINI_isResolvedTargetElement(resolved, target, surface) ? resolved : null;
-    }
-    const resolved = resolveAnswerTarget(
-      target.answerId || target.canonicalId || target.turnId,
-      target.answerId,
-      Number(target?.btnEl?.dataset?.turnIdx || 0),
-    );
-    return MINI_isResolvedTargetElement(resolved, target, surface) ? resolved : null;
-  }
-
-  function MINI_waitForResolvedTarget(ctx, surface = 'answer', timeoutMs = 1400) {
-    const maxWaitMs = Math.max(120, Number(timeoutMs || 1400) || 1400);
-    return new Promise((resolve) => {
-      const t0 = performance.now();
-
-      const tick = () => {
-        const target = MINI_resolveTargetElement(ctx, surface);
-        if (target) {
-          resolve(target);
-          return;
-        }
-        if ((performance.now() - t0) >= maxWaitMs) {
-          resolve(null);
-          return;
-        }
-        requestAnimationFrame(tick);
-      };
-
-      requestAnimationFrame(tick);
-    });
-  }
-
   function MINI_scrollToResolvedTarget(target, ctx, surface = 'answer') {
     if (!target) return false;
     scrollPageToTarget(target, true, 'center');
@@ -2959,93 +2435,15 @@
       || null;
   }
 
-  function MINI_resolveCollapsedPageHandle(ctx, surface = 'answer') {
-    const target = MINI_getCanonicalTargetCtx(ctx, surface);
-    const raw = findAnswerById(target.answerId || target.canonicalId || '')
-      || findTurnHostById(target.turnId || target.canonicalId || '');
-    return raw ? MINI_hiddenPageHandleForElement(raw) : null;
-  }
-
-  // ChatGPT virtualizes far-away turn sections out of the document, so an
-  // absent target may simply not be rendered yet. Jump the conversation
-  // scroller near the turn's proportional position (stable durable index /
-  // total) to make the host hydrate that region; the caller then re-resolves.
-  function MINI_estimateScrollToTurn(ctx) {
-    const turn = ctx?.turn || null;
-    const index = Math.max(0, Number(turn?.index || ctx?.btnEl?.dataset?.turnIdx || 0) || 0);
-    let total = 0;
-    try { total = Number(getCoreSurface()?.getTurnList?.()?.length || 0) || 0; } catch {}
-    if (!index || !total || total < 2) return false;
-
-    const anyTurn = q('[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]');
-    if (!anyTurn) return false;
-    let scroller = null;
-    let cur = anyTurn.parentElement;
-    while (cur && cur !== document.body && cur !== document.documentElement) {
-      try {
-        const cs = getComputedStyle(cur);
-        const oy = String(cs?.overflowY || '');
-        if ((oy === 'auto' || oy === 'scroll' || oy === 'overlay') && cur.scrollHeight > cur.clientHeight + 4) {
-          scroller = cur;
-          break;
-        }
-      } catch {}
-      cur = cur.parentElement;
-    }
-
-    const fraction = Math.min(1, Math.max(0, (index - 0.5) / total));
-    try {
-      if (scroller) {
-        scroller.scrollTo({ top: Math.floor(fraction * Math.max(0, scroller.scrollHeight - scroller.clientHeight)), behavior: 'auto' });
-        return true;
-      }
-      window.scrollTo({ top: Math.floor(fraction * Math.max(0, document.documentElement.scrollHeight - window.innerHeight)), behavior: 'auto' });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
   function MINI_navigateTurnTarget(ctx, surface = 'answer') {
-    if (MINI_completeIndexNavigationEnabled()) {
-      return completeIndexNavigationCoordinator.navigate({ ...(ctx || {}), surface })
-        .then((result) => ({
-          ctx: MINI_getCanonicalTargetCtx(ctx, surface),
-          target: null,
-          materialized: Number(result?.hops || 0) > 0,
-          completeIndexHandled: result?.handled === true,
-          navigationStatus: String(result?.status || ''),
-        }));
-    }
-    const immediateCtx = MINI_getCanonicalTargetCtx(ctx, surface);
-    const immediate = MINI_resolveTargetElement(immediateCtx, surface);
-    if (immediate) {
-      const immediateHandle = MINI_hiddenPageHandleForElement(immediate);
-      if (immediateHandle) {
-        return Promise.resolve({ ctx: immediateCtx, target: immediateHandle, materialized: false, handle: true });
-      }
-      return Promise.resolve({ ctx: immediateCtx, target: immediate, materialized: false });
-    }
-
-    const collapsedHandle = MINI_resolveCollapsedPageHandle(immediateCtx, surface);
-    if (collapsedHandle) {
-      return Promise.resolve({ ctx: immediateCtx, target: collapsedHandle, materialized: false, handle: true });
-    }
-
-    return MINI_materializeTarget(immediateCtx, surface).then(async (materializedCtx) => {
-      const waitMs = (isVirtualizedConversation() || materializedCtx?.estimatedScroll) ? 1600 : 480;
-      const target = await MINI_waitForResolvedTarget(materializedCtx, surface, waitMs);
-      if (!target) {
-        const handle = MINI_resolveCollapsedPageHandle(materializedCtx, surface);
-        if (handle) return { ctx: materializedCtx, target: handle, materialized: true, handle: true };
-        derr('turn:navigate:unresolved', {
-          surface,
-          id: String(materializedCtx?.canonicalId || materializedCtx?.answerId || materializedCtx?.turnId || ''),
-          estimatedScroll: !!materializedCtx?.estimatedScroll,
-        });
-      }
-      return { ctx: materializedCtx, target, materialized: true };
-    });
+    return completeIndexNavigationCoordinator.navigate({ ...(ctx || {}), surface })
+      .then((result) => ({
+        ctx: { ...(ctx || {}), surface },
+        target: null,
+        materialized: Number(result?.hops || 0) > 0,
+        completeIndexHandled: true,
+        navigationStatus: String(result?.status || 'unavailable'),
+      }));
   }
 
   function scrollPageToTarget(target, smooth = true, block = 'center') {
@@ -3222,8 +2620,6 @@
     let lastMidTime = 0;
     let lastMidId = '';
     let midTimer = null;
-    let pageClickTimer = null;
-    let pendingPageNum = 0;
     let lastTapTs = 0;
     let lastTapId = '';
     let suppressClickUntil = 0;
@@ -3260,10 +2656,6 @@
         try { exportBtn.click(); return true; } catch {}
       }
       return false;
-    };
-
-    const getTurn = (turnId) => {
-      try { return getCoreSurface()?.getTurnById?.(turnId) || null; } catch { return null; }
     };
 
     const isOwnedMiniMapBtn = (btn) => {
@@ -3353,97 +2745,6 @@
       return { targetType: 'unknown', pageLabel: null, btn: null };
     };
 
-    const clearPendingPageJump = () => {
-      if (pageClickTimer) {
-        try { clearTimeout(pageClickTimer); } catch {}
-      }
-      pageClickTimer = null;
-      pendingPageNum = 0;
-    };
-
-    const getPageNumFromDividerLabel = (label) => Math.max(1, Number(
-      label?.dataset?.pageNum
-      || label?.closest?.('.cgxui-mm-page-divider')?.getAttribute?.('data-page-num')
-      || 0
-    ) || 0);
-
-    const jumpToPageFromDivider = (pageNum, event) => {
-      const num = Math.max(1, Number(pageNum || 0) || 0);
-      if (!num) return false;
-
-      event?.preventDefault?.();
-      event?.stopPropagation?.();
-      suppressClickUntil = performance.now() + 260;
-
-      const core = getCoreSurface();
-      const firstTurnIdx = Math.max(1, ((pageNum - 1) * 25) + 1);
-      const canonical = getPaginationCanonicalTurnByIndex(firstTurnIdx) || null;
-      const turn = canonical?.turn || core?.getTurnList?.()?.[firstTurnIdx - 1] || null;
-      const targetId = String(canonical?.answerId || canonical?.turnId || turn?.answerId || turn?.turnId || '').trim();
-      if (!targetId) return false;
-
-      const finishSmoothScroll = async () => {
-        const ctx = {
-          id: targetId,
-          turnId: String(canonical?.turnId || turn?.turnId || '').trim(),
-          answerId: String(canonical?.answerId || turn?.answerId || '').trim(),
-          questionId: String(canonical?.questionId || turn?.qId || turn?.questionId || '').trim(),
-          gesture: 'page-divider',
-          btnEl: null,
-        };
-        const materializedCtx = await MINI_materializeTarget(ctx, 'answer');
-        const target = await MINI_waitForResolvedTarget(materializedCtx, 'answer', isVirtualizedConversation() ? 1800 : 600);
-        const host = getTurnHostEl(target) || target;
-        if (host) {
-          try { scrollPageToTarget(host, true, 'start'); } catch {}
-          try { getCoreSurface()?.centerOnPageDivider?.(num, { smooth: false }); } catch {}
-          S.lastActivePageNum = num;
-          return true;
-        }
-        return false;
-      };
-
-      const pw = W.H2O_Pagination;
-      if (pw && typeof pw.goToPageStart === 'function') {
-        armPageJumpGuard(520, 'page-divider');
-        try { pw.goToPageStart(num - 1, 'minimap:page-divider', { smooth: false }); } catch {}
-        finishSmoothScroll();
-        return true;
-      }
-
-      finishSmoothScroll();
-      return true;
-    };
-
-    const schedulePageJumpFromDivider = (label, event) => {
-      if (!label || !isOwnedPageDividerLabel(label)) return false;
-      const pageNum = getPageNumFromDividerLabel(label);
-      if (!pageNum) return false;
-      event?.preventDefault?.();
-      event?.stopPropagation?.();
-      // If this is the second click of a double-click, cancel the pending jump
-      // and let the dblclick event handle collapse instead. We must NOT execute
-      // the jump synchronously here: doing so calls pw.goToPageStart → renderPage
-      // synchronously, which destroys the label element before the dblclick fires,
-      // making isOwnedPageDividerLabel return false on the detached node.
-      if (Number(event?.detail || 1) > 1) {
-        clearPendingPageJump();
-        return false;
-      }
-      clearPendingPageJump();
-      // Defer the jump so a fast double-click can cancel it before execution.
-      // Keep the single-click jump behind the browser dblclick window so a
-      // legitimate double-click cannot be pre-empted by a page jump/remount.
-      pendingPageNum = pageNum;
-      pageClickTimer = setTimeout(() => {
-        const nextPageNum = Math.max(1, Number(pendingPageNum || pageNum) || 0);
-        pageClickTimer = null;
-        pendingPageNum = 0;
-        jumpToPageFromDivider(nextPageNum, event);
-      }, 400);
-      return true;
-    };
-
     const togglePageCollapseFromDivider = (label, event) => {
       // Resolve page number directly — tolerant of detached or replaced label nodes.
       const pageNum = Math.max(0, Number(
@@ -3453,7 +2754,6 @@
         || 0
       ) || 0);
       if (!pageNum) return false;
-      clearPendingPageJump();
       event?.preventDefault?.();
       event?.stopPropagation?.();
       suppressClickUntil = performance.now() + 180;
@@ -3487,14 +2787,15 @@
     const turnCtx = (btn, gesture, ev) => {
       const surfaceRole = String(btn?.dataset?.surfaceRole || 'answer').trim().toLowerCase() || 'answer';
       const turnIdx = Math.max(0, Number(btn?.dataset?.turnIdx || 0) || 0);
-      const paginationTurn = turnIdx > 0 ? getPaginationCanonicalTurnByIndex(turnIdx) : null;
-      const turnId = String(paginationTurn?.turnId || btn?.dataset?.id || btn?.dataset?.turnId || '').trim();
-      const answerId = String(paginationTurn?.answerId || btn?.dataset?.primaryAId || '').trim();
-      const questionId = String(paginationTurn?.questionId || '').trim();
+      // Button metadata is request evidence only. MINI_completeIndexDescriptor
+      // must map it to one current canonical record before any mount lookup or
+      // navigation work can begin.
+      const turnId = String(btn?.dataset?.turnId || btn?.dataset?.id || '').trim();
+      const answerId = String(btn?.dataset?.primaryAId || '').trim();
+      const questionId = String(btn?.dataset?.questionId || '').trim();
       const id = surfaceRole === 'question'
         ? (questionId || turnId || answerId)
         : (answerId || turnId || questionId);
-      const turn = paginationTurn?.turn || (turnId ? getTurn(turnId) : null) || resolveTurnRecord(answerId || turnId || questionId, answerId);
       return {
         surface: 'turn',
         surfaceRole,
@@ -3506,7 +2807,6 @@
         id,
         btnEl: btn || null,
         ev,
-        turn,
         sh: TOPW.H2O_MM_SHARED?.get?.() || null,
         core: MM_core(),
         rt: MM_rt(),
@@ -3645,32 +2945,6 @@
       if (!ctx.id) return false;
       const gestureKey = String(gesture || '').trim().toLowerCase() || 'click';
 
-      const isCold = btn.classList?.contains?.('h2o-mm-cold') || String(btn.getAttribute?.('data-h2o-archive-cold') || '') === '1';
-      if (isCold && gesture === 'click') {
-        const branchT0 = activePointerPerf ? perfNow() : 0;
-        const answerIndex = Math.max(1, Number(btn?.dataset?.turnIdx || 0) || 0);
-        const rawMsgIdx = Number(btn?.dataset?.h2oArchiveMsgIdx);
-        const msgIdx = Number.isFinite(rawMsgIdx) ? Math.floor(rawMsgIdx) : -1;
-        try {
-          window.dispatchEvent(new CustomEvent(EVT_ARCHIVE_SCROLL_TO_COLD, {
-            detail: {
-              chatId: String(resolveChatId() || '').trim(),
-              answerIndex,
-              msgIdx,
-              turnId: String(ctx.turnId || '').trim(),
-              answerId: String(ctx.answerId || '').trim(),
-              source: 'minimap:click:cold',
-            },
-          }));
-        } catch {}
-        try { setActiveTurnId(ctx.id, 'turn:click:cold'); } catch {}
-        event?.preventDefault?.();
-        event?.stopPropagation?.();
-        pointerPerfSetActionType('jumpOrScroll');
-        if (branchT0) pointerPerfRecordBranch('runTurnGesture:click:coldClick', perfNow() - branchT0);
-        return true;
-      }
-
       const binding0 = behaviorBinding('turn', gesture, event);
       const binding = normalizeTurnBindingForSurface(binding0, ctx);
       const kind = String(binding?.kind || '').trim();
@@ -3793,7 +3067,11 @@
       if (performance.now() < suppressClickUntil) return;
       const pageLabel = getOwnedPageDividerLabel(e.target);
       if (pageLabel && isOwnedPageDividerLabel(pageLabel)) {
-        schedulePageJumpFromDivider(pageLabel, e);
+        // A page number is not a canonical turn identity. Page-divider
+        // collapse remains logical, but single-click navigation fails closed
+        // until a canonical turn descriptor is supplied by its owner.
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
         return;
       }
       const btn = e.target?.closest?.(mmBtnSelector());
@@ -3812,7 +3090,6 @@
       if (!divider) return;
       const pageNum = Math.max(0, Number(divider.getAttribute('data-page-num') || 0) || 0);
       if (!pageNum) return;
-      clearPendingPageJump();
       e?.preventDefault?.();
       e?.stopPropagation?.();
       // Delegate to togglePageCollapseFromDivider using the live divider element
@@ -3901,10 +3178,7 @@
       try { window.removeEventListener('auxclick', handleMiddleEvent, true); } catch {}
       try { window.removeEventListener('mousedown', handleMiddleEvent, true); } catch {}
       try { if (midTimer) clearTimeout(midTimer); } catch {}
-      try { if (pageClickTimer) clearTimeout(pageClickTimer); } catch {}
       midTimer = null;
-      pageClickTimer = null;
-      pendingPageNum = 0;
     };
   }
 
@@ -3966,8 +3240,8 @@
     S.mmProgram = true;
     const skipPageScroll = !!opts?.skipPageScroll;
     if (!skipPageScroll) {
-      const target = resolveAnswerTarget(key);
-      try { scrollPageToTarget(target, true, 'center'); } catch (e) { derr('setActive:target.scroll', e); }
+      completeIndexNavigationCoordinator.navigate({ id: key, turnId: key, answerId: key, surface: 'answer' })
+        .catch((e) => derr('setActive:canonical-navigation', e));
     }
     try { core.setActive?.(key, source); } catch (e) { derr('setActive:core.setActive', e); }
     try { core.centerOn?.(key, { force: true, smooth: true, activate: false }); } catch (e) { derr('setActive:core.centerOn', e); }
