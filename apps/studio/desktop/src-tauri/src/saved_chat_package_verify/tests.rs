@@ -2,14 +2,15 @@ use super::*;
 use std::path::PathBuf;
 
 #[derive(Clone)]
-struct OwnedPackage {
-    manifest: Vec<u8>,
-    snapshot: Option<Vec<u8>>,
-    markdown: Option<Vec<u8>>,
-    html: Option<Vec<u8>>,
-    assets: Vec<VerifiedAssetMember>,
-    unexpected: Vec<String>,
-    chat_id: String,
+pub(crate) struct OwnedPackage {
+    pub(crate) manifest: Vec<u8>,
+    pub(crate) snapshot: Option<Vec<u8>>,
+    pub(crate) markdown: Option<Vec<u8>>,
+    pub(crate) html: Option<Vec<u8>>,
+    pub(crate) assets: Vec<VerifiedAssetMember>,
+    pub(crate) asset_bodies: Vec<(String, Vec<u8>)>,
+    pub(crate) unexpected: Vec<String>,
+    pub(crate) chat_id: String,
 }
 
 impl OwnedPackage {
@@ -66,7 +67,7 @@ fn fixture_root() -> PathBuf {
         .join("tools/validation/fixtures/saved-chat-archive/v3")
 }
 
-fn permanent_v3_fixture(gzip: bool) -> OwnedPackage {
+pub(crate) fn permanent_v3_fixture(gzip: bool) -> OwnedPackage {
     let root = if gzip {
         fixture_root().join("gzip/t06-canonical-assets.h2ochat")
     } else {
@@ -88,12 +89,13 @@ fn permanent_v3_fixture(gzip: bool) -> OwnedPackage {
             sha256: sha_of(&asset_bytes),
             byte_length: asset_bytes.len() as u64,
         }],
+        asset_bodies: vec![(asset["sha256"].as_str().unwrap().to_string(), asset_bytes)],
         unexpected: Vec::new(),
         chat_id: "t06-canonical-assets".to_string(),
     }
 }
 
-fn zero_asset_v3() -> OwnedPackage {
+pub(crate) fn zero_asset_v3() -> OwnedPackage {
     let snapshot = br#"{"schema":"h2o.savedChatSnapshot","schemaVersion":3,"chatId":"zero","snapshotId":"s0","savedAt":"2026-08-24T00:00:00.000Z","messages":[{"id":"m0","content":[{"type":"text","text":"hello"}],"assetRefs":[]}]}"#.to_vec();
     let logical_sha = sha_of(&snapshot);
     let content_hash = derive_content_hash_v3(&logical_sha, &[]).expect("v3 hash");
@@ -121,8 +123,47 @@ fn zero_asset_v3() -> OwnedPackage {
         markdown: None,
         html: None,
         assets: Vec::new(),
+        asset_bodies: Vec::new(),
         unexpected: Vec::new(),
         chat_id: "zero".to_string(),
+    }
+}
+
+pub(crate) fn gzip_zero_asset_v3() -> OwnedPackage {
+    use std::io::Write;
+
+    let mut package = zero_asset_v3();
+    let logical = package.snapshot.as_ref().expect("logical snapshot").clone();
+    let logical_sha = sha_of(&logical);
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&logical).expect("gzip write");
+    let physical = encoder.finish().expect("gzip finish");
+    assert!(
+        physical.len() < logical.len(),
+        "fixture must satisfy DP-M03-C"
+    );
+    let physical_sha = sha_of(&physical);
+    let physical_len = physical.len();
+    package.snapshot = Some(physical);
+    package.mutate_manifest(|manifest| {
+        let descriptor = &mut manifest["files"]["snapshot"];
+        descriptor["sha256"] = physical_sha.into();
+        descriptor["byteLength"] = physical_len.into();
+        descriptor["encoding"] = "gzip".into();
+        descriptor["contentSha256"] = logical_sha.into();
+        descriptor["contentByteLength"] = logical.len().into();
+    });
+    package
+}
+
+impl OwnedPackage {
+    pub(crate) fn install_cas(&self, archive_root: &std::path::Path) {
+        for (sha, bytes) in &self.asset_bodies {
+            let hex = sha.strip_prefix("sha256-").expect("prefixed asset sha");
+            let shard = archive_root.join("assets").join(&hex[..2]);
+            std::fs::create_dir_all(&shard).expect("CAS shard");
+            std::fs::write(shard.join(format!("sha256-{hex}")), bytes).expect("CAS object");
+        }
     }
 }
 
@@ -151,6 +192,7 @@ fn legacy_v1() -> OwnedPackage {
         markdown: Some(markdown),
         html: Some(html),
         assets: Vec::new(),
+        asset_bodies: Vec::new(),
         unexpected: Vec::new(),
         chat_id: "v1".to_string(),
     }
@@ -198,6 +240,7 @@ fn legacy_v2() -> OwnedPackage {
             sha256: asset_sha,
             byte_length: asset_bytes.len() as u64,
         }],
+        asset_bodies: Vec::new(),
         unexpected: Vec::new(),
         chat_id: "v2".to_string(),
     }
@@ -206,7 +249,7 @@ fn legacy_v2() -> OwnedPackage {
 fn assert_refused(package: &OwnedPackage, expected: &str) {
     assert_eq!(
         package
-            .verify(VerificationAdmission::V1V2AndV3)
+            .verify(VerificationAdmission::AllSupported)
             .expect_err("fixture must refuse"),
         expected
     );
@@ -215,10 +258,10 @@ fn assert_refused(package: &OwnedPackage, expected: &str) {
 #[test]
 fn permanent_identity_and_gzip_fixtures_verify_to_one_js_identity() {
     let identity = permanent_v3_fixture(false)
-        .verify(VerificationAdmission::V1V2AndV3)
+        .verify(VerificationAdmission::AllSupported)
         .expect("identity verifies");
     let gzip = permanent_v3_fixture(true)
-        .verify(VerificationAdmission::V1V2AndV3)
+        .verify(VerificationAdmission::AllSupported)
         .expect("gzip verifies");
 
     assert_eq!(identity.family, PackageFamily::V3);
@@ -271,7 +314,7 @@ fn v3_plaintext_manifest_and_zero_asset_package_verify() {
     let package = zero_asset_v3();
     assert_eq!(package.manifest.first().copied(), Some(b'{'));
     let verified = package
-        .verify(VerificationAdmission::V1V2AndV3)
+        .verify(VerificationAdmission::AllSupported)
         .expect("zero-asset v3 verifies");
     assert_eq!(verified.family, PackageFamily::V3);
     assert!(verified.asset_shas.is_empty());
@@ -312,6 +355,23 @@ fn production_admission_mode_still_refuses_v3() {
             .unwrap_err(),
         "generation-manifest-version-triple-incoherent"
     );
+}
+
+#[test]
+fn write_admission_is_exact_while_read_admission_accepts_all_supported_families() {
+    let v3 = zero_asset_v3();
+    assert_eq!(
+        v3.verify(VerificationAdmission::V3Only).unwrap().family,
+        PackageFamily::V3
+    );
+    for legacy in [legacy_v1(), legacy_v2()] {
+        assert_eq!(
+            legacy.verify(VerificationAdmission::V3Only).unwrap_err(),
+            "generation-manifest-version-triple-incoherent"
+        );
+        assert!(legacy.verify(VerificationAdmission::AllSupported).is_ok());
+    }
+    assert!(v3.verify(VerificationAdmission::AllSupported).is_ok());
 }
 
 #[test]
@@ -404,6 +464,7 @@ fn v3_rejects_gzip_logical_descriptor_and_bounded_decode_failures() {
             markdown: None,
             html: None,
             assets: Vec::new(),
+            asset_bodies: Vec::new(),
             unexpected: Vec::new(),
             chat_id: "bounded".to_string(),
         },

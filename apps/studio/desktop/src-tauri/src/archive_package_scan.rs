@@ -9,9 +9,9 @@
 //!
 //! Three reuse rules hold this module together:
 //!
-//! * Verification is the publisher's own `verify_occupant`, factored out of
-//!   `classify_occupant` unchanged. There is no second verifier, no second
-//!   contentHash, no second canonicaliser and no second projection.
+//! * Verification is the publisher's own all-supported occupant verifier,
+//!   sharing `classify_occupant`'s filesystem and semantic authority. There is
+//!   no second contentHash, canonicaliser or projection.
 //! * Orderability is T1.5's `classify`. Timestamps are not parsed again here.
 //! * The reserved-namespace predicate is T1.2's `is_reserved_component`.
 //!
@@ -24,7 +24,7 @@
 
 use crate::archive_durable_write::{confined, ARCHIVE_ROOT};
 use crate::archive_generation_order::{UnorderableReason, VerifiedGenerationFacts};
-use crate::archive_generation_publish::{verify_occupant, Outcome};
+use crate::archive_generation_publish::{verify_occupant_all_supported, Outcome};
 use crate::saved_chat_generation_policy::{
     production_live_generation_family, LiveGenerationFamily,
 };
@@ -100,7 +100,8 @@ impl IndeterminateReason {
 /// extracted (`isV2 = !!materialized.changed`), V1 otherwise. Both are
 /// therefore produced by the current live writer. `buildSavedChatPackageV3`
 /// exists but is called from no live path while live-v3 remains OFF, and the
-/// trusted verifier admits v1 and v2 only.
+/// trusted scanner admits all durable families even though new production
+/// writes remain governed by the immutable V1V2 policy.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConstructionFamily {
@@ -108,14 +109,8 @@ pub enum ConstructionFamily {
     V1,
     /// schemaVersion 2 + payloadVersion 2 + assets.
     V2,
-    /// The v3 family. Source-grounded, NOT speculative: `buildSavedChatPackageV3`
-    /// exists in the package projector but is called from no live path while
-    /// live-v3 remains OFF, and the trusted verifier refuses schemaVersion 3.
-    ///
-    /// No verified on-disk package can carry this family today — `verified_package`
-    /// only ever produces V1 or V2. It exists so the format-stale protection is
-    /// real and testable rather than latent, and so later consumers can use the
-    /// one trusted active-generation-family policy without adding another flag.
+    /// The v3 durable-read family. The scanner can verify it independently of
+    /// the active NEW-write policy; production writing remains V1V2 in P2.2.
     V3,
 }
 
@@ -163,12 +158,21 @@ pub struct VerifiedPackage {
     pub content_hash: String,
     /// The construction family the publisher's version-triple gate established.
     pub construction_family: ConstructionFamily,
+    /// Physical stored representation of snapshot.json.
+    pub snapshot_encoding: String,
+    pub snapshot_physical_sha256: String,
+    pub snapshot_physical_byte_length: u64,
+    /// Encoding-independent verified logical snapshot identity.
+    pub logical_snapshot_sha256: String,
+    pub logical_snapshot_byte_length: u64,
     pub order: OrderFact,
     /// Package-side CAS references from the VERIFIED manifest: sorted,
     /// deduplicated, normalized. Read-only evidence for later orphan analysis.
     /// This field exists only on a verified package, so an unreadable occupant
     /// can never present an empty list that reads as "references none".
     pub asset_shas: Vec<String>,
+    /// Exact governed persistent member inventory for this verified package.
+    pub persistent_members: Vec<String>,
 }
 
 /// What the trusted side proved about one occupant.
@@ -225,8 +229,13 @@ impl PackageScan {
 /// visibility seam only: nothing about the parse changed.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum NameShape {
-    Generation { chat_id: String, content_hash: String },
-    Legacy { chat_id: String },
+    Generation {
+        chat_id: String,
+        content_hash: String,
+    },
+    Legacy {
+        chat_id: String,
+    },
     Reserved,
     NotAPackage,
 }
@@ -250,7 +259,9 @@ pub(crate) fn name_shape(name: &str) -> NameShape {
         let hex = &rest[GENERATION_INFIX.len()..];
         if !chat_id.is_empty()
             && hex.len() == 64
-            && hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         {
             return NameShape::Generation {
                 chat_id: chat_id.to_string(),
@@ -286,17 +297,18 @@ fn verified_package(
     packages: &confined::Dir,
     name: &str,
 ) -> Result<VerifiedPackage, IndeterminateReason> {
-    let verified =
-        verify_occupant(packages, name.as_bytes()).map_err(|(outcome, _)| indeterminate_for(outcome))?;
+    let verified = verify_occupant_all_supported(packages, name.as_bytes())
+        .map_err(|(outcome, _)| indeterminate_for(outcome))?;
 
     // The publisher derives `sha256-<hex>`; normalize through the existing
     // helper rather than restating the shape here.
-    let content_hash =
-        crate::archive_durable_write::normalize_expected_sha(&verified.content_hash)
-            .ok_or(IndeterminateReason::Corrupt)?;
+    let content_hash = crate::archive_durable_write::normalize_expected_sha(&verified.content_hash)
+        .ok_or(IndeterminateReason::Corrupt)?;
 
     // Ordering is T1.5's decision, from the verified in-content savedAt.
-    let saved_at = crate::archive_generation_order::extract_saved_at(&verified.snapshot_bytes);
+    // For gzip v3 this value came from the shared verifier's bounded, hashed,
+    // decoded logical snapshot — never from physical gzip bytes.
+    let saved_at = verified.saved_at.clone();
     let order = match crate::archive_generation_order::classify(&VerifiedGenerationFacts {
         saved_at,
         content_hash: content_hash.clone(),
@@ -311,16 +323,13 @@ fn verified_package(
 
     // Package-side CAS references, from the VERIFIED manifest only.
     let mut asset_shas: Vec<String> = verified
-        .manifest
-        .assets
+        .asset_shas
         .iter()
-        .filter_map(|asset| {
-            crate::archive_durable_write::normalize_expected_sha(&asset.sha256)
-        })
+        .filter_map(|sha| crate::archive_durable_write::normalize_expected_sha(sha))
         .collect();
     // A declared asset whose sha is unusable would silently shrink the
     // reference set, so refuse the package rather than under-report it.
-    if asset_shas.len() != verified.manifest.assets.len() {
+    if asset_shas.len() != verified.asset_shas.len() {
         return Err(IndeterminateReason::Corrupt);
     }
     asset_shas.sort();
@@ -329,13 +338,22 @@ fn verified_package(
     Ok(VerifiedPackage {
         chat_id: verified.manifest.chat_id.clone(),
         content_hash,
-        construction_family: if verified.manifest.payload_v2 {
-            ConstructionFamily::V2
-        } else {
-            ConstructionFamily::V1
+        construction_family: match verified.family {
+            crate::saved_chat_package_verify::PackageFamily::V1 => ConstructionFamily::V1,
+            crate::saved_chat_package_verify::PackageFamily::V2 => ConstructionFamily::V2,
+            crate::saved_chat_package_verify::PackageFamily::V3 => ConstructionFamily::V3,
         },
+        snapshot_encoding: match verified.snapshot_encoding {
+            crate::saved_chat_package_verify::SnapshotEncoding::Identity => "identity".to_string(),
+            crate::saved_chat_package_verify::SnapshotEncoding::Gzip => "gzip".to_string(),
+        },
+        snapshot_physical_sha256: verified.snapshot_physical_sha256,
+        snapshot_physical_byte_length: verified.snapshot_physical_byte_length,
+        logical_snapshot_sha256: verified.logical_snapshot_sha256,
+        logical_snapshot_byte_length: verified.logical_snapshot_byte_length,
         order,
         asset_shas,
+        persistent_members: verified.persistent_members,
     })
 }
 

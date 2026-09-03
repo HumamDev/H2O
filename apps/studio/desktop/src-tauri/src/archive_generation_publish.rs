@@ -40,15 +40,21 @@
 
 #![cfg(unix)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::archive_durable_write::{confined, sha256_hex, ARCHIVE_ROOT};
+use crate::saved_chat_generation_policy::{
+    production_live_generation_family, LiveGenerationFamily,
+};
 pub(crate) use crate::saved_chat_package_verify::ValidatedManifest;
-use crate::saved_chat_package_verify::{self, VerificationAdmission};
+use crate::saved_chat_package_verify::{
+    self, PackageFamily, PackageMembers, SnapshotEncoding, VerificationAdmission,
+    VerifiedAssetMember, VerifiedPackageSemantics,
+};
 
 pub const GENERATION_PUBLISH_SCHEMA: &str = "h2o.studio.archive.generation-publish.v1";
 
@@ -957,8 +963,16 @@ fn derive_content_hash(
 /// Validates the staged manifest. Every refusal here corresponds to a governed
 /// v1/v2 verifier blocker (§S), so nothing this gate admits can fail the reader
 /// — except the RESIDUAL class, which is deliberately NOT enforced.
+#[cfg(test)]
 fn validate_manifest(bytes: &[u8]) -> Result<ValidatedManifest, &'static str> {
     saved_chat_package_verify::validate_manifest(bytes, VerificationAdmission::V1V2Only)
+}
+
+fn write_admission(family: LiveGenerationFamily) -> VerificationAdmission {
+    match family {
+        LiveGenerationFamily::V1V2 => VerificationAdmission::V1V2Only,
+        LiveGenerationFamily::V3 => VerificationAdmission::V3Only,
+    }
 }
 
 /// Cross-checks the staged snapshot against the manifest (§S).
@@ -993,6 +1007,41 @@ fn read_staged_member(dir: &confined::Dir, member: Member) -> Result<Vec<u8>, St
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)
         .map_err(|err| format!("generation-member-read-failed:{err}"))?;
+    Ok(buf)
+}
+
+/// Bounded variant for v3 snapshot bytes. The descriptor-relative metadata
+/// check prevents an oversized member from being allocated before the shared
+/// verifier enforces its logical/physical descriptor contract; `take(cap + 1)`
+/// closes growth after the metadata check.
+fn read_staged_member_bounded(
+    dir: &confined::Dir,
+    member: Member,
+    cap: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let name = member.file_name().as_bytes();
+    let st = dir
+        .stat_child_nofollow(name)
+        .map_err(|err| format!("generation-member-stat-failed:{err}"))?
+        .ok_or_else(|| "generation-member-missing".to_string())?;
+    if !confined::is_regular(&st) {
+        return Err("generation-member-not-regular".to_string());
+    }
+    if st.st_size < 0 || st.st_size as u64 > cap {
+        return Err("generation-member-read-bound-exceeded".to_string());
+    }
+    let file = dir
+        .open_child_read_nofollow(name)
+        .map_err(|err| format!("generation-member-open-failed:{err}"))?;
+    let mut bounded = file.take(cap.saturating_add(1));
+    let mut buf = Vec::with_capacity((st.st_size as u64).min(cap) as usize);
+    bounded
+        .read_to_end(&mut buf)
+        .map_err(|err| format!("generation-member-read-failed:{err}"))?;
+    if buf.len() as u64 > cap {
+        return Err("generation-member-read-bound-exceeded".to_string());
+    }
     Ok(buf)
 }
 
@@ -1097,6 +1146,59 @@ fn stream_cas_object_into(
     Ok((hex, len))
 }
 
+/// Copies the validated manifest's exact governed assets from canonical CAS
+/// into this operation's private stage and returns facts established from the
+/// bytes actually streamed. No caller path participates.
+fn stage_manifest_assets(
+    publisher: &Publisher,
+    dir: &confined::Dir,
+    manifest: &ValidatedManifest,
+) -> Result<Vec<VerifiedAssetMember>, String> {
+    if manifest.assets.is_empty() {
+        return Ok(Vec::new());
+    }
+    let archive = confined::Dir::open_root(&publisher.root)
+        .map_err(|_| "generation-archive-root-open-failed".to_string())?;
+    let cas = archive
+        .open_child_nofollow(b"assets")
+        .map_err(|_| "generation-cas-unavailable".to_string())?;
+    dir.mkdir_child_exclusive(b"assets")
+        .map_err(|_| "generation-staging-assets-create-failed".to_string())?;
+    let staged_assets = dir
+        .open_child_nofollow(b"assets")
+        .map_err(|_| "generation-staging-assets-open-failed".to_string())?;
+    let mut facts = Vec::with_capacity(manifest.assets.len());
+    for asset in &manifest.assets {
+        let (shard, basename) = cas_relative_parts(&asset.sha256);
+        let shard_dir = cas
+            .open_child_nofollow(shard.as_bytes())
+            .map_err(|_| "generation-cas-object-missing".to_string())?;
+        let member_name = format!("{}.{}", asset.sha256, asset.ext);
+        let (hex, len) = stream_cas_object_into(
+            &shard_dir,
+            basename.as_bytes(),
+            &staged_assets,
+            member_name.as_bytes(),
+        )?;
+        let sha256 = format!("sha256-{hex}");
+        if len != asset.byte_length {
+            return Err("generation-asset-byte-length-mismatch".to_string());
+        }
+        if sha256 != asset.sha256 {
+            return Err("generation-asset-sha-mismatch".to_string());
+        }
+        facts.push(VerifiedAssetMember {
+            path: asset.path.clone(),
+            sha256,
+            byte_length: len,
+        });
+    }
+    staged_assets
+        .sync()
+        .map_err(|_| "generation-staging-assets-fsync-failed".to_string())?;
+    Ok(facts)
+}
+
 /// CAS object location, derived HERE from the validated identity. The renderer
 /// supplies no CAS source path (§W).
 pub(crate) fn cas_relative_parts(sha: &str) -> (String, String) {
@@ -1109,6 +1211,23 @@ pub fn commit(
     token: u64,
     expected_manifest_sha256: Option<&str>,
 ) -> PublishResult {
+    commit_with_policy(
+        publisher,
+        token,
+        expected_manifest_sha256,
+        production_live_generation_family(),
+    )
+}
+
+/// Private policy seam for native tests and later activation wiring. The Tauri
+/// command never accepts a family from the renderer; it calls `commit` above,
+/// which obtains the immutable production policy internally.
+pub(crate) fn commit_with_policy(
+    publisher: &Publisher,
+    token: u64,
+    expected_manifest_sha256: Option<&str>,
+    family: LiveGenerationFamily,
+) -> PublishResult {
     // Property 6: take exclusive ownership and CONSUME the session before any
     // publication work. A committing session is not in the map, so no eviction
     // or abort can reach it; its admission slot is released only when we return.
@@ -1116,7 +1235,7 @@ pub fn commit(
         Some(session) => session,
         None => return PublishResult::refused("generation-session-unknown"),
     };
-    let result = commit_consumed(publisher, &session, expected_manifest_sha256);
+    let result = commit_consumed(publisher, &session, expected_manifest_sha256, family);
     publisher.registry.release_slot();
     result
 }
@@ -1125,6 +1244,7 @@ fn commit_consumed(
     publisher: &Publisher,
     session: &Arc<Session>,
     expected_manifest_sha256: Option<&str>,
+    family: LiveGenerationFamily,
 ) -> PublishResult {
     let mut inner = session.inner.lock().unwrap_or_else(|e| e.into_inner());
     inner.last_activity = Instant::now();
@@ -1167,37 +1287,16 @@ fn commit_consumed(
 
     let dir = held.as_ref().expect("held above");
 
-    // Enumerate staging and refuse any entry this session did not create (§S).
+    // Enumerate now, then interpret the exact allowed set only after the
+    // policy-gated manifest establishes the construction family.
     let entries = match dir.read_entry_names() {
         Ok(entries) => entries,
         Err(_) => refuse!("generation-staging-enumerate-failed"),
     };
-    for entry in &entries {
-        let known = Member::all()
-            .iter()
-            .any(|m| m.file_name().as_bytes() == entry.as_slice());
-        if !known {
-            refuse!("generation-staging-unexpected-entry");
-        }
-    }
-
-    // Required-member completeness for live v1/v2 (§J).
     let manifest_bytes = match read_staged_member(dir, Member::Manifest) {
         Ok(bytes) => bytes,
         Err(_) => refuse!("generation-manifest-missing"),
     };
-    let snapshot_bytes = match read_staged_member(dir, Member::Snapshot) {
-        Ok(bytes) => bytes,
-        Err(_) => refuse!("generation-snapshot-missing"),
-    };
-    // Presence + regular-file check only; the bytes are streamed for hashing
-    // below rather than buffered.
-    if hash_child(dir, Member::Markdown.file_name().as_bytes()).is_err() {
-        refuse!("generation-markdown-missing");
-    }
-    if hash_child(dir, Member::Html.file_name().as_bytes()).is_err() {
-        refuse!("generation-html-missing");
-    }
 
     // Assertion-only: can refuse, never steer (§U).
     if let Some(expected) = expected_manifest_sha256 {
@@ -1211,47 +1310,122 @@ fn commit_consumed(
         }
     }
 
-    let manifest = match validate_manifest(&manifest_bytes) {
+    let admission = write_admission(family);
+    let manifest = match saved_chat_package_verify::validate_manifest(&manifest_bytes, admission) {
         Ok(manifest) => manifest,
         Err(code) => refuse!(code),
     };
+    let is_v3 = manifest.family == PackageFamily::V3;
+
+    // WRITE accepts the closed superset of application member enums, but
+    // COMMIT enforces the exact family inventory. Under V3, renderers are not
+    // persistent members and their presence is a hard refusal.
+    for entry in &entries {
+        let known = if is_v3 {
+            [Member::Snapshot, Member::Manifest]
+                .iter()
+                .any(|m| m.file_name().as_bytes() == entry.as_slice())
+        } else {
+            Member::all()
+                .iter()
+                .any(|m| m.file_name().as_bytes() == entry.as_slice())
+        };
+        if !known {
+            if is_v3
+                && (entry.as_slice() == Member::Markdown.file_name().as_bytes()
+                    || entry.as_slice() == Member::Html.file_name().as_bytes())
+            {
+                refuse!("generation-v3-persistent-renderer-forbidden");
+            }
+            refuse!("generation-staging-unexpected-entry");
+        }
+    }
+
+    let snapshot_bytes = match if is_v3 {
+        read_staged_member_bounded(
+            dir,
+            Member::Snapshot,
+            saved_chat_package_verify::LOGICAL_SNAPSHOT_CAP_BYTES,
+        )
+    } else {
+        read_staged_member(dir, Member::Snapshot)
+    } {
+        Ok(bytes) => bytes,
+        Err(_) => refuse!("generation-snapshot-missing"),
+    };
+    if !is_v3 {
+        // Presence + regular-file check only; bytes remain streamed below.
+        if hash_child(dir, Member::Markdown.file_name().as_bytes()).is_err() {
+            refuse!("generation-markdown-missing");
+        }
+        if hash_child(dir, Member::Html.file_name().as_bytes()).is_err() {
+            refuse!("generation-html-missing");
+        }
+    }
     if manifest.chat_id != session.chat_id {
         refuse!("generation-manifest-chat-id-mismatch");
     }
-    if let Err(code) = validate_snapshot_cross_binding(&snapshot_bytes, &manifest, &session.chat_id)
-    {
-        refuse!(code);
-    }
 
-    // Re-hash every staged member against its manifest.files descriptor,
-    // matched by KEY. manifest.json does not describe itself.
-    for member in [Member::Snapshot, Member::Markdown, Member::Html] {
-        let key = member.descriptor_key().expect("non-manifest member");
-        let (declared_sha, declared_len) = match manifest.files.get(key) {
-            Some(entry) => (entry.0.clone(), entry.1),
-            None => refuse!("generation-manifest-file-descriptor-missing"),
+    let derived = if is_v3 {
+        let actual_assets = match stage_manifest_assets(publisher, dir, &manifest) {
+            Ok(facts) => facts,
+            Err(code) => refuse!(&code),
         };
-        // Streamed from the retained staging descriptor; working memory is the
-        // fixed window, not the member size.
-        let (hex, len) = match hash_child(dir, member.file_name().as_bytes()) {
-            Ok(value) => value,
-            Err(_) => refuse!("generation-member-read-failed"),
+        let verified: VerifiedPackageSemantics = match saved_chat_package_verify::verify_package(
+            PackageMembers {
+                manifest: &manifest_bytes,
+                snapshot: Some(&snapshot_bytes),
+                markdown: None,
+                html: None,
+                assets: &actual_assets,
+                unexpected_members: &[],
+            },
+            &session.chat_id,
+            admission,
+        ) {
+            Ok(verified) => verified,
+            Err(code) => refuse!(code),
         };
-        if declared_len != len {
-            refuse!("generation-member-byte-length-mismatch");
+        verified.content_hash
+    } else {
+        if let Err(code) =
+            validate_snapshot_cross_binding(&snapshot_bytes, &manifest, &session.chat_id)
+        {
+            refuse!(code);
         }
-        if declared_sha != format!("sha256-{hex}") {
-            refuse!("generation-member-sha-mismatch");
-        }
-    }
 
-    // Identity derived from OUR bytes (§T); the manifest must agree.
-    let mut sorted_shas: Vec<String> = manifest.assets.iter().map(|a| a.sha256.clone()).collect();
-    sorted_shas.sort();
-    let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted_shas);
-    if derived != manifest.content_hash {
-        refuse!("generation-content-hash-mismatch");
-    }
+        // Preserve the unbounded v1/v2 renderer contract: stream/hash rather
+        // than buffering presentation members.
+        for member in [Member::Snapshot, Member::Markdown, Member::Html] {
+            let key = member.descriptor_key().expect("non-manifest member");
+            let (declared_sha, declared_len) = match manifest.files.get(key) {
+                Some(entry) => (entry.0.clone(), entry.1),
+                None => refuse!("generation-manifest-file-descriptor-missing"),
+            };
+            let (hex, len) = match hash_child(dir, member.file_name().as_bytes()) {
+                Ok(value) => value,
+                Err(_) => refuse!("generation-member-read-failed"),
+            };
+            if declared_len != len {
+                refuse!("generation-member-byte-length-mismatch");
+            }
+            if declared_sha != format!("sha256-{hex}") {
+                refuse!("generation-member-sha-mismatch");
+            }
+        }
+
+        let mut sorted_shas: Vec<String> =
+            manifest.assets.iter().map(|a| a.sha256.clone()).collect();
+        sorted_shas.sort();
+        let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted_shas);
+        if derived != manifest.content_hash {
+            refuse!("generation-content-hash-mismatch");
+        }
+        if let Err(code) = stage_manifest_assets(publisher, dir, &manifest) {
+            refuse!(&code);
+        }
+        derived
+    };
 
     let hex = derived
         .strip_prefix("sha256-")
@@ -1268,61 +1442,12 @@ fn commit_consumed(
         Err(_) => refuse!("generation-name-max-indeterminate"),
     }
 
-    // Copy governed assets from the canonical CAS on THIS side, with streaming
-    // re-verification (§W). Bytes never cross IPC.
-    if !manifest.assets.is_empty() {
-        let archive = match confined::Dir::open_root(&publisher.root) {
-            Ok(dir) => dir,
-            Err(_) => refuse!("generation-archive-root-open-failed"),
-        };
-        let cas = match archive.open_child_nofollow(b"assets") {
-            Ok(dir) => dir,
-            Err(_) => refuse!("generation-cas-unavailable"),
-        };
-        if dir.mkdir_child_exclusive(b"assets").is_err() {
-            refuse!("generation-staging-assets-create-failed");
-        }
-        let staged_assets = match dir.open_child_nofollow(b"assets") {
-            Ok(dir) => dir,
-            Err(_) => refuse!("generation-staging-assets-open-failed"),
-        };
-        for asset in &manifest.assets {
-            let (shard, basename) = cas_relative_parts(&asset.sha256);
-            let shard_dir = match cas.open_child_nofollow(shard.as_bytes()) {
-                Ok(dir) => dir,
-                Err(_) => refuse!("generation-cas-object-missing"),
-            };
-            // Streamed, with incremental SHA-256 (§W). No ingest bound is
-            // applied: DP-PRE-M05-ASSET-BOUND is an INGEST ceiling, never a
-            // read/packaging ceiling, so a historical over-cap CAS object
-            // stays packageable.
-            let member_name = format!("{}.{}", asset.sha256, asset.ext);
-            let (hex, len) = match stream_cas_object_into(
-                &shard_dir,
-                basename.as_bytes(),
-                &staged_assets,
-                member_name.as_bytes(),
-            ) {
-                Ok(value) => value,
-                Err(code) => refuse!(&code),
-            };
-            // Verified from the bytes actually streamed through, so a short
-            // read or a partial write cannot pass unnoticed.
-            if len != asset.byte_length {
-                refuse!("generation-asset-byte-length-mismatch");
-            }
-            if format!("sha256-{hex}") != asset.sha256 {
-                refuse!("generation-asset-sha-mismatch");
-            }
-        }
-        if staged_assets.sync().is_err() {
-            refuse!("generation-staging-assets-fsync-failed");
-        }
-    }
-
     // Durability fences: every member, then the staging directory, BEFORE
     // promotion.
     for member in Member::all() {
+        if is_v3 && matches!(member, Member::Markdown | Member::Html) {
+            continue;
+        }
         let file = match dir.open_child_read_nofollow(member.file_name().as_bytes()) {
             Ok(file) => file,
             Err(_) => refuse!("generation-member-reopen-failed"),
@@ -1357,8 +1482,13 @@ fn commit_consumed(
     if !promoted {
         // Occupied: classify TRUSTED-SIDE → clean own staging → parent fence →
         // report (§N.2 frozen tail).
-        let (outcome, code, advisories) =
-            classify_occupant(&packages, final_name.as_bytes(), &derived, &session.chat_id);
+        let (outcome, code, advisories) = classify_occupant(
+            &packages,
+            final_name.as_bytes(),
+            &derived,
+            &session.chat_id,
+            admission,
+        );
         inner.dir = held.take();
         let clean = cleanup_staging(publisher, &mut inner);
         let fenced = parent_fence(&packages);
@@ -1409,13 +1539,24 @@ pub(crate) struct VerifiedOccupant {
     pub(crate) dir: confined::Dir,
     pub(crate) manifest: ValidatedManifest,
     pub(crate) manifest_bytes: Vec<u8>,
+    /// Physical stored snapshot bytes. M07 remains V1V2-only in P2.2 and uses
+    /// these exact bytes through its existing retained-handle path.
     pub(crate) snapshot_bytes: Vec<u8>,
     pub(crate) content_hash: String,
+    pub(crate) family: PackageFamily,
+    pub(crate) snapshot_encoding: SnapshotEncoding,
+    pub(crate) snapshot_physical_sha256: String,
+    pub(crate) snapshot_physical_byte_length: u64,
+    pub(crate) logical_snapshot_sha256: String,
+    pub(crate) logical_snapshot_byte_length: u64,
+    pub(crate) saved_at: Option<String>,
+    pub(crate) asset_shas: Vec<String>,
+    pub(crate) persistent_members: Vec<String>,
 }
 
-/// The authoritative occupant verification, factored out of `classify_occupant`
-/// UNCHANGED so both the publisher and the M06 read-only engine share exactly
-/// one implementation.
+/// Legacy durable-read entry point retained for M07 until its later v3
+/// convergence. Both wrappers below share the same filesystem verifier; only
+/// their explicit family admission differs.
 ///
 /// It performs every structural check the publisher already performed: symlinks
 /// are refused and never followed, required members must be present, the
@@ -1430,42 +1571,105 @@ pub(crate) fn verify_occupant(
     packages: &confined::Dir,
     name: &[u8],
 ) -> Result<VerifiedOccupant, (Outcome, &'static str)> {
+    // Deliberately remains V1V2-only because M07 calls this existing entry
+    // point and its v3 convergence is a later phase.
+    verify_occupant_with_admission(packages, name, VerificationAdmission::V1V2Only)
+}
+
+/// Scanner-only durable-read admission. Supported historical families remain
+/// readable regardless of the active family for new writes.
+pub(crate) fn verify_occupant_all_supported(
+    packages: &confined::Dir,
+    name: &[u8],
+) -> Result<VerifiedOccupant, (Outcome, &'static str)> {
+    verify_occupant_with_admission(packages, name, VerificationAdmission::AllSupported)
+}
+
+fn verify_occupant_with_admission(
+    packages: &confined::Dir,
+    name: &[u8],
+    admission: VerificationAdmission,
+) -> Result<VerifiedOccupant, (Outcome, &'static str)> {
     let st = match packages.stat_child_nofollow(name) {
         Ok(Some(st)) => st,
         _ => {
-            return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"))
+            return Err((
+                Outcome::GenerationOccupantUnreadable,
+                "generation-occupant-unreadable",
+            ))
         }
     };
     if confined::is_symlink(&st) {
         // Neither valid nor an identity, so NOT "foreign" (§N.2 fixes that as
         // "occupant valid but a different identity"). Never followed.
-        return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"));
+        return Err((
+            Outcome::GenerationOccupantUnreadable,
+            "generation-occupant-unreadable",
+        ));
     }
     let dir = match packages.open_child_nofollow(name) {
         Ok(dir) => dir,
         Err(_) => {
-            return Err((Outcome::GenerationOccupantUnreadable, "generation-occupant-unreadable"))
+            return Err((
+                Outcome::GenerationOccupantUnreadable,
+                "generation-occupant-unreadable",
+            ))
         }
     };
     let manifest_bytes = match read_staged_member(&dir, Member::Manifest) {
         Ok(bytes) => bytes,
         Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
     };
-    let snapshot_bytes = match read_staged_member(&dir, Member::Snapshot) {
+    let manifest = match saved_chat_package_verify::validate_manifest(&manifest_bytes, admission) {
+        Ok(manifest) => manifest,
+        Err(_) => {
+            return Err((
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            ))
+        }
+    };
+    let is_v3 = manifest.family == PackageFamily::V3;
+    let snapshot_bytes = match if is_v3 {
+        read_staged_member_bounded(
+            &dir,
+            Member::Snapshot,
+            saved_chat_package_verify::LOGICAL_SNAPSHOT_CAP_BYTES,
+        )
+    } else {
+        read_staged_member(&dir, Member::Snapshot)
+    } {
         Ok(bytes) => bytes,
         Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
     };
-    if read_staged_member(&dir, Member::Markdown).is_err()
-        || read_staged_member(&dir, Member::Html).is_err()
+    if !is_v3
+        && (read_staged_member(&dir, Member::Markdown).is_err()
+            || read_staged_member(&dir, Member::Html).is_err())
     {
         return Err((Outcome::GenerationPartial, "generation-partial"));
     }
-    let manifest = match validate_manifest(&manifest_bytes) {
-        Ok(manifest) => manifest,
-        Err(_) => {
-            return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
+
+    if is_v3 {
+        let entries = dir.read_entry_names().map_err(|_| {
+            (
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            )
+        })?;
+        let mut expected = BTreeSet::from([
+            Member::Manifest.file_name().as_bytes().to_vec(),
+            Member::Snapshot.file_name().as_bytes().to_vec(),
+        ]);
+        if !manifest.assets.is_empty() {
+            expected.insert(b"assets".to_vec());
         }
-    };
+        if entries.len() != expected.len() || entries.iter().any(|name| !expected.contains(name)) {
+            return Err((
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            ));
+        }
+    }
     // §N.2 step "verify the required members are present": the governed
     // `assets/` copies are required members of a live v2 package (§J), and the
     // reader enforces them as HARD blockers (package-asset-missing /
@@ -1478,88 +1682,202 @@ pub(crate) fn verify_occupant(
     // Only the DECLARED descriptors are checked. An undeclared extra file under
     // `assets/` is `extra-package-asset`, a reader WARNING, so refusing on it
     // would be a new validity rule.
+    let mut actual_assets = Vec::with_capacity(manifest.assets.len());
     if !manifest.assets.is_empty() {
         let assets = match dir.open_child_nofollow(b"assets") {
             Ok(dir) => dir,
             Err(_) => return Err((Outcome::GenerationPartial, "generation-partial")),
         };
+        if is_v3 {
+            let names = assets.read_entry_names().map_err(|_| {
+                (
+                    Outcome::GenerationDestinationCorrupt,
+                    "generation-destination-corrupt",
+                )
+            })?;
+            let expected: BTreeSet<Vec<u8>> = manifest
+                .assets
+                .iter()
+                .map(|asset| format!("{}.{}", asset.sha256, asset.ext).into_bytes())
+                .collect();
+            if names.len() != expected.len() || names.iter().any(|name| !expected.contains(name)) {
+                return Err((
+                    Outcome::GenerationDestinationCorrupt,
+                    "generation-destination-corrupt",
+                ));
+            }
+        }
         for asset in &manifest.assets {
             let member_name = format!("{}.{}", asset.sha256, asset.ext);
             let st = match assets.stat_child_nofollow(member_name.as_bytes()) {
                 Ok(Some(st)) => st,
                 Ok(None) => return Err((Outcome::GenerationPartial, "generation-partial")),
                 Err(_) => {
-                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
+                    return Err((
+                        Outcome::GenerationDestinationCorrupt,
+                        "generation-destination-corrupt",
+                    ))
                 }
             };
             if !confined::is_regular(&st) {
-                return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
+                return Err((
+                    Outcome::GenerationDestinationCorrupt,
+                    "generation-destination-corrupt",
+                ));
             }
             match hash_child(&assets, member_name.as_bytes()) {
                 Ok((hex, len)) => {
-                    if len != asset.byte_length || format!("sha256-{hex}") != asset.sha256 {
-                        return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
+                    let sha256 = format!("sha256-{hex}");
+                    if len != asset.byte_length || sha256 != asset.sha256 {
+                        return Err((
+                            Outcome::GenerationDestinationCorrupt,
+                            "generation-destination-corrupt",
+                        ));
                     }
+                    actual_assets.push(VerifiedAssetMember {
+                        path: asset.path.clone(),
+                        sha256,
+                        byte_length: len,
+                    });
                 }
                 Err(_) => {
-                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
+                    return Err((
+                        Outcome::GenerationDestinationCorrupt,
+                        "generation-destination-corrupt",
+                    ))
                 }
             }
         }
     }
 
-    // The occupant must be internally consistent by the same cross-binding the
-    // reader applies (manifest.chatId == snapshot.chatId, snapshotId agreement,
-    // asset refs ⊆ manifest). A verification failure is CORRUPT, not foreign.
-    if validate_snapshot_cross_binding(&snapshot_bytes, &manifest, &manifest.chat_id).is_err() {
-        return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
-    }
+    let (
+        content_hash,
+        snapshot_encoding,
+        snapshot_physical_sha256,
+        snapshot_physical_byte_length,
+        logical_snapshot_sha256,
+        logical_snapshot_byte_length,
+        saved_at,
+    ) = if is_v3 {
+        let verified = saved_chat_package_verify::verify_package(
+            PackageMembers {
+                manifest: &manifest_bytes,
+                snapshot: Some(&snapshot_bytes),
+                markdown: None,
+                html: None,
+                assets: &actual_assets,
+                unexpected_members: &[],
+            },
+            &manifest.chat_id,
+            admission,
+        )
+        .map_err(|_| {
+            (
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            )
+        })?;
+        (
+            verified.content_hash,
+            verified.snapshot_encoding,
+            verified.snapshot_physical_sha256,
+            verified.snapshot_physical_byte_length,
+            verified.logical_snapshot_sha256,
+            verified.logical_snapshot_byte_length,
+            verified.saved_at,
+        )
+    } else {
+        // Preserve the accepted v1/v2 occupant contract. Presentation bytes
+        // must exist, but descriptor mismatch remains a non-blocking dedupe
+        // advisory rather than package corruption.
+        if validate_snapshot_cross_binding(&snapshot_bytes, &manifest, &manifest.chat_id).is_err() {
+            return Err((
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            ));
+        }
 
-    // The governed reader hard-blocks `snapshot-sha-mismatch` for v1/v2 when
-    // `manifest.files.snapshot.sha256` disagrees with the stored bytes, and it
-    // is a §S class-A blocker that must be unreachable for a committed
-    // generation. contentHash alone does NOT cover it: the descriptor is a
-    // separate field, so an occupant can carry correct bytes and a correct
-    // contentHash while its files.snapshot descriptor is wrong. Without this,
-    // such an occupant would be laundered into DEDUPED while the reader
-    // classifies it invalid.
-    //
-    // Scoped deliberately to `snapshot`: the reader does NOT hash chat.md or
-    // chat.html, so re-hashing those as blockers would newly refuse packages
-    // the reader accepts (they are handled as a non-blocking advisory below).
-    {
-        let key = Member::Snapshot
-            .descriptor_key()
-            .expect("non-manifest member");
-        match manifest.files.get(key) {
-            Some((declared_sha, declared_len)) => {
-                let actual = format!("sha256-{}", sha256_hex(&snapshot_bytes));
-                if *declared_len != snapshot_bytes.len() as u64 || *declared_sha != actual {
-                    return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"));
+        // The governed reader hard-blocks `snapshot-sha-mismatch` for v1/v2 when
+        // `manifest.files.snapshot.sha256` disagrees with the stored bytes, and it
+        // is a §S class-A blocker that must be unreachable for a committed
+        // generation. contentHash alone does NOT cover it: the descriptor is a
+        // separate field, so an occupant can carry correct bytes and a correct
+        // contentHash while its files.snapshot descriptor is wrong. Without this,
+        // such an occupant would be laundered into DEDUPED while the reader
+        // classifies it invalid.
+        //
+        // Scoped deliberately to `snapshot`: the reader does NOT hash chat.md or
+        // chat.html, so re-hashing those as blockers would newly refuse packages
+        // the reader accepts (they are handled as a non-blocking advisory below).
+        {
+            let key = Member::Snapshot
+                .descriptor_key()
+                .expect("non-manifest member");
+            match manifest.files.get(key) {
+                Some((declared_sha, declared_len)) => {
+                    let actual = format!("sha256-{}", sha256_hex(&snapshot_bytes));
+                    if *declared_len != snapshot_bytes.len() as u64 || *declared_sha != actual {
+                        return Err((
+                            Outcome::GenerationDestinationCorrupt,
+                            "generation-destination-corrupt",
+                        ));
+                    }
+                }
+                None => {
+                    return Err((
+                        Outcome::GenerationDestinationCorrupt,
+                        "generation-destination-corrupt",
+                    ))
                 }
             }
-            None => {
-                return Err((Outcome::GenerationDestinationCorrupt, "generation-destination-corrupt"))
-            }
         }
-    }
 
-    let mut sorted: Vec<String> = manifest.assets.iter().map(|a| a.sha256.clone()).collect();
-    sorted.sort();
-    let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted);
-    if derived != manifest.content_hash {
-        return Err((
-            Outcome::GenerationDestinationCorrupt,
-            "generation-destination-corrupt",
-        ));
+        let mut sorted: Vec<String> = manifest.assets.iter().map(|a| a.sha256.clone()).collect();
+        sorted.sort();
+        let derived = derive_content_hash(manifest.payload_v2, &snapshot_bytes, &sorted);
+        if derived != manifest.content_hash {
+            return Err((
+                Outcome::GenerationDestinationCorrupt,
+                "generation-destination-corrupt",
+            ));
+        }
+        let snapshot_sha = format!("sha256-{}", sha256_hex(&snapshot_bytes));
+        (
+            derived,
+            SnapshotEncoding::Identity,
+            snapshot_sha.clone(),
+            snapshot_bytes.len() as u64,
+            snapshot_sha,
+            snapshot_bytes.len() as u64,
+            crate::archive_generation_order::extract_saved_at(&snapshot_bytes),
+        )
+    };
+
+    let mut asset_shas: Vec<String> = manifest.assets.iter().map(|a| a.sha256.clone()).collect();
+    asset_shas.sort();
+    let mut persistent_members = vec!["manifest.json".to_string(), "snapshot.json".to_string()];
+    if !is_v3 {
+        persistent_members.extend(["chat.md".to_string(), "chat.html".to_string()]);
     }
+    persistent_members.extend(manifest.assets.iter().map(|asset| asset.path.clone()));
+    persistent_members.sort();
+    let package_family = manifest.family;
 
     Ok(VerifiedOccupant {
         dir,
         manifest,
         manifest_bytes,
         snapshot_bytes,
-        content_hash: derived,
+        content_hash,
+        family: package_family,
+        snapshot_encoding,
+        snapshot_physical_sha256,
+        snapshot_physical_byte_length,
+        logical_snapshot_sha256,
+        logical_snapshot_byte_length,
+        saved_at,
+        asset_shas,
+        persistent_members,
     })
 }
 
@@ -1571,6 +1889,7 @@ fn classify_occupant(
     name: &[u8],
     expected_content_hash: &str,
     session_chat_id: &str,
+    admission: VerificationAdmission,
 ) -> (Outcome, &'static str, Vec<Blocker>) {
     let VerifiedOccupant {
         dir,
@@ -1578,7 +1897,8 @@ fn classify_occupant(
         manifest_bytes: _,
         snapshot_bytes: _,
         content_hash: derived,
-    } = match verify_occupant(packages, name) {
+        ..
+    } = match verify_occupant_with_admission(packages, name, admission) {
         Ok(verified) => verified,
         Err((outcome, code)) => return (outcome, code, Vec::new()),
     };

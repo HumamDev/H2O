@@ -1,6 +1,13 @@
 use super::*;
 use crate::archive_durable_write::sha256_hex;
-use crate::archive_generation_publish::{begin, commit, write_member, Member, Publisher};
+use crate::archive_generation_publish::{
+    begin, commit, commit_with_policy, write_member, Member, Publisher,
+};
+use crate::saved_chat_generation_policy::LiveGenerationFamily;
+use crate::saved_chat_package_verify::tests::{
+    gzip_zero_asset_v3, permanent_v3_fixture, zero_asset_v3, OwnedPackage,
+};
+use crate::saved_chat_package_verify::derive_content_hash_v3;
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -119,6 +126,85 @@ fn find<'a>(scan: &'a PackageScan, name: &str) -> &'a ClassifiedOccupant {
         .find(|o| o.name == name)
         .unwrap_or_else(|| panic!("{name} missing from inventory: {:?}",
             scan.occupants.iter().map(|o| &o.name).collect::<Vec<_>>()))
+}
+
+fn package_content_hash(package: &OwnedPackage) -> String {
+    serde_json::from_slice::<serde_json::Value>(&package.manifest)
+        .expect("package manifest")
+        .get("contentHash")
+        .and_then(serde_json::Value::as_str)
+        .expect("contentHash")
+        .to_string()
+}
+
+fn mutate_package_manifest(
+    package: &mut OwnedPackage,
+    update: impl FnOnce(&mut serde_json::Value),
+) {
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&package.manifest).expect("package manifest");
+    update(&mut manifest);
+    package.manifest = serde_json::to_vec(&manifest).expect("serialize package manifest");
+}
+
+fn rebind_snapshot_physical_descriptor(package: &mut OwnedPackage) {
+    let snapshot = package.snapshot.as_ref().expect("snapshot");
+    let sha = sha_of(snapshot);
+    let len = snapshot.len() as u64;
+    mutate_package_manifest(package, |manifest| {
+        manifest["files"]["snapshot"]["sha256"] = sha.into();
+        manifest["files"]["snapshot"]["byteLength"] = len.into();
+    });
+}
+
+fn publish_v3(root: &Path, package: &OwnedPackage) -> String {
+    package.install_cas(root);
+    let publisher = Publisher::new(root.to_path_buf());
+    let begun = begin(&publisher, &package.chat_id);
+    assert!(begun.ok, "begin refused: {:?}", begun.blockers);
+    assert!(
+        write_member(
+            &publisher,
+            begun.token,
+            Member::Snapshot,
+            package.snapshot.as_deref().expect("snapshot"),
+        )
+        .ok
+    );
+    assert!(write_member(&publisher, begun.token, Member::Manifest, &package.manifest).ok);
+    let published = commit_with_policy(&publisher, begun.token, None, LiveGenerationFamily::V3);
+    assert!(published.ok, "commit refused: {:?}", published.blockers);
+    published
+        .content_hash
+        .strip_prefix("sha256-")
+        .expect("trusted hash")
+        .to_string()
+}
+
+fn install_direct(root: &Path, name: &str, package: &OwnedPackage) -> PathBuf {
+    let path = packages_dir(root).join(name);
+    std::fs::create_dir_all(&path).expect("package directory");
+    std::fs::write(path.join("manifest.json"), &package.manifest).expect("manifest");
+    if let Some(snapshot) = &package.snapshot {
+        std::fs::write(path.join("snapshot.json"), snapshot).expect("snapshot");
+    }
+    if let Some(markdown) = &package.markdown {
+        std::fs::write(path.join("chat.md"), markdown).expect("markdown");
+    }
+    if let Some(html) = &package.html {
+        std::fs::write(path.join("chat.html"), html).expect("html");
+    }
+    for (sha, bytes) in &package.asset_bodies {
+        let asset = package
+            .assets
+            .iter()
+            .find(|asset| &asset.sha256 == sha)
+            .expect("asset descriptor");
+        let target = path.join(&asset.path);
+        std::fs::create_dir_all(target.parent().unwrap()).expect("asset directory");
+        std::fs::write(target, bytes).expect("asset body");
+    }
+    path
 }
 
 /// (A)(C)(M) real published packages are enumerated, verified and reported with
@@ -643,4 +729,294 @@ fn scanning_changes_nothing_and_creates_nothing() {
 
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
     let _ = std::fs::remove_dir_all(empty.parent().unwrap());
+}
+
+// ── M09 P2.2: all-supported durable read admission ───────────────────────
+
+#[test]
+fn scanner_verifies_v3_identity_and_gzip_as_one_logical_generation() {
+    let identity = zero_asset_v3();
+    let gzip = gzip_zero_asset_v3();
+    assert_eq!(package_content_hash(&identity), package_content_hash(&gzip));
+    assert_ne!(identity.snapshot, gzip.snapshot);
+
+    let mut observed = Vec::new();
+    for (tag, package, expected_encoding) in [
+        ("scan-v3-identity", &identity, "identity"),
+        ("scan-v3-gzip", &gzip, "gzip"),
+    ] {
+        let root = scratch(tag);
+        let hash = publish_v3(&root, package);
+        let name = format!("{}.g{hash}.h2ochat", package.chat_id);
+        let scan = scan_packages_within(&root);
+        assert!(scan.complete, "{:?}", scan.blockers);
+        match &find(&scan, &name).class {
+            OccupantClass::VerifiedGeneration(verified) => {
+                assert_eq!(verified.construction_family, ConstructionFamily::V3);
+                assert!(!verified.construction_family.is_live_writer_family());
+                assert_eq!(verified.content_hash, hash);
+                assert_eq!(verified.snapshot_encoding, expected_encoding);
+                assert_eq!(
+                    verified.order,
+                    OrderFact::Orderable {
+                        saved_at: "2026-08-24T00:00:00.000Z".into()
+                    }
+                );
+                assert!(verified.asset_shas.is_empty());
+                assert_eq!(
+                    verified.persistent_members,
+                    vec!["manifest.json".to_string(), "snapshot.json".to_string()]
+                );
+                observed.push((
+                    verified.content_hash.clone(),
+                    verified.snapshot_physical_sha256.clone(),
+                    verified.snapshot_physical_byte_length,
+                    verified.logical_snapshot_sha256.clone(),
+                    verified.logical_snapshot_byte_length,
+                ));
+            }
+            other => panic!("expected verified v3, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    assert_eq!(observed[0].0, observed[1].0);
+    assert_ne!(observed[0].1, observed[1].1);
+    assert_ne!(observed[0].2, observed[1].2);
+    assert_eq!(observed[0].3, observed[1].3);
+    assert_eq!(observed[0].4, observed[1].4);
+}
+
+#[test]
+fn scanner_verifies_asset_bearing_v3_with_exact_persistent_inventory() {
+    let package = permanent_v3_fixture(false);
+    let root = scratch("scan-v3-assets");
+    let hash = publish_v3(&root, &package);
+    let name = format!("{}.g{hash}.h2ochat", package.chat_id);
+    let scan = scan_packages_within(&root);
+    assert!(scan.complete, "{:?}", scan.blockers);
+    match &find(&scan, &name).class {
+        OccupantClass::VerifiedGeneration(verified) => {
+            assert_eq!(verified.construction_family, ConstructionFamily::V3);
+            assert_eq!(verified.asset_shas.len(), 1);
+            assert_eq!(
+                verified.asset_shas[0],
+                package.assets[0]
+                    .sha256
+                    .strip_prefix("sha256-")
+                    .expect("prefixed asset hash")
+            );
+            assert_eq!(
+                verified.persistent_members,
+                vec![
+                    package.assets[0].path.clone(),
+                    "manifest.json".to_string(),
+                    "snapshot.json".to_string(),
+                ]
+            );
+        }
+        other => panic!("expected verified asset-bearing v3, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn scanner_refuses_v3_renderer_members_malformed_gzip_and_false_logical_descriptor() {
+    let cases = [
+        {
+            let mut package = zero_asset_v3();
+            package.markdown = Some(b"must not persist".to_vec());
+            ("scan-v3-renderer", package)
+        },
+        {
+            let mut package = gzip_zero_asset_v3();
+            package.snapshot = Some(b"not a gzip stream".to_vec());
+            rebind_snapshot_physical_descriptor(&mut package);
+            ("scan-v3-gzip-malformed", package)
+        },
+        {
+            let mut package = gzip_zero_asset_v3();
+            mutate_package_manifest(&mut package, |manifest| {
+                manifest["files"]["snapshot"]["contentSha256"] =
+                    format!("sha256-{}", "ee".repeat(32)).into();
+            });
+            ("scan-v3-logical-false", package)
+        },
+        {
+            let mut package = zero_asset_v3();
+            package.snapshot = None;
+            ("scan-v3-snapshot-missing", package)
+        },
+    ];
+
+    for (tag, package) in cases {
+        let root = scratch(tag);
+        let hash = package_content_hash(&package);
+        let name = format!(
+            "{}.g{}.h2ochat",
+            package.chat_id,
+            hash.strip_prefix("sha256-").unwrap()
+        );
+        install_direct(&root, &name, &package);
+        let scan = scan_packages_within(&root);
+        assert!(scan.complete, "{:?}", scan.blockers);
+        match &find(&scan, &name).class {
+            OccupantClass::Indeterminate { reason } => assert!(matches!(
+                reason,
+                IndeterminateReason::Corrupt | IndeterminateReason::Partial
+            )),
+            other => panic!("invalid v3 must not verify: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+}
+
+#[test]
+fn scanner_refuses_missing_and_corrupt_v3_assets() {
+    for (tag, remove) in [
+        ("scan-v3-asset-missing", true),
+        ("scan-v3-asset-corrupt", false),
+    ] {
+        let package = permanent_v3_fixture(false);
+        let root = scratch(tag);
+        let hash = package_content_hash(&package);
+        let name = format!(
+            "{}.g{}.h2ochat",
+            package.chat_id,
+            hash.strip_prefix("sha256-").unwrap()
+        );
+        let path = install_direct(&root, &name, &package);
+        let asset = path.join(&package.assets[0].path);
+        if remove {
+            std::fs::remove_file(asset).unwrap();
+        } else {
+            std::fs::write(asset, b"corrupt asset bytes").unwrap();
+        }
+        let scan = scan_packages_within(&root);
+        match &find(&scan, &name).class {
+            OccupantClass::Indeterminate { reason } => assert!(matches!(
+                reason,
+                IndeterminateReason::Corrupt | IndeterminateReason::Partial
+            )),
+            other => panic!("invalid asset must not verify: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+}
+
+#[test]
+fn scanner_refuses_v3_descriptor_version_identity_and_member_substitution() {
+    let cases = [
+        {
+            let mut package = zero_asset_v3();
+            package.snapshot.as_mut().unwrap()[0] ^= 1;
+            ("scan-v3-physical-sha", package)
+        },
+        {
+            let mut package = zero_asset_v3();
+            mutate_package_manifest(&mut package, |manifest| {
+                let len = manifest["files"]["snapshot"]["byteLength"]
+                    .as_u64()
+                    .unwrap();
+                manifest["files"]["snapshot"]["byteLength"] = (len + 1).into();
+            });
+            ("scan-v3-physical-length", package)
+        },
+        {
+            let mut package = gzip_zero_asset_v3();
+            mutate_package_manifest(&mut package, |manifest| {
+                let len = manifest["files"]["snapshot"]["contentByteLength"]
+                    .as_u64()
+                    .unwrap();
+                manifest["files"]["snapshot"]["contentByteLength"] = (len - 1).into();
+            });
+            ("scan-v3-logical-length", package)
+        },
+        {
+            let mut package = zero_asset_v3();
+            mutate_package_manifest(&mut package, |manifest| {
+                manifest["contentHash"] = format!("sha256-{}", "aa".repeat(32)).into();
+            });
+            ("scan-v3-false-content", package)
+        },
+        {
+            let mut package = zero_asset_v3();
+            mutate_package_manifest(&mut package, |manifest| {
+                manifest["payloadVersion"] = 2.into();
+            });
+            ("scan-v3-mixed-version", package)
+        },
+        {
+            let mut package = zero_asset_v3();
+            let mut snapshot: serde_json::Value =
+                serde_json::from_slice(package.snapshot.as_ref().unwrap()).unwrap();
+            snapshot["chatId"] = "different-chat".into();
+            package.snapshot = Some(serde_json::to_vec(&snapshot).unwrap());
+            rebind_snapshot_physical_descriptor(&mut package);
+            let logical_sha = sha_of(package.snapshot.as_ref().unwrap());
+            let content_hash = derive_content_hash_v3(&logical_sha, &[]).unwrap();
+            mutate_package_manifest(&mut package, |manifest| {
+                manifest["contentHash"] = content_hash.into();
+            });
+            ("scan-v3-cross-binding", package)
+        },
+    ];
+
+    for (tag, package) in cases {
+        let root = scratch(tag);
+        let hash = package_content_hash(&package);
+        let name = format!(
+            "{}.g{}.h2ochat",
+            package.chat_id,
+            hash.strip_prefix("sha256-").unwrap()
+        );
+        install_direct(&root, &name, &package);
+        let scan = scan_packages_within(&root);
+        match &find(&scan, &name).class {
+            OccupantClass::Indeterminate { reason } => {
+                assert_eq!(*reason, IndeterminateReason::Corrupt)
+            }
+            other => panic!("{tag}: invalid v3 must not verify: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    let package = permanent_v3_fixture(false);
+    let root = scratch("scan-v3-undeclared-asset");
+    let hash = package_content_hash(&package);
+    let name = format!(
+        "{}.g{}.h2ochat",
+        package.chat_id,
+        hash.strip_prefix("sha256-").unwrap()
+    );
+    let path = install_direct(&root, &name, &package);
+    std::fs::write(path.join("assets/undeclared.bin"), b"foreign").unwrap();
+    let scan = scan_packages_within(&root);
+    assert!(matches!(
+        find(&scan, &name).class,
+        OccupantClass::Indeterminate {
+            reason: IndeterminateReason::Corrupt
+        }
+    ));
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+
+    let package = zero_asset_v3();
+    let root = scratch("scan-v3-snapshot-symlink");
+    let hash = package_content_hash(&package);
+    let name = format!(
+        "{}.g{}.h2ochat",
+        package.chat_id,
+        hash.strip_prefix("sha256-").unwrap()
+    );
+    let path = install_direct(&root, &name, &package);
+    std::fs::remove_file(path.join("snapshot.json")).unwrap();
+    std::os::unix::fs::symlink(path.join("manifest.json"), path.join("snapshot.json")).unwrap();
+    let scan = scan_packages_within(&root);
+    assert!(matches!(
+        find(&scan, &name).class,
+        OccupantClass::Indeterminate {
+            reason: IndeterminateReason::Partial
+        }
+    ));
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

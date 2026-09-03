@@ -28,10 +28,16 @@ fn generation_in(
             chat_id: chat.to_string(),
             content_hash: h,
             construction_family,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Orderable {
                 saved_at: saved_at.to_string(),
             },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     }
 }
@@ -54,10 +60,16 @@ fn unorderable(chat: &str, tag: u8) -> ClassifiedOccupant {
             chat_id: chat.to_string(),
             content_hash: h,
             construction_family: ConstructionFamily::V1,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Unorderable {
                 reason: UnorderableReason::SavedAtMissing,
             },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     }
 }
@@ -71,10 +83,16 @@ fn legacy(chat: &str, tag: u8, saved_at: &str) -> ClassifiedOccupant {
             chat_id: chat.to_string(),
             content_hash: h,
             construction_family: ConstructionFamily::V1,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Orderable {
                 saved_at: saved_at.to_string(),
             },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     }
 }

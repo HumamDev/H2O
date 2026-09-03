@@ -20,10 +20,12 @@ pub(crate) const LOGICAL_SNAPSHOT_CAP_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VerificationAdmission {
-    /// Current production gate. P2.1 must not make live COMMIT/scan admit v3.
+    /// Current production NEW-write gate. Live COMMIT must still refuse v3.
     V1V2Only,
-    /// Private foundation seam for tests and later P2.2 trusted consumers.
-    V1V2AndV3,
+    /// Exact future-write gate: a V3 build must not accept a new v1/v2 write.
+    V3Only,
+    /// Durable read gate. Rollback changes new writes, never read compatibility.
+    AllSupported,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -211,9 +213,30 @@ pub(crate) fn validate_manifest(
     };
 
     let family = match (schema_version, has_payload_key, payload_version) {
-        (Some(1), false, _) if assets_array.is_empty() => PackageFamily::V1,
-        (Some(2), true, Some(2)) if !assets_array.is_empty() => PackageFamily::V2,
-        (Some(3), true, Some(3)) if admission == VerificationAdmission::V1V2AndV3 => {
+        (Some(1), false, _)
+            if assets_array.is_empty()
+                && matches!(
+                    admission,
+                    VerificationAdmission::V1V2Only | VerificationAdmission::AllSupported
+                ) =>
+        {
+            PackageFamily::V1
+        }
+        (Some(2), true, Some(2))
+            if !assets_array.is_empty()
+                && matches!(
+                    admission,
+                    VerificationAdmission::V1V2Only | VerificationAdmission::AllSupported
+                ) =>
+        {
+            PackageFamily::V2
+        }
+        (Some(3), true, Some(3))
+            if matches!(
+                admission,
+                VerificationAdmission::V3Only | VerificationAdmission::AllSupported
+            ) =>
+        {
             PackageFamily::V3
         }
         _ => return Err("generation-manifest-version-triple-incoherent"),
@@ -635,4 +658,4 @@ pub(crate) fn verify_package(
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

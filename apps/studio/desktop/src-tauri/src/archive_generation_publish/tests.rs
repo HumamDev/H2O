@@ -17,6 +17,10 @@
 //! A string-presence assertion is never evidence that behaviour is correct.
 
 use super::*;
+use crate::saved_chat_generation_policy::LiveGenerationFamily;
+use crate::saved_chat_package_verify::tests::{
+    gzip_zero_asset_v3, permanent_v3_fixture, zero_asset_v3, OwnedPackage,
+};
 use std::path::PathBuf;
 use std::sync::Barrier;
 
@@ -166,6 +170,74 @@ fn blocker_codes_of(list: &[Blocker]) -> Vec<String> {
 
 fn blocker_codes(result: &PublishResult) -> Vec<String> {
     result.blockers.iter().map(|b| b.code.clone()).collect()
+}
+
+fn package_content_hash(package: &OwnedPackage) -> String {
+    serde_json::from_slice::<serde_json::Value>(&package.manifest)
+        .expect("package manifest")
+        .get("contentHash")
+        .and_then(serde_json::Value::as_str)
+        .expect("contentHash")
+        .to_string()
+}
+
+fn mutate_package_manifest(
+    package: &mut OwnedPackage,
+    update: impl FnOnce(&mut serde_json::Value),
+) {
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&package.manifest).expect("package manifest");
+    update(&mut manifest);
+    package.manifest = serde_json::to_vec(&manifest).expect("serialize package manifest");
+}
+
+fn rebind_package_snapshot_physical_descriptor(package: &mut OwnedPackage) {
+    let snapshot = package.snapshot.as_ref().expect("snapshot");
+    let sha = sha_of(snapshot);
+    let len = snapshot.len() as u64;
+    mutate_package_manifest(package, |manifest| {
+        manifest["files"]["snapshot"]["sha256"] = sha.into();
+        manifest["files"]["snapshot"]["byteLength"] = len.into();
+    });
+}
+
+fn stage_v3_package(p: &Publisher, package: &OwnedPackage, install_cas: bool) -> u64 {
+    if install_cas {
+        package.install_cas(&p.root);
+    }
+    let begun = begin(p, &package.chat_id);
+    assert!(begun.ok, "begin refused: {:?}", begun.blockers);
+    if let Some(bytes) = package.snapshot.as_deref() {
+        assert!(write_member(p, begun.token, Member::Snapshot, bytes).ok);
+    }
+    if let Some(bytes) = package.markdown.as_deref() {
+        assert!(write_member(p, begun.token, Member::Markdown, bytes).ok);
+    }
+    if let Some(bytes) = package.html.as_deref() {
+        assert!(write_member(p, begun.token, Member::Html, bytes).ok);
+    }
+    assert!(write_member(p, begun.token, Member::Manifest, &package.manifest).ok);
+    begun.token
+}
+
+fn publish_v3(p: &Publisher, package: &OwnedPackage) -> PublishResult {
+    let token = stage_v3_package(p, package, true);
+    commit_with_policy(p, token, None, LiveGenerationFamily::V3)
+}
+
+fn assert_v3_refused(tag: &str, package: &OwnedPackage, install_cas: bool) -> PublishResult {
+    let p = publisher(tag);
+    let token = stage_v3_package(&p, package, install_cas);
+    let result = commit_with_policy(&p, token, None, LiveGenerationFamily::V3);
+    assert!(!result.ok, "invalid v3 package unexpectedly published");
+    assert!(!result.committed);
+    assert!(
+        packages_entries(&p)
+            .iter()
+            .all(|name| name.starts_with(STAGING_PREFIX)),
+        "a refused package must not create a final generation"
+    );
+    result
 }
 
 // ── FILESYSTEM / CONFINEMENT ───────────────────────────────────────────────
@@ -2594,4 +2666,288 @@ fn internal_session_entropy_and_width_are_unchanged() {
         seen_above_2_53,
         "tokens must still use the full u64 range; they must not be capped for JavaScript"
     );
+}
+
+// ── M09 P2.2: exact policy-gated v3 publication ──────────────────────────
+
+#[test]
+fn v3_identity_gzip_and_assets_publish_under_injected_policy() {
+    for (tag, package, expected_encoding) in [
+        ("v3-identity", zero_asset_v3(), SnapshotEncoding::Identity),
+        ("v3-gzip", gzip_zero_asset_v3(), SnapshotEncoding::Gzip),
+        (
+            "v3-assets",
+            permanent_v3_fixture(false),
+            SnapshotEncoding::Identity,
+        ),
+    ] {
+        let p = publisher(tag);
+        let expected_hash = package_content_hash(&package);
+        let result = publish_v3(&p, &package);
+        assert!(result.ok, "blockers: {:?}", blocker_codes(&result));
+        assert_eq!(result.outcome, Outcome::Created);
+        assert_eq!(result.content_hash, expected_hash);
+
+        let hex = expected_hash.strip_prefix("sha256-").unwrap();
+        let name = generation_basename(&package.chat_id, hex);
+        let final_dir = p.root.join(PACKAGES_DIR).join(&name);
+        assert_eq!(packages_entries(&p), vec![name.clone()]);
+        assert_eq!(
+            std::fs::read(final_dir.join("snapshot.json")).unwrap(),
+            package.snapshot.as_ref().unwrap().as_slice(),
+        );
+        assert!(!final_dir.join("chat.md").exists());
+        assert!(!final_dir.join("chat.html").exists());
+        for asset in &package.assets {
+            assert!(
+                final_dir.join(&asset.path).is_file(),
+                "missing {}",
+                asset.path
+            );
+        }
+
+        let packages = confined::Dir::open_root(&p.root.join(PACKAGES_DIR)).unwrap();
+        let verified = verify_occupant_all_supported(&packages, name.as_bytes()).unwrap();
+        assert_eq!(verified.family, PackageFamily::V3);
+        assert_eq!(verified.content_hash, expected_hash);
+        assert_eq!(verified.snapshot_encoding, expected_encoding);
+
+        let scan = crate::archive_package_scan::scan_packages_within(&p.root);
+        assert!(scan.complete, "{:?}", scan.blockers);
+        let scanned = scan
+            .occupants
+            .iter()
+            .find(|occupant| occupant.name == name)
+            .expect("published v3 scanned");
+        match &scanned.class {
+            crate::archive_package_scan::OccupantClass::VerifiedGeneration(package) => {
+                assert_eq!(
+                    package.construction_family,
+                    crate::archive_package_scan::ConstructionFamily::V3
+                );
+                assert!(!package.construction_family.is_live_writer_family());
+                assert_eq!(package.content_hash, hex);
+            }
+            other => panic!("expected verified v3, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn production_policy_refuses_v3_while_injected_v3_accepts_same_package() {
+    let package = zero_asset_v3();
+    let p = publisher("v3-production-off");
+    let token = stage_v3_package(&p, &package, true);
+    let refused = commit(&p, token, None);
+    assert!(!refused.ok);
+    assert!(!refused.committed);
+    assert!(
+        blocker_codes(&refused)
+            .contains(&"generation-manifest-version-triple-incoherent".to_string()),
+        "unexpected blockers: {:?}",
+        blocker_codes(&refused),
+    );
+    assert!(packages_entries(&p).is_empty());
+
+    let accepted = publish_v3(&p, &package);
+    assert!(accepted.ok, "blockers: {:?}", blocker_codes(&accepted));
+    assert_eq!(accepted.outcome, Outcome::Created);
+}
+
+#[test]
+fn v3_policy_refuses_legacy_new_writes() {
+    for (tag, fixture) in [
+        ("v3-refuses-v1", v1_fixture("legacy_v1", "s1", "body")),
+        ("v3-refuses-v2", {
+            let p = publisher("v3-refuses-v2-fixture");
+            v2_fixture(&p.root, "legacy_v2", &[("png", b"asset")])
+        }),
+    ] {
+        let p = publisher(tag);
+        if fixture.content_hash != sha_of(&fixture.snapshot) {
+            let manifest: serde_json::Value = serde_json::from_slice(&fixture.manifest).unwrap();
+            for asset in manifest["assets"].as_array().unwrap() {
+                let sha = asset["sha256"].as_str().unwrap();
+                let hex = sha.strip_prefix("sha256-").unwrap();
+                let shard = p.root.join("assets").join(&hex[..2]);
+                std::fs::create_dir_all(&shard).unwrap();
+                std::fs::write(shard.join(format!("sha256-{hex}")), b"asset").unwrap();
+            }
+        }
+        let begun = begin(&p, &fixture.chat_id);
+        assert!(begun.ok);
+        stage_all(&p, begun.token, &fixture);
+        let result = commit_with_policy(&p, begun.token, None, LiveGenerationFamily::V3);
+        assert!(!result.ok);
+        assert!(!result.committed);
+        assert!(packages_entries(&p).is_empty());
+    }
+}
+
+#[test]
+fn identity_and_gzip_dedupe_without_replacing_first_representation() {
+    let identity = zero_asset_v3();
+    let gzip = gzip_zero_asset_v3();
+    assert_eq!(package_content_hash(&identity), package_content_hash(&gzip));
+    assert_ne!(identity.snapshot, gzip.snapshot);
+
+    for (tag, first, second) in [
+        ("v3-id-then-gzip", &identity, &gzip),
+        ("v3-gzip-then-id", &gzip, &identity),
+    ] {
+        let p = publisher(tag);
+        let created = publish_v3(&p, first);
+        assert_eq!(created.outcome, Outcome::Created);
+        let hex = created.content_hash.strip_prefix("sha256-").unwrap();
+        let name = generation_basename(&first.chat_id, hex);
+        let snapshot = p.root.join(PACKAGES_DIR).join(&name).join("snapshot.json");
+        let before = std::fs::read(&snapshot).unwrap();
+
+        let deduped = publish_v3(&p, second);
+        assert!(deduped.ok, "blockers: {:?}", blocker_codes(&deduped));
+        assert_eq!(deduped.outcome, Outcome::Deduped);
+        assert!(!deduped.committed);
+        assert_eq!(std::fs::read(snapshot).unwrap(), before);
+        assert_eq!(packages_entries(&p), vec![name]);
+    }
+}
+
+#[test]
+fn v3_commit_refuses_false_descriptors_inventory_and_assets_without_final_mutation() {
+    let mut false_hash = zero_asset_v3();
+    mutate_package_manifest(&mut false_hash, |manifest| {
+        manifest["contentHash"] = format!("sha256-{}", "00".repeat(32)).into();
+    });
+    assert!(!assert_v3_refused("v3-false-content", &false_hash, true).ok);
+
+    let mut physical_mismatch = zero_asset_v3();
+    physical_mismatch.snapshot.as_mut().unwrap().push(b' ');
+    assert!(!assert_v3_refused("v3-physical", &physical_mismatch, true).ok);
+
+    let mut logical_mismatch = gzip_zero_asset_v3();
+    mutate_package_manifest(&mut logical_mismatch, |manifest| {
+        manifest["files"]["snapshot"]["contentSha256"] =
+            format!("sha256-{}", "11".repeat(32)).into();
+    });
+    assert!(!assert_v3_refused("v3-logical", &logical_mismatch, true).ok);
+
+    let mut missing_snapshot = zero_asset_v3();
+    missing_snapshot.snapshot = None;
+    assert!(!assert_v3_refused("v3-missing-snapshot", &missing_snapshot, true).ok);
+
+    let mut renderers = zero_asset_v3();
+    renderers.markdown = Some(b"foreign renderer".to_vec());
+    renderers.html = Some(b"foreign renderer".to_vec());
+    let renderer_result = assert_v3_refused("v3-renderers", &renderers, true);
+    assert!(blocker_codes(&renderer_result)
+        .contains(&"generation-v3-persistent-renderer-forbidden".to_string()));
+
+    let assets = permanent_v3_fixture(false);
+    assert!(!assert_v3_refused("v3-missing-asset", &assets, false).ok);
+
+    let p = publisher("v3-wrong-asset");
+    let token = stage_v3_package(&p, &assets, true);
+    let asset_sha = &assets.asset_bodies[0].0;
+    let hex = asset_sha.strip_prefix("sha256-").unwrap();
+    std::fs::write(
+        p.root
+            .join("assets")
+            .join(&hex[..2])
+            .join(format!("sha256-{hex}")),
+        b"wrong bytes",
+    )
+    .unwrap();
+    let wrong_asset = commit_with_policy(&p, token, None, LiveGenerationFamily::V3);
+    assert!(!wrong_asset.ok);
+    assert!(!wrong_asset.committed);
+    assert!(packages_entries(&p).is_empty());
+
+    let mut malformed_gzip = gzip_zero_asset_v3();
+    malformed_gzip.snapshot = Some(b"not gzip".to_vec());
+    rebind_package_snapshot_physical_descriptor(&mut malformed_gzip);
+    assert!(!assert_v3_refused("v3-malformed-gzip", &malformed_gzip, true).ok);
+
+    let mut mixed = zero_asset_v3();
+    mutate_package_manifest(&mut mixed, |manifest| {
+        manifest["payloadVersion"] = 2.into();
+    });
+    assert!(!assert_v3_refused("v3-mixed", &mixed, true).ok);
+
+    let package = zero_asset_v3();
+    let p = publisher("v3-undeclared-member");
+    let token = stage_v3_package(&p, &package, true);
+    let staging = packages_entries(&p)
+        .into_iter()
+        .find(|name| name.starts_with(STAGING_PREFIX))
+        .expect("owned staging");
+    std::fs::write(
+        p.root
+            .join(PACKAGES_DIR)
+            .join(staging)
+            .join("undeclared.bin"),
+        b"undeclared",
+    )
+    .unwrap();
+    let undeclared = commit_with_policy(&p, token, None, LiveGenerationFamily::V3);
+    assert!(!undeclared.ok);
+    assert!(!undeclared.committed);
+    assert!(blocker_codes(&undeclared).contains(&"generation-staging-unexpected-entry".to_string()));
+    assert!(
+        packages_entries(&p)
+            .iter()
+            .all(|name| name.starts_with(STAGING_PREFIX)),
+        "foreign-contaminated private residue must never become a final generation"
+    );
+}
+
+#[test]
+fn v3_commit_never_replaces_invalid_or_wrong_type_final_occupants() {
+    use std::os::unix::fs::symlink;
+
+    for (tag, occupant_kind) in [
+        ("v3-occupied-corrupt", "directory"),
+        ("v3-occupied-file", "file"),
+        ("v3-occupied-symlink", "symlink"),
+    ] {
+        let package = zero_asset_v3();
+        let p = publisher(tag);
+        let token = stage_v3_package(&p, &package, true);
+        let hash = package_content_hash(&package);
+        let name = generation_basename(&package.chat_id, hash.strip_prefix("sha256-").unwrap());
+        let final_path = p.root.join(PACKAGES_DIR).join(&name);
+        match occupant_kind {
+            "directory" => {
+                std::fs::create_dir(&final_path).unwrap();
+                std::fs::write(final_path.join("winner.txt"), b"winner bytes").unwrap();
+            }
+            "file" => std::fs::write(&final_path, b"winner bytes").unwrap(),
+            "symlink" => {
+                let target = p.root.join("foreign-target");
+                std::fs::create_dir(&target).unwrap();
+                std::fs::write(target.join("winner.txt"), b"winner bytes").unwrap();
+                symlink(&target, &final_path).unwrap();
+            }
+            _ => unreachable!(),
+        }
+
+        let result = commit_with_policy(&p, token, None, LiveGenerationFamily::V3);
+        assert!(!result.ok);
+        assert!(!result.committed);
+        assert!(
+            matches!(
+                result.outcome,
+                Outcome::GenerationDestinationCorrupt
+                    | Outcome::GenerationPartial
+                    | Outcome::GenerationOccupantUnreadable
+            ),
+            "unexpected outcome: {:?}",
+            result.outcome
+        );
+        let winner = if occupant_kind == "file" {
+            std::fs::read(&final_path).unwrap()
+        } else {
+            std::fs::read(final_path.join("winner.txt")).unwrap()
+        };
+        assert_eq!(winner, b"winner bytes");
+    }
 }

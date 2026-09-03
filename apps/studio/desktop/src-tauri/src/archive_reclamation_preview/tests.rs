@@ -24,8 +24,14 @@ fn gen_in(chat: &str, tag: u8, family: ConstructionFamily) -> ClassifiedOccupant
             chat_id: chat.to_string(),
             content_hash: h,
             construction_family: family,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Orderable { saved_at: day(tag as u32) },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     }
 }
@@ -286,8 +292,14 @@ fn the_preview_carries_every_protection_reason() {
             chat_id: "chat_a".into(),
             content_hash: hash(70),
             construction_family: ConstructionFamily::V1,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Orderable { saved_at: day(1) },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     });
     // Unorderable.
@@ -298,8 +310,14 @@ fn the_preview_carries_every_protection_reason() {
             chat_id: "chat_a".into(),
             content_hash: hash(60),
             construction_family: ConstructionFamily::V1,
+            snapshot_encoding: "identity".into(),
+            snapshot_physical_sha256: String::new(),
+            snapshot_physical_byte_length: 0,
+            logical_snapshot_sha256: String::new(),
+            logical_snapshot_byte_length: 0,
             order: OrderFact::Unorderable { reason: UnorderableReason::SavedAtMissing },
             asset_shas: vec![],
+            persistent_members: vec![],
         }),
     });
     // Format-stale (non-live family).
