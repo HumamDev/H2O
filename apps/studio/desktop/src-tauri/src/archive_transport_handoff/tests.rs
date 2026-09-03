@@ -1,6 +1,10 @@
 use super::*;
 use crate::archive_generation_publish::{
-    begin as publish_begin, commit, write_member, Member, Publisher,
+    begin as publish_begin, commit, commit_with_policy, write_member, Member, Publisher,
+};
+use crate::saved_chat_generation_policy::LiveGenerationFamily;
+use crate::saved_chat_package_verify::tests::{
+    gzip_zero_asset_v3, permanent_v3_fixture, zero_asset_v3, OwnedPackage,
 };
 use std::path::{Path, PathBuf};
 
@@ -147,6 +151,115 @@ fn canonical_cas_path(root: &Path, identity: &str) -> PathBuf {
     root.join("assets")
         .join(&hex[0..2])
         .join(format!("sha256-{hex}"))
+}
+
+fn package_content_hash(package: &OwnedPackage) -> String {
+    serde_json::from_slice::<serde_json::Value>(&package.manifest)
+        .expect("package manifest")
+        .get("contentHash")
+        .and_then(serde_json::Value::as_str)
+        .expect("contentHash")
+        .to_string()
+}
+
+fn mutate_package_manifest(
+    package: &mut OwnedPackage,
+    update: impl FnOnce(&mut serde_json::Value),
+) {
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&package.manifest).expect("package manifest");
+    update(&mut manifest);
+    package.manifest = serde_json::to_vec(&manifest).expect("serialize package manifest");
+}
+
+fn rebind_snapshot_physical_descriptor(package: &mut OwnedPackage) {
+    let snapshot = package.snapshot.as_ref().expect("snapshot");
+    let physical_sha = sha(snapshot);
+    let physical_len = snapshot.len() as u64;
+    mutate_package_manifest(package, |manifest| {
+        manifest["files"]["snapshot"]["sha256"] = physical_sha.into();
+        manifest["files"]["snapshot"]["byteLength"] = physical_len.into();
+    });
+}
+
+fn publish_v3(root: &Path, package: &OwnedPackage) -> PathBuf {
+    package.install_cas(root);
+    let publisher = Publisher::new(root.to_path_buf());
+    let begun = publish_begin(&publisher, &package.chat_id);
+    assert!(begun.ok, "v3 publish BEGIN: {:?}", begun.blockers);
+    assert!(
+        write_member(
+            &publisher,
+            begun.token,
+            Member::Snapshot,
+            package.snapshot.as_deref().expect("v3 snapshot"),
+        )
+        .ok
+    );
+    assert!(write_member(&publisher, begun.token, Member::Manifest, &package.manifest,).ok);
+    let result = commit_with_policy(&publisher, begun.token, None, LiveGenerationFamily::V3);
+    assert!(result.ok, "v3 publish COMMIT: {:?}", result.blockers);
+    let hex = result
+        .content_hash
+        .strip_prefix("sha256-")
+        .expect("trusted v3 hash");
+    root.join("packages")
+        .join(generation_basename(&package.chat_id, hex))
+}
+
+fn install_direct_v3(root: &Path, package: &OwnedPackage, selector_content_hash: &str) -> PathBuf {
+    package.install_cas(root);
+    let hex = selector_content_hash
+        .strip_prefix("sha256-")
+        .expect("selector hash");
+    let path = root
+        .join("packages")
+        .join(generation_basename(&package.chat_id, hex));
+    std::fs::create_dir_all(&path).expect("direct package");
+    std::fs::write(path.join("manifest.json"), &package.manifest).expect("manifest");
+    if let Some(snapshot) = &package.snapshot {
+        std::fs::write(path.join("snapshot.json"), snapshot).expect("snapshot");
+    }
+    if let Some(markdown) = &package.markdown {
+        std::fs::write(path.join("chat.md"), markdown).expect("markdown");
+    }
+    if let Some(html) = &package.html {
+        std::fs::write(path.join("chat.html"), html).expect("html");
+    }
+    for asset in &package.assets {
+        let (_, bytes) = package
+            .asset_bodies
+            .iter()
+            .find(|(sha, _)| sha == &asset.sha256)
+            .expect("asset body");
+        let target = path.join(&asset.path);
+        std::fs::create_dir_all(target.parent().expect("asset parent")).expect("asset directory");
+        std::fs::write(target, bytes).expect("package asset");
+    }
+    path
+}
+
+fn v3_selector(package: &OwnedPackage, content_hash: &str) -> HandoffSelector {
+    HandoffSelector::Generation {
+        chat_id: package.chat_id.clone(),
+        content_hash: content_hash.to_string(),
+    }
+}
+
+fn assert_direct_v3_refused(
+    tag: &str,
+    package: &OwnedPackage,
+    selector_content_hash: &str,
+    mutate_fs: impl FnOnce(&Path),
+) {
+    let root = scratch(tag);
+    let package_path = install_direct_v3(&root, package, selector_content_hash);
+    mutate_fs(&package_path);
+    let handoff = Handoff::new(&root);
+    let result = begin(&handoff, &v3_selector(package, selector_content_hash));
+    assert!(!result.ok, "invalid v3 BEGIN unexpectedly succeeded");
+    assert_eq!(blocker(&result), codes::PACKAGE_UNVERIFIED);
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }
 
 fn blocker<T>(result: &T) -> String
@@ -790,6 +903,301 @@ fn physical_representation_can_change_without_redefining_logical_content_hash() 
     );
     assert!(end(&handoff, second.token).ok);
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn v3_identity_and_gzip_handoff_preserve_logical_identity_and_physical_distinction() {
+    let identity_root = scratch("v3-identity");
+    let gzip_root = scratch("v3-gzip");
+    let identity = zero_asset_v3();
+    let gzip = gzip_zero_asset_v3();
+    let content_hash = package_content_hash(&identity);
+    assert_eq!(package_content_hash(&gzip), content_hash);
+    publish_v3(&identity_root, &identity);
+    publish_v3(&gzip_root, &gzip);
+
+    let identity_handoff = Handoff::new(&identity_root);
+    let gzip_handoff = Handoff::new(&gzip_root);
+    let identity_begin = begin(&identity_handoff, &v3_selector(&identity, &content_hash));
+    let gzip_begin = begin(&gzip_handoff, &v3_selector(&gzip, &content_hash));
+    assert!(identity_begin.ok, "{:?}", identity_begin.blockers);
+    assert!(gzip_begin.ok, "{:?}", gzip_begin.blockers);
+    let identity_descriptor = identity_begin.descriptor.as_ref().unwrap();
+    let gzip_descriptor = gzip_begin.descriptor.as_ref().unwrap();
+
+    for descriptor in [identity_descriptor, gzip_descriptor] {
+        assert_eq!(descriptor.construction_family, ConstructionFamily::V3);
+        assert_eq!(descriptor.schema_version, 3);
+        assert_eq!(descriptor.payload_version, Some(3));
+        assert_eq!(descriptor.logical_identity.content_hash, content_hash);
+        assert_eq!(descriptor.object_count, 2);
+        assert_eq!(
+            descriptor
+                .objects
+                .iter()
+                .map(|object| object.object_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["manifest", "snapshot"]
+        );
+    }
+
+    let identity_snapshot = identity_descriptor
+        .objects
+        .iter()
+        .find(|object| object.object_id == "snapshot")
+        .unwrap();
+    let gzip_snapshot = gzip_descriptor
+        .objects
+        .iter()
+        .find(|object| object.object_id == "snapshot")
+        .unwrap();
+    assert_eq!(identity_snapshot.encoding.as_deref(), Some("identity"));
+    assert_eq!(gzip_snapshot.encoding.as_deref(), Some("gzip"));
+    assert_eq!(
+        identity_snapshot.logical_sha256,
+        gzip_snapshot.logical_sha256
+    );
+    assert_eq!(
+        identity_snapshot.logical_byte_length,
+        gzip_snapshot.logical_byte_length
+    );
+    assert_ne!(identity_snapshot.stored_sha256, gzip_snapshot.stored_sha256);
+    assert_ne!(identity_snapshot.byte_length, gzip_snapshot.byte_length);
+    assert_ne!(
+        identity_descriptor.representation_hash,
+        gzip_descriptor.representation_hash
+    );
+    assert_eq!(
+        read_all(
+            &identity_handoff,
+            identity_begin.token,
+            "snapshot",
+            identity_snapshot.byte_length,
+        ),
+        identity.snapshot.as_ref().unwrap().as_slice()
+    );
+    assert_eq!(
+        read_all(
+            &gzip_handoff,
+            gzip_begin.token,
+            "snapshot",
+            gzip_snapshot.byte_length,
+        ),
+        gzip.snapshot.as_ref().unwrap().as_slice()
+    );
+    assert!(end(&identity_handoff, identity_begin.token).ok);
+    assert!(end(&gzip_handoff, gzip_begin.token).ok);
+    let _ = std::fs::remove_dir_all(identity_root.parent().unwrap());
+    let _ = std::fs::remove_dir_all(gzip_root.parent().unwrap());
+}
+
+#[test]
+fn v3_asset_handoff_is_exact_and_excludes_derived_renderers() {
+    let root = scratch("v3-assets");
+    let package = permanent_v3_fixture(false);
+    let content_hash = package_content_hash(&package);
+    publish_v3(&root, &package);
+    let handoff = Handoff::new(&root);
+    let begun = begin(&handoff, &v3_selector(&package, &content_hash));
+    assert!(begun.ok, "{:?}", begun.blockers);
+    let descriptor = begun.descriptor.as_ref().unwrap();
+    assert_eq!(descriptor.object_count, 2 + package.assets.len() as u64);
+    assert!(descriptor
+        .objects
+        .iter()
+        .all(|object| !matches!(object.role, ObjectRole::Markdown | ObjectRole::Html)));
+    let handoff_assets: Vec<_> = descriptor
+        .objects
+        .iter()
+        .filter(|object| object.role == ObjectRole::Asset)
+        .collect();
+    assert_eq!(handoff_assets.len(), package.assets.len());
+    for object in handoff_assets {
+        let (_, expected) = package
+            .asset_bodies
+            .iter()
+            .find(|(sha, _)| sha == &object.stored_sha256)
+            .expect("asset body");
+        assert_eq!(
+            read_all(&handoff, begun.token, &object.object_id, object.byte_length),
+            *expected
+        );
+    }
+    assert!(end(&handoff, begun.token).ok);
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn v3_retained_handles_survive_package_rename_and_unlink() {
+    let root = scratch("v3-stable-fd");
+    let package = gzip_zero_asset_v3();
+    let content_hash = package_content_hash(&package);
+    let package_path = publish_v3(&root, &package);
+    let handoff = Handoff::new(&root);
+    let begun = begin(&handoff, &v3_selector(&package, &content_hash));
+    assert!(begun.ok, "{:?}", begun.blockers);
+    let snapshot_len = begun
+        .descriptor
+        .as_ref()
+        .unwrap()
+        .objects
+        .iter()
+        .find(|object| object.object_id == "snapshot")
+        .unwrap()
+        .byte_length;
+    let moved = root.join("packages").join("moved-v3-out-of-canonical-name");
+    std::fs::rename(&package_path, &moved).expect("rename v3 package");
+    std::fs::remove_dir_all(&moved).expect("unlink v3 package tree");
+    assert_eq!(
+        read_all(&handoff, begun.token, "snapshot", snapshot_len),
+        *package.snapshot.as_ref().unwrap()
+    );
+    let replacement = begin(&handoff, &v3_selector(&package, &content_hash));
+    assert!(!replacement.ok);
+    assert_eq!(blocker(&replacement), codes::PACKAGE_ABSENT);
+    assert!(end(&handoff, begun.token).ok);
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+#[test]
+fn handoff_read_admission_is_independent_from_new_write_family() {
+    let v1_root = scratch("cross-policy-v1");
+    let v1 = v1_fixture("cross_policy_v1", "rollback-readable");
+    publish(&v1_root, &v1);
+    assert!(!ConstructionFamily::V1.is_live_writer_family_for(LiveGenerationFamily::V3));
+    let v1_handoff = Handoff::new(&v1_root);
+    let v1_begin = begin(&v1_handoff, &generation_selector(&v1));
+    assert!(v1_begin.ok, "{:?}", v1_begin.blockers);
+    assert!(end(&v1_handoff, v1_begin.token).ok);
+
+    assert_eq!(
+        crate::saved_chat_generation_policy::production_live_generation_family(),
+        LiveGenerationFamily::V1V2
+    );
+    let v3_root = scratch("cross-policy-v3");
+    let v3 = zero_asset_v3();
+    let content_hash = package_content_hash(&v3);
+    publish_v3(&v3_root, &v3);
+    assert!(!ConstructionFamily::V3.is_live_writer_family());
+    let v3_handoff = Handoff::new(&v3_root);
+    let v3_begin = begin(&v3_handoff, &v3_selector(&v3, &content_hash));
+    assert!(v3_begin.ok, "{:?}", v3_begin.blockers);
+    assert!(end(&v3_handoff, v3_begin.token).ok);
+
+    let _ = std::fs::remove_dir_all(v1_root.parent().unwrap());
+    let _ = std::fs::remove_dir_all(v3_root.parent().unwrap());
+}
+
+#[test]
+fn v3_begin_refuses_semantic_descriptor_inventory_type_and_asset_failures() {
+    let good_identity = zero_asset_v3();
+    let good_identity_hash = package_content_hash(&good_identity);
+    let good_gzip = gzip_zero_asset_v3();
+    let good_gzip_hash = package_content_hash(&good_gzip);
+    let good_assets = permanent_v3_fixture(false);
+    let good_assets_hash = package_content_hash(&good_assets);
+
+    let mut malformed = good_identity.clone();
+    malformed.manifest = b"{".to_vec();
+    assert_direct_v3_refused("v3-malformed", &malformed, &good_identity_hash, |_| {});
+
+    let mut false_content_hash = good_identity.clone();
+    mutate_package_manifest(&mut false_content_hash, |manifest| {
+        manifest["contentHash"] = format!("sha256-{}", "f".repeat(64)).into();
+    });
+    assert_direct_v3_refused(
+        "v3-false-content-hash",
+        &false_content_hash,
+        &good_identity_hash,
+        |_| {},
+    );
+
+    let mut bad_physical_sha = good_identity.clone();
+    mutate_package_manifest(&mut bad_physical_sha, |manifest| {
+        manifest["files"]["snapshot"]["sha256"] = format!("sha256-{}", "e".repeat(64)).into();
+    });
+    assert_direct_v3_refused(
+        "v3-bad-physical-sha",
+        &bad_physical_sha,
+        &good_identity_hash,
+        |_| {},
+    );
+
+    let mut bad_logical_sha = good_gzip.clone();
+    mutate_package_manifest(&mut bad_logical_sha, |manifest| {
+        manifest["files"]["snapshot"]["contentSha256"] =
+            format!("sha256-{}", "d".repeat(64)).into();
+    });
+    assert_direct_v3_refused(
+        "v3-bad-logical-sha",
+        &bad_logical_sha,
+        &good_gzip_hash,
+        |_| {},
+    );
+
+    let mut malformed_gzip = good_gzip.clone();
+    malformed_gzip.snapshot = Some(b"not-gzip".to_vec());
+    rebind_snapshot_physical_descriptor(&mut malformed_gzip);
+    assert_direct_v3_refused(
+        "v3-malformed-gzip",
+        &malformed_gzip,
+        &good_gzip_hash,
+        |_| {},
+    );
+
+    let mut persistent_markdown = good_identity.clone();
+    persistent_markdown.markdown = Some(b"# forbidden durable renderer\n".to_vec());
+    assert_direct_v3_refused(
+        "v3-persistent-markdown",
+        &persistent_markdown,
+        &good_identity_hash,
+        |_| {},
+    );
+
+    assert_direct_v3_refused(
+        "v3-symlink-snapshot",
+        &good_identity,
+        &good_identity_hash,
+        |package_path| {
+            std::fs::remove_file(package_path.join("snapshot.json")).unwrap();
+            std::os::unix::fs::symlink("manifest.json", package_path.join("snapshot.json"))
+                .unwrap();
+        },
+    );
+    assert_direct_v3_refused(
+        "v3-directory-snapshot",
+        &good_identity,
+        &good_identity_hash,
+        |package_path| {
+            std::fs::remove_file(package_path.join("snapshot.json")).unwrap();
+            std::fs::create_dir(package_path.join("snapshot.json")).unwrap();
+        },
+    );
+    assert_direct_v3_refused(
+        "v3-missing-snapshot",
+        &good_identity,
+        &good_identity_hash,
+        |package_path| {
+            std::fs::remove_file(package_path.join("snapshot.json")).unwrap();
+        },
+    );
+
+    assert_direct_v3_refused(
+        "v3-missing-package-asset",
+        &good_assets,
+        &good_assets_hash,
+        |package_path| {
+            std::fs::remove_file(package_path.join(&good_assets.assets[0].path)).unwrap();
+        },
+    );
+    assert_direct_v3_refused(
+        "v3-corrupt-package-asset",
+        &good_assets,
+        &good_assets_hash,
+        |package_path| {
+            std::fs::write(package_path.join(&good_assets.assets[0].path), b"corrupt").unwrap();
+        },
+    );
 }
 
 #[test]

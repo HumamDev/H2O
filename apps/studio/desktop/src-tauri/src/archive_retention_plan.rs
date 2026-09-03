@@ -24,9 +24,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::archive_db_probe::{DbProbeResult, ProtectionSource};
 use crate::archive_cas_scan::CasInventory;
+use crate::archive_db_probe::{DbProbeResult, ProtectionSource};
 use crate::archive_package_scan::{ConstructionFamily, OccupantClass, OrderFact, PackageScan};
+use crate::saved_chat_generation_policy::{
+    production_live_generation_family, LiveGenerationFamily,
+};
 
 /// `DP-M06-RETENTION-FLOOR` — APPROVED 2026-08-28, default `K = 3`.
 pub const RETENTION_FLOOR_K: usize = 3;
@@ -267,19 +270,34 @@ fn protection_reason_for(source: ProtectionSource) -> ProtectionReason {
 
 /// Production entry point: bound to the approved floor.
 pub fn plan(inputs: &RetentionInputs<'_>) -> ReclamationPlan {
+    plan_for_live_family(inputs, production_live_generation_family())
+}
+
+/// Pure active-family seam. Production callers use [`plan`], which binds the
+/// immutable Rust build policy internally; native tests may inject the other
+/// admitted family without mutating process state or accepting renderer input.
+pub(crate) fn plan_for_live_family(
+    inputs: &RetentionInputs<'_>,
+    live_family: LiveGenerationFamily,
+) -> ReclamationPlan {
     // The approved constant is the only production floor. `expect` is safe by
     // construction: RETENTION_FLOOR_K is 3, and a future edit to 0 would fail
     // the invariant test rather than ship a floor-less plan.
-    plan_with_floor(inputs, RETENTION_FLOOR_K)
+    plan_with_floor_for_live_family(inputs, RETENTION_FLOOR_K, live_family)
         .expect("approved retention floor must satisfy K >= 1")
 }
 
 /// The pure engine. `k` is injectable for tests only; production binds the
 /// approved constant above. `K = 0` is invalid per DP-M06-RETENTION-FLOOR and
 /// is refused rather than silently protecting nothing.
-pub fn plan_with_floor(
+pub fn plan_with_floor(inputs: &RetentionInputs<'_>, k: usize) -> Result<ReclamationPlan, String> {
+    plan_with_floor_for_live_family(inputs, k, production_live_generation_family())
+}
+
+pub(crate) fn plan_with_floor_for_live_family(
     inputs: &RetentionInputs<'_>,
     k: usize,
+    live_family: LiveGenerationFamily,
 ) -> Result<ReclamationPlan, String> {
     if k < 1 {
         return Err(codes::INVALID_FLOOR.to_string());
@@ -443,7 +461,10 @@ pub fn plan_with_floor(
 
         // CORRECTION B: format-stale. A VALID generation from a family the live
         // writer does not produce is protected, and is never content-obsolete.
-        if !entry.construction_family.is_live_writer_family() {
+        if !entry
+            .construction_family
+            .is_live_writer_family_for(live_family)
+        {
             reasons.insert(ProtectionReason::FormatStale);
         }
 
@@ -484,7 +505,11 @@ pub fn plan_with_floor(
                     reasons.insert(ProtectionReason::CurrentProjection);
                 }
                 // Candidacy requires the live-writer family AND no protection.
-                if reasons.is_empty() && entry.construction_family.is_live_writer_family() {
+                if reasons.is_empty()
+                    && entry
+                        .construction_family
+                        .is_live_writer_family_for(live_family)
+                {
                     Decision::Candidate {
                         evidence: CandidateEvidence {
                             current_projection_content_hash: content_hash.clone(),

@@ -1529,7 +1529,8 @@ fn commit_consumed(
     }
 }
 
-/// The trusted facts `verify_occupant` establishes about a package on disk.
+/// The trusted facts the all-supported occupant verifier establishes about a
+/// package on disk.
 ///
 /// M06 T2.1 consumes this so the read-only engine reuses the publisher's
 /// verification authority verbatim instead of running an "almost equivalent"
@@ -1539,9 +1540,6 @@ pub(crate) struct VerifiedOccupant {
     pub(crate) dir: confined::Dir,
     pub(crate) manifest: ValidatedManifest,
     pub(crate) manifest_bytes: Vec<u8>,
-    /// Physical stored snapshot bytes. M07 remains V1V2-only in P2.2 and uses
-    /// these exact bytes through its existing retained-handle path.
-    pub(crate) snapshot_bytes: Vec<u8>,
     pub(crate) content_hash: String,
     pub(crate) family: PackageFamily,
     pub(crate) snapshot_encoding: SnapshotEncoding,
@@ -1554,10 +1552,6 @@ pub(crate) struct VerifiedOccupant {
     pub(crate) persistent_members: Vec<String>,
 }
 
-/// Legacy durable-read entry point retained for M07 until its later v3
-/// convergence. Both wrappers below share the same filesystem verifier; only
-/// their explicit family admission differs.
-///
 /// It performs every structural check the publisher already performed: symlinks
 /// are refused and never followed, required members must be present, the
 /// manifest must validate, every DECLARED asset member is re-hashed and
@@ -1567,17 +1561,9 @@ pub(crate) struct VerifiedOccupant {
 ///
 /// TRUSTED-SIDE ONLY — the renderer never adjudicates this (§N.2). The occupant
 /// is never overwritten, repaired or deleted.
-pub(crate) fn verify_occupant(
-    packages: &confined::Dir,
-    name: &[u8],
-) -> Result<VerifiedOccupant, (Outcome, &'static str)> {
-    // Deliberately remains V1V2-only because M07 calls this existing entry
-    // point and its v3 convergence is a later phase.
-    verify_occupant_with_admission(packages, name, VerificationAdmission::V1V2Only)
-}
-
-/// Scanner-only durable-read admission. Supported historical families remain
-/// readable regardless of the active family for new writes.
+/// Shared durable-read admission. The package scanner and M07 transport handoff
+/// both use this entry point, so rollback changes new writes but never read
+/// compatibility for an already-verified family.
 pub(crate) fn verify_occupant_all_supported(
     packages: &confined::Dir,
     name: &[u8],
@@ -1867,7 +1853,6 @@ fn verify_occupant_with_admission(
         dir,
         manifest,
         manifest_bytes,
-        snapshot_bytes,
         content_hash,
         family: package_family,
         snapshot_encoding,
@@ -1895,7 +1880,6 @@ fn classify_occupant(
         dir,
         manifest,
         manifest_bytes: _,
-        snapshot_bytes: _,
         content_hash: derived,
         ..
     } = match verify_occupant_with_admission(packages, name, admission) {

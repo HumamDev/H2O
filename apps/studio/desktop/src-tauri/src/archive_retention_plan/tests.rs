@@ -5,6 +5,7 @@ use crate::archive_cas_scan::CasInventory;
 use crate::archive_package_scan::{
     ClassifiedOccupant, ConstructionFamily, IndeterminateReason, OccupantClass, VerifiedPackage,
 };
+use crate::saved_chat_generation_policy::LiveGenerationFamily;
 
 fn hash(tag: u8) -> String {
     format!("{:02x}{}", tag, "0".repeat(62))
@@ -175,6 +176,25 @@ fn run_with_cas(
         scope: None,
         cas,
     })
+}
+
+fn run_for_family(
+    scan: &PackageScan,
+    db: &DbProbeResult,
+    projections: BTreeMap<String, ProjectionVerdict>,
+    live_family: LiveGenerationFamily,
+) -> ReclamationPlan {
+    let cas = empty_cas();
+    plan_for_live_family(
+        &RetentionInputs {
+            scan,
+            db,
+            projections,
+            scope: None,
+            cas: &cas,
+        },
+        live_family,
+    )
 }
 
 fn decision_for<'a>(plan: &'a ReclamationPlan, name: &str) -> &'a Decision {
@@ -739,11 +759,7 @@ fn k_plus_two_valid_non_live_family_generations_are_all_format_stale_protected()
         .filter(|l| !l.starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(
-        code.contains("reasons.is_empty() && entry.construction_family.is_live_writer_family()"),
-        "candidacy must require the live-writer family"
-    );
-    assert!(code.contains("if !entry.construction_family.is_live_writer_family() {"));
+    assert!(code.contains("is_live_writer_family_for(live_family)"));
 }
 
 /// CORRECTION B — live-family control: with K+2 live-family generations, older
@@ -767,6 +783,95 @@ fn k_plus_two_live_family_generations_prune_normally() {
             assert!(!reasons.contains(&ProtectionReason::FormatStale));
         }
     }
+}
+
+#[test]
+fn active_family_policy_reclassifies_without_making_old_formats_destructive() {
+    const N: u8 = (RETENTION_FLOOR_K as u8) + 2;
+    let d = db(vec![], vec![]);
+
+    for (family, live_policy, rollback_policy) in [
+        (
+            ConstructionFamily::V3,
+            LiveGenerationFamily::V3,
+            LiveGenerationFamily::V1V2,
+        ),
+        (
+            ConstructionFamily::V1,
+            LiveGenerationFamily::V1V2,
+            LiveGenerationFamily::V3,
+        ),
+        (
+            ConstructionFamily::V2,
+            LiveGenerationFamily::V1V2,
+            LiveGenerationFamily::V3,
+        ),
+    ] {
+        let occupants: Vec<_> = (1..=N)
+            .map(|tag| generation_in("chat_policy", tag, &day(tag as u32), family))
+            .collect();
+        let s = scan(occupants);
+        let projection = verdicts(&[("chat_policy", &hash(N))]);
+
+        let active = run_for_family(&s, &d, projection.clone(), live_policy);
+        assert_eq!(
+            active.totals.candidates,
+            N as usize - RETENTION_FLOOR_K,
+            "the active family must retain ordinary content-stale candidacy"
+        );
+        assert!(active
+            .decisions
+            .iter()
+            .all(|decision| match &decision.decision {
+                Decision::Protected { reasons } =>
+                    !reasons.contains(&ProtectionReason::FormatStale),
+                Decision::Candidate { .. } | Decision::Excluded { .. } => true,
+            }));
+
+        let rolled_back = run_for_family(&s, &d, projection, rollback_policy);
+        assert_eq!(rolled_back.totals.candidates, 0);
+        for decision in &rolled_back.decisions {
+            let Decision::Protected { reasons } = &decision.decision else {
+                panic!("non-live family must be protected: {decision:?}");
+            };
+            assert!(reasons.contains(&ProtectionReason::FormatStale));
+        }
+        assert!(
+            s.occupants.iter().all(|occupant| match &occupant.class {
+                OccupantClass::VerifiedGeneration(package) => package.construction_family == family,
+                _ => false,
+            }),
+            "policy changes classification, never verified construction family"
+        );
+    }
+}
+
+#[test]
+fn production_plan_is_exactly_the_shared_v1v2_policy_mapping() {
+    assert_eq!(
+        crate::saved_chat_generation_policy::production_live_generation_family(),
+        LiveGenerationFamily::V1V2
+    );
+    let s = scan(vec![
+        generation_in("chat_prod", 1, &day(1), ConstructionFamily::V1),
+        generation_in("chat_prod", 2, &day(2), ConstructionFamily::V2),
+        generation_in("chat_prod", 3, &day(3), ConstructionFamily::V3),
+    ]);
+    let d = db(vec![], vec![]);
+    let projections = verdicts(&[("chat_prod", &hash(3))]);
+    let cas = empty_cas();
+    let inputs = RetentionInputs {
+        scan: &s,
+        db: &d,
+        projections: projections.clone(),
+        scope: None,
+        cas: &cas,
+    };
+    assert_eq!(
+        plan(&inputs),
+        run_for_family(&s, &d, projections, LiveGenerationFamily::V1V2),
+        "Preview and Execute both call plan, whose production result must be the shared build policy"
+    );
 }
 
 /// CORRECTION C — read-only orphan ANALYSIS: observed minus referenced.

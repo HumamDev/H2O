@@ -18,9 +18,10 @@ use std::time::Instant;
 
 use crate::archive_durable_write::{confined, sha256_hex};
 use crate::archive_generation_publish::{
-    cas_relative_parts, generation_basename, validated_chat_id, verify_occupant,
+    cas_relative_parts, generation_basename, validated_chat_id, verify_occupant_all_supported,
 };
 use crate::archive_package_scan::{legacy_basename, ConstructionFamily};
+use crate::saved_chat_package_verify::{PackageFamily, SnapshotEncoding};
 
 pub const HANDOFF_SCHEMA: &str = "h2o.savedChatTransportHandoff.v1";
 pub const REPRESENTATION_SCHEMA: &str = "h2o.savedChatTransportRepresentation.v1";
@@ -396,6 +397,9 @@ fn open_exact_object(
     media_type: String,
     expected_sha: &str,
     expected_len: u64,
+    encoding: Option<String>,
+    logical_sha256: Option<String>,
+    logical_byte_length: Option<u64>,
     unavailable_code: &'static str,
     mismatch_code: &'static str,
 ) -> Result<OpenObject, &'static str> {
@@ -416,11 +420,9 @@ fn open_exact_object(
             media_type,
             stored_sha256,
             byte_length,
-            // V1/V2 descriptors expose no encoding/logical fields. Future v3
-            // admission must carry its verified values here without inference.
-            encoding: None,
-            logical_sha256: None,
-            logical_byte_length: None,
+            encoding,
+            logical_sha256,
+            logical_byte_length,
         },
         file,
     })
@@ -532,7 +534,10 @@ fn prepare(
         Ok(Some(_)) => {}
         Err(_) => return Err(codes::PACKAGE_UNVERIFIED),
     }
-    let verified = verify_occupant(&packages, package_name.as_bytes())
+    // Durable READ admission is deliberately independent from the active
+    // NEW-write family. Rollback may stop new v3 publication, but a verified
+    // v3 generation must remain transportable.
+    let verified = verify_occupant_all_supported(&packages, package_name.as_bytes())
         .map_err(|_| codes::PACKAGE_UNVERIFIED)?;
 
     let verified_hex = crate::archive_durable_write::normalize_expected_sha(&verified.content_hash)
@@ -545,14 +550,10 @@ fn prepare(
         return Err(codes::PACKAGE_IDENTITY_MISMATCH);
     }
 
-    let construction_family = match (
-        verified.manifest.schema_version,
-        verified.manifest.payload_version,
-        verified.manifest.payload_v2,
-    ) {
-        (1, None, false) => ConstructionFamily::V1,
-        (2, Some(2), true) => ConstructionFamily::V2,
-        _ => return Err(codes::PACKAGE_FAMILY_UNSUPPORTED),
+    let construction_family = match verified.family {
+        PackageFamily::V1 => ConstructionFamily::V1,
+        PackageFamily::V2 => ConstructionFamily::V2,
+        PackageFamily::V3 => ConstructionFamily::V3,
     };
 
     let mut opened = Vec::new();
@@ -565,48 +566,73 @@ fn prepare(
         "application/json".to_string(),
         &manifest_sha,
         verified.manifest_bytes.len() as u64,
+        None,
+        None,
+        None,
         codes::MEMBER_UNAVAILABLE,
         codes::MEMBER_IDENTITY_MISMATCH,
     )?);
 
-    // Current authoritative verifier admits v1/v2 only, for which all three
-    // payload/presentation descriptors are required. A future v3 verifier must
-    // add its version-aware branch instead of inheriting these renderer rules.
-    for (key, name, object_id, role, media_type) in [
-        (
-            "snapshot",
-            b"snapshot.json".as_slice(),
-            "snapshot",
-            ObjectRole::Snapshot,
-            "application/json",
-        ),
-        (
-            "markdown",
-            b"chat.md".as_slice(),
-            "markdown",
-            ObjectRole::Markdown,
-            "text/markdown",
-        ),
-        (
-            "html",
-            b"chat.html".as_slice(),
-            "html",
-            ObjectRole::Html,
-            "text/html",
-        ),
-    ] {
-        let (sha, len) = required_file(&verified.manifest.files, key)?;
-        opened.push(open_exact_object(
-            &verified.dir,
-            name,
-            object_id.to_string(),
-            role,
-            media_type.to_string(),
-            &sha,
-            len,
-            codes::MEMBER_UNAVAILABLE,
-            codes::MEMBER_IDENTITY_MISMATCH,
-        )?);
+    let snapshot_encoding = if construction_family == ConstructionFamily::V3 {
+        Some(match verified.snapshot_encoding {
+            SnapshotEncoding::Identity => "identity".to_string(),
+            SnapshotEncoding::Gzip => "gzip".to_string(),
+        })
+    } else {
+        None
+    };
+    opened.push(open_exact_object(
+        &verified.dir,
+        b"snapshot.json",
+        "snapshot".to_string(),
+        ObjectRole::Snapshot,
+        "application/json".to_string(),
+        &verified.snapshot_physical_sha256,
+        verified.snapshot_physical_byte_length,
+        snapshot_encoding,
+        (construction_family == ConstructionFamily::V3)
+            .then(|| verified.logical_snapshot_sha256.clone()),
+        (construction_family == ConstructionFamily::V3)
+            .then_some(verified.logical_snapshot_byte_length),
+        codes::MEMBER_UNAVAILABLE,
+        codes::MEMBER_IDENTITY_MISMATCH,
+    )?);
+
+    // V1/V2 persist presentation members. V3 does not: Markdown and HTML are
+    // derived only by M08 export and never enter its durable object inventory.
+    if construction_family != ConstructionFamily::V3 {
+        for (key, name, object_id, role, media_type) in [
+            (
+                "markdown",
+                b"chat.md".as_slice(),
+                "markdown",
+                ObjectRole::Markdown,
+                "text/markdown",
+            ),
+            (
+                "html",
+                b"chat.html".as_slice(),
+                "html",
+                ObjectRole::Html,
+                "text/html",
+            ),
+        ] {
+            let (sha, len) = required_file(&verified.manifest.files, key)?;
+            opened.push(open_exact_object(
+                &verified.dir,
+                name,
+                object_id.to_string(),
+                role,
+                media_type.to_string(),
+                &sha,
+                len,
+                None,
+                None,
+                None,
+                codes::MEMBER_UNAVAILABLE,
+                codes::MEMBER_IDENTITY_MISMATCH,
+            )?);
+        }
     }
 
     // Assets are opened from canonical CAS. Location comes only from the
@@ -631,6 +657,9 @@ fn prepare(
                 asset.mime_type.clone(),
                 &asset.sha256,
                 asset.byte_length,
+                None,
+                None,
+                None,
                 codes::ASSET_UNAVAILABLE,
                 codes::ASSET_IDENTITY_MISMATCH,
             )?);
