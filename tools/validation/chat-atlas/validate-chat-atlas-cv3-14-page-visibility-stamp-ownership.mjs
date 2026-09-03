@@ -13,6 +13,15 @@ const DIVIDER_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️
 const VALIDATOR_PATH = 'tools/validation/chat-atlas/validate-chat-atlas-cv3-14-page-visibility-stamp-ownership.mjs';
 const BASE = 'f6d948c9721b9319d1c1c6f7ac1fd037c46bb9c1';
 const P03C_BASE = 'ac18cc70323d5b9b7b094bcef0afd4d432787437';
+const P03C_VERIFIED_HEAD = 'c40809a18675d0812186124ce77bf8f3c0b35e36';
+const P03C_VERIFIED_PAGE_BLOB = '906fd4856fad632b2caf05062af309513e42d421';
+const P03C_PATHS = Object.freeze([
+  PAGE_PATH,
+  'tools/validation/chat-atlas/validate-chat-atlas-cv3-11-effective-title-list-collapse.mjs',
+  'tools/validation/chat-atlas/validate-chat-atlas-cv3-13-title-list-page-hydration.mjs',
+  VALIDATOR_PATH,
+  'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+]);
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 // The chat page's structural implementation moved out of MiniMap Core into
 // 0C3a Chat Page Structure Engine, so the MiniMap source read here is that
@@ -63,6 +72,54 @@ async function fixture(name, run) {
     fixtures.push({ name, ok: true });
   } catch (error) {
     fixtures.push({ name, ok: false, error: String(error?.stack || error) });
+  }
+}
+
+function exactPathSet(actual = [], expected = []) {
+  const left = Array.from(new Set(actual.map(String))).sort();
+  const right = Array.from(new Set(expected.map(String))).sort();
+  return left.length === right.length && left.every((file, index) => file === right[index]);
+}
+
+function isValidatorMaintenancePath(file = '') {
+  const value = String(file || '');
+  return value.startsWith('tools/validation/')
+    && value.endsWith('.mjs')
+    && !value.includes('/../')
+    && !value.includes('//');
+}
+
+function verifiedDescendantScopeValid({
+  verifiedAncestor = false,
+  verifiedBlob = '',
+  currentBlob = '',
+  workingBlob = '',
+  descendantPaths = [],
+  dirtyNonValidatorPaths = [],
+} = {}) {
+  return verifiedAncestor === true
+    && verifiedBlob === P03C_VERIFIED_PAGE_BLOB
+    && currentBlob === verifiedBlob
+    && workingBlob === verifiedBlob
+    && descendantPaths.every(isValidatorMaintenancePath)
+    && dirtyNonValidatorPaths.length === 0;
+}
+
+function gitPathList(args = []) {
+  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' })
+    .split('\0')
+    .filter(Boolean);
+}
+
+function isAncestor(ancestor, descendant = 'HEAD') {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], {
+      cwd: ROOT,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -617,24 +674,61 @@ await fixture('safety counters remain zero', () => {
 });
 
 await fixture('scope is limited to approved page and divider ownership', () => {
-  const changedTracked = execFileSync('git', ['diff', '--name-only', '-z', P03C_BASE], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  }).split('\0').filter(Boolean);
-  const changedUntracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '-z'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  }).split('\0').filter(Boolean);
-  const changed = Array.from(new Set([...changedTracked, ...changedUntracked])).sort();
-  const allowed = new Set([
-    PAGE_PATH,
-    'tools/validation/chat-atlas/validate-chat-atlas-cv3-11-effective-title-list-collapse.mjs',
-    'tools/validation/chat-atlas/validate-chat-atlas-cv3-13-title-list-page-hydration.mjs',
-    VALIDATOR_PATH,
-    'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+  const historicalPaths = gitPathList([
+    'diff', '--name-only', '-z', `${P03C_BASE}..${P03C_VERIFIED_HEAD}`,
   ]);
-  equal(changed.every((file) => allowed.has(file)), true, 'only the five approved P03C paths change');
-  equal(changed.includes(VALIDATOR_PATH), true, 'CV-3.14 participates in the P03C assurance package');
+  const descendantPaths = gitPathList([
+    'diff', '--name-only', '-z', `${P03C_VERIFIED_HEAD}..HEAD`,
+  ]);
+  const dirtyTracked = [
+    ...gitPathList(['diff', '--name-only', '-z']),
+    ...gitPathList(['diff', '--cached', '--name-only', '-z']),
+  ];
+  const dirtyUntracked = gitPathList(['ls-files', '--others', '--exclude-standard', '-z']);
+  const dirtyNonValidatorPaths = Array.from(new Set([...dirtyTracked, ...dirtyUntracked]))
+    .filter((file) => !isValidatorMaintenancePath(file));
+  const verifiedBlob = execFileSync(
+    'git', ['rev-parse', `${P03C_VERIFIED_HEAD}:${PAGE_PATH}`], { cwd: ROOT, encoding: 'utf8' },
+  ).trim();
+  const currentBlob = execFileSync(
+    'git', ['rev-parse', `HEAD:${PAGE_PATH}`], { cwd: ROOT, encoding: 'utf8' },
+  ).trim();
+  const workingBlob = execFileSync(
+    'git', ['hash-object', PAGE_PATH], { cwd: ROOT, encoding: 'utf8' },
+  ).trim();
+  const currentEvidence = {
+    verifiedAncestor: isAncestor(P03C_VERIFIED_HEAD),
+    verifiedBlob,
+    currentBlob,
+    workingBlob,
+    descendantPaths,
+    dirtyNonValidatorPaths,
+  };
+
+  equal(exactPathSet(historicalPaths, P03C_PATHS), true, 'historical P03C package is the exact five-path set');
+  equal(verifiedDescendantScopeValid(currentEvidence), true, 'verified P03C production blob survives validator-only descendants');
+  equal(descendantPaths.every(isValidatorMaintenancePath), true, 'committed descendant delta is validator maintenance only');
+  equal(dirtyNonValidatorPaths, [], 'worktree has no dirty or untracked product/source path');
+  equal(P03C_PATHS.includes(VALIDATOR_PATH), true, 'CV-3.14 participates in the historical P03C assurance package');
+
+  equal(exactPathSet(P03C_PATHS, P03C_PATHS), true, 'exact historical set is accepted');
+  equal(
+    exactPathSet([...P03C_PATHS, 'src-runtime-base/unauthorized-p03c-expansion.js'], P03C_PATHS),
+    false,
+    'historical production-path expansion is rejected',
+  );
+  equal(verifiedDescendantScopeValid({
+    ...currentEvidence,
+    descendantPaths: ['tools/validation/chat-atlas/synthetic-maintenance.mjs'],
+  }), true, 'validator-only descendant is accepted');
+  equal(verifiedDescendantScopeValid({
+    ...currentEvidence,
+    currentBlob: '0000000000000000000000000000000000000000',
+  }), false, 'current 1C1b blob mismatch is rejected');
+  equal(verifiedDescendantScopeValid({
+    ...currentEvidence,
+    descendantPaths: [...descendantPaths, 'src-runtime-base/unauthorized-descendant.js'],
+  }), false, 'descendant production path is rejected');
   equal(PAGE_SOURCE.includes('reconcileTitleListFlowHiddenArtifacts'), true, 'cleanup owner is Thread Pages');
   equal(DIVIDER_SOURCE.includes('authority-previous-page-unit'), true, 'supporting change is divider durability only');
 });
