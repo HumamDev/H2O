@@ -25,6 +25,9 @@
 use crate::archive_durable_write::{confined, ARCHIVE_ROOT};
 use crate::archive_generation_order::{UnorderableReason, VerifiedGenerationFacts};
 use crate::archive_generation_publish::{verify_occupant, Outcome};
+use crate::saved_chat_generation_policy::{
+    production_live_generation_family, LiveGenerationFamily,
+};
 
 /// The canonical package suffix. Paired with `generation_basename` in the
 /// publisher; a test pins that this parser is that constructor's inverse.
@@ -111,23 +114,29 @@ pub enum ConstructionFamily {
     ///
     /// No verified on-disk package can carry this family today — `verified_package`
     /// only ever produces V1 or V2. It exists so the format-stale protection is
-    /// real and testable rather than latent, and so activating v3 later is a
-    /// reviewable change to `is_live_writer_family` alone.
+    /// real and testable rather than latent, and so later consumers can use the
+    /// one trusted active-generation-family policy without adding another flag.
     V3,
 }
 
 impl ConstructionFamily {
     /// True when this family is one the CURRENT live writer produces. Both
     /// admitted families are live today; this predicate exists so the
-    /// distinction is explicit rather than assumed, and so activating another
-    /// family later is a one-line, reviewable change.
+    /// distinction is explicit rather than assumed. The policy remains V1V2 in
+    /// production; P2.1 changes no destructive classification result.
     pub fn is_live_writer_family(self) -> bool {
-        match self {
+        self.is_live_writer_family_for(production_live_generation_family())
+    }
+
+    /// Pure policy seam: production calls the immutable build policy above;
+    /// tests and later P2 consumers may inject a family without mutable state.
+    pub(crate) fn is_live_writer_family_for(self, policy: LiveGenerationFamily) -> bool {
+        match (policy, self) {
             // `buildSavedChatPackageV1` emits BOTH: V2 when inline assets were
             // extracted, V1 otherwise. One writer, content-conditional output.
-            ConstructionFamily::V1 | ConstructionFamily::V2 => true,
-            // Live-v3 is OFF; no live path constructs it.
-            ConstructionFamily::V3 => false,
+            (LiveGenerationFamily::V1V2, ConstructionFamily::V1 | ConstructionFamily::V2) => true,
+            (LiveGenerationFamily::V3, ConstructionFamily::V3) => true,
+            _ => false,
         }
     }
 }

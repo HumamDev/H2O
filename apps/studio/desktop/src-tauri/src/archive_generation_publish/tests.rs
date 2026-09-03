@@ -1776,12 +1776,13 @@ fn expected_manifest_sha_can_only_refuse() {
 }
 
 #[test]
-fn the_module_uses_no_generic_canonicalizer_and_no_colon_identity() {
+fn the_trusted_verifier_uses_no_generic_canonicalizer_and_no_colon_identity() {
     // Wrong-canonicalizer tripwire (§T / C7). The identity path must not reuse
     // transport canonicalization, generic object sorting, or a `sha256:` form.
-    let source = include_str!("../archive_generation_publish.rs");
+    let publisher_source = include_str!("../archive_generation_publish.rs");
+    let source = include_str!("../saved_chat_package_verify.rs");
     assert!(
-        !source.contains("sorted_json_value"),
+        !publisher_source.contains("sorted_json_value") && !source.contains("sorted_json_value"),
         "archive identity must not reuse transport canonicalization"
     );
     // The colon form would appear as a string literal prefix (`"sha256:`), not

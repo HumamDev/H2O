@@ -105,6 +105,14 @@ pub mod archive_retention_plan;
 /// canonical package namespace. Registers no command and mutates nothing.
 pub mod archive_package_scan;
 
+/// M09 P2.1 — the one immutable-per-build active generation-family policy.
+/// Exposes one read-only query; there is no setter or persisted feature state.
+pub mod saved_chat_generation_policy;
+
+/// M09 P2.1 — private saved-chat-only semantic verifier for v1/v2 and dormant
+/// v3 identity/gzip admission. Filesystem consumers remain trusted adapters.
+pub(crate) mod saved_chat_package_verify;
+
 /// M07 P0/P1 — storage-owned, read-only immutable transport-object handoff.
 /// Semantic selectors only; retained verified handles expose bounded reads and
 /// carry no remote, path, credential, outbox, ledger or destructive authority.
@@ -2591,6 +2599,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            saved_chat_generation_policy::h2o_saved_chat_generation_policy,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
@@ -2636,6 +2645,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_write_member,
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
+            saved_chat_generation_policy::h2o_saved_chat_generation_policy,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,

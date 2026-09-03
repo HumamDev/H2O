@@ -30,6 +30,11 @@ reqwest = { version = "0.13.3", default-features = false, features = ["blocking"
 # Already pinned transitively via the sqlx/digest chain; promoting to a
 # direct dep so synthetic_cleanup_dryrun.rs can `use sha2::*` cleanly.
 sha2 = "0.10"
+# M09 P2.1: bounded trusted verification of the already-governed v3 gzip
+# representation. This exact version is already resolved transitively in the
+# workspace lockfile; declaring it directly lets the saved-chat verifier use it
+# without introducing another compression format or changing resolution.
+flate2 = "1.1.9"
 # Archive durable write — macOS `F_FULLFSYNC` (plain fsync(2) does not flush
 # the drive cache on Darwin) and percent-decoding of the destination header,
 # mirroring `plugin:fs|write_file`'s marshaling. Both are already pinned

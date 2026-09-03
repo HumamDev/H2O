@@ -47,6 +47,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::archive_durable_write::{confined, sha256_hex, ARCHIVE_ROOT};
+pub(crate) use crate::saved_chat_package_verify::ValidatedManifest;
+use crate::saved_chat_package_verify::{self, VerificationAdmission};
 
 pub const GENERATION_PUBLISH_SCHEMA: &str = "h2o.studio.archive.generation-publish.v1";
 
@@ -913,50 +915,9 @@ pub fn abort(publisher: &Publisher, token: u64) -> AckResult {
 
 // ── Identity (§L, §T) ──────────────────────────────────────────────────────
 
-/// A validated `sha256-<64 lowercase hex>` string, kept in its RAW form because
-/// the v2 pre-image consumes exactly the manifest's own strings.
-fn validated_sha_string(value: &str) -> Option<&str> {
-    let hex = value.strip_prefix("sha256-")?;
-    if hex.len() == 64
-        && hex
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        Some(value)
-    } else {
-        None
-    }
-}
-
-/// v2 identity pre-image, built BY HAND.
-///
-/// This module owns NO general-purpose JSON canonicalizer and must never
-/// acquire one: the JS producer sorts keys then relies on `JSON.stringify`,
-/// which emits integer-index-like property names in ascending numeric order
-/// FIRST regardless of insertion order — so a generic port is wrong in general.
-/// This descriptor is safe precisely because its only two property names are
-/// non-integer ASCII, and it is constructed literally rather than serialized.
-///
-/// Every element is pre-validated against the ASCII sha grammar, so no element
-/// can contain a character requiring JSON escaping, and the JS `.sort()`
-/// (UTF-16 code units) and Rust byte order coincide.
-///
-/// The hash math does NOT deduplicate: it hashes the list it is given, exactly
-/// as the historical producer does.
+#[cfg(test)]
 fn v2_content_pre_image(snapshot_sha: &str, sorted_asset_shas: &[String]) -> String {
-    let mut out = String::from("{\"assets\":[");
-    for (index, sha) in sorted_asset_shas.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push('"');
-        out.push_str(sha);
-        out.push('"');
-    }
-    out.push_str("],\"snapshot\":\"");
-    out.push_str(snapshot_sha);
-    out.push_str("\"}");
-    out
+    saved_chat_package_verify::v2_content_pre_image(snapshot_sha, sorted_asset_shas)
 }
 
 /// Test-only access to the identity derivation, so a T2.1 fixture can build a
@@ -967,7 +928,11 @@ pub(crate) fn derive_content_hash_for_test(
     snapshot_bytes: &[u8],
     sorted_asset_shas: &[String],
 ) -> String {
-    derive_content_hash(payload_v2, snapshot_bytes, sorted_asset_shas)
+    saved_chat_package_verify::derive_content_hash_v1_v2(
+        payload_v2,
+        snapshot_bytes,
+        sorted_asset_shas,
+    )
 }
 
 /// Derives the package content hash from the STAGED BYTES.
@@ -980,181 +945,20 @@ fn derive_content_hash(
     snapshot_bytes: &[u8],
     sorted_asset_shas: &[String],
 ) -> String {
-    let snapshot_sha = format!("sha256-{}", sha256_hex(snapshot_bytes));
-    if !payload_v2 {
-        return snapshot_sha;
-    }
-    let pre_image = v2_content_pre_image(&snapshot_sha, sorted_asset_shas);
-    format!("sha256-{}", sha256_hex(pre_image.as_bytes()))
+    saved_chat_package_verify::derive_content_hash_v1_v2(
+        payload_v2,
+        snapshot_bytes,
+        sorted_asset_shas,
+    )
 }
 
 // ── Manifest validation (§S, §V) ───────────────────────────────────────────
-
-#[derive(Debug)]
-pub(crate) struct AssetDescriptor {
-    pub(crate) path: String,
-    pub(crate) sha256: String,
-    pub(crate) ext: String,
-    pub(crate) mime_type: String,
-    pub(crate) byte_length: u64,
-}
-
-#[derive(Debug)]
-pub(crate) struct ValidatedManifest {
-    pub(crate) schema_version: u64,
-    pub(crate) payload_version: Option<u64>,
-    pub(crate) chat_id: String,
-    pub(crate) snapshot_id: String,
-    pub(crate) content_hash: String,
-    pub(crate) payload_v2: bool,
-    pub(crate) assets: Vec<AssetDescriptor>,
-    /// key -> (sha256, byteLength)
-    pub(crate) files: BTreeMap<String, (String, u64)>,
-}
-
-fn json_str(value: &serde_json::Value, key: &str) -> String {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string()
-}
 
 /// Validates the staged manifest. Every refusal here corresponds to a governed
 /// v1/v2 verifier blocker (§S), so nothing this gate admits can fail the reader
 /// — except the RESIDUAL class, which is deliberately NOT enforced.
 fn validate_manifest(bytes: &[u8]) -> Result<ValidatedManifest, &'static str> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| "generation-manifest-json-invalid")?;
-    if !value.is_object() {
-        return Err("generation-manifest-json-invalid");
-    }
-    if json_str(&value, "schema") != "h2o.savedChatPackage" {
-        return Err("generation-manifest-schema-invalid");
-    }
-
-    let schema_version = value.get("schemaVersion").and_then(|v| v.as_u64());
-    let payload_version = value.get("payloadVersion").and_then(|v| v.as_u64());
-    let has_payload_key = value.get("payloadVersion").is_some();
-    let assets_value = value.get("assets");
-    let assets_array = match assets_value {
-        None => Vec::new(),
-        Some(serde_json::Value::Array(items)) => items.clone(),
-        Some(_) => return Err("generation-manifest-assets-invalid"),
-    };
-
-    // Coherent version triple (§V). v1: schemaVersion 1, NO payloadVersion key,
-    // assets empty. v2: schemaVersion 2, payloadVersion 2, assets non-empty.
-    // Anything else — including schemaVersion 3 — is refused: M05 admits v1
-    // and v2 only.
-    let payload_v2 = match (schema_version, has_payload_key, payload_version) {
-        (Some(1), false, _) if assets_array.is_empty() => false,
-        (Some(2), true, Some(2)) if !assets_array.is_empty() => true,
-        _ => return Err("generation-manifest-version-triple-incoherent"),
-    };
-
-    let chat_id = json_str(&value, "chatId");
-    if chat_id.is_empty() {
-        return Err("generation-manifest-chat-id-missing");
-    }
-    let snapshot_id = json_str(&value, "snapshotId");
-    if snapshot_id.is_empty() || snapshot_id.trim() != snapshot_id {
-        // Same reason as mimeType: the verifier compares a TRIMMED manifest
-        // value against the RAW snapshot value, so a padded id passes here and
-        // blocks there.
-        return Err("generation-manifest-snapshot-id-missing");
-    }
-    let content_hash = json_str(&value, "contentHash");
-    if validated_sha_string(&content_hash).is_none() {
-        return Err("generation-manifest-content-hash-invalid");
-    }
-
-    // files descriptors, matched BY KEY (not by path).
-    let mut files = BTreeMap::new();
-    let files_value = value
-        .get("files")
-        .and_then(|v| v.as_object())
-        .ok_or("generation-manifest-files-invalid")?;
-    for (key, descriptor) in files_value {
-        let sha = json_str(descriptor, "sha256");
-        if validated_sha_string(&sha).is_none() {
-            return Err("generation-manifest-file-sha-invalid");
-        }
-        let len = descriptor
-            .get("byteLength")
-            .and_then(|v| v.as_u64())
-            .ok_or("generation-manifest-file-byte-length-invalid")?;
-        files.insert(key.clone(), (sha, len));
-    }
-
-    // Asset descriptors: full reader-contract validation (§S).
-    let mut assets = Vec::new();
-    for item in &assets_array {
-        let sha = json_str(item, "sha256");
-        let sha = validated_sha_string(&sha).ok_or("generation-manifest-asset-sha-invalid")?;
-        let path = json_str(item, "path");
-        let ext = json_str(item, "ext");
-        if ext.is_empty() {
-            return Err("generation-manifest-asset-ext-missing");
-        }
-        let mime = json_str(item, "mimeType");
-        // The verifier trims before testing emptiness, so a whitespace-only
-        // mimeType passes a raw check here and blocks in the reader. Refusing
-        // non-trim-invariant values keeps the gate a superset without
-        // normalizing near identity code. Class B: the sanctioned writer
-        // cannot emit padding.
-        if mime.trim().is_empty() {
-            return Err("generation-manifest-asset-mime-missing");
-        }
-        let byte_length = item
-            .get("byteLength")
-            .and_then(|v| v.as_u64())
-            .ok_or("generation-manifest-asset-byte-length-invalid")?;
-        if !ext
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        {
-            return Err("generation-manifest-asset-ext-invalid");
-        }
-        // Path is exactly `assets/<sha>.<ext>` — the descriptor cannot name any
-        // other location.
-        let expected_path = format!("assets/{sha}.{ext}");
-        if path != expected_path {
-            return Err("generation-manifest-asset-path-invalid");
-        }
-        assets.push(AssetDescriptor {
-            path,
-            sha256: sha.to_string(),
-            ext,
-            mime_type: mime,
-            byte_length,
-        });
-    }
-
-    // Descriptor uniqueness (§S, class B — writer-conformant). Refuses nothing
-    // the sanctioned writer can produce; the READER still accepts historical
-    // duplicate-bearing packages, and the hash math above still does not dedupe.
-    let mut seen_sha = std::collections::BTreeSet::new();
-    let mut seen_path = std::collections::BTreeSet::new();
-    for asset in &assets {
-        if !seen_sha.insert(asset.sha256.clone()) {
-            return Err("generation-manifest-asset-duplicate-sha");
-        }
-        if !seen_path.insert(asset.path.clone()) {
-            return Err("generation-manifest-asset-duplicate-path");
-        }
-    }
-
-    Ok(ValidatedManifest {
-        schema_version: schema_version.expect("version triple validated above"),
-        payload_version,
-        chat_id,
-        snapshot_id,
-        content_hash,
-        payload_v2,
-        assets,
-        files,
-    })
+    saved_chat_package_verify::validate_manifest(bytes, VerificationAdmission::V1V2Only)
 }
 
 /// Cross-checks the staged snapshot against the manifest (§S).
@@ -1163,42 +967,12 @@ fn validate_snapshot_cross_binding(
     manifest: &ValidatedManifest,
     begin_chat_id: &str,
 ) -> Result<(), &'static str> {
-    let value: serde_json::Value =
-        serde_json::from_slice(snapshot_bytes).map_err(|_| "generation-snapshot-json-invalid")?;
-    let chat_id = json_str(&value, "chatId");
-    if chat_id != manifest.chat_id || chat_id != begin_chat_id {
-        return Err("generation-chat-id-mismatch");
-    }
-    let snapshot_snapshot_id = json_str(&value, "snapshotId");
-    // The snapshot's own value must also be trim-invariant: the verifier
-    // compares trimmed-manifest against raw-snapshot, so equal-but-padded
-    // values pass here and mismatch there.
-    if snapshot_snapshot_id != manifest.snapshot_id
-        || snapshot_snapshot_id.trim() != snapshot_snapshot_id
-    {
-        return Err("generation-snapshot-id-mismatch");
-    }
-    // Snapshot asset references must be a subset of the manifest's assets.
-    let declared: std::collections::BTreeSet<&str> =
-        manifest.assets.iter().map(|a| a.sha256.as_str()).collect();
-    if let Some(messages) = value.get("messages").and_then(|v| v.as_array()) {
-        for message in messages {
-            let refs = match message.get("assetRefs").and_then(|v| v.as_array()) {
-                Some(refs) => refs,
-                None => continue,
-            };
-            for entry in refs {
-                let sha = entry.as_str().unwrap_or_default();
-                if validated_sha_string(sha).is_none() {
-                    return Err("generation-snapshot-asset-ref-invalid");
-                }
-                if !declared.contains(sha) {
-                    return Err("generation-snapshot-asset-ref-missing-manifest");
-                }
-            }
-        }
-    }
-    Ok(())
+    saved_chat_package_verify::validate_snapshot_cross_binding(
+        snapshot_bytes,
+        manifest,
+        begin_chat_id,
+    )
+    .map(|_| ())
 }
 
 // ── COMMIT (§G, §N) ────────────────────────────────────────────────────────
