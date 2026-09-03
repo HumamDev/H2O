@@ -1571,15 +1571,15 @@
 
   /* M05 G1: the dormant v3 package writer is RETIRED as a mutation path.
    *
-   * It had no production caller and live v3 remains OFF, but it was the last
+   * It had no production caller when retired, but it was the last
    * renderer-side code able to mkdir a package directory and write members
    * under archive/**. Leaving it callable would have kept exactly the
    * authority the G1 capability cutover removes — and after that cutover its
    * plugin-fs calls could only fail with an opaque scope error.
    *
    * Publication of any version goes through the trusted generation publisher.
-   * When live v3 is separately activated, it publishes through that same
-   * trusted path; it does not resurrect this one.
+   * Live v3 publishes through that same trusted path; activation does not
+   * resurrect this one.
    */
   async function writeSavedChatPackageV3() {
     throw new Error('writeSavedChatPackageV3 is retired: saved chat packages are published as immutable generations by trusted code (M05 G1)');

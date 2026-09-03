@@ -1,8 +1,6 @@
 use super::*;
 use crate::archive_durable_write::sha256_hex;
-use crate::archive_generation_publish::{
-    begin, commit, commit_with_policy, write_member, Member, Publisher,
-};
+use crate::archive_generation_publish::{begin, commit_with_policy, write_member, Member, Publisher};
 use crate::saved_chat_generation_policy::LiveGenerationFamily;
 use crate::saved_chat_package_verify::tests::{
     gzip_zero_asset_v3, permanent_v3_fixture, zero_asset_v3, OwnedPackage,
@@ -27,8 +25,8 @@ fn sha_of(bytes: &[u8]) -> String {
     format!("sha256-{}", sha256_hex(bytes))
 }
 
-/// Publishes a REAL v1 package through the actual publisher, so the fixture is
-/// exactly what the product writes rather than hand-assembled bytes.
+/// Publishes a REAL v1 package through the actual publisher with the supported
+/// V1/V2 rollback policy, rather than hand-assembling an on-disk generation.
 fn publish_v1(root: &Path, chat_id: &str, saved_at: &str) -> String {
     let publisher = Publisher::new(root.to_path_buf());
     let snapshot = format!(
@@ -53,7 +51,7 @@ fn publish_v1(root: &Path, chat_id: &str, saved_at: &str) -> String {
     assert!(write_member(&publisher, token, Member::Markdown, &markdown).ok);
     assert!(write_member(&publisher, token, Member::Html, &html).ok);
     assert!(write_member(&publisher, token, Member::Manifest, &manifest).ok);
-    let published = commit(&publisher, token, None);
+    let published = commit_with_policy(&publisher, token, None, LiveGenerationFamily::V1V2);
     assert!(published.ok, "commit refused: {:?}", published.blockers);
     content_hash.strip_prefix("sha256-").unwrap().to_string()
 }
@@ -107,7 +105,7 @@ fn publish_v2(root: &Path, chat_id: &str, saved_at: &str, assets: &[(&str, &[u8]
     assert!(write_member(&publisher, token, Member::Markdown, &markdown).ok);
     assert!(write_member(&publisher, token, Member::Html, &html).ok);
     assert!(write_member(&publisher, token, Member::Manifest, &manifest).ok);
-    let published = commit(&publisher, token, None);
+    let published = commit_with_policy(&publisher, token, None, LiveGenerationFamily::V1V2);
     assert!(published.ok, "commit refused: {:?}", published.blockers);
     shas.sort();
     (
@@ -230,9 +228,9 @@ fn real_published_packages_verify_with_trusted_facts_and_asset_references() {
             assert_eq!(p.chat_id, "chat_one");
             assert_eq!(p.content_hash, hash_v1);
             assert_eq!(p.construction_family, ConstructionFamily::V1);
-            // The verifier admits v1/v2 only, so a disk can never yield V3.
+            // Read admission remains all-family while the activated writer is V3.
             assert_ne!(p.construction_family, ConstructionFamily::V3);
-            assert!(p.construction_family.is_live_writer_family());
+            assert!(!p.construction_family.is_live_writer_family());
             assert_eq!(
                 p.order,
                 OrderFact::Orderable { saved_at: "2026-03-01T00:00:00.000Z".into() }
@@ -247,7 +245,7 @@ fn real_published_packages_verify_with_trusted_facts_and_asset_references() {
     match &v2.class {
         OccupantClass::VerifiedGeneration(p) => {
             assert_eq!(p.construction_family, ConstructionFamily::V2);
-            assert!(p.construction_family.is_live_writer_family());
+            assert!(!p.construction_family.is_live_writer_family());
             // (M) verified manifest asset references, sorted and deduplicated.
             assert_eq!(p.asset_shas, shas);
             assert_eq!(p.asset_shas.len(), 2);
@@ -753,7 +751,7 @@ fn scanner_verifies_v3_identity_and_gzip_as_one_logical_generation() {
         match &find(&scan, &name).class {
             OccupantClass::VerifiedGeneration(verified) => {
                 assert_eq!(verified.construction_family, ConstructionFamily::V3);
-                assert!(!verified.construction_family.is_live_writer_family());
+                assert!(verified.construction_family.is_live_writer_family());
                 assert_eq!(verified.content_hash, hash);
                 assert_eq!(verified.snapshot_encoding, expected_encoding);
                 assert_eq!(

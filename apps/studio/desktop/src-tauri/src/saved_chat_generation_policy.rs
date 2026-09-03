@@ -29,12 +29,12 @@ impl LiveGenerationFamily {
     }
 }
 
-/// The sole build selection point. Ordinary/default builds remain v1/v2. The
-/// non-default v3 value exists only for the guarded disposable P3 debug
-/// acceptance artifact; the compile-time guard above makes it unavailable to
-/// release builds.
+/// The sole production build selection point. HDA-authorized ordinary/default
+/// builds publish v3. The guarded P3 acceptance feature selects the same
+/// generation family while separately selecting its disposable export root;
+/// the compile-time guard above keeps that harness out of release builds.
 #[cfg(not(feature = "saved-chat-v3-acceptance"))]
-pub const PRODUCTION_LIVE_GENERATION_FAMILY: LiveGenerationFamily = LiveGenerationFamily::V1V2;
+pub const PRODUCTION_LIVE_GENERATION_FAMILY: LiveGenerationFamily = LiveGenerationFamily::V3;
 
 #[cfg(feature = "saved-chat-v3-acceptance")]
 pub const PRODUCTION_LIVE_GENERATION_FAMILY: LiveGenerationFamily = LiveGenerationFamily::V3;
@@ -74,12 +74,12 @@ mod tests {
 
     #[cfg(not(feature = "saved-chat-v3-acceptance"))]
     #[test]
-    fn production_policy_remains_v1v2() {
+    fn hda_activated_production_policy_is_v3() {
         assert_eq!(
             production_live_generation_family(),
-            LiveGenerationFamily::V1V2
+            LiveGenerationFamily::V3
         );
-        assert_eq!(production_policy().live_generation_family.as_str(), "v1v2");
+        assert_eq!(production_policy().live_generation_family.as_str(), "v3");
     }
 
     #[cfg(feature = "saved-chat-v3-acceptance")]
@@ -94,11 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn pure_policy_parameter_supports_future_v3_tests_without_mutable_state() {
-        let injected = policy_for(LiveGenerationFamily::V3);
+    fn pure_policy_parameter_preserves_v1v2_rollback_without_mutable_state() {
+        let injected = policy_for(LiveGenerationFamily::V1V2);
         assert_eq!(injected.schema, SAVED_CHAT_GENERATION_POLICY_SCHEMA);
-        assert_eq!(injected.live_generation_family, LiveGenerationFamily::V3);
-        assert_eq!(injected.live_generation_family.as_str(), "v3");
+        assert_eq!(injected.live_generation_family, LiveGenerationFamily::V1V2);
+        assert_eq!(injected.live_generation_family.as_str(), "v1v2");
         assert_eq!(
             production_policy().live_generation_family,
             PRODUCTION_LIVE_GENERATION_FAMILY

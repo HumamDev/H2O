@@ -148,7 +148,23 @@ fn publish(p: &Publisher, fx: &Fixture) -> PublishResult {
     let begun = begin(p, &fx.chat_id);
     assert!(begun.ok, "begin refused: {:?}", begun.blockers);
     stage_all(p, begun.token, fx);
-    commit(p, begun.token, None)
+    commit_v1v2(p, begun.token, None)
+}
+
+/// The large legacy publisher matrix is also the explicit V1/V2 rollback
+/// regression. Production uses `commit` directly in the activation-specific
+/// tests below; these fixtures inject the still-supported rollback family.
+fn commit_v1v2(
+    publisher: &Publisher,
+    token: u64,
+    expected_manifest_sha256: Option<&str>,
+) -> PublishResult {
+    commit_with_policy(
+        publisher,
+        token,
+        expected_manifest_sha256,
+        LiveGenerationFamily::V1V2,
+    )
 }
 
 fn packages_entries(p: &Publisher) -> Vec<String> {
@@ -398,7 +414,7 @@ fn a_symlinked_member_is_refused_and_never_followed() {
     )
     .expect("symlink");
 
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(!result.ok);
     // Either the O_NOFOLLOW open refuses it, or the not-regular check does.
     assert!(
@@ -430,7 +446,7 @@ fn an_unexpected_staging_entry_refuses_the_commit() {
         b"planted",
     )
     .expect("plant");
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(!result.ok);
     assert!(blocker_codes(&result).contains(&"generation-staging-unexpected-entry".to_string()));
 }
@@ -503,11 +519,11 @@ fn double_commit_and_post_commit_abort_are_safe() {
     let fx = v1_fixture("chat_double", "snap1", "x");
     let begun = begin(&p, &fx.chat_id);
     stage_all(&p, begun.token, &fx);
-    let first = commit(&p, begun.token, None);
+    let first = commit_v1v2(&p, begun.token, None);
     assert!(first.ok && first.committed);
 
     // Second COMMIT finds no session.
-    let second = commit(&p, begun.token, None);
+    let second = commit_v1v2(&p, begun.token, None);
     assert!(!second.ok);
     assert_eq!(second.blockers[0].code, "generation-session-unknown");
 
@@ -549,7 +565,7 @@ fn write_to_an_unknown_or_consumed_session_is_refused() {
     assert!(!write_member(&p, 9_999, Member::Snapshot, b"x").ok);
     let begun = begin(&p, &fx.chat_id);
     stage_all(&p, begun.token, &fx);
-    assert!(commit(&p, begun.token, None).ok);
+    assert!(commit_v1v2(&p, begun.token, None).ok);
     let after = write_member(&p, begun.token, Member::Snapshot, b"x");
     assert!(!after.ok);
     assert_eq!(after.blockers[0].code, "generation-session-unknown");
@@ -577,7 +593,7 @@ fn a_member_may_arrive_in_many_chunks_and_interleave_with_others() {
     }
     assert!(write_member(&p, begun.token, Member::Html, &fx.html).ok);
     assert!(write_member(&p, begun.token, Member::Manifest, &fx.manifest).ok);
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(result.ok, "{:?}", blocker_codes(&result));
     assert_eq!(result.content_hash, fx.content_hash);
 }
@@ -1096,7 +1112,7 @@ fn the_reserve_also_governs_the_commit_time_asset_copy() {
     assert!(begun.ok);
     stage_all(&p, begun.token, &fx);
     set_space(FREE_SPACE_RESERVE_BYTES + 4);
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     set_space(FREE_SPACE_REAL);
 
     assert!(
@@ -1484,7 +1500,7 @@ fn every_required_v1_member_is_mandatory() {
             };
             write_member(&p, begun.token, member, bytes);
         }
-        let result = commit(&p, begun.token, None);
+        let result = commit_v1v2(&p, begun.token, None);
         assert!(
             !result.ok,
             "missing {} must refuse — the v3 two-member form is not admitted",
@@ -1509,7 +1525,7 @@ fn staged_bytes_altered_before_verification_are_detected() {
     let path = p.root.join(PACKAGES_DIR).join(&staging).join("chat.md");
     std::fs::write(&path, b"TAMPERED-TAMPERED-TAMPERED").expect("tamper");
 
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(!result.ok, "tampered member must not publish");
     let codes = blocker_codes(&result);
     assert!(
@@ -1828,7 +1844,7 @@ fn expected_manifest_sha_can_only_refuse() {
     // Wrong assertion refuses.
     let begun = begin(&p, &fx.chat_id);
     stage_all(&p, begun.token, &fx);
-    let wrong = commit(
+    let wrong = commit_v1v2(
         &p,
         begun.token,
         Some(&("sha256-".to_string() + &"a".repeat(64))),
@@ -1842,7 +1858,7 @@ fn expected_manifest_sha_can_only_refuse() {
     // Correct assertion changes nothing about the derived identity.
     let begun = begin(&p, &fx.chat_id);
     stage_all(&p, begun.token, &fx);
-    let right = commit(&p, begun.token, Some(&sha_of(&fx.manifest)));
+    let right = commit_v1v2(&p, begun.token, Some(&sha_of(&fx.manifest)));
     assert!(right.ok);
     assert_eq!(right.content_hash, fx.content_hash);
 }
@@ -2024,7 +2040,7 @@ fn the_gate_accepts_a_real_committed_sanctioned_writer_package() {
     assert!(write_member(&p, begun.token, Member::Markdown, &markdown).ok);
     assert!(write_member(&p, begun.token, Member::Html, &html).ok);
     assert!(write_member(&p, begun.token, Member::Manifest, &manifest).ok);
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(
         result.ok && result.committed,
         "a real sanctioned-writer package must publish: {:?}",
@@ -2228,7 +2244,7 @@ fn two_publishers_racing_the_same_generation_produce_exactly_one_commit() {
             assert!(begun.ok);
             stage_all(&p, begun.token, &fx);
             barrier.wait();
-            commit(&p, begun.token, None)
+            commit_v1v2(&p, begun.token, None)
         }));
     }
     let results: Vec<PublishResult> = handles
@@ -2333,7 +2349,7 @@ fn a_successful_promotion_releases_the_staging_tree_from_cleanup_scope() {
         .map(Arc::clone)
         .expect("session present before commit");
 
-    let result = commit(&p, begun.token, None);
+    let result = commit_v1v2(&p, begun.token, None);
     assert!(result.ok && result.committed);
     let published = packages_entries(&p);
     assert_eq!(published.len(), 1);
@@ -2725,7 +2741,7 @@ fn v3_identity_gzip_and_assets_publish_under_injected_policy() {
                     package.construction_family,
                     crate::archive_package_scan::ConstructionFamily::V3
                 );
-                assert!(!package.construction_family.is_live_writer_family());
+                assert!(package.construction_family.is_live_writer_family());
                 assert_eq!(package.content_hash, hex);
             }
             other => panic!("expected verified v3, got {other:?}"),
@@ -2734,11 +2750,17 @@ fn v3_identity_gzip_and_assets_publish_under_injected_policy() {
 }
 
 #[test]
-fn production_policy_refuses_v3_while_injected_v3_accepts_same_package() {
+fn production_policy_accepts_v3_while_v1v2_rollback_refuses_same_package() {
     let package = zero_asset_v3();
-    let p = publisher("v3-production-off");
+    let p = publisher("v3-production-active");
     let token = stage_v3_package(&p, &package, true);
-    let refused = commit(&p, token, None);
+    let accepted = commit(&p, token, None);
+    assert!(accepted.ok, "blockers: {:?}", blocker_codes(&accepted));
+    assert_eq!(accepted.outcome, Outcome::Created);
+
+    let rollback = publisher("v3-v1v2-rollback-refusal");
+    let token = stage_v3_package(&rollback, &package, true);
+    let refused = commit_with_policy(&rollback, token, None, LiveGenerationFamily::V1V2);
     assert!(!refused.ok);
     assert!(!refused.committed);
     assert!(
@@ -2747,11 +2769,7 @@ fn production_policy_refuses_v3_while_injected_v3_accepts_same_package() {
         "unexpected blockers: {:?}",
         blocker_codes(&refused),
     );
-    assert!(packages_entries(&p).is_empty());
-
-    let accepted = publish_v3(&p, &package);
-    assert!(accepted.ok, "blockers: {:?}", blocker_codes(&accepted));
-    assert_eq!(accepted.outcome, Outcome::Created);
+    assert!(packages_entries(&rollback).is_empty());
 }
 
 #[test]

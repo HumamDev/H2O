@@ -94,14 +94,10 @@ impl IndeterminateReason {
 /// The package construction family, as the publisher's own version-triple gate
 /// established it.
 ///
-/// Grounded in source, not inferred: the live writer is
-/// `buildSavedChatPackageV1`, which emits V1 or V2 from the SAME builder
-/// depending on content — V2 exactly when inline `data:image` assets were
-/// extracted (`isV2 = !!materialized.changed`), V1 otherwise. Both are
-/// therefore produced by the current live writer. `buildSavedChatPackageV3`
-/// exists but is called from no live path while live-v3 remains OFF, and the
-/// trusted scanner admits all durable families even though new production
-/// writes remain governed by the immutable V1V2 policy.
+/// The trusted scanner admits every durable family independently of the
+/// immutable NEW-write policy. The shared policy decides whether the active
+/// writer uses the V1/V2 builder (which emits V1 or V2 according to assets) or
+/// the canonical V3 builder; scanning never narrows historical readability.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConstructionFamily {
@@ -109,16 +105,14 @@ pub enum ConstructionFamily {
     V1,
     /// schemaVersion 2 + payloadVersion 2 + assets.
     V2,
-    /// The v3 durable-read family. The scanner can verify it independently of
-    /// the active NEW-write policy; production writing remains V1V2 in P2.2.
+    /// The v3 durable-read family. The scanner verifies it independently of
+    /// the active NEW-write policy.
     V3,
 }
 
 impl ConstructionFamily {
-    /// True when this family is one the CURRENT live writer produces. Both
-    /// admitted families are live today; this predicate exists so the
-    /// distinction is explicit rather than assumed. The policy remains V1V2 in
-    /// production; P2.1 changes no destructive classification result.
+    /// True when this family is one the CURRENT immutable build policy permits
+    /// the live writer to produce.
     pub fn is_live_writer_family(self) -> bool {
         self.is_live_writer_family_for(production_live_generation_family())
     }

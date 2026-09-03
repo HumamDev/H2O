@@ -57,11 +57,10 @@
 
   /* The live writer's contentHash construction FAMILY. §F distinguishes
    * format-stale from content-stale by whether the package's construction
-   * differs from the live writer's — the frozen example being "v1/v2 packages
-   * after a future live v3 activation". v1 and v2 are two arms of the SAME
-   * live family (the writer picks between them per content, by whether inline
-   * assets exist), so a v1-vs-v2 difference is ordinary content drift, not a
-   * format transition. */
+   * differs from the live writer's — for example, v1/v2 packages under the v3
+   * production policy. v1 and v2 are two arms of the SAME rollback family (the
+   * writer picks between them per content, by whether inline assets exist), so
+   * a v1-vs-v2 difference is ordinary content drift, not a format transition. */
   function constructionFamily(schemaVersion) {
     if (schemaVersion === 1 || schemaVersion === 2) return 'v1v2';
     if (schemaVersion === 3) return 'v3';

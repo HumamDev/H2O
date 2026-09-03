@@ -36,7 +36,7 @@ fn gen_in(chat: &str, tag: u8, family: ConstructionFamily) -> ClassifiedOccupant
     }
 }
 fn gen(chat: &str, tag: u8) -> ClassifiedOccupant {
-    gen_in(chat, tag, ConstructionFamily::V1)
+    gen_in(chat, tag, ConstructionFamily::V3)
 }
 
 fn five(chat: &str) -> Vec<ClassifiedOccupant> {
@@ -321,7 +321,7 @@ fn the_preview_carries_every_protection_reason() {
         }),
     });
     // Format-stale (non-live family).
-    occupants.push(gen_in("chat_a", 61, ConstructionFamily::V3));
+    occupants.push(gen_in("chat_a", 61, ConstructionFamily::V1));
     // Indeterminate.
     occupants.push(ClassifiedOccupant {
         path: "archive/packages/broken.h2ochat".into(),

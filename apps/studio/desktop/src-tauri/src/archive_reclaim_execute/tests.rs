@@ -6,6 +6,7 @@ use crate::archive_generation_publish::{abort, begin, commit, write_member, Memb
 use crate::archive_instance_lock::{ArchiveInstanceState, ExclusiveOwnership};
 use crate::archive_package_scan::scan_packages_within;
 use crate::archive_reclamation_preview::ProjectionInput;
+use crate::saved_chat_package_verify::derive_content_hash_v3;
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -25,28 +26,23 @@ fn sha_of(bytes: &[u8]) -> String {
     format!("sha256-{}", sha256_hex(bytes))
 }
 
-/// Publishes a REAL v1 generation through the actual publisher, so execution
+/// Publishes a REAL v3 generation through the actual publisher, so execution
 /// acts on genuine canonical packages rather than hand-made directories.
 fn publish(root: &Path, chat: &str, saved_at: &str) -> String {
     let publisher = Publisher::new(root.to_path_buf());
     let snapshot = format!(
-        r#"{{"schemaVersion":1,"chatId":"{chat}","snapshotId":"s1","savedAt":"{saved_at}","messages":[{{"id":"m0","turnIndex":0,"contentText":"body-{saved_at}"}}]}}"#
+        r#"{{"schema":"h2o.savedChatSnapshot","schemaVersion":3,"chatId":"{chat}","snapshotId":"s1","savedAt":"{saved_at}","messages":[{{"id":"m0","turnIndex":0,"content":[{{"type":"text","text":"body-{saved_at}"}}],"assetRefs":[]}}]}}"#
     ).into_bytes();
-    let markdown = format!("# {chat}\n").into_bytes();
-    let html = format!("<!doctype html><p>{chat}</p>").into_bytes();
-    let content_hash = sha_of(&snapshot);
+    let snapshot_sha = sha_of(&snapshot);
+    let content_hash = derive_content_hash_v3(&snapshot_sha, &[]).expect("v3 content hash");
     let manifest = format!(
-        r#"{{"schema":"h2o.savedChatPackage","schemaVersion":1,"chatId":"{chat}","snapshotId":"s1","contentHash":"{content_hash}","files":{{"snapshot":{{"path":"snapshot.json","sha256":"{}","byteLength":{}}},"markdown":{{"path":"chat.md","sha256":"{}","byteLength":{}}},"html":{{"path":"chat.html","sha256":"{}","byteLength":{}}}}},"assets":[]}}"#,
-        sha_of(&snapshot), snapshot.len(),
-        sha_of(&markdown), markdown.len(),
-        sha_of(&html), html.len(),
+        r#"{{"schema":"h2o.savedChatPackage","schemaVersion":3,"payloadVersion":3,"chatId":"{chat}","snapshotId":"s1","contentHash":"{content_hash}","files":{{"snapshot":{{"path":"snapshot.json","sha256":"{snapshot_sha}","byteLength":{},"encoding":"identity"}}}},"assets":[]}}"#,
+        snapshot.len(),
     ).into_bytes();
     let begun = begin(&publisher, chat);
     assert!(begun.ok, "begin refused: {:?}", begun.blockers);
     let t = begun.token;
     assert!(write_member(&publisher, t, Member::Snapshot, &snapshot).ok);
-    assert!(write_member(&publisher, t, Member::Markdown, &markdown).ok);
-    assert!(write_member(&publisher, t, Member::Html, &html).ok);
     assert!(write_member(&publisher, t, Member::Manifest, &manifest).ok);
     let published = commit(&publisher, t, None);
     assert!(published.ok, "commit refused: {:?}", published.blockers);
@@ -2746,7 +2742,7 @@ fn canonical_entries_are_whole(root: &Path) -> Result<usize, String> {
         if !dir.is_dir() {
             return Err(format!("{name} is not a directory"));
         }
-        for member in ["manifest.json", "snapshot.json", "chat.md", "chat.html"] {
+        for member in ["manifest.json", "snapshot.json"] {
             if !dir.join(member).exists() {
                 return Err(format!("{name} is half-deleted: {member} missing"));
             }
@@ -2917,7 +2913,7 @@ fn crash_windows_after_a_rename_leave_stale_quarantine_that_recovery_converges()
             .collect();
         assert_eq!(items.len(), 1, "[{tag}] a complete renamed entry: {items:?}");
         // Complete, not half-copied.
-        for member in ["manifest.json", "snapshot.json", "chat.md", "chat.html"] {
+        for member in ["manifest.json", "snapshot.json"] {
             assert!(
                 stale[0].join(&items[0]).join(member).exists(),
                 "[{tag}] the quarantined entry is incomplete"

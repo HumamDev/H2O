@@ -367,12 +367,9 @@ async function main() {
    * publication with no partial directory, exclusive create-only promotion,
    * and honest durability reporting.
    *
-   * DELIBERATE, RECORDED COVERAGE DEFERRAL: the DP-M03-B/C v3 interrupted-write
-   * resume semantics are frozen normative behaviour for a payload version that
-   * is NOT live (live v3 remains OFF). They must be re-established inside the
-   * trusted publisher as a prerequisite of any future live-v3 activation. This
-   * note exists so that requirement is explicit rather than silently lost with
-   * the retired writer.
+   * The DP-M03-B/C interrupted-write safety property was re-established inside
+   * the trusted publisher before v3 activation. The retired renderer writer
+   * remains non-live; native tests own the interruption and recovery proof.
    * ──────────────────────────────────────────────────────────────────────── */
 
   await checkAsync('the retired v1 writer now publishes through trusted Rust and mutates nothing itself', async () => {

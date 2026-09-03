@@ -1,6 +1,6 @@
 use super::*;
 use crate::archive_generation_publish::{
-    begin as publish_begin, commit, commit_with_policy, write_member, Member, Publisher,
+    begin as publish_begin, commit_with_policy, write_member, Member, Publisher,
 };
 use crate::saved_chat_generation_policy::LiveGenerationFamily;
 use crate::saved_chat_package_verify::tests::{
@@ -132,7 +132,7 @@ fn publish(root: &Path, fx: &Fixture) -> PathBuf {
     assert!(write_member(&publisher, begun.token, Member::Markdown, &fx.markdown).ok);
     assert!(write_member(&publisher, begun.token, Member::Html, &fx.html).ok);
     assert!(write_member(&publisher, begun.token, Member::Manifest, &fx.manifest).ok);
-    let result = commit(&publisher, begun.token, None);
+    let result = commit_with_policy(&publisher, begun.token, None, LiveGenerationFamily::V1V2);
     assert!(result.ok, "publish COMMIT: {:?}", result.blockers);
     let hex = fx.content_hash.strip_prefix("sha256-").unwrap();
     root.join("packages")
@@ -1065,20 +1065,21 @@ fn handoff_read_admission_is_independent_from_new_write_family() {
     let v1 = v1_fixture("cross_policy_v1", "rollback-readable");
     publish(&v1_root, &v1);
     assert!(!ConstructionFamily::V1.is_live_writer_family_for(LiveGenerationFamily::V3));
+    assert_eq!(
+        crate::saved_chat_generation_policy::production_live_generation_family(),
+        LiveGenerationFamily::V3
+    );
+    assert!(!ConstructionFamily::V1.is_live_writer_family());
     let v1_handoff = Handoff::new(&v1_root);
     let v1_begin = begin(&v1_handoff, &generation_selector(&v1));
     assert!(v1_begin.ok, "{:?}", v1_begin.blockers);
     assert!(end(&v1_handoff, v1_begin.token).ok);
 
-    assert_eq!(
-        crate::saved_chat_generation_policy::production_live_generation_family(),
-        LiveGenerationFamily::V1V2
-    );
     let v3_root = scratch("cross-policy-v3");
     let v3 = zero_asset_v3();
     let content_hash = package_content_hash(&v3);
     publish_v3(&v3_root, &v3);
-    assert!(!ConstructionFamily::V3.is_live_writer_family());
+    assert!(ConstructionFamily::V3.is_live_writer_family());
     let v3_handoff = Handoff::new(&v3_root);
     let v3_begin = begin(&v3_handoff, &v3_selector(&v3, &content_hash));
     assert!(v3_begin.ok, "{:?}", v3_begin.blockers);

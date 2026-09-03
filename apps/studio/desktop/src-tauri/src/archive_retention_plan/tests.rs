@@ -169,13 +169,13 @@ fn run_with_cas(
     projections: BTreeMap<String, ProjectionVerdict>,
     cas: &CasInventory,
 ) -> ReclamationPlan {
-    plan(&RetentionInputs {
+    plan_for_live_family(&RetentionInputs {
         scan,
         db,
         projections,
         scope: None,
         cas,
-    })
+    }, LiveGenerationFamily::V1V2)
 }
 
 fn run_for_family(
@@ -292,16 +292,20 @@ fn the_floor_honours_k_ge_1_and_refuses_k_zero() {
         cas: &empty,
     };
 
-    let k1 = plan_with_floor(&inputs, 1).expect("K=1 is valid");
+    let k1 = plan_with_floor_for_live_family(&inputs, 1, LiveGenerationFamily::V1V2)
+        .expect("K=1 is valid");
     assert_eq!(k1.retention_floor, 1);
     // Only the newest survives the floor; it is also newest-overall.
     assert_eq!(k1.totals.candidates, 4);
 
-    let k0 = plan_with_floor(&inputs, 0);
+    let k0 = plan_with_floor_for_live_family(&inputs, 0, LiveGenerationFamily::V1V2);
     assert_eq!(k0.err().as_deref(), Some(codes::INVALID_FLOOR));
 
     // Production path is the approved floor.
-    assert_eq!(plan(&inputs).retention_floor, RETENTION_FLOOR_K);
+    assert_eq!(
+        plan_for_live_family(&inputs, LiveGenerationFamily::V1V2).retention_floor,
+        RETENTION_FLOOR_K
+    );
 }
 
 /// (D) verified-but-unorderable is protected, never ranked as oldest, and never
@@ -723,7 +727,7 @@ fn a_legacy_package_cannot_witness_a_projection() {
 #[test]
 fn k_plus_two_valid_non_live_family_generations_are_all_format_stale_protected() {
     const N: u8 = (RETENTION_FLOOR_K as u8) + 2; // 5 > K
-    let stale = ConstructionFamily::V3; // the source-grounded non-live family
+    let stale = ConstructionFamily::V3; // non-live under the V1/V2 rollback policy
 
     // Build K+2 generations and force them out of the live-writer set.
     let occupants: Vec<ClassifiedOccupant> = (1..=N)
@@ -736,7 +740,10 @@ fn k_plus_two_valid_non_live_family_generations_are_all_format_stale_protected()
 
     assert!(plan.complete);
     assert!(N as usize > RETENTION_FLOOR_K, "fixture must exceed the floor");
-    assert!(!stale.is_live_writer_family(), "fixture family must be non-live");
+    assert!(
+        !stale.is_live_writer_family_for(LiveGenerationFamily::V1V2),
+        "fixture family must be non-live under the exercised rollback policy"
+    );
     assert_eq!(plan.totals.candidates, 0, "format-stale must protect all K+2 of them");
     for t in 1..=N {
         assert!(
@@ -847,10 +854,10 @@ fn active_family_policy_reclassifies_without_making_old_formats_destructive() {
 }
 
 #[test]
-fn production_plan_is_exactly_the_shared_v1v2_policy_mapping() {
+fn production_plan_is_exactly_the_shared_v3_policy_mapping() {
     assert_eq!(
         crate::saved_chat_generation_policy::production_live_generation_family(),
-        LiveGenerationFamily::V1V2
+        LiveGenerationFamily::V3
     );
     let s = scan(vec![
         generation_in("chat_prod", 1, &day(1), ConstructionFamily::V1),
@@ -869,7 +876,7 @@ fn production_plan_is_exactly_the_shared_v1v2_policy_mapping() {
     };
     assert_eq!(
         plan(&inputs),
-        run_for_family(&s, &d, projections, LiveGenerationFamily::V1V2),
+        run_for_family(&s, &d, projections, LiveGenerationFamily::V3),
         "Preview and Execute both call plan, whose production result must be the shared build policy"
     );
 }
