@@ -477,7 +477,6 @@
       STORE_normalizeHexColor,
       FRAG_SVG_CATEGORY,
       FRAG_SVG_FOLDER,
-      DOM_resolveRightPanePageHost,
     };
   }
   const UTIL_isReservedFolderViewName = (name) => CFG_RESERVED_FOLDER_VIEW_NAMES.has(UTIL_normText(name || '').toLowerCase());

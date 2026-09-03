@@ -60,6 +60,127 @@ function present(text, pattern, message) {
   assert.match(text, pattern, message);
 }
 
+function extractFunction(text, name) {
+  const start = text.indexOf(`function ${name}`);
+  assert.notEqual(start, -1, `${name} exists`);
+  const brace = text.indexOf('{', text.indexOf(')', start));
+  let depth = 0;
+  for (let index = brace; index < text.length; index += 1) {
+    if (text[index] === '{') depth += 1;
+    if (text[index] === '}') depth -= 1;
+    if (depth === 0) return text.slice(start, index + 1);
+  }
+  throw new Error(`unterminated function ${name}`);
+}
+
+function runFoldersPageHostDelegation(serviceAvailable) {
+  const counters = {
+    canonicalServiceCalls: 0,
+    localFallbackCalls: 0,
+    nativeDetachCalls: 0,
+    nativeRetentionCalls: 0,
+    nativeRestoreCalls: 0,
+  };
+  const receivedEnvs = [];
+  const pageHostService = serviceAvailable ? {
+    UI_restoreInShellPage(env) {
+      counters.canonicalServiceCalls += 1;
+      receivedEnvs.push(env);
+      return true;
+    },
+    UI_mountInShellPage(env) {
+      counters.canonicalServiceCalls += 1;
+      receivedEnvs.push(env);
+      return true;
+    },
+  } : null;
+  const H2O = {
+    LibraryCore: {
+      getService(name) { return name === 'page-host' ? pageHostService : null; },
+    },
+  };
+  const sandbox = {
+    W: { location: { href: 'https://chatgpt.com/c/p02c-folders' } },
+    D: {},
+    H2O,
+    STATE: { pageSession: null, pageEl: null, pageHost: null, pageHiddenRecords: [] },
+    CLEAN: { nodes: new Set(), timers: new Set(), listeners: new Set(), observers: new Set() },
+    SAFE_remove() {},
+    ATTR_CGXUI: 'data-cgxui',
+    ATTR_CGXUI_OWNER: 'data-cgxui-owner',
+    ATTR_CGXUI_STATE: 'data-cgxui-state',
+    ATTR_CGXUI_MODE: 'data-cgxui-mode',
+    ATTR_CGXUI_PAGE_HIDDEN: 'data-cgxui-page-hidden-by',
+    UI_FSECTION_VIEWER: 'flsc-viewer',
+    UI_FSECTION_PAGE_HOST: 'flsc-page-host',
+    UI_FSECTION_PAGE: 'flsc-page',
+    CFG_H2O_PAGE_ROUTE_OWNER: 'folders',
+    CFG_H2O_PAGE_ROUTE_PREFIX: 'h2o',
+    CFG_H2O_PAGE_QUERY_FLAG: 'h2o-page',
+    CFG_H2O_PAGE_QUERY_VIEW: 'view',
+    CFG_H2O_PAGE_QUERY_ID: 'id',
+    SkID: 'flsc',
+    STORE_normalizeCategoryOpenMode(value) { return String(value || 'panel'); },
+    STORE_normalizeHexColor(value) { return String(value || ''); },
+    FRAG_SVG_CATEGORY: '<svg data-kind="category"></svg>',
+    FRAG_SVG_FOLDER: '<svg data-kind="folder"></svg>',
+    Set,
+    Map,
+    Object,
+    Array,
+    String,
+  };
+  const resolverFunctionNames = [
+    'DOM_hasClassTokens',
+    'DOM_classText',
+    'DOM_isScrollPageHost',
+    'DOM_resolveRightPanePageHost',
+  ];
+  const resolverFunctions = resolverFunctionNames
+    .filter((name) => source.folders.includes(`function ${name}`))
+    .map((name) => extractFunction(source.folders, name));
+  vm.createContext(sandbox);
+  vm.runInContext([
+    ...resolverFunctions,
+    extractFunction(source.folders, 'LIBCORE_getPageHostService'),
+    extractFunction(source.folders, 'LIBCORE_ENV'),
+    extractFunction(source.folders, 'UI_restoreInShellPage'),
+    extractFunction(source.folders, 'UI_mountInShellPage'),
+    'globalThis.__foldersPageHostApi = { LIBCORE_ENV, UI_restoreInShellPage, UI_mountInShellPage };',
+  ].join('\n'), sandbox, { filename: `${PATHS.folders}:page-host-delegation` });
+
+  const result = {
+    serviceAvailable,
+    counters,
+    receivedEnvs,
+    resolverDeclared: resolverFunctions.length === resolverFunctionNames.length,
+    libcoreEnvResult: 'NOT_EVALUATED',
+    missingIdentifier: '',
+    restoreResult: null,
+    mountResult: null,
+  };
+  try {
+    if (serviceAvailable) {
+      const env = sandbox.__foldersPageHostApi.LIBCORE_ENV();
+      result.libcoreEnvResult = 'PASS';
+      result.envHasDanglingResolver = Object.prototype.hasOwnProperty.call(env, 'DOM_resolveRightPanePageHost');
+    } else {
+      result.libcoreEnvResult = 'NOT_EVALUATED_SERVICE_ABSENT';
+    }
+    result.restoreResult = sandbox.__foldersPageHostApi.UI_restoreInShellPage('cv3-52');
+    result.mountResult = sandbox.__foldersPageHostApi.UI_mountInShellPage({ nodeType: 1 });
+  } catch (error) {
+    result.libcoreEnvResult = `${error?.name || 'Error'}: ${error?.message || String(error)}`;
+    result.missingIdentifier = /DOM_resolveRightPanePageHost/.test(result.libcoreEnvResult)
+      ? 'DOM_resolveRightPanePageHost'
+      : '';
+  }
+  return result;
+}
+
+const foldersServiceAvailable = runFoldersPageHostDelegation(true);
+const foldersServiceAbsent = runFoldersPageHostDelegation(false);
+
 const retiredCandidate = active.engine.includes('P02A_PHYSICAL_PAGINATION_RETIRED')
   && active.adapter.includes('P02A_PHYSICAL_PAGINATION_RETIRED');
 const retiredUnmountCandidate = active.unmountEngine.includes('P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED')
@@ -185,22 +306,40 @@ check('P02C-TP-C3 retained page hosts cannot be physically reinserted', () => {
 });
 
 check('P02C-FO-C1 local page-host fragment retention is absent', () => {
-  absent(source.folders, /function\s+PAGEHOST_enterPage_LOCAL\b|createDocumentFragment\s*\(|previousNodes\s*=|STATE\.pageSession\s*=\s*\{[\s\S]{0,800}?fragment\b/, 'Folders local fragment/session retention fallback remains');
+  absent(source.folders, /function\s+(?:PAGEHOST_enterPage_LOCAL|DOM_resolveRightPanePageHost)\b|createDocumentFragment\s*\(|previousNodes\s*=|STATE\.pageSession\s*=\s*\{[\s\S]{0,800}?fragment\b/, 'Folders local fragment/session retention fallback remains');
 });
 
 check('P02C-FO-C2 local retained-native restore is absent', () => {
   absent(source.folders, /function\s+PAGEHOST_restorePreviousPage_LOCAL\b|fragment\s+instanceof\s+DocumentFragment|fragment\.firstChild[\s\S]{0,160}?appendChild\s*\(\s*fragment\.firstChild\s*\)/, 'Folders local retained-node restoration remains');
 });
 
-check('P02C-FO-C3 canonical page-host delegation remains explicit', () => {
+check('P02C-FO-C3 canonical page-host delegation executes with service available', () => {
   present(source.folders, /svc\?\.UI_restoreInShellPage[\s\S]{0,120}?svc\.UI_restoreInShellPage\s*\(\s*LIBCORE_ENV\(\)/, 'canonical restore delegation missing');
   present(source.folders, /svc\?\.UI_mountInShellPage[\s\S]{0,120}?svc\.UI_mountInShellPage\s*\(\s*LIBCORE_ENV\(\)/, 'canonical mount delegation missing');
+  assert.equal(foldersServiceAvailable.libcoreEnvResult, 'PASS', `LIBCORE_ENV failed: ${foldersServiceAvailable.libcoreEnvResult}`);
+  if (!foldersServiceAvailable.resolverDeclared) {
+    assert.equal(foldersServiceAvailable.envHasDanglingResolver, false, 'Folders environment exposes an undeclared local resolver');
+  }
+  assert.equal(foldersServiceAvailable.restoreResult, true, 'canonical restore service was not invoked successfully');
+  assert.equal(foldersServiceAvailable.mountResult, true, 'canonical mount service was not invoked successfully');
+  assert.equal(foldersServiceAvailable.counters.canonicalServiceCalls, 2, 'canonical page-host service call count');
+  assert.equal(foldersServiceAvailable.counters.localFallbackCalls, 0, 'local physical fallback was invoked');
+  assert.equal(foldersServiceAvailable.counters.nativeDetachCalls, 0, 'local native detach occurred');
+  assert.equal(foldersServiceAvailable.counters.nativeRetentionCalls, 0, 'local native retention occurred');
+  assert.equal(foldersServiceAvailable.counters.nativeRestoreCalls, 0, 'local native restore occurred');
 });
 
 check('P02C-FO-C4 absent canonical page-host service fails closed', () => {
   present(source.folders, /function\s+UI_restoreInShellPage[\s\S]{0,300}?return\s+false\s*;/, 'missing restore service does not fail closed');
   present(source.folders, /function\s+UI_mountInShellPage[\s\S]{0,300}?return\s+false\s*;/, 'missing mount service does not fail closed');
   absent(source.folders, /return\s+PAGEHOST_(?:restorePreviousPage|enterPage)_LOCAL\s*\(/, 'local physical page-host fallback remains callable');
+  assert.equal(foldersServiceAbsent.libcoreEnvResult, 'NOT_EVALUATED_SERVICE_ABSENT', `service-absence wrapper evaluated the environment: ${foldersServiceAbsent.libcoreEnvResult}`);
+  assert.equal(foldersServiceAbsent.restoreResult, false, 'missing restore service did not fail closed');
+  assert.equal(foldersServiceAbsent.mountResult, false, 'missing mount service did not fail closed');
+  assert.equal(foldersServiceAbsent.counters.canonicalServiceCalls, 0, 'absent canonical service was invoked');
+  assert.equal(foldersServiceAbsent.counters.nativeDetachCalls, 0, 'service absence detached native children');
+  assert.equal(foldersServiceAbsent.counters.nativeRetentionCalls, 0, 'service absence retained native children');
+  assert.equal(foldersServiceAbsent.counters.nativeRestoreCalls, 0, 'service absence restored native children');
 });
 
 check('UM-A automatic Global Unmount boot and startup waiter are retired', () => {
@@ -1204,6 +1343,13 @@ const evidence = {
   unmountCandidate: retiredUnmountCandidate,
   assertions: checks.length,
   failures: failures.length,
+  foldersLibcoreEnvResult: foldersServiceAvailable.libcoreEnvResult,
+  foldersMissingIdentifier: foldersServiceAvailable.missingIdentifier,
+  foldersCanonicalServiceCallCount: foldersServiceAvailable.counters.canonicalServiceCalls,
+  foldersServiceAvailableLocalFallbackCallCount: foldersServiceAvailable.counters.localFallbackCalls,
+  foldersServiceAbsenceNativeDetachCount: foldersServiceAbsent.counters.nativeDetachCalls,
+  foldersServiceAbsenceNativeRetentionCount: foldersServiceAbsent.counters.nativeRetentionCalls,
+  foldersServiceAbsenceNativeRestoreCount: foldersServiceAbsent.counters.nativeRestoreCalls,
   ...runtimeEvidence,
   ...unmountRuntimeEvidence,
   autoPhysicalBootCount: retiredCandidate ? 0 : 1,
