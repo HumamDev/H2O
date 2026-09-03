@@ -569,7 +569,12 @@ await fixture('root cause is GRAPH_BRIDGE_BUILD_BYTES_STALE', () => {
 
 const corrected = buildCorrectedPublication();
 const stage2c = loadStage2cHarness();
-const stage2cLive = stage2c.createLiveCapabilityHarness();
+const stage2cRetiredInlineSlot = stage2c.createLiveCapabilityHarness({
+  rangeFixtureExtraKind: 'inline-slot',
+});
+const stage2cLive = stage2c.createLiveCapabilityHarness({
+  rangeFixtureExtraKind: 'title-list',
+});
 
 function seedCorrected(generation = 1, fingerprint = 'djb2:1yue4v7') {
   const scope = makeGraphScope(generation, fingerprint);
@@ -817,12 +822,20 @@ await fixture('Page 2 cold exact-wrapper capability succeeds in the loaded runti
   equal(stage2cLive.end.boundaryWrapperConnected, true, 'Page 2 wrapper retained');
 });
 
-await fixture('Page 1 range diagnostics retain the accepted exact topology', () => {
+await fixture('Page 1 range diagnostics retain current topology and reject retired inline slots', () => {
   equal(stage2cLive.pageOneRange.supported, true, 'range supported');
   equal(stage2cLive.pageOneRange.rangeProven, true, 'range proven');
   equal(stage2cLive.pageOneRange.hostWrapperCount, 50, '50 host wrappers');
   equal(stage2cLive.pageOneRange.h2oNodeCount, 3, '3 H2O nodes');
   equal(stage2cLive.pageOneRange.ambiguousWrapperCount, 0, 'zero ambiguity');
+  equal(stage2cRetiredInlineSlot.pageOneRange.supported, false, 'retired inline slot unsupported');
+  equal(stage2cRetiredInlineSlot.pageOneRange.rangeProven, false, 'retired inline slot range unproven');
+  equal(
+    stage2cRetiredInlineSlot.pageOneRange.reason,
+    'range-wrapper-ambiguous',
+    'retired inline slot fails closed as an ambiguous wrapper',
+  );
+  equal(stage2cRetiredInlineSlot.pageOneRange.ambiguousWrapperCount, 1, 'one retired wrapper is ambiguous');
 });
 
 await fixture('Page collapse capability retains rendered prerequisites and installed transaction', () => {

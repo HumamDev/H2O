@@ -275,16 +275,19 @@ function createCapabilityVm({ model, boundary, range } = {}) {
   return capabilityEngine;
 }
 
-let baseRangeHarness = null;
+const baseRangeHarnesses = new Map();
 
-function getBaseRangeHarness() {
-  if (baseRangeHarness) return baseRangeHarness;
+function getBaseRangeHarness(extraKind = 'inline-slot') {
+  const fixtureExtraKind = String(extraKind || 'inline-slot').trim() || 'inline-slot';
+  if (baseRangeHarnesses.has(fixtureExtraKind)) {
+    return baseRangeHarnesses.get(fixtureExtraKind);
+  }
   const factory = loadRangeHarnessFactory(PARENT);
   const rangeHarness = factory.createHarness({
     productionSource: PARENT,
     coldEnd: true,
     middleCount: 48,
-    extraKind: 'inline-slot',
+    extraKind: fixtureExtraKind,
     count: 39,
   });
   const start = rangeHarness.api.boundary(1);
@@ -292,7 +295,7 @@ function getBaseRangeHarness() {
   const outside = rangeHarness.api.boundary(3);
   const pageOneRange = rangeHarness.api.range(1);
   const pageTwoRange = rangeHarness.api.range(2);
-  baseRangeHarness = {
+  const baseRangeHarness = {
     ...rangeHarness,
     start,
     end,
@@ -300,11 +303,12 @@ function getBaseRangeHarness() {
     pageOneRange,
     pageTwoRange,
   };
+  baseRangeHarnesses.set(fixtureExtraKind, baseRangeHarness);
   return baseRangeHarness;
 }
 
 function createLiveCapabilityHarness(options = {}) {
-  const rangeHarness = getBaseRangeHarness();
+  const rangeHarness = getBaseRangeHarness(options.rangeFixtureExtraKind);
   const { start, end } = rangeHarness;
   const boundaryOverrides = options.boundaryOverrides || {};
   const rangeBase = rangeHarness.pageOneRange;
@@ -949,7 +953,7 @@ const passed = fixtures.filter((result) => result.ok).length;
 console.log(`Fixtures: ${passed}/${fixtures.length}`);
 console.log(`Assertions: ${assertions}`);
 const capabilityTotals = capabilityEngine?.safety || {};
-const rangeTotals = baseRangeHarness?.safety || {};
+const rangeTotals = getBaseRangeHarness().safety || {};
 console.log(
   'Safety counters: '
   + `storage=${Number(capabilityTotals.storage || 0) + Number(rangeTotals.storageWrites || 0)} `
