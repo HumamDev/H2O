@@ -531,8 +531,9 @@ await checkAsync('list returns persisted requests and diagnose queue returns cou
 
 // ── M05 Phase 3: projection-aware refresh identity ──────────────────────────
 
-const okProjection = (contentHash) => ({
-  status: 'ok', reason: '', contentHash, snapshotId: 'snap_d2a', schemaVersion: 2, payloadVersion: 2, assetShas: [],
+const okProjection = (contentHash, schemaVersion = 2) => ({
+  status: 'ok', reason: '', contentHash, snapshotId: 'snap_d2a', schemaVersion,
+  payloadVersion: schemaVersion === 3 ? 3 : 2, assetShas: [],
 });
 const PROJ_A = 'sha256-' + 'a'.repeat(64);
 const PROJ_B = 'sha256-' + 'b'.repeat(64);
@@ -586,6 +587,17 @@ await checkAsync('P3F-5 the probe is consulted with the resolved chatId', async 
   await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p3f_5', dedupeKey: 'sha256-' + '7'.repeat(64) }));
   assert.equal(ingestion.__probeCalls.length, 1, 'the governed probe is the projection authority');
   assert.equal(ingestion.__probeCalls[0].chatId, 'chat_d2a');
+});
+
+await checkAsync('M09 P2.3 v3 request dedupe consumes the active projection contentHash', async () => {
+  const v3Hash = 'sha256-' + '9'.repeat(64);
+  const ingestion = loadModule({ projection: okProjection(v3Hash, 3) });
+  const key = 'sha256-' + '8'.repeat(64);
+  const first = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p23_v3_a', dedupeKey: key }));
+  const second = await ingestion.enqueueSavedChatArchiveRequestV1(validEnvelope({ requestId: 'req_p23_v3_b', dedupeKey: key }));
+  assert.notEqual(first.dedupeKey, key, 'active v3 projection identity must become the Desktop dedupe half');
+  assert.equal(second.status, 'duplicate');
+  assert.equal(second.duplicateOf, 'req_p23_v3_a');
 });
 
 /* ── Phase 5 — the newly reachable operator intake, end to end ─────────────

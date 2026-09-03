@@ -70,8 +70,8 @@ check('re-resolution before write + the validated->writing->written and writing-
   assert.match(code, /STATUS_FAILED/);
 });
 
-check('writeSavedChatPackageV1 is called once, with snapshotId + overwrite:false, and no request/package content', () => {
-  const callMatch = code.match(/writeSavedChatPackageV1\s*\(\s*\{[^}]*\}\s*\)/);
+check('active-family writer is called once with snapshotId, overwrite:false, and the resolved policy token', () => {
+  const callMatch = code.match(/writeSavedChatPackageForLiveGenerationFamily\s*\(\s*\{[^}]*\}\s*,\s*policyToken\s*\)/);
   assert.ok(callMatch, 'writer call not found');
   const callArgs = callMatch[0];
   assert.match(callArgs, /snapshotId\s*:/);
@@ -81,7 +81,8 @@ check('writeSavedChatPackageV1 is called once, with snapshotId + overwrite:false
     assert.ok(!callArgs.includes(banned), `writer call leaked source field: ${banned}`);
   }
   // exactly one writer call site
-  assert.equal((code.match(/writeSavedChatPackageV1\s*\(/g) || []).length, 1, 'writer must be called exactly once');
+  assert.equal((code.match(/writeSavedChatPackageForLiveGenerationFamily\s*\(/g) || []).length, 1, 'writer must be called exactly once');
+  assert.equal((code.match(/readSavedChatGenerationPolicy\s*\(/g) || []).length, 1, 'policy must be resolved once per eligible materialization');
 });
 
 check('overwrite defaults false in the API surface', () => {
@@ -121,7 +122,7 @@ check('module is loaded in studio.html and packed', () => {
 console.log('[archive-materializer] behavioral checks');
 
 // In-memory queue + mock ingestion, loaded into a VM that satisfies the Tauri gate.
-function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage, coverageThrows, raceAfterRead } = {}) {
+function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage, coverageThrows, raceAfterRead, policyThrows, policyFamily = 'v1v2' } = {}) {
   const queue = new Map();
   if (row) queue.set(row.request_id, { ...row });
   const sqlCalls = [];
@@ -159,6 +160,8 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage,
   };
 
   const writerCalls = [];
+  const policyCalls = [];
+  const policyToken = Object.freeze({ schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: policyFamily });
   const context = {
     console,
     JSON, Date, String, Number, Array, Object, RegExp,
@@ -167,7 +170,13 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage,
       Studio: {
         ingestion: {
           resolveSavedChatArchiveRequestV1: async (normalized) => resolveResult,
-          writeSavedChatPackageV1: async (opts) => {
+          readSavedChatGenerationPolicy: async () => {
+            policyCalls.push(true);
+            if (policyThrows) throw new Error(policyThrows);
+            return policyToken;
+          },
+          writeSavedChatPackageForLiveGenerationFamily: async (opts, token) => {
+            assert.strictEqual(token, policyToken, 'writer must receive the one policy token resolved at the operation boundary');
             writerCalls.push(opts);
             if (writerThrows) throw new Error(writerThrows);
             return writerResult;
@@ -177,9 +186,14 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage,
     },
   };
   const coverageCalls = [];
+  const coveragePolicyTokens = [];
   if (coverage || coverageThrows) {
-    context.H2O.Studio.ingestion.describeSavedChatCoverageV1 = async (opts) => {
+    context.H2O.Studio.ingestion.describeSavedChatCoverageV1 = async (opts, token) => {
       coverageCalls.push(opts);
+      coveragePolicyTokens.push(token);
+      if (token !== undefined) {
+        assert.strictEqual(token, policyToken, 'coverage must receive the same operation policy token');
+      }
       if (coverageThrows) throw new Error(coverageThrows);
       return coverage;
     };
@@ -191,7 +205,7 @@ function loadFixture({ row, resolveResult, writerResult, writerThrows, coverage,
   const rearm = sandbox.H2O.Studio.ingestion.rearmFailedSavedChatArchiveRequestV1;
   const reconcile = sandbox.H2O.Studio.ingestion.reconcileStrandedSavedChatArchiveWritingV1;
   if (typeof api !== 'function') throw new Error('materialize API did not register');
-  return { api, rearm, reconcile, queue, sqlCalls, writerCalls, coverageCalls, context };
+  return { api, rearm, reconcile, queue, sqlCalls, writerCalls, coverageCalls, coveragePolicyTokens, policyCalls, policyToken, context };
 }
 
 function validatedRow() {
@@ -222,6 +236,7 @@ await checkAsync('validated row + writer success -> written, package persisted, 
   assert.equal(r.package.schemaVersion, 2);
   assert.equal(r.package.payloadVersion, 2);
   assert.equal(fx.writerCalls.length, 1, 'writer called exactly once');
+  assert.equal(fx.policyCalls.length, 1, 'eligible materialization resolves native policy exactly once');
   assert.deepEqual(Object.keys(fx.writerCalls[0]).sort(), ['overwrite', 'snapshotId']);
   assert.equal(fx.writerCalls[0].snapshotId, 'snap_1');
   assert.equal(fx.writerCalls[0].overwrite, false);
@@ -238,6 +253,20 @@ await checkAsync('validated row + writer success -> written, package persisted, 
   assert.equal(writes.length, 2);
   assert.equal(writes[0].values[0], 'writing');
   assert.equal(writes[1].values[0], 'written');
+});
+
+await checkAsync('policy query failure leaves the request retryable and publishes nothing', async () => {
+  const fx = loadFixture({
+    row: validatedRow(),
+    resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1' } },
+    policyThrows: 'native policy unavailable',
+  });
+  const r = await fx.api({ requestId: 'req_1' });
+  assert.equal(r.status, 'deferred');
+  assert.equal(r.deferred.reason, 'generation-policy-unavailable');
+  assert.equal(fx.writerCalls.length, 0);
+  assert.equal(fx.queue.get('req_1').status, 'validated');
+  assert.equal(fx.sqlCalls.filter((call) => call.cmd === 'plugin:sql|execute').length, 0);
 });
 
 await checkAsync('written row -> already-written, no writer call, no queue write', async () => {
@@ -348,9 +377,9 @@ await checkAsync('a worker whose writer threw cannot stamp failed over a written
   // stop `writing -> failed` from regressing that outcome. Driving it through
   // a real claim matters: setting the row to `writing` up front would only
   // exercise the eligibility gate and never reach a guarded UPDATE.
-  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1;
-  fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1 = async (opts) => {
-    try { return await original(opts); }
+  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageForLiveGenerationFamily;
+  fx.context.H2O.Studio.ingestion.writeSavedChatPackageForLiveGenerationFamily = async (opts, policyToken) => {
+    try { return await original(opts, policyToken); }
     finally { fx.queue.get('req_1').status = 'written'; }
   };
   const r = await fx.api({ requestId: 'req_1' });
@@ -369,9 +398,9 @@ await checkAsync('losing writing -> written reports the conflict and still surfa
   });
   // Simulate another actor moving the row out of `writing` while the package
   // write was in flight.
-  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1;
-  fx.context.H2O.Studio.ingestion.writeSavedChatPackageV1 = async (opts) => {
-    const out = await original(opts);
+  const original = fx.context.H2O.Studio.ingestion.writeSavedChatPackageForLiveGenerationFamily;
+  fx.context.H2O.Studio.ingestion.writeSavedChatPackageForLiveGenerationFamily = async (opts, policyToken) => {
+    const out = await original(opts, policyToken);
     fx.queue.get('req_1').status = 'failed';
     return out;
   };
@@ -425,6 +454,8 @@ await checkAsync('P3-1 re-resolution runs BEFORE coverage and before the writing
   const r = await fx.api({ requestId: 'req_1' });
   assert.equal(r.status, 'written');
   assert.equal(fx.coverageCalls.length, 1, 'coverage consulted exactly once');
+  assert.equal(fx.policyCalls.length, 1, 'policy consulted exactly once');
+  assert.strictEqual(fx.coveragePolicyTokens[0], fx.policyToken, 'coverage and writer share the operation policy token');
   const firstUpdate = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|execute');
   const firstSelect = fx.sqlCalls.findIndex((c) => c.cmd === 'plugin:sql|select');
   assert.ok(firstSelect >= 0 && firstSelect < firstUpdate, 'the row is read before any transition');
@@ -735,31 +766,45 @@ await checkAsync('P3R-10 age alone never resets a writing row', async () => {
   }
 });
 
-await checkAsync('P3R-11 RESTART proof: intent persisted, process restarted, then reconciled', async () => {
-  // 1. A worker claims and records intent, then is interrupted.
+await checkAsync('P3R-11 ROLLBACK proof: V3 intent survives restart under a V1V2 build policy', async () => {
+  const V3_INTENDED = 'sha256-' + '3'.repeat(64);
+  // 1. Build A uses V3, claims and records its logical identity, publishes,
+  //    then is hard-interrupted before queue completion.
   const first = loadFixture({
     row: validatedRow(),
+    policyFamily: 'v3',
     resolveResult: { status: 'validated', ok: true, resolution: { snapshotId: 'snap_1', studioChatId: 'chat_1' } },
-    coverage: coverageStale({ projection: { status: 'ok', contentHash: INTENDED, snapshotId: 'snap_1', schemaVersion: 2 } }),
+    coverage: coverageStale({ projection: { status: 'ok', contentHash: V3_INTENDED, snapshotId: 'snap_1', schemaVersion: 3, payloadVersion: 3 } }),
     writerThrows: 'simulated interruption before completion',
   });
   await first.api({ requestId: 'req_1' });
+  const claimWrite = first.sqlCalls.filter((call) => call.cmd === 'plugin:sql|execute')[0];
+  const claimedMaterialization = JSON.parse(claimWrite.values[2]).materialization;
+  assert.equal(claimedMaterialization.intendedContentHash, V3_INTENDED,
+    'the active v3 projection identity must be durable before publication');
   // The writer threw, so this worker moved the row to failed; simulate instead
   // a HARD interruption by restoring the durable state as it was mid-write.
   const durable = { ...first.queue.get('req_1') };
   durable.status = 'writing';
-  durable.meta_json = JSON.stringify({ materialization: { intendedContentHash: INTENDED, processingStartedAt: '2026-08-27T00:00:00.000Z' } });
+  durable.meta_json = JSON.stringify({ materialization: claimedMaterialization });
 
-  // 2. A NEW process (fresh sandbox, fresh module instance) sees only the
-  //    persisted row — nothing in memory survives.
+  // 2. Build B has rolled back to V1V2. Reconciliation sees only persisted
+  //    intent plus the all-family verified archive scan; today's V1V2
+  //    projection is deliberately different and is not the recovery key.
   const after = loadFixture({
     row: durable,
-    coverage: coverageWith([{ packagePath: 'archive/packages/chat_1.gddd.h2ochat', contentHash: INTENDED, schemaVersion: 2, payloadVersion: 2, classification: 'generation' }]),
+    policyFamily: 'v1v2',
+    coverage: coverageWith(
+      [{ packagePath: 'archive/packages/chat_1.g333.h2ochat', contentHash: V3_INTENDED, schemaVersion: 3, payloadVersion: 3, classification: 'generation' }],
+      { projection: { status: 'ok', contentHash: FRESH_HASH, snapshotId: 'snap_1', schemaVersion: 2, payloadVersion: 2 } },
+    ),
   });
   assert.equal(after.queue.get('req_1').status, 'writing', 'pre-state: stranded');
   const r = after.reconcile ? await after.reconcile({ requestId: 'req_1' }) : null;
   assert.ok(r, 'the recovery API must exist in the restarted process');
   assert.equal(r.status, 'written', 'recovered purely from persisted intent + verified package');
+  assert.equal(r.package.contentHash, V3_INTENDED);
+  assert.equal(r.package.schemaVersion, 3, 'the already-published v3 generation remains the recovered object');
   assert.equal(after.writerCalls.length, 0);
 });
 

@@ -10,12 +10,11 @@
  *
  * HOW IT STAYS HONEST
  *
- * It drives the SAME buildSavedChatPackageV1 path the writer uses, through the
- * asset-stack injection seam, with a private stack whose CAS is hash-only and
- * whose registry is a no-op. There is no second contentHash implementation and
- * no forked projector: a probe hash that disagreed with the writer would be
- * worse than useless, so the only way to guarantee agreement is to run the
- * same code.
+ * It drives the SAME active-family package-builder facade the writer uses,
+ * through the asset-stack injection seam, with a private stack whose CAS is
+ * hash-only and whose registry is a no-op. There is no second contentHash
+ * implementation and no forked projector: a probe hash that disagreed with the
+ * writer would be worse than useless, so both run the same selected builder.
  *
  * `skipAssetMaterialization` is NOT usable for this: it suppresses inline
  * asset extraction, which decides v1-vs-v2, so it would answer a different
@@ -191,9 +190,9 @@
 
   /* ── The probe ────────────────────────────────────────────────────────── */
 
-  async function probeCurrentSavedChatProjectionV1(options) {
+  async function probeCurrentSavedChatProjectionV1(options, policyToken) {
     var opts = safeObject(options);
-    var build = H2O.Studio.ingestion && H2O.Studio.ingestion.buildSavedChatPackageV1;
+    var build = H2O.Studio.ingestion && H2O.Studio.ingestion.buildSavedChatPackageForLiveGenerationFamily;
     if (typeof build !== 'function') {
       return indeterminate('projector-unavailable');
     }
@@ -222,9 +221,12 @@
         snapshotId: cleanString(opts.snapshotId) || undefined,
         /* The seam: same builder, private stack. */
         assetStack: stack,
-      });
+      }, policyToken);
     } catch (err) {
       var message = String((err && err.message) || err);
+      if (err && /^saved-chat-generation-policy-/.test(cleanString(err.code))) {
+        return indeterminate('generation-policy-unavailable');
+      }
       if (err && err.code === 'asset-bound-exceeded') {
         /* Not stale and not fresh: this state is not publishable at all, so
          * asserting either would be wrong. */
@@ -260,6 +262,7 @@
       snapshotId: cleanString(manifest.snapshotId),
       schemaVersion: typeof manifest.schemaVersion === 'number' ? manifest.schemaVersion : null,
       payloadVersion: typeof manifest.payloadVersion === 'number' ? manifest.payloadVersion : null,
+      liveGenerationFamily: cleanString(built.liveGenerationFamily),
       /* Exactly what the writer would submit for this state. */
       contentHash: cleanString(built.contentHash || manifest.contentHash),
       assetShas: assetShas,
@@ -274,6 +277,7 @@
       mutatesFilesystem: false,
       mutatesStore: false,
       usesRealProjector: true,
+      usesActiveGenerationFamily: true,
       statuses: [STATUS_OK, STATUS_INDETERMINATE, STATUS_NO_SNAPSHOT],
     };
   }

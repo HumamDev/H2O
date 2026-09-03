@@ -169,6 +169,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only: M05 G1 trusted generation publication bridge. Package writes
   // publish through it, so it must load with the writer.
   "ingestion/saved-chat-generation-publisher.tauri.js",
+  // Desktop-only: M09 P2.3 read-only native generation-family policy client
+  // and active-family package construction/publication routing facade.
+  "ingestion/saved-chat-generation-policy.tauri.js",
   // Desktop-only: M05 Phase 2.1 mutation-free current-projection probe.
   "ingestion/saved-chat-projection-probe.tauri.js",
   // Desktop-only: M05 Phase 2.2 per-chat coverage/freshness engine. Composes
@@ -1372,6 +1375,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/asset-cas.tauri.js",
   "ingestion/saved-chat-package-assets.tauri.js",
   "ingestion/saved-chat-generation-publisher.tauri.js",
+  "ingestion/saved-chat-generation-policy.tauri.js",
   "ingestion/saved-chat-projection-probe.tauri.js",
   "ingestion/saved-chat-coverage.tauri.js",
   "ingestion/saved-chat-archive-diagnostics.tauri.js",

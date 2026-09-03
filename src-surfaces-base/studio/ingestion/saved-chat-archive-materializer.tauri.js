@@ -9,8 +9,8 @@
  *   - RE-RESOLVES the persisted normalized request against live Desktop store
  *     state (H2O.Studio.ingestion.resolveSavedChatArchiveRequestV1) immediately
  *     before writing, and bails (no write) if it no longer validates,
- *   - on still-validated, transitions validated -> writing, calls the existing
- *     Desktop writer writeSavedChatPackageV1({ snapshotId, overwrite:false })
+ *   - on still-validated, transitions validated -> writing, calls the
+ *     active-family writer({ snapshotId, overwrite:false }, trustedPolicyToken)
  *     passing ONLY the resolved Desktop snapshotId, then transitions
  *     writing -> written (or writing -> failed).
  *
@@ -232,7 +232,9 @@
     }
 
     var ingestion = getIngestion();
-    if (typeof ingestion.resolveSavedChatArchiveRequestV1 !== 'function' || typeof ingestion.writeSavedChatPackageV1 !== 'function') {
+    if (typeof ingestion.resolveSavedChatArchiveRequestV1 !== 'function'
+      || typeof ingestion.readSavedChatGenerationPolicy !== 'function'
+      || typeof ingestion.writeSavedChatPackageForLiveGenerationFamily !== 'function') {
       result.status = STATUS_DB_UNAVAILABLE;
       result.error = 'materializer-dependencies-missing';
       /* Best-effort report: the missing dependency is the actionable truth, so
@@ -240,11 +242,26 @@
       try {
         var depNote = await transitionRequestStatus({
           requestId: requestId, expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_DB_UNAVAILABLE,
-          patch: { errorCode: 'materializer-dependencies-missing', errorMessage: 'resolve/writer ingestion API unavailable', processingFinishedAt: nowIso(), overwrite: false },
+          patch: { errorCode: 'materializer-dependencies-missing', errorMessage: 'resolve/policy/active-writer ingestion API unavailable', processingFinishedAt: nowIso(), overwrite: false },
           currentMeta: currentMeta,
         });
         if (!depNote.ok) result.transitionConflict = { expectedStatus: STATUS_VALIDATED, nextStatus: STATUS_DB_UNAVAILABLE };
       } catch (_) { /* best-effort */ }
+      return result;
+    }
+
+    /* Resolve the immutable native build policy exactly once for this
+     * materialization. The opaque module-minted token is passed through the
+     * projection and writer paths; neither receives a renderer-chosen family.
+     * A query/validation failure leaves the row retryable and publishes
+     * nothing. */
+    var policyToken;
+    try {
+      policyToken = await ingestion.readSavedChatGenerationPolicy();
+    } catch (err) {
+      result.status = 'deferred';
+      result.error = String((err && err.message) || err || 'generation policy unavailable');
+      result.deferred = { reason: 'generation-policy-unavailable' };
       return result;
     }
 
@@ -305,7 +322,7 @@
         || cleanString(row.studio_chat_id);
       if (coverageChatId) {
         try {
-          coverage = await ingestion.describeSavedChatCoverageV1({ chatId: coverageChatId });
+          coverage = await ingestion.describeSavedChatCoverageV1({ chatId: coverageChatId }, policyToken);
         } catch (err) {
           coverage = null;
         }
@@ -420,11 +437,15 @@
      * already returns what it wrote, so use it. */
     var claimedMeta = safeObject(claim.meta) || currentMeta;
 
-    /* Call the existing Desktop writer with ONLY the resolved snapshotId.
-     * Never pass request/Chrome content as package source; overwrite stays false. */
+    /* Call the active-family Desktop writer with ONLY the resolved snapshotId
+     * plus the unforgeable policy token read above. Never pass request/Chrome
+     * content as package source; overwrite stays false. */
     var written;
     try {
-      written = await ingestion.writeSavedChatPackageV1({ snapshotId: snapshotId, overwrite: false });
+      written = await ingestion.writeSavedChatPackageForLiveGenerationFamily(
+        { snapshotId: snapshotId, overwrite: false },
+        policyToken
+      );
     } catch (err) {
       var errorMessage = String((err && err.message) || err || 'package writer failed');
       /* The legacy `package already exists -> failure` mapping is RETIRED.

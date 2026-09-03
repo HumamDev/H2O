@@ -675,6 +675,9 @@
        never names the final generation path. Must load before any package
        write, which now publishes through it. -->
   <script src="./ingestion/saved-chat-generation-publisher.tauri.js"></script>
+  <!-- Desktop-only: M09 P2.3 read-only native generation-family policy
+       client and active-family build/publication facade. -->
+  <script src="./ingestion/saved-chat-generation-policy.tauri.js"></script>
   <!-- Desktop-only: M05 Phase 2.1 current-projection probe. Mutation-free:
        drives the SAME package projector through the asset-stack seam with a
        hash-only CAS and a no-op registry, so it derives the identity the

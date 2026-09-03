@@ -100,7 +100,7 @@
     };
   }
 
-  async function describeSavedChatCoverageV1(options) {
+  async function describeSavedChatCoverageV1(options, policyToken) {
     var opts = safeObject(options);
     var chatId = cleanString(opts.chatId);
     var ing = H2O.Studio.ingestion || {};
@@ -135,7 +135,7 @@
       if (typeof ing.probeCurrentSavedChatProjectionV1 !== 'function') {
         projection = { status: 'indeterminate', reason: 'projection-probe-unavailable', contentHash: '' };
       } else {
-        projection = safeObject(await ing.probeCurrentSavedChatProjectionV1({ chatId: chatId }));
+        projection = safeObject(await ing.probeCurrentSavedChatProjectionV1({ chatId: chatId }, policyToken));
       }
     }
     result.projection = {
@@ -145,6 +145,7 @@
       contentHash: projection.status === 'ok' ? cleanString(projection.contentHash) : '',
       snapshotId: projection.status === 'ok' ? cleanString(projection.snapshotId) : '',
       schemaVersion: projection.status === 'ok' && typeof projection.schemaVersion === 'number' ? projection.schemaVersion : null,
+      liveGenerationFamily: projection.status === 'ok' ? cleanString(projection.liveGenerationFamily) : '',
     };
     var projectionOk = result.projection.status === 'ok' && !!result.projection.contentHash;
 

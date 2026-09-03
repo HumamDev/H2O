@@ -21,6 +21,7 @@ const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const MATERIALIZER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-assets.tauri.js';
 const CODEC_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const PROJECTOR_REL = 'src-surfaces-base/studio/ingestion/saved-chat-package-v1.tauri.js';
+const GENERATION_POLICY_REL = 'src-surfaces-base/studio/ingestion/saved-chat-generation-policy.tauri.js';
 const PROBE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-projection-probe.tauri.js';
 
 const PASS = [];
@@ -148,9 +149,10 @@ function buildProjector({ withImage }) {
  * test mark one authoritative store unready. The sandbox's __TAURI_INTERNALS__
  * invoke THROWS, so any filesystem call by the probe fails the test
  * structurally rather than by assertion. */
-function buildProbeEnv({ withImage, readiness = {} }) {
+function buildProbeEnv({ withImage, readiness = {}, family = 'v1v2', policyWire, policyThrows = '' }) {
   const mocks = createMockStores({ withImage });
   const cas = createMockCas();
+  const policyCalls = [];
   for (const [name, ready] of Object.entries(readiness)) {
     mocks.stores[name] = { ...(mocks.stores[name] || {}), isReady: () => ready };
   }
@@ -160,7 +162,16 @@ function buildProbeEnv({ withImage, readiness = {} }) {
     TextEncoder, TextDecoder, Uint8Array, ArrayBuffer,
     ReadableStream, TransformStream, CompressionStream, DecompressionStream,
     crypto: globalThis.crypto || crypto.webcrypto,
-    __TAURI_INTERNALS__: { invoke: async (cmd) => { throw new Error(`probe must not invoke ${cmd}`); } },
+    __TAURI_INTERNALS__: { invoke: async (cmd) => {
+      policyCalls.push(cmd);
+      if (cmd === 'h2o_saved_chat_generation_policy') {
+        if (policyThrows) throw new Error(policyThrows);
+        return policyWire === undefined
+          ? { schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: family }
+          : policyWire;
+      }
+      throw new Error(`probe must not invoke ${cmd}`);
+    } },
     H2O: { Studio: { store: mocks.stores, ingestion: { assetCas: cas.api } } },
     chrome: { runtime: { id: 'desktop-test', getManifest: () => ({ name: 'H2O Studio Test', version: '0.0.0-test' }) } },
   };
@@ -170,6 +181,7 @@ function buildProbeEnv({ withImage, readiness = {} }) {
   vm.runInContext(readRepo(MATERIALIZER_REL), sandbox, { filename: MATERIALIZER_REL });
   vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
   vm.runInContext(readRepo(PROJECTOR_REL), sandbox, { filename: PROJECTOR_REL });
+  vm.runInContext(readRepo(GENERATION_POLICY_REL), sandbox, { filename: GENERATION_POLICY_REL });
   vm.runInContext(readRepo(PROBE_REL), sandbox, { filename: PROBE_REL });
   const ingestion = sandbox.H2O?.Studio?.ingestion;
   if (typeof ingestion?.probeCurrentSavedChatProjectionV1 !== 'function') {
@@ -178,7 +190,7 @@ function buildProbeEnv({ withImage, readiness = {} }) {
   /* The probe reuses the REAL governed bound; the mock CAS must publish it or
    * the probe would silently lose its asset-bound enforcement. */
   ingestion.assetCas.assetBlobCapBytes = 33554432;
-  return { ingestion, mocks, cas, ids: mocks.ids };
+  return { ingestion, mocks, cas, ids: mocks.ids, policyCalls };
 }
 
 async function main() {
@@ -421,6 +433,39 @@ async function main() {
     // Cross-realm: compare contents, not prototypes.
     assert.deepEqual([...probe.assetShas], [...builtShas]);
     assert.ok(probe.assetShas.length > 0);
+  });
+
+  await checkAsync('M09 P2.3 injected V3 policy selects the canonical v3 builder for projection', async () => {
+    const env = buildProbeEnv({ withImage: true, family: 'v3' });
+    const direct = await env.ingestion.buildSavedChatPackageV3({ snapshotId: env.ids.snapshotId });
+    const active = await env.ingestion.buildSavedChatPackageForLiveGenerationFamily({ snapshotId: env.ids.snapshotId });
+    const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+    assert.equal(active.schemaVersion, 3);
+    assert.equal(active.payloadVersion, 3);
+    assert.equal(active.liveGenerationFamily, 'v3');
+    assert.equal(active.contentHash, direct.contentHash, 'facade must not duplicate or alter v3 identity');
+    assert.equal(probe.status, 'ok', probe.reason);
+    assert.equal(probe.schemaVersion, 3);
+    assert.equal(probe.payloadVersion, 3);
+    assert.equal(probe.liveGenerationFamily, 'v3');
+    assert.equal(probe.contentHash, direct.contentHash, 'projection and v3 writer build must share identity');
+    assert.deepEqual(Object.keys(active.files).sort(), ['manifest.json', 'snapshot.json']);
+  });
+
+  await checkAsync('M09 P2.3 malformed, unknown, missing, and failed policy reads are indeterminate', async () => {
+    const fixtures = [
+      { policyWire: { schema: 'wrong', liveGenerationFamily: 'v1v2' } },
+      { policyWire: { schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: 'v4' } },
+      { policyWire: { schema: 'h2o.studio.saved-chat-generation-policy.v1' } },
+      { policyThrows: 'native policy unavailable' },
+    ];
+    for (const fixture of fixtures) {
+      const env = buildProbeEnv({ withImage: false, ...fixture });
+      const probe = await env.ingestion.probeCurrentSavedChatProjectionV1({ chatId: env.ids.chatId });
+      assert.equal(probe.status, 'indeterminate');
+      assert.equal(probe.reason, 'generation-policy-unavailable');
+      assert.equal(probe.contentHash, '');
+    }
   });
 
   await checkAsync('P2.1 the v2 probe rewrites HTML refs the same way the writer does', async () => {

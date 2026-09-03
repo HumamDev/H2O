@@ -109,6 +109,23 @@ async function main() {
     assert.equal(r.complete, true);
   });
 
+  await checkAsync('1b. v3 identity/gzip representations cover by shared logical contentHash', async () => {
+    const identity = pkg({ dir: 'identity.h2ochat', contentHash: HASH_A, schemaVersion: 3 });
+    identity.payloadVersion = 3;
+    identity.snapshotEncoding = 'identity';
+    identity.snapshotPhysicalSha256 = 'sha256-' + '1'.repeat(64);
+    const gzip = pkg({ dir: 'gzip.h2ochat', contentHash: HASH_A, schemaVersion: 3 });
+    gzip.payloadVersion = 3;
+    gzip.snapshotEncoding = 'gzip';
+    gzip.snapshotPhysicalSha256 = 'sha256-' + '2'.repeat(64);
+    const describe = load({ packages: [identity, gzip], projection: okProjection(HASH_A, 3) });
+    const r = await describe({ chatId: CHAT });
+    assert.equal(r.covered, true);
+    assert.equal(r.fresh.length, 2, 'physical representation differences must not alter logical coverage');
+    assert.notEqual(identity.snapshotPhysicalSha256, gzip.snapshotPhysicalSha256);
+    assert.equal(identity.hashChecks.expectedContentHash, gzip.hashChecks.expectedContentHash);
+  });
+
   await checkAsync('2. complete scan + authoritative projection + no equal package ⇒ not covered', async () => {
     const describe = load({ packages: [pkg({ dir: 'g1.h2ochat', contentHash: HASH_B })], projection: okProjection(HASH_A) });
     const r = await describe({ chatId: CHAT });

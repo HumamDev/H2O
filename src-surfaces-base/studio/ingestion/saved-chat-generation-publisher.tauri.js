@@ -1,9 +1,8 @@
 /* Saved Chat generation publisher bridge (M05 G1).
  *
  * The smallest production bridge that drives the trusted Rust generation
- * publisher. It builds the sanctioned live v1/v2 package with the EXISTING
- * package construction authority, stages the four governed members through the
- * fixed member enum, and commits through trusted Rust.
+ * publisher. It stages the exact governed application-member inventory selected
+ * by the already-built package version, then commits through trusted Rust.
  *
  * Authority boundaries this module must never cross (§O):
  *   - it never names the final generation destination — Rust derives it from
@@ -49,7 +48,8 @@
   var CHUNK_BYTES = 4 * 1024 * 1024;
 
   /* Fixed member enum → the trusted side owns the filenames. */
-  var MEMBER_ORDER = ['snapshot', 'markdown', 'html', 'manifest'];
+  var V1V2_MEMBER_ORDER = ['snapshot', 'markdown', 'html', 'manifest'];
+  var V3_MEMBER_ORDER = ['snapshot', 'manifest'];
   var MEMBER_SOURCE = {
     snapshot: 'snapshot.json',
     markdown: 'chat.md',
@@ -90,6 +90,31 @@
     return list.map(function (b) { return cleanString(b && b.code); }).filter(Boolean);
   }
 
+  function applicationMembersForBuiltPackage(built) {
+    var manifest = (built && built.manifest) || {};
+    var schemaVersion = Number(built && built.schemaVersion);
+    var payloadVersion = Number(built && built.payloadVersion);
+    if (!Number.isFinite(schemaVersion)) schemaVersion = Number(manifest.schemaVersion);
+    if (!Number.isFinite(payloadVersion)) {
+      payloadVersion = manifest.payloadVersion == null && schemaVersion === 1
+        ? 1
+        : Number(manifest.payloadVersion);
+    }
+    if (Number(manifest.schemaVersion) !== schemaVersion) {
+      throw new Error('publishBuiltPackage: result/manifest schemaVersion mismatch');
+    }
+    if (schemaVersion === 1 && payloadVersion === 1 && manifest.payloadVersion == null) {
+      return V1V2_MEMBER_ORDER;
+    }
+    if (schemaVersion === 2 && payloadVersion === 2 && Number(manifest.payloadVersion) === 2) {
+      return V1V2_MEMBER_ORDER;
+    }
+    if (schemaVersion === 3 && payloadVersion === 3 && Number(manifest.payloadVersion) === 3) {
+      return V3_MEMBER_ORDER;
+    }
+    throw new Error('publishBuiltPackage: unsupported or incoherent package version');
+  }
+
   /* One member, delivered as N bounded appends. */
   async function stageMember(token, member, bytes) {
     var offset = 0;
@@ -112,11 +137,14 @@
   }
 
   /* Publishes an already-built sanctioned package as an immutable generation.
-   * `built` is the output of buildSavedChatPackageV1/V2. */
-  async function publishBuiltPackageV1(built) {
+   * The fixed member set comes from the coherent built package version; a
+   * renderer cannot submit a free-form list. Native COMMIT independently
+   * verifies exact inventory against its trusted active-family policy. */
+  async function publishBuiltSavedChatGeneration(built) {
     if (!built || !built.files) throw new Error('publishBuiltPackage: a built package is required');
     var chatId = cleanString(built.manifest && built.manifest.chatId);
     if (!chatId) throw new Error('publishBuiltPackage: manifest.chatId is required');
+    var memberOrder = applicationMembersForBuiltPackage(built);
 
     var begun = await invoke(BEGIN_COMMAND, { options: { chatId: chatId } });
     if (!begun || begun.ok !== true) {
@@ -128,8 +156,8 @@
 
     var committed = false;
     try {
-      for (var i = 0; i < MEMBER_ORDER.length; i += 1) {
-        var member = MEMBER_ORDER[i];
+      for (var i = 0; i < memberOrder.length; i += 1) {
+        var member = memberOrder[i];
         var file = built.files[MEMBER_SOURCE[member]];
         if (!file) throw new Error('built package is missing required member ' + MEMBER_SOURCE[member]);
         var bytes = file.bytes instanceof Uint8Array ? file.bytes : textBytes(file.text);
@@ -180,7 +208,10 @@
       version: MODULE_VERSION,
       commands: [BEGIN_COMMAND, WRITE_COMMAND, COMMIT_COMMAND, ABORT_COMMAND],
       chunkBytes: CHUNK_BYTES,
-      members: MEMBER_ORDER.slice(),
+      membersByFamily: {
+        v1v2: V1V2_MEMBER_ORDER.slice(),
+        v3: V3_MEMBER_ORDER.slice(),
+      },
       derivesFinalPath: false,
       adjudicatesOccupant: false,
       publishCount: state.publishCount,
@@ -190,6 +221,9 @@
     };
   }
 
-  H2O.Studio.ingestion.publishSavedChatGenerationV1 = publishBuiltPackageV1;
+  H2O.Studio.ingestion.publishBuiltSavedChatGeneration = publishBuiltSavedChatGeneration;
+  /* Compatibility name for the existing v1/v2 writer. It reaches the same
+   * version-aware publisher and does not select a family. */
+  H2O.Studio.ingestion.publishSavedChatGenerationV1 = publishBuiltSavedChatGeneration;
   H2O.Studio.ingestion.diagnoseSavedChatGenerationPublisherV1 = diagnoseSavedChatGenerationPublisherV1;
 })(typeof window !== 'undefined' ? window : globalThis);

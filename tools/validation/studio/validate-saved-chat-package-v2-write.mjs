@@ -437,6 +437,9 @@ async function main() {
  * generation-session-unknown. The token is opaque: the bridge must hand back
  * the EXACT value it was given, byte for byte, to every later command. */
 const PUBLISHER_BRIDGE_REL = 'src-surfaces-base/studio/ingestion/saved-chat-generation-publisher.tauri.js';
+const GENERATION_POLICY_REL = 'src-surfaces-base/studio/ingestion/saved-chat-generation-policy.tauri.js';
+const STUDIO_HTML_REL = 'src-surfaces-base/studio/studio.html';
+const PACK_STUDIO_REL = 'tools/product/studio/pack-studio.mjs';
 const BIG_TOKEN = '12308876026142924039'; // the real token from the failed run
 
 function loadPublisherBridge(invokeImpl) {
@@ -463,6 +466,92 @@ function builtPackageFixture() {
       'manifest.json': { bytes: enc.encode('{"chatId":"c_bridge_token"}') },
     },
   };
+}
+
+function builtV3PackageFixture() {
+  const enc = new TextEncoder();
+  const contentHash = 'sha256-' + '3'.repeat(64);
+  const assets = [{
+    path: 'assets/sha256-' + 'a'.repeat(64) + '.png',
+    sha256: 'sha256-' + 'a'.repeat(64), byteLength: 7, mimeType: 'image/png', ext: 'png',
+  }];
+  return {
+    ok: true,
+    schemaVersion: 3,
+    payloadVersion: 3,
+    contentHash,
+    snapshotId: 's3',
+    assets,
+    manifest: { chatId: 'c_bridge_v3', schemaVersion: 3, payloadVersion: 3, contentHash, assets },
+    files: {
+      'snapshot.json': { bytes: enc.encode('{"schemaVersion":3,"snapshotId":"s3"}') },
+      'manifest.json': { bytes: enc.encode('{"chatId":"c_bridge_v3","schemaVersion":3,"payloadVersion":3}') },
+    },
+  };
+}
+
+function builtV2PackageFixture() {
+  const enc = new TextEncoder();
+  const contentHash = 'sha256-' + '2'.repeat(64);
+  return {
+    ok: true, schemaVersion: 2, payloadVersion: 2, contentHash, snapshotId: 's2',
+    manifest: { chatId: 'c_bridge_v2', schemaVersion: 2, payloadVersion: 2, contentHash, assets: [{ sha256: 'sha256-' + 'a'.repeat(64) }] },
+    files: {
+      'snapshot.json': { bytes: enc.encode('{"schemaVersion":2,"snapshotId":"s2"}') },
+      'chat.md': { bytes: enc.encode('# v2') },
+      'chat.html': { bytes: enc.encode('<p>v2</p>') },
+      'manifest.json': { bytes: enc.encode('{"chatId":"c_bridge_v2","schemaVersion":2,"payloadVersion":2}') },
+    },
+  };
+}
+
+function loadActiveRouting({ family = 'v1v2', policyWire, policyThrows = '', v1Built, v3Built } = {}) {
+  const writes = [];
+  const calls = [];
+  const retiredCalls = [];
+  const context = {
+    console, setTimeout, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, Math, JSON,
+    Promise, Object, Array, String, Number, Boolean, Error, Date, WeakSet, isFinite, parseInt,
+    __TAURI_INTERNALS__: {
+      invoke: async (cmd, args, meta) => {
+        calls.push(cmd);
+        if (cmd === 'h2o_saved_chat_generation_policy') {
+          if (policyThrows) throw new Error(policyThrows);
+          return policyWire === undefined
+            ? { schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: family }
+            : policyWire;
+        }
+        if (cmd === 'h2o_archive_generation_begin') return { ok: true, token: BIG_TOKEN, blockers: [] };
+        if (cmd === 'h2o_archive_generation_write_member') {
+          const options = JSON.parse(meta?.headers?.options || '{}');
+          writes.push({ member: options.member, bytes: new Uint8Array(args) });
+          return { ok: true, blockers: [] };
+        }
+        if (cmd === 'h2o_archive_generation_commit') {
+          const built = family === 'v3' ? (v3Built || builtV3PackageFixture()) : (v1Built || builtPackageFixture());
+          return {
+            ok: true, outcome: 'created', committed: true, durabilityComplete: true,
+            generationPath: `archive/packages/${built.manifest.chatId}.g${String(built.contentHash || 'sha256-' + '1'.repeat(64)).replace(/^sha256-/, '')}.h2ochat`,
+            contentHash: built.contentHash || 'sha256-' + '1'.repeat(64), blockers: [], advisories: [],
+          };
+        }
+        if (cmd === 'h2o_archive_generation_abort') return { ok: true };
+        throw new Error('unexpected command ' + cmd);
+      },
+    },
+    H2O: { Studio: { ingestion: {
+      buildSavedChatPackageV1: async () => v1Built || Object.assign({
+        ok: true, schemaVersion: 1, payloadVersion: 1, contentHash: 'sha256-' + '1'.repeat(64), snapshotId: 's1',
+      }, builtPackageFixture()),
+      buildSavedChatPackageV3: async () => v3Built || builtV3PackageFixture(),
+      writeSavedChatPackageV3: async () => { retiredCalls.push(true); throw new Error('retired writer called'); },
+    } } },
+  };
+  context.globalThis = context; context.window = context;
+  const sandbox = vm.createContext(context);
+  vm.runInContext(readRepo(PUBLISHER_BRIDGE_REL), sandbox, { filename: PUBLISHER_BRIDGE_REL });
+  vm.runInContext(readRepo(GENERATION_POLICY_REL), sandbox, { filename: GENERATION_POLICY_REL });
+  return { ingestion: sandbox.H2O.Studio.ingestion, writes, calls, retiredCalls };
 }
 
 await checkAsync('bridge returns the EXACT opaque token string to write/commit', async () => {
@@ -508,6 +597,83 @@ check('bridge performs no arithmetic or numeric coercion on the token', () => {
   for (const banned of ['Number(token', 'parseInt(token', 'parseFloat(token', 'token +', '+ token', 'token++']) {
     assert.ok(!src.includes(banned), `bridge must not coerce the token: ${banned}`);
   }
+});
+
+check('active-family policy facade is loaded once in order and packed for source/mirror builds', () => {
+  const html = readRepo(STUDIO_HTML_REL);
+  const pack = readRepo(PACK_STUDIO_REL);
+  const packageIndex = html.indexOf('./ingestion/saved-chat-package-v1.tauri.js');
+  const publisherIndex = html.indexOf('./ingestion/saved-chat-generation-publisher.tauri.js');
+  const policyIndex = html.indexOf('./ingestion/saved-chat-generation-policy.tauri.js');
+  const probeIndex = html.indexOf('./ingestion/saved-chat-projection-probe.tauri.js');
+  assert.ok(packageIndex >= 0 && packageIndex < publisherIndex && publisherIndex < policyIndex && policyIndex < probeIndex);
+  assert.equal((html.match(/saved-chat-generation-policy\.tauri\.js/g) || []).length, 1);
+  assert.ok((pack.match(/ingestion\/saved-chat-generation-policy\.tauri\.js/g) || []).length >= 2);
+});
+
+check('policy facade exposes read/build/write only, with no persisted or mutable family switch', () => {
+  const source = readRepo(GENERATION_POLICY_REL);
+  assert.match(source, /h2o_saved_chat_generation_policy/);
+  assert.doesNotMatch(source, /localStorage|sessionStorage|process\.env|setSavedChatGeneration|setLiveGeneration/i);
+  assert.doesNotMatch(source, /opts\.(?:family|liveGenerationFamily)|options\.(?:family|liveGenerationFamily)/);
+});
+
+await checkAsync('active V1V2 routing writes the governed four-member application inventory', async () => {
+  const env = loadActiveRouting({ family: 'v1v2' });
+  const policyToken = await env.ingestion.readSavedChatGenerationPolicy();
+  const result = await env.ingestion.writeSavedChatPackageForLiveGenerationFamily(
+    { snapshotId: 's1', overwrite: false }, policyToken,
+  );
+  assert.deepEqual(env.writes.map((entry) => entry.member), ['snapshot', 'markdown', 'html', 'manifest']);
+  assert.equal(result.liveGenerationFamily, 'v1v2');
+  assert.equal(result.written, true);
+  assert.equal(env.calls.filter((cmd) => cmd === 'h2o_saved_chat_generation_policy').length, 1,
+    'passing the operation token must avoid a second policy query');
+});
+
+await checkAsync('active V1V2 routing preserves the v2 asset-bearing four-member contract', async () => {
+  const built = builtV2PackageFixture();
+  const env = loadActiveRouting({ family: 'v1v2', v1Built: built });
+  const result = await env.ingestion.writeSavedChatPackageForLiveGenerationFamily({ snapshotId: 's2', overwrite: false });
+  assert.deepEqual(env.writes.map((entry) => entry.member), ['snapshot', 'markdown', 'html', 'manifest']);
+  assert.equal(result.schemaVersion, 2);
+  assert.equal(result.payloadVersion, 2);
+  assert.equal(result.contentHash, built.contentHash);
+});
+
+await checkAsync('injected V3 policy routes through the trusted publisher with snapshot + manifest only', async () => {
+  const env = loadActiveRouting({ family: 'v3' });
+  const result = await env.ingestion.writeSavedChatPackageForLiveGenerationFamily({ snapshotId: 's3', overwrite: false });
+  assert.deepEqual(env.writes.map((entry) => entry.member), ['snapshot', 'manifest']);
+  assert.equal(env.retiredCalls.length, 0, 'retired writeSavedChatPackageV3 must never be called');
+  assert.equal(result.liveGenerationFamily, 'v3');
+  assert.equal(result.contentHash, builtV3PackageFixture().contentHash);
+  assert.equal(result.assets.length, 1, 'asset declarations remain available for trusted native/CAS COMMIT');
+  assert.equal(result.written, true);
+});
+
+await checkAsync('policy query/refusal failures publish nothing and never fall back families', async () => {
+  for (const fixture of [
+    { policyWire: { schema: 'wrong', liveGenerationFamily: 'v1v2' } },
+    { policyWire: { schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: 'v4' } },
+    { policyWire: { schema: 'h2o.studio.saved-chat-generation-policy.v1' } },
+    { policyThrows: 'native policy unavailable' },
+  ]) {
+    const env = loadActiveRouting(fixture);
+    await assert.rejects(() => env.ingestion.writeSavedChatPackageForLiveGenerationFamily({ snapshotId: 's1' }), /policy/i);
+    assert.equal(env.writes.length, 0, 'no generation member may be staged after a policy failure');
+    assert.equal(env.calls.includes('h2o_archive_generation_begin'), false, 'BEGIN must not be attempted');
+  }
+});
+
+await checkAsync('a forged renderer family object cannot select a builder', async () => {
+  const env = loadActiveRouting({ family: 'v1v2' });
+  await assert.rejects(
+    () => env.ingestion.buildSavedChatPackageForLiveGenerationFamily({}, {
+      schema: 'h2o.studio.saved-chat-generation-policy.v1', liveGenerationFamily: 'v3',
+    }),
+    /policy token/i,
+  );
 });
 
 
