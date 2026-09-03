@@ -31,6 +31,7 @@ const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspect
 const IMPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const FOLDER_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_folder_publish.rs';
 const ZIP_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_zip_publish.rs';
+const EXPORT_ROOT_POLICY_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_export_root_policy.rs';
 const ARCHIVE_DURABLE_WRITE_NATIVE = 'apps/studio/desktop/src-tauri/src/archive_durable_write.rs';
 const TAURI_LIB = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const ZIP_NATIVE_STAGE_ROOT = '.H2O Studio Saved Chat ZIP Staging';
@@ -199,11 +200,12 @@ function sha256(value) {
   return `sha256-${nodeCrypto.createHash('sha256').update(Buffer.from(value)).digest('hex')}`;
 }
 
-function createBehaviorFs() {
+function createBehaviorFs(config = {}) {
   const dirs = new Set();
   const files = new Map();
   const APP = 15;
   const HOME = 21;
+  const exportBaseDir = config.exportBaseDir === APP ? APP : HOME;
   const folderStageCreateNames = [];
   let beforeFolderPublish = null;
   let folderPublishCalls = 0;
@@ -265,6 +267,14 @@ function createBehaviorFs() {
     }
   }
   async function invoke(command, body, metadata) {
+    if (command === 'h2o_saved_chat_export_root_policy') {
+      if (config.exportPolicyError) throw new Error(String(config.exportPolicyError));
+      if (config.exportPolicyWire !== undefined) return config.exportPolicyWire;
+      return {
+        schema: 'h2o.studio.saved-chat-export-root-policy.v1',
+        baseDirectory: exportBaseDir === APP ? 'appLocalData' : 'home',
+      };
+    }
     if (command === 'plugin:fs|write_file') {
       const p = decodeURIComponent(metadata?.headers?.path || '');
       const options = JSON.parse(metadata?.headers?.options || '{}');
@@ -278,10 +288,10 @@ function createBehaviorFs() {
       const stagedName = `${finalName}.tmp-${token}`;
       const stagedPath = `H2O Studio Exports/${stagedName}`;
       folderStageCreateNames.push(stagedName);
-      if (exists(HOME, stagedPath)) {
+      if (exists(exportBaseDir, stagedPath)) {
         return { schema: 'h2o.savedChatFolderStage.v1', ok: false, status: 'stage-exists', owned: false, stagedName: null };
       }
-      mkdir(HOME, stagedPath);
+      mkdir(exportBaseDir, stagedPath);
       return { schema: 'h2o.savedChatFolderStage.v1', ok: true, status: 'created', owned: true, stagedName };
     }
     if (command === 'h2o_publish_saved_chat_folder_create_only') {
@@ -294,13 +304,13 @@ function createBehaviorFs() {
         beforeFolderPublish = null;
         await hook({ stagedPath, finalPath });
       }
-      if (exists(HOME, finalPath)) {
+      if (exists(exportBaseDir, finalPath)) {
         return { schema: 'h2o.savedChatFolderPublish.v1', ok: false, status: 'destination-exists', stagingRemoved: false };
       }
-      if (!dirs.has(key(HOME, stagedPath))) {
+      if (!dirs.has(key(exportBaseDir, stagedPath))) {
         return { schema: 'h2o.savedChatFolderPublish.v1', ok: false, status: 'staged-missing', stagingRemoved: false };
       }
-      renameTree(HOME, stagedPath, HOME, finalPath);
+      renameTree(exportBaseDir, stagedPath, exportBaseDir, finalPath);
       return { schema: 'h2o.savedChatFolderPublish.v1', ok: true, status: 'published', stagingRemoved: true };
     }
     if (command === 'h2o_publish_saved_chat_zip_bytes_create_only') {
@@ -313,25 +323,25 @@ function createBehaviorFs() {
       const finalPath = `H2O Studio Exports/${finalName}`;
       zipStageNames.push(stagedName);
       zipPublishOptions.push({ ...options });
-      if (exists(HOME, stagedPath)) {
+      if (exists(exportBaseDir, stagedPath)) {
         return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'stage-exists', stagingRemoved: false, committed: false, durabilityComplete: false, byteLength: 0, sha256: '', fullFsync: false };
       }
       const ownedBytes = Buffer.from(body);
-      put(HOME, stagedPath, ownedBytes);
+      put(exportBaseDir, stagedPath, ownedBytes);
       /* Buffer object identity models the retained native descriptor. The
        * final publication selects this object, never a later incarnation of
        * the staging pathname. */
-      const ownedEntry = files.get(key(HOME, stagedPath));
+      const ownedEntry = files.get(key(exportBaseDir, stagedPath));
       const actualLength = zipIdentityFault === 'length' ? ownedEntry.length + 1 : ownedEntry.length;
       const actualSha = zipIdentityFault === 'hash'
         ? sha256(Buffer.concat([ownedEntry, Buffer.from('mismatch')]))
         : sha256(ownedEntry);
       if (Number(options.expectedByteLength) !== actualLength) {
-        if (files.get(key(HOME, stagedPath)) === ownedEntry) files.delete(key(HOME, stagedPath));
+        if (files.get(key(exportBaseDir, stagedPath)) === ownedEntry) files.delete(key(exportBaseDir, stagedPath));
         return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-length-mismatch', stagingRemoved: true, committed: false, durabilityComplete: false, byteLength: 0, sha256: '', fullFsync: false };
       }
       if (String(options.expectedSha256 || '') !== actualSha) {
-        if (files.get(key(HOME, stagedPath)) === ownedEntry) files.delete(key(HOME, stagedPath));
+        if (files.get(key(exportBaseDir, stagedPath)) === ownedEntry) files.delete(key(exportBaseDir, stagedPath));
         return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'staged-hash-mismatch', stagingRemoved: true, committed: false, durabilityComplete: false, byteLength: 0, sha256: '', fullFsync: false };
       }
       if (beforeZipPublish) {
@@ -339,14 +349,14 @@ function createBehaviorFs() {
         beforeZipPublish = null;
         await hook({ stagedName, stagedPath, finalPath });
       }
-      if (exists(HOME, finalPath)) {
-        const stagingRemoved = files.get(key(HOME, stagedPath)) === ownedEntry;
-        if (stagingRemoved) files.delete(key(HOME, stagedPath));
+      if (exists(exportBaseDir, finalPath)) {
+        const stagingRemoved = files.get(key(exportBaseDir, stagedPath)) === ownedEntry;
+        if (stagingRemoved) files.delete(key(exportBaseDir, stagedPath));
         return { schema: 'h2o.savedChatZipPublish.v1', ok: false, status: 'destination-exists', stagingRemoved, committed: false, durabilityComplete: false, byteLength: 0, sha256: '', fullFsync: false };
       }
-      files.set(key(HOME, finalPath), Buffer.from(ownedEntry));
-      const stagingRemoved = files.get(key(HOME, stagedPath)) === ownedEntry;
-      if (stagingRemoved) files.delete(key(HOME, stagedPath));
+      files.set(key(exportBaseDir, finalPath), Buffer.from(ownedEntry));
+      const stagingRemoved = files.get(key(exportBaseDir, stagedPath)) === ownedEntry;
+      if (stagingRemoved) files.delete(key(exportBaseDir, stagedPath));
       return { schema: 'h2o.savedChatZipPublish.v1', ok: true, status: 'published', stagingRemoved, committed: true, durabilityComplete: true, byteLength: ownedEntry.length, sha256: actualSha, fullFsync: true };
     }
     const p = body?.path;
@@ -384,7 +394,7 @@ function createBehaviorFs() {
   }
   mkdir(APP, 'archive/packages');
   return {
-    APP, HOME, dirs, files, invoke, mkdir, put, exists, inventory, key,
+    APP, HOME, exportBaseDir, dirs, files, invoke, mkdir, put, exists, inventory, key,
     folderStageCreateNames() { return folderStageCreateNames.slice(); },
     setBeforeFolderPublish(fn) { beforeFolderPublish = fn; },
     folderPublishCallCount() { return folderPublishCalls; },
@@ -690,6 +700,10 @@ check('J.2 exporter is Desktop-only and verification-gated through inspectPackag
 check('J.2 exporter uses fixed bounded export root and no arbitrary destination root', () => {
   assertIncludes(exporterCode, "EXPORT_ROOT = 'H2O Studio Exports'");
   assertIncludes(exporterCode, 'HOME_BASE_DIR = 21');
+  assertIncludes(exporterCode, 'APP_LOCAL_DATA = 15');
+  assertIncludes(exporterCode, 'h2o_saved_chat_export_root_policy');
+  assertIncludes(exporterCode, 'validateExportRootPolicyWire');
+  assertIncludes(exporterCode, 'exportRootOptions');
   assertIncludes(exporterCode, 'resolveExportDestination');
   assert.doesNotMatch(exporterCode, /destinationRoot|rootPath|targetRoot|absoluteDestination|showOpenDialog|showSaveDialog|dialog:/);
   assert.doesNotMatch(exporterCode, /\$DOWNLOAD|\$HOME\/\*\*/);
@@ -722,6 +736,7 @@ check('J.2 exporter guards package-relative paths and asset paths', () => {
 check('M09 P0.1 folder final publication uses one bounded native atomic create-only command', () => {
   assert.ok(existsRepo(FOLDER_PUBLISH_NATIVE), `${FOLDER_PUBLISH_NATIVE} does not exist`);
   const native = readRepo(FOLDER_PUBLISH_NATIVE);
+  const rootPolicy = readRepo(EXPORT_ROOT_POLICY_NATIVE);
   const tauriLib = readRepo(TAURI_LIB);
   assertIncludes(exporterCode, 'destination-exists');
   assertIncludes(exporterCode, 'fsExists(dest.destinationPath');
@@ -730,7 +745,8 @@ check('M09 P0.1 folder final publication uses one bounded native atomic create-o
   assertIncludes(exporterCode, 'publishFolderCreateOnly(tempName, dest.exportName)');
   assertIncludes(native, 'promote_dir_exclusive');
   assertIncludes(native, 'destination-exists');
-  assertIncludes(native, 'H2O Studio Exports');
+  assertIncludes(native, 'saved_chat_export_root_policy::production_roots');
+  assertIncludes(rootPolicy, 'H2O Studio Exports');
   assertIncludes(tauriLib, 'pub mod saved_chat_folder_publish;');
   assertIncludes(tauriLib, 'saved_chat_folder_publish::h2o_publish_saved_chat_folder_create_only');
   assert.equal(
@@ -780,6 +796,7 @@ check('M09 P0.1b folder staging uses bounded native exclusive creation and rando
 check('M09 P0.3c ZIP bytes use FD-bound create-only publication from native-owned staging', () => {
   assert.ok(existsRepo(ZIP_PUBLISH_NATIVE), `${ZIP_PUBLISH_NATIVE} does not exist`);
   const native = readRepo(ZIP_PUBLISH_NATIVE);
+  const rootPolicy = readRepo(EXPORT_ROOT_POLICY_NATIVE);
   const durableWrite = readRepo(ARCHIVE_DURABLE_WRITE_NATIVE);
   const tauriLib = readRepo(TAURI_LIB);
   assertIncludes(exporterCode, 'h2o_publish_saved_chat_zip_bytes_create_only');
@@ -787,7 +804,7 @@ check('M09 P0.3c ZIP bytes use FD-bound create-only publication from native-owne
   assertIncludes(exporterCode, 'ZIP_STAGE_CREATE_ATTEMPTS = 8');
   assertIncludes(exporterCode, 'crypto.getRandomValues');
   assertIncludes(native, 'publish_open_file_clone_exclusive');
-  assertIncludes(native, '.H2O Studio Saved Chat ZIP Staging');
+  assertIncludes(rootPolicy, '.H2O Studio Saved Chat ZIP Staging');
   assertIncludes(native, 'create_new_child');
   assertIncludes(native, 'sync_file_contents');
   assertIncludes(native, 'hash_owned_file');
@@ -802,7 +819,8 @@ check('M09 P0.3c ZIP bytes use FD-bound create-only publication from native-owne
   assertIncludes(native, 'staging-identity-mismatch');
   assertIncludes(native, 'committed');
   assertIncludes(native, 'durability_complete');
-  assertIncludes(native, 'H2O Studio Exports');
+  assertIncludes(native, 'saved_chat_export_root_policy::production_roots');
+  assertIncludes(rootPolicy, 'H2O Studio Exports');
   assertIncludes(durableWrite, 'publish_open_file_clone_exclusive');
   assertIncludes(durableWrite, 'libc::fclonefileat');
   assertIncludes(tauriLib, 'saved_chat_zip_publish::h2o_publish_saved_chat_zip_bytes_create_only');
@@ -999,6 +1017,69 @@ checkAsync('M03 T04: behavior harness executes the real governed codec before Di
   assert.equal(typeof runtime.H2O?.Studio?.ingestion?.validateSavedChatPackageV1, 'function');
   /* The harness must never substitute its own compression path for the codec. */
   assert.doesNotMatch(readRepo(DIAGNOSTICS), /DecompressionStream|CompressionStream/);
+});
+
+checkAsync('M09 P3.2 renderer export-root policy accepts only exact governed wire values', async () => {
+  const runtime = loadBehaviorRuntime(createBehaviorFs());
+  const exporter = runtime.H2O.Studio.archiveExporter;
+  const policy = await exporter.readSavedChatExportRootPolicy();
+  assert.equal(policy.schema, 'h2o.studio.saved-chat-export-root-policy.v1');
+  assert.equal(policy.baseDirectory, 'home');
+  assert.equal(Object.isFrozen(policy), true);
+  assert.equal(exporter._private.validateExportRootPolicyWire, undefined);
+
+  for (const invalid of [
+    null,
+    {},
+    { schema: 'wrong', baseDirectory: 'home' },
+    { schema: 'h2o.studio.saved-chat-export-root-policy.v1' },
+    { schema: 'h2o.studio.saved-chat-export-root-policy.v1', baseDirectory: 'unknown' },
+    { schema: 'h2o.studio.saved-chat-export-root-policy.v1', baseDirectory: 'home', path: '/tmp' },
+  ]) {
+    const invalidRuntime = loadBehaviorRuntime(createBehaviorFs({ exportPolicyWire: invalid }));
+    await assert.rejects(
+      invalidRuntime.H2O.Studio.archiveExporter.readSavedChatExportRootPolicy()
+    );
+  }
+});
+
+checkAsync('M09 P3.2 AppLocalData policy binds renderer staging and native folder publication to one disposable root', async () => {
+  const mem = createBehaviorFs({ exportBaseDir: 15 });
+  const pkg = readCommittedV3Fixture();
+  const sourceRoot = installBehaviorPackage(mem, pkg);
+  const runtime = loadBehaviorRuntime(mem);
+  const exporter = runtime.H2O.Studio.archiveExporter;
+
+  const policy = await exporter.readSavedChatExportRootPolicy();
+  assert.equal(policy.baseDirectory, 'appLocalData');
+  const result = await exporter.exportVerifiedPackage({
+    packagePath: sourceRoot,
+    exportName: 'p3-2-app-local.h2ochat',
+  });
+  assert.equal(result.status, 'exported');
+  assert.ok(mem.inventory(mem.APP, 'H2O Studio Exports/p3-2-app-local.h2ochat').length > 0);
+  assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports'), []);
+  assert.equal(mem.folderPublishCallCount(), 1);
+});
+
+checkAsync('M09 P3.2 malformed or unavailable export-root policy fails closed before export mutation', async () => {
+  for (const options of [
+    { exportPolicyWire: { schema: 'wrong', baseDirectory: 'home' } },
+    { exportPolicyError: 'policy command unavailable' },
+  ]) {
+    const mem = createBehaviorFs(options);
+    const pkg = readCommittedV3Fixture();
+    const sourceRoot = installBehaviorPackage(mem, pkg);
+    const runtime = loadBehaviorRuntime(mem);
+    const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({
+      packagePath: sourceRoot,
+      exportName: 'must-not-write.h2ochat',
+    });
+    assert.equal(result.status, 'write-error');
+    assert.deepEqual(mem.inventory(mem.HOME, 'H2O Studio Exports'), []);
+    assert.deepEqual(mem.inventory(mem.APP, 'H2O Studio Exports'), []);
+    assert.equal(mem.folderPublishCallCount(), 0);
+  }
 });
 
 checkAsync('M02 T05 v3 export regenerates deterministic renderers without mutating source identity', async () => {

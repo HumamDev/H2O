@@ -5,6 +5,11 @@
 //! per-chat value. Later publisher, scanner, retention, and renderer-routing
 //! work must consume this authority instead of introducing parallel booleans.
 
+#[cfg(all(feature = "saved-chat-v3-acceptance", not(debug_assertions)))]
+compile_error!(
+    "saved-chat-v3-acceptance is a debug-only validation seam and cannot produce a release artifact"
+);
+
 pub const SAVED_CHAT_GENERATION_POLICY_SCHEMA: &str = "h2o.studio.saved-chat-generation-policy.v1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -24,8 +29,15 @@ impl LiveGenerationFamily {
     }
 }
 
-/// The sole production selection point. M09 P2.1 MUST leave v3 off.
+/// The sole build selection point. Ordinary/default builds remain v1/v2. The
+/// non-default v3 value exists only for the guarded disposable P3 debug
+/// acceptance artifact; the compile-time guard above makes it unavailable to
+/// release builds.
+#[cfg(not(feature = "saved-chat-v3-acceptance"))]
 pub const PRODUCTION_LIVE_GENERATION_FAMILY: LiveGenerationFamily = LiveGenerationFamily::V1V2;
+
+#[cfg(feature = "saved-chat-v3-acceptance")]
+pub const PRODUCTION_LIVE_GENERATION_FAMILY: LiveGenerationFamily = LiveGenerationFamily::V3;
 
 pub const fn production_live_generation_family() -> LiveGenerationFamily {
     PRODUCTION_LIVE_GENERATION_FAMILY
@@ -60,6 +72,7 @@ pub async fn h2o_saved_chat_generation_policy() -> GenerationPolicyResult {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "saved-chat-v3-acceptance"))]
     #[test]
     fn production_policy_remains_v1v2() {
         assert_eq!(
@@ -67,6 +80,17 @@ mod tests {
             LiveGenerationFamily::V1V2
         );
         assert_eq!(production_policy().live_generation_family.as_str(), "v1v2");
+    }
+
+    #[cfg(feature = "saved-chat-v3-acceptance")]
+    #[test]
+    fn guarded_debug_acceptance_policy_is_v3() {
+        assert!(cfg!(debug_assertions));
+        assert_eq!(
+            production_live_generation_family(),
+            LiveGenerationFamily::V3
+        );
+        assert_eq!(production_policy().live_generation_family.as_str(), "v3");
     }
 
     #[test]
@@ -77,8 +101,7 @@ mod tests {
         assert_eq!(injected.live_generation_family.as_str(), "v3");
         assert_eq!(
             production_policy().live_generation_family,
-            LiveGenerationFamily::V1V2,
-            "test injection must not mutate production policy"
+            PRODUCTION_LIVE_GENERATION_FAMILY
         );
 
         use crate::archive_package_scan::ConstructionFamily;
@@ -86,7 +109,10 @@ mod tests {
         assert!(!ConstructionFamily::V1.is_live_writer_family_for(LiveGenerationFamily::V3));
         assert!(ConstructionFamily::V1.is_live_writer_family_for(LiveGenerationFamily::V1V2));
         assert!(ConstructionFamily::V2.is_live_writer_family_for(LiveGenerationFamily::V1V2));
-        assert!(!ConstructionFamily::V3.is_live_writer_family());
+        assert_eq!(
+            ConstructionFamily::V3.is_live_writer_family(),
+            PRODUCTION_LIVE_GENERATION_FAMILY == LiveGenerationFamily::V3
+        );
     }
 
     #[test]
@@ -96,7 +122,7 @@ mod tests {
             value,
             serde_json::json!({
                 "schema": "h2o.studio.saved-chat-generation-policy.v1",
-                "liveGenerationFamily": "v1v2"
+                "liveGenerationFamily": PRODUCTION_LIVE_GENERATION_FAMILY.as_str()
             })
         );
     }

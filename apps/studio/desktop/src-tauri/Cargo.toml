@@ -12,6 +12,12 @@ license = "UNLICENSED"
 name = "h2o_studio_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+# M09 P3 disposable Desktop acceptance only. The Rust policy module rejects
+# this feature in non-debug profiles so it cannot produce a release artifact.
+saved-chat-v3-acceptance = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

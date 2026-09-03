@@ -2,7 +2,7 @@
 //!
 //! The renderer supplies verified ZIP bytes plus an expected SHA-256/length,
 //! one governed final leaf, and a 128-bit lowercase-hex operation token. This
-//! module resolves both `$HOME/H2O Studio Exports` and a fixed native-only
+//! module resolves both the immutable governed export root and a fixed native-only
 //! sibling staging root, derives the staging leaf, exclusively creates it,
 //! retains the created handle through write/sync/readback, and atomically
 //! creates the final name from that verified descriptor with `fclonefileat`.
@@ -16,10 +16,10 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
-const EXPORT_ROOT: &str = "H2O Studio Exports";
-const STAGING_ROOT: &str = ".H2O Studio Saved Chat ZIP Staging";
 const FINAL_SUFFIX: &str = ".h2ochat.zip";
 const TEMP_SUFFIX_PREFIX: &str = ".tmp-";
 const TOKEN_HEX_LENGTH: usize = 32;
@@ -381,15 +381,6 @@ pub fn publish_saved_chat_zip_bytes_within_roots(
     )
 }
 
-fn roots(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), &'static str> {
-    use tauri::Manager;
-
-    app.path()
-        .home_dir()
-        .map(|home| (home.join(EXPORT_ROOT), home.join(STAGING_ROOT)))
-        .map_err(|_| "home-unavailable")
-}
-
 /// Purpose-bounded raw-body command. The body is the exact ZIP byte sequence;
 /// governed leaf/token/hash/length metadata travels in the established encoded
 /// `options` header. No arbitrary filesystem path or staged pathname is
@@ -408,13 +399,13 @@ pub async fn h2o_publish_saved_chat_zip_bytes_create_only(
         Ok(bytes) => bytes,
         Err(_) => return Ok(SavedChatZipPublishResult::refused("invalid-body", false)),
     };
-    let (final_root, staging_root) = match roots(&app) {
+    let roots = match crate::saved_chat_export_root_policy::production_roots(&app) {
         Ok(roots) => roots,
         Err(status) => return Ok(SavedChatZipPublishResult::refused(status, false)),
     };
     Ok(publish_saved_chat_zip_bytes_within_roots(
-        &final_root,
-        &staging_root,
+        &roots.final_root,
+        &roots.zip_staging_root,
         &options,
         &bytes,
     ))

@@ -109,6 +109,11 @@ pub mod archive_package_scan;
 /// Exposes one read-only query; there is no setter or persisted feature state.
 pub mod saved_chat_generation_policy;
 
+/// M09 P3.2 — immutable export-root policy. Ordinary builds retain the Home
+/// export root; the debug-only acceptance artifact uses identifier-scoped
+/// AppLocalData. Exposes one read-only query and no path/root mutation input.
+pub mod saved_chat_export_root_policy;
+
 /// M09 P2.1 — private saved-chat-only semantic verifier for v1/v2 and dormant
 /// v3 identity/gzip admission. Filesystem consumers remain trusted adapters.
 pub(crate) mod saved_chat_package_verify;
@@ -2600,6 +2605,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
             saved_chat_generation_policy::h2o_saved_chat_generation_policy,
+            saved_chat_export_root_policy::h2o_saved_chat_export_root_policy,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
@@ -2646,6 +2652,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_commit,
             archive_generation_publish::h2o_archive_generation_abort,
             saved_chat_generation_policy::h2o_saved_chat_generation_policy,
+            saved_chat_export_root_policy::h2o_saved_chat_export_root_policy,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,

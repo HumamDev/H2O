@@ -3,15 +3,16 @@
 //! For staging, the renderer supplies a governed final leaf and bounded random
 //! token; native code derives the staging leaf and creates it exclusively. For
 //! publication, the renderer may name only that governed staged/final LEAF
-//! pair. Both operations resolve `$HOME/H2O Studio Exports` themselves and
+//! pair. Both operations resolve the immutable governed export root themselves and
 //! reuse the archive durable writer's descriptor-relative primitives. This is
 //! not a general filesystem, mkdir or rename API.
 
 use serde::Serialize;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
-const EXPORT_ROOT: &str = "H2O Studio Exports";
 const FINAL_SUFFIX: &str = ".h2ochat";
 const TEMP_SUFFIX_PREFIX: &str = ".tmp-";
 const STAGE_TOKEN_HEX_LENGTH: usize = 32;
@@ -229,25 +230,20 @@ pub fn publish_saved_chat_folder_within_root(
     })
 }
 
-fn export_root(app: &tauri::AppHandle) -> Result<PathBuf, &'static str> {
-    use tauri::Manager;
-
-    app.path()
-        .home_dir()
-        .map(|home| home.join(EXPORT_ROOT))
-        .map_err(|_| "home-unavailable")
-}
-
 #[tauri::command]
 pub fn h2o_create_saved_chat_folder_stage(
     app: tauri::AppHandle,
     request: SavedChatFolderStageRequest,
 ) -> SavedChatFolderStageResult {
-    let root = match export_root(&app) {
-        Ok(root) => root,
+    let roots = match crate::saved_chat_export_root_policy::production_roots(&app) {
+        Ok(roots) => roots,
         Err(status) => return SavedChatFolderStageResult::refused(status),
     };
-    create_saved_chat_folder_stage_within_root(&root, &request.final_name, &request.token)
+    create_saved_chat_folder_stage_within_root(
+        &roots.final_root,
+        &request.final_name,
+        &request.token,
+    )
 }
 
 #[tauri::command]
@@ -255,11 +251,15 @@ pub fn h2o_publish_saved_chat_folder_create_only(
     app: tauri::AppHandle,
     request: SavedChatFolderPublishRequest,
 ) -> SavedChatFolderPublishResult {
-    let root = match export_root(&app) {
-        Ok(root) => root,
+    let roots = match crate::saved_chat_export_root_policy::production_roots(&app) {
+        Ok(roots) => roots,
         Err(status) => return SavedChatFolderPublishResult::refused(status),
     };
-    publish_saved_chat_folder_within_root(&root, &request.staged_name, &request.final_name)
+    publish_saved_chat_folder_within_root(
+        &roots.final_root,
+        &request.staged_name,
+        &request.final_name,
+    )
 }
 
 #[cfg(test)]

@@ -6,7 +6,9 @@
  *
  * Boundaries:
  *   - Source package must inspect as verified via H2O.Studio.archiveInspector.
- *   - Destination is fixed to $HOME/H2O Studio Exports/ only.
+ *   - Destination is fixed by one native immutable export-root policy.
+ *     Ordinary builds use $HOME/H2O Studio Exports/; the debug-only M09 P3
+ *     acceptance artifact uses its identifier-scoped AppLocalData directory.
  *   - No OS picker, no arbitrary caller-supplied destination root.
  *   - Manifest-driven copy only; no blind recursive copy.
  *   - No overwrite: existing final destination is rejected.
@@ -26,6 +28,10 @@
   var MODULE_VERSION = '0.1.0-phase-j-2';
   var APP_LOCAL_DATA = 15;
   var HOME_BASE_DIR = 21;
+  var EXPORT_ROOT_POLICY_COMMAND = 'h2o_saved_chat_export_root_policy';
+  var EXPORT_ROOT_POLICY_SCHEMA = 'h2o.studio.saved-chat-export-root-policy.v1';
+  var EXPORT_BASE_HOME = 'home';
+  var EXPORT_BASE_APP_LOCAL_DATA = 'appLocalData';
   var PACKAGE_ROOT = 'archive/packages';
   var EXPORT_ROOT = 'H2O Studio Exports';
   var PACKAGE_SUFFIX = '.h2ochat';
@@ -36,6 +42,7 @@
   var ZIP_STAGE_TOKEN_BYTES = 16;
   var ZIP_STAGE_CREATE_ATTEMPTS = 8;
   var SUPPORTED_SCHEMA_VERSIONS = [1, 2, 3];
+  var issuedExportRootPolicyTokens = new WeakSet();
 
   function detectTauri() {
     try {
@@ -156,8 +163,56 @@
     return new TextDecoder('utf-8').decode(bytesFor(raw));
   }
 
-  function homeOptions(extra) {
-    return Object.assign({ baseDir: HOME_BASE_DIR }, extra || {});
+  function exportRootPolicyError(code, message) {
+    var error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  function validateExportRootPolicyWire(value) {
+    var wire = safeObject(value);
+    var keys = Object.keys(wire).sort();
+    if (keys.length !== 2 || keys[0] !== 'baseDirectory' || keys[1] !== 'schema' ||
+        cleanString(wire.schema) !== EXPORT_ROOT_POLICY_SCHEMA) {
+      throw exportRootPolicyError('saved-chat-export-root-policy-invalid-schema', 'saved-chat export-root policy schema is invalid');
+    }
+    var baseDirectory = cleanString(wire.baseDirectory);
+    if (baseDirectory !== EXPORT_BASE_HOME && baseDirectory !== EXPORT_BASE_APP_LOCAL_DATA) {
+      throw exportRootPolicyError('saved-chat-export-root-policy-invalid-base-directory', 'saved-chat export-root policy base directory is missing or unknown');
+    }
+    var token = Object.freeze({ schema: EXPORT_ROOT_POLICY_SCHEMA, baseDirectory: baseDirectory });
+    issuedExportRootPolicyTokens.add(token);
+    return token;
+  }
+
+  async function readSavedChatExportRootPolicy() {
+    var invoke = getInvoke();
+    if (!invoke) {
+      throw exportRootPolicyError('saved-chat-export-root-policy-unavailable', 'tauri invoke unavailable for saved-chat export-root policy');
+    }
+    try {
+      return validateExportRootPolicyWire(await invoke(EXPORT_ROOT_POLICY_COMMAND, {}));
+    } catch (error) {
+      if (cleanString(error && error.code).indexOf('saved-chat-export-root-policy-invalid-') === 0) throw error;
+      throw exportRootPolicyError(
+        'saved-chat-export-root-policy-unavailable',
+        'saved-chat export-root policy query failed: ' + String((error && error.message) || error || 'invoke failed')
+      );
+    }
+  }
+
+  function requireExportRootPolicyToken(value) {
+    if (!value || !issuedExportRootPolicyTokens.has(value)) {
+      throw exportRootPolicyError('saved-chat-export-root-policy-token-required', 'a policy token from the trusted read-only export-root command is required');
+    }
+    return value;
+  }
+
+  function exportRootOptions(policyToken, extra) {
+    var policy = requireExportRootPolicyToken(policyToken);
+    return Object.assign({
+      baseDir: policy.baseDirectory === EXPORT_BASE_APP_LOCAL_DATA ? APP_LOCAL_DATA : HOME_BASE_DIR,
+    }, extra || {});
   }
 
   function appLocalOptions(extra) {
@@ -167,7 +222,8 @@
   async function fsExists(path, options) {
     var invoke = getInvoke();
     if (!invoke) throw new Error('tauri invoke unavailable for fs exists');
-    try { return !!(await invoke('plugin:fs|exists', { path: path, options: options || homeOptions() })); }
+    if (!options) throw new Error('saved-chat export-root policy options required for fs exists');
+    try { return !!(await invoke('plugin:fs|exists', { path: path, options: options })); }
     catch (err) {
       var msg = String((err && err.message) || err).toLowerCase();
       if (msg.indexOf('not found') >= 0 || msg.indexOf('no such') >= 0) return false;
@@ -178,13 +234,15 @@
   function fsMkdir(path, options) {
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for fs mkdir'));
-    return invoke('plugin:fs|mkdir', { path: path, options: options || homeOptions({ recursive: true }) });
+    if (!options) return Promise.reject(new Error('saved-chat export-root policy options required for fs mkdir'));
+    return invoke('plugin:fs|mkdir', { path: path, options: options });
   }
 
   function fsRemove(path, options) {
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for fs remove'));
-    return invoke('plugin:fs|remove', { path: path, options: options || homeOptions({ recursive: true }) });
+    if (!options) return Promise.reject(new Error('saved-chat export-root policy options required for fs remove'));
+    return invoke('plugin:fs|remove', { path: path, options: options });
   }
 
   function publishFolderCreateOnly(stagedName, finalName) {
@@ -240,10 +298,11 @@
   function fsWriteFile(path, bytes, options) {
     var invoke = getInvoke();
     if (!invoke) return Promise.reject(new Error('tauri invoke unavailable for fs write_file'));
+    if (!options) return Promise.reject(new Error('saved-chat export-root policy options required for fs write_file'));
     return invoke('plugin:fs|write_file', bytesFor(bytes), {
       headers: {
         path: encodeURIComponent(path),
-        options: JSON.stringify(options || homeOptions()),
+        options: JSON.stringify(options),
       },
     });
   }
@@ -553,16 +612,18 @@
     return { status: 'verified', inspection: inspection, manifest: manifestRead.manifest, manifestBytes: manifestRead.bytes };
   }
 
-  async function dryRunExportPackage(options) {
+  async function dryRunExportPackage(options, policyToken) {
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     try {
+      var exportPolicy = policyToken || await readSavedChatExportRootPolicy();
+      var exportFsOptions = exportRootOptions(exportPolicy);
       var dest = resolveExportDestination(opts);
       var verified = await inspectVerifiedPackage(packagePath);
       if (verified.status !== 'verified') {
         return exportResult(verified.status, { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: verified.reason, inspectionStatus: cleanString(verified.inspection && verified.inspection.status) });
       }
-      var exists = await fsExists(dest.destinationPath, homeOptions());
+      var exists = await fsExists(dest.destinationPath, exportFsOptions);
       if (exists) {
         return exportResult('destination-exists', {
           packagePath: packagePath,
@@ -593,11 +654,11 @@
     }
   }
 
-  async function copyDeclaredFile(packagePath, tempPath, desc) {
+  async function copyDeclaredFile(packagePath, tempPath, desc, exportPolicy) {
     var sourceRel = joinPath(packagePath, desc.path);
     var destRel = joinPath(tempPath, desc.path);
     var bytes = await fsReadFile(sourceRel, appLocalOptions());
-    await fsWriteFile(destRel, bytes, homeOptions());
+    await fsWriteFile(destRel, bytes, exportRootOptions(exportPolicy));
     return {
       relativePath: desc.path,
       bytes: bytes,
@@ -657,10 +718,14 @@
     return companions;
   }
 
-  async function writeV3DerivedExportCompanions(manifest, copied, tempPath) {
+  async function writeV3DerivedExportCompanions(manifest, copied, tempPath, exportPolicy) {
     var companions = await buildV3DerivedExportCompanions(manifest, copied);
     for (var ci = 0; ci < companions.length; ci += 1) {
-      await fsWriteFile(joinPath(tempPath, companions[ci].relativePath), companions[ci].bytes, homeOptions());
+      await fsWriteFile(
+        joinPath(tempPath, companions[ci].relativePath),
+        companions[ci].bytes,
+        exportRootOptions(exportPolicy)
+      );
     }
     return companions;
   }
@@ -672,36 +737,46 @@
     var tempName = '';
     var ownsStage = false;
     try {
+      var exportPolicy = await readSavedChatExportRootPolicy();
+      var exportFsOptions = exportRootOptions(exportPolicy);
       var dest = resolveExportDestination(opts);
-      var dry = await dryRunExportPackage(opts);
+      var dry = await dryRunExportPackage(opts, exportPolicy);
       if (dry.status !== 'export-ready') return dry;
       var verified = await inspectVerifiedPackage(packagePath);
       if (verified.status !== 'verified') {
         return exportResult(verified.status, { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: verified.reason, inspectionStatus: cleanString(verified.inspection && verified.inspection.status) });
       }
-      var finalExists = await fsExists(dest.destinationPath, homeOptions());
+      var finalExists = await fsExists(dest.destinationPath, exportFsOptions);
       if (finalExists) {
         return exportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, inspectionStatus: 'verified', reason: 'destination already exists' });
       }
 
       var declared = declaredFilesFromManifest(verified.manifest);
-      await fsMkdir(EXPORT_ROOT, homeOptions({ recursive: true }));
+      await fsMkdir(EXPORT_ROOT, exportRootOptions(exportPolicy, { recursive: true }));
       var ownedStage = await createOwnedFolderStage(dest.exportName);
       tempName = ownedStage.stagedName;
       tempPath = ownedStage.stagedPath;
       ownsStage = true;
       if (asArray(verified.manifest.assets).length) {
-        await fsMkdir(joinPath(tempPath, 'assets'), homeOptions({ recursive: true }));
+        await fsMkdir(
+          joinPath(tempPath, 'assets'),
+          exportRootOptions(exportPolicy, { recursive: true })
+        );
       }
 
       var copied = [];
       for (var i = 0; i < declared.length; i += 1) {
-        copied.push(await copyDeclaredFile(packagePath, tempPath, declared[i]));
+        copied.push(await copyDeclaredFile(packagePath, tempPath, declared[i], exportPolicy));
       }
       var postCopy = await verifyCopiedFiles(verified.manifest, copied);
       /* Derived v3 companions are intentionally outside manifest.files and
        * contentHash. The source manifest is copied byte-for-byte and unchanged. */
-      var derivedCompanions = await writeV3DerivedExportCompanions(verified.manifest, copied, tempPath);
+      var derivedCompanions = await writeV3DerivedExportCompanions(
+        verified.manifest,
+        copied,
+        tempPath,
+        exportPolicy
+      );
       /* Advisory existence checks above improve UX but are not publication
        * authority. This native operation performs the final existence test and
        * create-only directory namespace mutation atomically under the fixed
@@ -709,7 +784,7 @@
       var publication = safeObject(await publishFolderCreateOnly(tempName, dest.exportName));
       if (cleanString(publication.status) === 'destination-exists') {
         if (ownsStage) {
-          try { await fsRemove(tempPath, homeOptions({ recursive: true })); } catch (_) { /* best effort */ }
+          try { await fsRemove(tempPath, exportRootOptions(exportPolicy, { recursive: true })); } catch (_) { /* best effort */ }
         }
         ownsStage = false;
         tempPath = '';
@@ -748,7 +823,7 @@
       });
     } catch (err) {
       if (ownsStage && tempPath) {
-        try { await fsRemove(tempPath, homeOptions({ recursive: true })); } catch (_) { /* best-effort cleanup only */ }
+        try { await fsRemove(tempPath, exportRootOptions(exportPolicy, { recursive: true })); } catch (_) { /* best-effort cleanup only */ }
       }
       return exportResult('write-error', { packagePath: packagePath, tempPath: tempPath, reason: String((err && err.message) || err || 'export failed') });
     }
@@ -823,10 +898,11 @@
     return decoded;
   }
 
-  async function dryRunExportPackageZip(options) {
+  async function dryRunExportPackageZip(options, policyToken) {
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     try {
+      var exportPolicy = policyToken || await readSavedChatExportRootPolicy();
       var dest = resolveZipExportDestination(opts);
       if (!getPortableZip() || !getPackageByteValidator()) {
         return zipExportResult('rejected', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: 'portable ZIP authority unavailable' });
@@ -835,7 +911,7 @@
       if (verified.status !== 'verified') {
         return zipExportResult(verified.status, { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, reason: verified.reason, inspectionStatus: cleanString(verified.inspection && verified.inspection.status) });
       }
-      if (await fsExists(dest.destinationPath, homeOptions())) {
+      if (await fsExists(dest.destinationPath, exportRootOptions(exportPolicy))) {
         return zipExportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, packageDirName: dest.packageDirName, inspectionStatus: 'verified', reason: 'destination already exists' });
       }
       var schemaVersion = Number(verified.manifest.schemaVersion);
@@ -865,8 +941,9 @@
     var opts = safeObject(options);
     var packagePath = cleanString(opts.packagePath);
     try {
+      var exportPolicy = await readSavedChatExportRootPolicy();
       var dest = resolveZipExportDestination(opts);
-      var dry = await dryRunExportPackageZip(opts);
+      var dry = await dryRunExportPackageZip(opts, exportPolicy);
       if (dry.status !== 'export-ready') return dry;
       var verified = await inspectVerifiedPackage(packagePath);
       if (verified.status !== 'verified') {
@@ -877,7 +954,7 @@
       var zipBytes = await portable.buildPortableZip(assembled.zipEntries, { method: portable.METHOD_DEFLATE });
       var decoded = await verifyPortableZipReadback(zipBytes, assembled);
       var expectedZipSha256 = await sha256Prefixed(zipBytes);
-      if (await fsExists(dest.destinationPath, homeOptions())) {
+      if (await fsExists(dest.destinationPath, exportRootOptions(exportPolicy))) {
         return zipExportResult('destination-exists', { packagePath: packagePath, exportName: dest.exportName, destinationPath: dest.destinationPath, packageDirName: dest.packageDirName, inspectionStatus: 'verified', reason: 'destination already exists' });
       }
       /* Advisory existence checks above improve UX but are not publication
@@ -1131,6 +1208,7 @@
     __version: MODULE_VERSION,
     detectTauri: detectTauri,
     isDesktopCapable: isDesktopCapable,
+    readSavedChatExportRootPolicy: readSavedChatExportRootPolicy,
     resolveExportDestination: resolveExportDestination,
     resolveZipExportDestination: resolveZipExportDestination,
     dryRunExportPackage: dryRunExportPackage,
