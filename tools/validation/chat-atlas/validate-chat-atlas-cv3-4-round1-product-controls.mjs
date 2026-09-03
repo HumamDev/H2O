@@ -173,9 +173,9 @@ function loadControlHubMiniMap(runtimeApi) {
   new vm.Script(controlHubSource, { filename: controlHubPath }).runInContext(context);
   const plugin = plugins.find((entry) => entry.key === 'minimap');
   if (!plugin) throw new Error('minimap-control-hub-plugin-missing');
-  const control = plugin.getControls().find((entry) => entry.key === 'mmCompleteTurnIndexProjection');
-  if (!control) throw new Error('complete-turn-toggle-missing');
-  return { control, plugins, window };
+  const controls = plugin.getControls();
+  const control = controls.find((entry) => entry.key === 'mmCompleteTurnIndexProjection') || null;
+  return { control, controls, plugins, window };
 }
 
 function loadSideActionsProductControl(runtimeApi) {
@@ -241,71 +241,59 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-await fixture('toggle is placed in Control Hub MiniMap and initial render is mutation-free', () => {
+await fixture('normal Control Hub exposes no canonical membership disable control', () => {
   const runtime = createTurnRuntime({ storedValue: '0' });
   const { control, plugins } = loadControlHubMiniMap(runtime.api);
-  equal(control.type, 'toggle');
-  equal(control.label, 'Full Conversation MiniMap');
-  equal(control.group, 'Conversation Coverage');
+  equal(control, null);
   equal(plugins.filter((entry) => entry.key === 'minimap').length, 1);
   equal(runtime.state.setterCalls.length, 0);
   equal(runtime.state.storageWrites, 0);
 });
 
-await fixture('persisted one renders enabled and reload reads it without writes', () => {
+await fixture('legacy stored one cannot expose a normal authority toggle', () => {
   const first = createTurnRuntime({ storedValue: '1' });
-  const firstControl = loadControlHubMiniMap(first.api).control;
-  equal(firstControl.getLive(), true);
+  equal(loadControlHubMiniMap(first.api).control, null);
   equal(first.state.setterCalls.length, 0);
   equal(first.state.storageWrites, 0);
   const reload = createTurnRuntime({ storedValue: '1' });
-  equal(loadControlHubMiniMap(reload.api).control.getLive(), true);
+  equal(loadControlHubMiniMap(reload.api).control, null);
   equal(reload.state.storageWrites, 0);
 });
 
-await fixture('persisted zero and absent preference render disabled', () => {
+await fixture('legacy stored zero and absent preference cannot expose a disable action', () => {
   const disabled = createTurnRuntime({ storedValue: '0' });
-  equal(loadControlHubMiniMap(disabled.api).control.getLive(), false);
+  equal(loadControlHubMiniMap(disabled.api).control, null);
   const absent = createTurnRuntime({ storedValue: null, compiledDefault: false });
-  equal(loadControlHubMiniMap(absent.api).control.getLive(), false);
+  equal(loadControlHubMiniMap(absent.api).control, null);
   equal(disabled.state.storageWrites + absent.state.storageWrites, 0);
 });
 
-await fixture('one enable toggle uses only approved preference setter once', () => {
+await fixture('normal MiniMap controls cannot call the public preference setter true', () => {
   const runtime = createTurnRuntime({ storedValue: '0' });
-  const control = loadControlHubMiniMap(runtime.api).control;
-  control.setLive(true);
-  equal(runtime.state.setterCalls, [true]);
-  equal(runtime.state.storageWrites, 1);
-  equal(runtime.state.enabled, true);
-  equal(runtime.state.storedValue, '1');
+  const { controls } = loadControlHubMiniMap(runtime.api);
+  for (const control of controls) control.getLive?.();
+  equal(runtime.state.setterCalls, []);
+  equal(runtime.state.storageWrites, 0);
   equal(runtime.state.canarySetterCalls, 0);
   equal(runtime.state.reconciliationSetterCalls, 0);
   equal(runtime.state.autoBranchReconciliationEnabled, false);
-  totals.preferenceSetters += runtime.state.setterCalls.length;
-  totals.preferenceStorageWrites += runtime.state.storageWrites;
 });
 
-await fixture('one disable toggle uses only approved preference setter once', () => {
+await fixture('normal MiniMap controls cannot call the public preference setter false', () => {
   const runtime = createTurnRuntime({ storedValue: '1' });
-  const control = loadControlHubMiniMap(runtime.api).control;
-  control.setLive(false);
-  equal(runtime.state.setterCalls, [false]);
-  equal(runtime.state.storageWrites, 1);
-  equal(runtime.state.enabled, false);
-  equal(runtime.state.storedValue, '0');
+  const { controls } = loadControlHubMiniMap(runtime.api);
+  for (const control of controls) control.setLive?.(control.def);
+  equal(runtime.state.setterCalls, []);
+  equal(runtime.state.storageWrites, 0);
   equal(runtime.state.canarySetterCalls, 0);
   equal(runtime.state.reconciliationSetterCalls, 0);
   equal(runtime.state.autoBranchReconciliationEnabled, false);
-  totals.preferenceSetters += runtime.state.setterCalls.length;
-  totals.preferenceStorageWrites += runtime.state.storageWrites;
 });
 
-await fixture('missing toggle runtime API fails safely without mutation', () => {
+await fixture('missing authority runtime remains safe because no product toggle exists', () => {
   const runtime = createTurnRuntime({ available: false });
   const control = loadControlHubMiniMap(runtime.api).control;
-  equal(control.getLive(), false);
-  equal(control.setLive(true), undefined);
+  equal(control, null);
   equal(runtime.state.setterCalls.length, 0);
   equal(runtime.state.storageWrites, 0);
 });
@@ -513,16 +501,14 @@ await fixture('newer branch state is not overwritten by stale refresh success fe
 });
 
 await fixture('surface contract excludes forbidden APIs and preserves technical controls', () => {
-  const settingSource = extractFunction(controlHubSource, 'setCompleteTurnIndexProjectionSetting');
   const refreshSource = [
     extractFunction(sideActionsSource, 'sideActionsApplyMiniMapBranchStaleIndicator'),
     extractFunction(sideActionsSource, 'sideActionsRefreshCompleteTurnIndex'),
     extractFunction(sideActionsSource, 'registerCompleteTurnIndexRefreshAction'),
   ].join('\n');
-  equal(settingSource.includes('setCompleteTurnIndexProjectionPreference'), true);
-  equal(settingSource.includes('localStorage'), false);
-  equal(settingSource.includes('setCompleteTurnIndexProjectionCanary'), false);
-  equal(settingSource.includes('setCompleteTurnIndexAutoBranchReconciliationCanary'), false);
+  equal(controlHubSource.includes('setCompleteTurnIndexProjectionSetting'), false);
+  equal(controlHubSource.includes('mmCompleteTurnIndexProjection'), false);
+  equal(controlHubSource.includes('setCompleteTurnIndexProjectionPreference'), false);
   equal(refreshSource.includes('refreshCompleteTurnIndexProjection()'), true);
   equal(refreshSource.includes('rebuildCompleteTurnIndexProjection'), false);
   equal(refreshSource.includes('setCompleteTurnIndexProjectionPreference'), false);

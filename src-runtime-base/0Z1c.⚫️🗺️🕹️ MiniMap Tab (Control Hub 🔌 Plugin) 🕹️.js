@@ -37,40 +37,6 @@
     return W.H2O?.[TOK]?.[BrID]?.api || null;
   }
 
-  // Round 1 product activation uses the complete-turn runtime's persisted
-  // preference API directly. It deliberately does not share MiniMap's UI
-  // storage namespace and never touches either memory-only canary.
-  function completeTurnIndexRuntime() {
-    try { return TOPW.H2O?.turnRuntime || null; } catch { return null; }
-  }
-
-  function getCompleteTurnIndexProjectionSetting() {
-    const runtime = completeTurnIndexRuntime();
-    if (typeof runtime?.getCompleteTurnIndexProjectionPreference !== 'function') return false;
-    try {
-      const preference = runtime.getCompleteTurnIndexProjectionPreference();
-      if (preference?.storedValue === '1') return true;
-      if (preference?.storedValue === '0') return false;
-      if (preference?.storedValue == null) return preference?.compiledDefault === true;
-      return runtime.getCompleteTurnIndexProjectionStatus?.()?.enabled === true;
-    } catch {
-      return false;
-    }
-  }
-
-  function setCompleteTurnIndexProjectionSetting(enabled) {
-    const runtime = completeTurnIndexRuntime();
-    if (typeof runtime?.setCompleteTurnIndexProjectionPreference !== 'function') return false;
-    try {
-      runtime.setCompleteTurnIndexProjectionPreference(enabled === true);
-      return true;
-    } catch {
-      return false;
-    } finally {
-      CH_api()?.invalidate?.();
-    }
-  }
-
   const EVT_BEHAVIOR_CHANGED = 'evt:h2o:mm:behavior-changed';
   const BDEFAULT = Object.freeze({
     turn: Object.freeze({
@@ -422,20 +388,6 @@
     ]);
 
     const controls = [
-      {
-        type: 'toggle',
-        key: 'mmCompleteTurnIndexProjection',
-        label: 'Full Conversation MiniMap',
-        help: 'Include every conversation turn, even when older messages are unloaded or virtualized.',
-        group: 'Conversation Coverage',
-        def: false,
-        getLive() {
-          return getCompleteTurnIndexProjectionSetting();
-        },
-        setLive(enabled) {
-          setCompleteTurnIndexProjectionSetting(enabled === true);
-        },
-      },
       {
         type: 'toggle',
         key: 'mmNav',

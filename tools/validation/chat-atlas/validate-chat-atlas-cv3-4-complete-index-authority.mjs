@@ -9,20 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const CORE_PATH = 'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js';
-// The Chat Atlas Ledger moved out of H2O Core into 0A3b Chat Atlas Ledger,
-// with 0A3a Chat Atlas Core brokering it. This validator asserts on that
-// implementation, so the H2O Core source it reads is now the aggregate of the
-// three files the code actually lives in. No assertion changes: positive checks
-// and by-name extraction still find the code, and negative checks get strictly
-// stronger because a forbidden pattern must be absent from all three.
-const H2O_CORE_AGGREGATE_SOURCES = [
-  'src-runtime-base/0A1a.⬛️🧠 H2O Core 🧠.js',
-  'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js',
-  'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js',
-];
-const coreSource = H2O_CORE_AGGREGATE_SOURCES
-  .map((rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8'))
-  .join('\n');
+const BROKER_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
+const LEDGER_REL = 'src-runtime-base/0A3b.⬛️📒 Chat Atlas Ledger 📒.js';
+const h2oCoreSource = fs.readFileSync(path.join(ROOT, CORE_PATH), 'utf8');
+const brokerSource = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
+const ledgerSource = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
 const CHAT_ID = '6928b333-12f4-8328-9e41-6a01def45127';
 const CHAT_B = '7928b333-12f4-8328-9e41-6a01def45128';
 const Q29 = '29a40c98-0bd8-48cd-be80-0273311a4977';
@@ -38,6 +29,7 @@ const INTERNAL_QIDS = [
   'e1d4b63f-0be7-4a51-b074-e3372b71d790',
   'aabc4cd2-9a33-4ba0-a721-110e8aa4e25b',
 ];
+const COMPLETE_INDEX_PREFERENCE_KEY = 'h2o:prm:cgx:chat-atlas:complete-turn-index:enabled:v1';
 
 let assertionCount = 0;
 const fixtures = [];
@@ -69,10 +61,16 @@ function countOccurrences(source, needle) {
   return source.split(needle).length - 1;
 }
 
-function instrumentCore() {
-  const setter = '  function setChatAtlasCanonicalSource(value) {\n';
-  const marker = coreSource.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS')) || '';
-  const close = '\n})();';
+function instrumentH2OCore() {
+  const marker = h2oCoreSource.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS')) || '';
+  const markerIndex = h2oCoreSource.indexOf(marker);
+  if (!marker || markerIndex < 0) throw new Error('h2o-core-bootstrap-boundary-invalid');
+  return `${h2oCoreSource.slice(0, markerIndex)}\n})();\n`;
+}
+
+function instrumentBroker() {
+  const bootApply = '  try { chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot(); } catch {}';
+  const exportAnchor = '  const CHAT_ATLAS_CORE_API = {';
   const required = [
     'chatAtlasNormalizeCompleteIndexEnvelope',
     'chatAtlasCompareCompleteIndexRevision',
@@ -85,17 +83,13 @@ function instrumentCore() {
     'rebuildCompleteTurnIndexProjection',
   ];
   for (const name of required) {
-    if (countOccurrences(coreSource, `  function ${name}(`) !== 1) {
+    if (countOccurrences(brokerSource, `  function ${name}(`) !== 1) {
       throw new Error(`authority-production-anchor-invalid:${name}`);
     }
   }
-  if (countOccurrences(coreSource, setter) !== 1 || countOccurrences(coreSource, marker) !== 1) {
+  if (countOccurrences(brokerSource, exportAnchor) !== 1 || countOccurrences(brokerSource, bootApply) !== 1) {
     throw new Error('authority-bootstrap-anchor-invalid');
   }
-  let source = coreSource.replace(setter, `${setter}    globalThis.__AUTHORITY_SOURCE_SETTER_GUARD__();\n`);
-  const markerIndex = source.indexOf(marker);
-  const closeIndex = source.lastIndexOf(close);
-  if (markerIndex < 0 || closeIndex <= markerIndex) throw new Error('authority-bootstrap-boundary-invalid');
   const exportBlock = `
   globalThis.__CV34_COMPLETE_INDEX_AUTHORITY__ = Object.freeze({
     fingerprint: chatAtlasCompleteIndexFingerprint,
@@ -109,39 +103,46 @@ function instrumentCore() {
     triggerAuthority: chatAtlasTriggerCompleteIndexAuthority,
     status: getCompleteTurnIndexProjectionStatus,
     setCanary: setCompleteTurnIndexProjectionCanary,
+    applyPreferenceAtBoot: chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot,
+    getPreference: getCompleteTurnIndexProjectionPreference,
+    setPreference: setCompleteTurnIndexProjectionPreference,
+    clearPreference: clearCompleteTurnIndexProjectionPreference,
     rebuild: rebuildCompleteTurnIndexProjection,
-    buildTurns,
-    listTurns: listTurnRecords,
-    setLegacyTurns(rows) { turnState.turns = Array.isArray(rows) ? rows.slice() : []; },
+    buildTurns: (...a) => host()?.buildTurns?.(...a),
+    listTurns: () => host()?.listTurnRecords?.() || [],
+    setLegacyTurns(rows) { const s = host()?.turnState; if (s) s.turns = Array.isArray(rows) ? rows.slice() : []; },
     state: completeTurnIndexAuthorityState,
     cacheSchema: COMPLETE_TURN_INDEX_CACHE_SCHEMA,
     cachePrefix: COMPLETE_TURN_INDEX_CACHE_KEY_PREFIX,
     canaryName: COMPLETE_TURN_INDEX_CANARY,
   });
-  globalThis.__CV34_AUTHORITY_BOOTSTRAP_SUPPRESSED__ = true;`;
-  return `${source.slice(0, markerIndex)}${exportBlock}${close}\n`;
+  globalThis.__CV34_AUTHORITY_BOOTSTRAP_SUPPRESSED__ = true;
+`;
+  return brokerSource
+    .replace(exportAnchor, `${exportBlock}\n${exportAnchor}`)
+    .replace(bootApply, '  /* CV-3.4: boot preference application is invoked explicitly per fixture. */');
 }
 
+function instrumentLedger() {
+  const setter = '  function setChatAtlasCanonicalSource(value) {\n';
+  if (countOccurrences(ledgerSource, setter) !== 1) throw new Error('ledger-source-setter-anchor-invalid');
+  return ledgerSource.replace(setter, `${setter}    globalThis.__AUTHORITY_SOURCE_SETTER_GUARD__();\n`);
+}
 
-// ── Real 0A3a broker + real 0A3b Ledger as separate programs ───────────────
-// The six Ledger-facing H2O.turnRuntime properties are contributed by 0A3a now,
-// so the runtime under test loads the three real scripts the way production
-// does. Evaluating 0A3b is inert (no top-level observer or rAF).
-const BROKER_REL = 'src-runtime-base/0A3a.\u2b1b\ufe0f\ud83e\udded Chat Atlas Core \ud83e\udded.js';
-const LEDGER_REL = 'src-runtime-base/0A3b.\u2b1b\ufe0f\ud83d\udcd2 Chat Atlas Ledger \ud83d\udcd2.js';
-const BROKER_PROGRAM = fs.readFileSync(path.join(ROOT, BROKER_REL), 'utf8');
-const LEDGER_PROGRAM = fs.readFileSync(path.join(ROOT, LEDGER_REL), 'utf8');
-const coreProgram = instrumentCore();
+const coreProgram = instrumentH2OCore();
+const BROKER_PROGRAM = instrumentBroker();
+const LEDGER_PROGRAM = instrumentLedger();
 
 function createStorage(initial = new Map()) {
   const map = initial;
-  const state = { reads: 0, writes: 0, removals: 0, failNextWrite: false };
+  const state = { reads: 0, writes: 0, removals: 0, failReads: false, failNextWrite: false };
   return {
     map,
     state,
     api: {
       getItem(key) {
         state.reads += 1;
+        if (state.failReads) throw new Error('fixture-read-failed');
         return map.has(String(key)) ? map.get(String(key)) : null;
       },
       setItem(key, value) {
@@ -320,30 +321,51 @@ function rowByQId(runtime, qId) {
   return runtime.api.listTurns().find((row) => row.qId === qId) || null;
 }
 
-await fixture('gate defaults off with a memory-only status contract', () => {
+await fixture('normal product boot always enables complete canonical authority', () => {
   const runtime = createRuntime();
+  runtime.api.applyPreferenceAtBoot();
   const status = runtime.api.status();
-  equal(status.enabled, false);
-  equal(status.defaultEnabled, false);
-  equal(status.memoryOnly, true);
-  equal(status.status, 'disabled');
+  equal(status.enabled, true);
+  equal(status.defaultEnabled, true);
+  equal(status.status === 'disabled', false);
   equal(runtime.api.canaryName, 'complete-turn-index-projection');
 });
 
-await fixture('reload-like runtime recreation resets the gate off', () => {
-  const first = createRuntime();
-  first.api.setCanary(true);
-  const second = createRuntime();
-  equal(first.api.status().enabled, true);
-  equal(second.api.status().enabled, false);
+await fixture('legacy stored disabled state is migration input and cannot disable boot', () => {
+  const storage = createStorage(new Map([[COMPLETE_INDEX_PREFERENCE_KEY, '0']]));
+  const runtime = createRuntime({ storage });
+  runtime.api.applyPreferenceAtBoot();
+  equal(runtime.api.status().enabled, true);
+  equal(runtime.api.getPreference().storedValue === '0' || runtime.api.getPreference().storedValue === '1', true);
 });
 
-await fixture('disabled gate performs zero complete-index cache I/O', async () => {
-  const runtime = createRuntime();
-  await runtime.api.trigger();
-  equal(runtime.storage.state.reads, 0);
-  equal(runtime.storage.state.writes, 0);
-  equal(runtime.api.status().setterCallCount, 0);
+await fixture('preference read failure preserves the governed enabled state', () => {
+  const storage = createStorage();
+  storage.state.failReads = true;
+  const runtime = createRuntime({ storage });
+  runtime.api.applyPreferenceAtBoot();
+  equal(runtime.api.status().enabled, true);
+  equal(runtime.api.getPreference().readErrorCode, 'preference-read-failed');
+});
+
+await fixture('normal public false setter cannot disable or persist false', () => {
+  const storage = createStorage();
+  const runtime = createRuntime({ storage });
+  runtime.api.applyPreferenceAtBoot();
+  const result = runtime.api.setPreference(false);
+  equal(result.enabled, true);
+  equal(runtime.api.status().enabled, true);
+  equal(storage.map.get(COMPLETE_INDEX_PREFERENCE_KEY), '1');
+});
+
+await fixture('preference write failure cannot disable authority in memory', () => {
+  const storage = createStorage();
+  const runtime = createRuntime({ storage });
+  runtime.api.applyPreferenceAtBoot();
+  storage.state.failNextWrite = true;
+  const result = runtime.api.setPreference(false);
+  equal(result.enabled, true);
+  equal(runtime.api.status().enabled, true);
 });
 
 await fixture('cache key and schema are dedicated and chat-scoped', () => {

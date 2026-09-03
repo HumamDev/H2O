@@ -5819,17 +5819,15 @@ function UM_PUBLIC() {
       const id = String(chatId || resolveChatId()).trim();
       if (!id) return { ok: false, renderedCount: 0, status: 'chat-id-missing' };
       const completeIndex = getCompleteIndexProjectionStatus();
-      if (completeIndex.enabled) {
-        scheduleRebuild(`complete-index:${completeIndex.status}:legacy-cache-bypassed`);
-        return {
-          ok: false,
-          renderedCount: 0,
-          status: 'complete-index-authority',
-          chatId: id,
-          lastTurnId: '',
-          lastAnswerId: '',
-        };
-      }
+      scheduleRebuild(`complete-index:${completeIndex.status}:legacy-cache-bypassed`);
+      return {
+        ok: false,
+        renderedCount: 0,
+        status: 'complete-index-authority',
+        chatId: id,
+        lastTurnId: '',
+        lastAnswerId: '',
+      };
 
       const cached = loadTurnCache(id);
       const cachedCurrentTurns = Array.isArray(cached?.currentTurns) ? cached.currentTurns : [];
@@ -5948,11 +5946,9 @@ function UM_PUBLIC() {
       const chatId = String(_chatId || resolveChatId()).trim();
       const source = String(_opts?.source || 'core:append').trim();
       const completeIndex = getCompleteIndexProjectionStatus();
-      if (completeIndex.enabled) {
-        scheduleRebuild(`complete-index:${completeIndex.status}:incremental-append-bypassed`);
-        bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'completeIndexAuthority');
-        return { ok: false, status: 'complete-index-authority', chatId, source };
-      }
+      scheduleRebuild(`complete-index:${completeIndex.status}:incremental-append-bypassed`);
+      bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'completeIndexAuthority');
+      return { ok: false, status: 'complete-index-authority', chatId, source };
       const rootEl = (_answerEl && _answerEl.nodeType === 1) ? _answerEl : null;
       if (!rootEl) {
         bumpReason(PERF.incrementalRefresh.appendTurnStatuses, 'noop');
@@ -7018,26 +7014,10 @@ function UM_PUBLIC() {
   }
 
   function getBestCanonicalSnapshot() {
-    const fromState =
-      buildCanonicalSnapshotFromTurns(S.turnList, {
-        byAId: S.turnIdByAId,
-        answerByTurn: S.answerByTurnId,
-        answers: S.answerEls,
-      })
-      || buildCanonicalSnapshotFromTurns(S.turnById, {
-        byAId: S.turnIdByAId,
-        answerByTurn: S.answerByTurnId,
-        answers: S.answerEls,
-      });
-    if (fromState?.list?.length) return fromState;
-
-    const publishedById = getPublishedTurnByIdMap();
-    const publishedByAId = getPublishedTurnIdByAIdMap();
-    return buildCanonicalSnapshotFromTurns(publishedById, {
-      byAId: publishedByAId,
-      answerByTurn: S.answerByTurnId,
-      answers: S.answerEls,
-    });
+    // Revalidate against the current canonical/effective owner on every
+    // refresh. In-memory MiniMap state and legacy globals are presentation
+    // products, never continuity proof or alternate membership authority.
+    return getAuthoritativeTurnSnapshot();
   }
 
   function recoverMiniBtnFromDom(anyId, resolvedTurnId = '') {
@@ -7081,6 +7061,12 @@ function UM_PUBLIC() {
   }
 
   function getCanonicalTurnsFromSharedRuntime() {
+    const completeIndex = getCompleteIndexProjectionStatus();
+    if (
+      completeIndex.enabled !== true
+      || completeIndex.authoritative !== true
+      || completeIndex.completenessProof !== 'host-payload-full-graph'
+    ) return null;
     const api = getTurnRuntimeApi();
     if (!api) return null;
 
@@ -7193,7 +7179,11 @@ function UM_PUBLIC() {
 
   function getAuthoritativeTurnSnapshot() {
     const completeIndex = getCompleteIndexProjectionStatus();
-    if (completeIndex.enabled) {
+    if (
+      completeIndex.enabled
+      && completeIndex.authoritative
+      && completeIndex.completenessProof === 'host-payload-full-graph'
+    ) {
       const effective = getEffectiveTurnsFromSharedRuntime();
       if (
         effective
@@ -7227,34 +7217,15 @@ function UM_PUBLIC() {
         completeIndexStatus: completeIndex.status,
       };
     }
-    const runtimeCanonical = getCanonicalTurnsFromSharedRuntime();
-    const paginationCanonical = getCanonicalTurnsFromPagination();
-    if (runtimeCanonical?.list?.length) {
-      if (shouldUseSharedRuntimeCanonical(runtimeCanonical, paginationCanonical)) {
-        return runtimeCanonical;
-      }
-    }
-    if (paginationCanonical?.list?.length) return paginationCanonical;
-
-    const turnApi = TOPW?.H2O?.turn || W?.H2O?.turn || null;
-    let apiTurns = null;
-    try {
-      apiTurns = (typeof turnApi?.getTurns === 'function') ? (turnApi.getTurns() || null) : null;
-    } catch {
-      apiTurns = null;
-    }
-    const turnsCanonical = buildCanonicalTurnCollection(apiTurns, { requireAnswer: true });
-    if (turnsCanonical?.list?.length) return turnsCanonical;
-
-    const domCanonical = buildCanonicalTurnCollection(getAnswerEls(), { requireAnswer: true });
-    if (domCanonical?.list?.length) return domCanonical;
-
     return {
       list: [],
       byId: new Map(),
       byAId: new Map(),
       answerByTurn: new Map(),
       answers: [],
+      source: 'complete-index-boundary',
+      completeness: 'unavailable',
+      completeIndexStatus: completeIndex.status,
     };
   }
 
@@ -7296,6 +7267,12 @@ function UM_PUBLIC() {
     const api = getTurnRuntimeApi();
     const key = String(anyId || '').trim();
     if (!api || !key) return null;
+    const completeIndex = getCompleteIndexProjectionStatus();
+    if (
+      completeIndex.enabled !== true
+      || completeIndex.authoritative !== true
+      || completeIndex.completenessProof !== 'host-payload-full-graph'
+    ) return null;
     try {
       if (selectedPathPresentationActive()) {
         return callEffectiveTurnRuntime('AID', key)
@@ -9793,31 +9770,9 @@ function unbindChatPageDividerBridge() {
     try {
       const key = String(anyId || '').trim();
 
-      // When pagination is active, the canonical turn list (S.turnList) only
-      // contains answered turns (e.g. 34 for a 35-turn chat with one unanswered
-      // question). Use H2O Core's turn total instead, which counts all Q+A pairs
-      // including unanswered ones — giving the correct 35.
-      const coreTurnTotal = Math.max(0, Number(W?.H2O?.turn?.total?.() || 0) || 0);
-      const paginationEnabled = isPaginationWindowingEnabled();
-      let total = Number(
-        (paginationEnabled && coreTurnTotal > 0)
-          ? coreTurnTotal
-          : (S.turnList.length || coreTurnTotal || getAnswerEls().length || 0)
-      );
-      // Authoritative floor: ChatGPT keeps one <section data-turn="assistant">
-      // per answered pair in the document even when content is virtualized.
-      // Never display a smaller (subset-derived) count than that; while the
-      // canonical list is still catching up, show the authoritative total
-      // rather than a fake final subset count.
-      let sectionPairTotal = 0;
-      try { sectionPairTotal = document.querySelectorAll('[data-testid^="conversation-turn-"][data-turn="assistant"]').length; } catch {}
-      if (sectionPairTotal > total) total = sectionPairTotal;
+      const total = Number(S.turnList.length || 0);
 
       let idx = Number(getTurnIndex(key));
-      if (!idx && key.startsWith('turn:')) {
-        const m = key.match(/(\d+)$/);
-        if (m) idx = Number(m[1]) || 0;
-      }
       if (!idx) idx = total > 0 ? 1 : 0;
 
       const cEl = counterEl();
@@ -10280,7 +10235,11 @@ function unbindChatPageDividerBridge() {
       const overlayActive = effectivePresentation.overlayActive === true
         && effectivePresentation.source === 'selected-path-overlay'
         && effectivePresentation.count > 0;
-      if (completeIndex.enabled && !completeIndex.authoritative) {
+      if (
+        completeIndex.enabled !== true
+        || completeIndex.authoritative !== true
+        || completeIndex.completenessProof !== 'host-payload-full-graph'
+      ) {
         publishTurnSnapshot({
           list: [],
           byId: new Map(),
@@ -10298,7 +10257,7 @@ function unbindChatPageDividerBridge() {
         S.lastRebuildResult = out;
         return out;
       }
-      if (completeIndex.enabled) clearCompleteIndexBoundaryState();
+      clearCompleteIndexBoundaryState();
 
       const snapshot = indexTurns({ commit: false });
       let list = Array.isArray(snapshot?.list) ? snapshot.list : [];
@@ -10324,7 +10283,7 @@ function unbindChatPageDividerBridge() {
       // Canonical-only regression contract: when no overlay is active this is
       // exactly the historical `list.length !== completeIndex.projectedCount`
       // boundary; the effective count is consulted only for proven overlays.
-      if (completeIndex.enabled && list.length !== expectedPresentationCount) {
+      if (list.length !== expectedPresentationCount) {
         publishTurnSnapshot({
           list: [],
           byId: new Map(),
@@ -10346,8 +10305,7 @@ function unbindChatPageDividerBridge() {
       }
       // Never let a subset re-index shrink the MiniMap: merge with the
       // per-chat turn cache before building buttons/publishing/saving.
-      const mergeOutcome = completeIndex.enabled
-        ? {
+      const mergeOutcome = {
           ok: true,
           merged: {
             list: list.slice(),
@@ -10369,8 +10327,7 @@ function unbindChatPageDividerBridge() {
           }),
           persistence: null,
           error: null,
-        }
-        : mergeRebuildTurnCache(resolveChatId(), list, snapshot.canonicalEvidence);
+        };
       if (!mergeOutcome.ok) {
         safeDiag('err', 'core.rebuildNow:mergeTurnCache', mergeOutcome.error);
         out.status = 'partial';
