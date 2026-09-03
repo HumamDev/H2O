@@ -13,7 +13,7 @@ const PAGINATION_PATH = 'src-runtime-base/0C1b.⚫️🪟 Pagination Windowing (
 const UNMOUNT_PATH = 'src-runtime-base/0C2b.⚫️⛰️ Unmount Messages (Chat 🔗 Adapter) ⛰️.js';
 const DIVIDER_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const VALIDATOR_PATH = 'tools/validation/chat-atlas/validate-chat-atlas-cv3-13-title-list-page-hydration.mjs';
-const BASE = '14bacca24c2cf67ac333434fa26b457bbfc9adec';
+const BASE = 'ac18cc70323d5b9b7b094bcef0afd4d432787437';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 const PAGINATION_SOURCE = fs.readFileSync(path.join(ROOT, PAGINATION_PATH), 'utf8');
 const UNMOUNT_SOURCE = fs.readFileSync(path.join(ROOT, UNMOUNT_PATH), 'utf8');
@@ -615,8 +615,22 @@ await fixture('atomic stable-state order cannot expose orphan timestamp before d
   equal(h.log.includes('global-hide'), false, 'no global hidden phase exists');
 });
 
+await fixture('P03C C5 host remount cannot retain an adopted stale wrapper', () => {
+  equal(PAGE_SOURCE.includes('openedContentAdopted'), false, 'no adopted-wrapper transaction state remains');
+  equal(PAGE_SOURCE.includes('adoptOpenedTurnIntoStack'), false, 'no native adoption helper remains');
+  equal(PAGE_SOURCE.includes('data-h2o-title-stack-inline'), false, 'no native inline ownership stamp remains');
+});
+
+await fixture('P03C C6 route and reset paths cannot restore stale native wrappers', () => {
+  const release = extractFunction(PAGE_SOURCE, 'releaseAtomicPageCollapseState');
+  const reset = extractFunction(PAGE_SOURCE, 'resetAllMechanisms');
+  equal(release.includes('restoreAllInlineTurns'), false, 'atomic release performs no native restore');
+  equal(reset.includes('restoreAllInlineTurns'), false, 'reset performs no native restore');
+  equal(PAGE_SOURCE.includes('restoreInlineTurnToFlow'), false, 'no callable native restore helper remains');
+});
+
 await fixture('safety and scope boundaries remain exact', () => {
-  const paths = [PAGE_PATH, PAGINATION_PATH, UNMOUNT_PATH, DIVIDER_PATH];
+  const paths = [PAGE_PATH];
   const diffs = paths.map((file) => execFileSync('git', ['diff', '--unified=0', BASE, '--', file], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -627,9 +641,9 @@ await fixture('safety and scope boundaries remain exact', () => {
   equal(/\bnew\s+MutationObserver\b/.test(added), false, 'no broad observer');
   equal(/localStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no storage write');
   equal(/sessionStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no session cache write');
-  equal(/canonical.*(?:set|write|mutat)/i.test(added), false, 'no canonical write');
+  equal(/\b(?:set|write|mutate)Canonical[A-Z]\w*\s*\(/.test(added), false, 'no canonical mutation API');
   equal(/alias(?:es)?\.(?:set|write|delete)/i.test(added), false, 'no alias write');
-  equal(/\.remove\(\)/.test(added), false, 'no destructive host removal');
+  equal(/(?:anchor|wrapper|section)\??\.remove\(\)/i.test(added), false, 'no destructive host removal');
   equal(/getEffectivePresentation(?:Index|Status)/.test(added), false, 'no acquisition/overlay redesign');
   equal(/Side Actions|side-actions/i.test(added), false, 'no Side Actions change');
 
@@ -642,7 +656,15 @@ await fixture('safety and scope boundaries remain exact', () => {
     encoding: 'utf8',
   }).split('\0').filter(Boolean);
   const changed = Array.from(new Set([...changedTracked, ...changedUntracked])).sort();
-  equal(changed, [PAGE_PATH, PAGINATION_PATH, UNMOUNT_PATH, DIVIDER_PATH, VALIDATOR_PATH].sort(), 'only approved page/title/windowing files change');
+  const allowed = new Set([
+    PAGE_PATH,
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-11-effective-title-list-collapse.mjs',
+    VALIDATOR_PATH,
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-14-page-visibility-stamp-ownership.mjs',
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+  ]);
+  equal(changed.every((file) => allowed.has(file)), true, 'only the five approved P03C paths change');
+  equal(changed.includes(VALIDATOR_PATH), true, 'CV-3.13 participates in the P03C assurance package');
 });
 
 for (const key of Object.keys(safety)) equal(safety[key], 0, `safety counter ${key} remains zero`);

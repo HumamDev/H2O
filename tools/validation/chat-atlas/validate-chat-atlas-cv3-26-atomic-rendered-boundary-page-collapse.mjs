@@ -220,12 +220,17 @@ function createTransactionHarness(options = {}) {
     productionSource: SOURCE,
     coldEnd: true,
     middleCount: 48,
-    extraKind: 'inline-slot',
+    extraKind: 'title-list',
     count: 39,
   });
   rangeFactory.prime(rangeHarness);
   const rawPlan = rangeHarness.api.plan(1);
   if (!rawPlan?.ok) throw new Error(`range-plan-unavailable:${rawPlan?.diagnostic?.reason}`);
+  // The range probe needs one already-owned H2O node to prove exclusion. It
+  // is not the transaction's title list, so remove it before exercising the
+  // real detached-list preparation/commit path below.
+  rangeHarness.guard.locked = false;
+  rangeHarness.extra?.remove?.();
   const model = buildTitleModel(Number(options.count || 39));
   const titleRows = model.pages[0]?.turnRecords || [];
   const plan = {
@@ -282,6 +287,7 @@ function createTransactionHarness(options = {}) {
     nativeOrdinals: 0,
     testArithmetic: 0,
     persistence: 0,
+    materializations: 0,
   };
   const control = {
     model,
@@ -332,10 +338,13 @@ function createTransactionHarness(options = {}) {
     collapsedPagesByChat: new Map(),
     titleListPagesByChat: new Map(),
     titleListStacksByKey: new Map(),
+    titleListOpenStatesByKey: new Map(),
+    titleListOpenSequence: 0,
     collapsedBoundaryDiagnostics: new Map(),
   };
   const stackStats = {};
   const W = {
+    H2O: { obs: { mounts: new Map() } },
     getComputedStyle: () => ({ overflowY: 'visible' }),
     scrollBy() {
       safety.nonAnchorScrolling += 1;
@@ -373,9 +382,22 @@ function createTransactionHarness(options = {}) {
     'setAtomicCollapsedPageMemory',
     'prepareDetachedPageTitleList',
     'revalidateAtomicPageCollapsePlan',
+    'titleListOpenStateKey',
+    'getTitleListSuffixContainers',
+    'ensureTitleListSuffixContainer',
+    'restoreTitleListProjectionRows',
+    'titleListCanonicalMemberForOpenState',
+    'titleListOpenStateCurrent',
+    'titleListCurrentNativeMount',
+    'titleListCurrentOpenMount',
+    'requestTitleListCanonicalMaterialization',
+    'clearTitleListNativeInPlaceProjection',
+    'reconcileTitleListNativeInPlaceProjection',
+    'openTitleListNativeInPlace',
     'releaseAtomicPageCollapseState',
     'rollbackAtomicPageCollapse',
     'validateCommittedAtomicPageCollapse',
+    'rebindCommittedAtomicPageCollapse',
     'collapsePageWithRenderedBoundaries',
     'applyExpandedCollapseControlState',
     'expandPageWithRenderedBoundaries',
@@ -385,11 +407,14 @@ function createTransactionHarness(options = {}) {
   const api = vm.runInNewContext(`(() => {
     const document = injectedDocument;
     const W = injectedWindow;
+    const TOPW = W;
     const S = injectedState;
     const TITLE_LIST_PAGE_SIZE = 25;
     const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
     const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
     const ATTR_TITLE_LIST_NUM = 'data-cgxui-chat-page-title-list-num';
+    const ATTR_TITLE_LIST_SEGMENT = 'data-h2o-title-list-segment';
+    const TITLE_LIST_SUFFIX_SEL = '[data-h2o-title-list-segment="suffix"]';
     const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
     const resolveChatId = () => 'chat-stage-2c2';
     const collapsedNativeRangeKey = (chatId, pageNum) => String(chatId) + '::' + String(pageNum);
@@ -424,7 +449,7 @@ function createTransactionHarness(options = {}) {
     });
     const projectSyntheticRowTitle = () => ({ changed: false, preventedDowngrade: false });
     const applyStackedTitleBarWash = () => ({ status: 'painted' });
-    const restoreAllInlineTurns = () => 0;
+    const replayDeferredPageCollapseIntent = () => [];
     const releaseTitleStackBars = () => 0;
     const getTitleListStackStats = () => injectedStackStats;
     const syncTitleOnlyModeRootAttribute = () => {};
@@ -440,6 +465,27 @@ function createTransactionHarness(options = {}) {
     const renderedBoundaryTransitionActive = (projection) => projection?.selectedPathConfirmationPending === true;
     const renderedBoundaryRecordStreaming = (record) => record?.livePendingStreaming === true;
     const buildTitleListPresentationPageModel = () => injectedControl.model;
+    const memberSectionCandidates = (member, role) => {
+      const identity = role === 'user' ? member?.questionId : member?.answerId;
+      return Array.from(injectedPlan.flowRoot.children || []).filter((node) => (
+        pageCollapseRangeNodeCarriesIdentity(node, identity)
+      ));
+    };
+    const getTurnAnchorNode = (section) => section;
+    const titleListDirectFlowChild = (flowRoot, node) => (
+      node?.parentElement === flowRoot ? node : null
+    );
+    const clearTitleListFlowHiddenNode = (node) => {
+      if (!node?.hasAttribute?.('data-cgxui-chat-page-title-list-hidden')) return false;
+      node.removeAttribute('data-cgxui-chat-page-title-list-hidden');
+      return true;
+    };
+    const MM_SH = () => ({ api: { rt: {
+      setActiveTurnId() {
+        injectedCalls.materializations += 1;
+        return true;
+      },
+    } } });
     const evaluatePageCollapseCapability = () => {
       injectedCalls.capability += 1;
       injectedCalls.plans += 1;
@@ -482,6 +528,9 @@ function createTransactionHarness(options = {}) {
       prepare: prepareDetachedPageTitleList,
       revalidate: revalidateAtomicPageCollapsePlan,
       memberCurrent: pageCollapseMemberIdentityCurrent,
+      open: openTitleListNativeInPlace,
+      close: clearTitleListNativeInPlaceProjection,
+      openMount: titleListCurrentOpenMount,
       state: S,
     });
   })()`, {
@@ -519,6 +568,7 @@ function createTransactionHarness(options = {}) {
     calls,
     control,
     capability,
+    window: W,
   };
 }
 
@@ -782,12 +832,10 @@ await fixture('product feedback excludes technical internals', () => {
   ok(!/native-slot|graph|wrapper|fingerprint/.test(String(h.capability.productReason)), 'safe product reason');
 });
 await fixture('1C1b is sole native-hidden transaction writer', () => {
-  // Two statements, one owner: the commit stamp in applyCollapsedNativeRange
-  // and the committed-state maintenance restamp in
-  // rebindCommittedAtomicPageCollapse (host element replacement inside a
-  // hidden range delivers replacements without the stamp). Both live in this
-  // module's transaction owner; no other module writes the attribute.
-  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 2, 'transaction-owner writer statements');
+  // P03C adds bounded unhide/rehide writes for the currently selected native
+  // mount, but all statements remain inside this transaction/presentation
+  // owner. No lifecycle helper or second module receives the attribute.
+  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 5, 'bounded transaction-owner writer statements');
 });
 await fixture('1A1b remains Page-unit-only', () => {
   const core = fs.readFileSync(path.join(ROOT, 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js'), 'utf8');
@@ -799,6 +847,125 @@ await fixture('range diagnostics remain semantically unchanged', () => {
   equal(h.rawPlan.diagnostic.hostWrapperCount, 50, 'range count unchanged');
 });
 await fixture('graph bridge remains required', () => ok(SOURCE.includes('getGraphIdentityDiagnostics'), 'graph getter consumed'));
+await fixture('P03C opens the exact canonical native turn in place between H2O prefix and suffix', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  const nativeAnchors = transaction.hostWrappers.filter((node) => (
+    node === x.start.wrapper || node === x.answer1.wrapper
+  ));
+  const originalParents = nativeAnchors.map((node) => node.parentElement);
+  const opened = x.api.open(transaction, member);
+  equal(opened.status, 'open', 'canonical mounted target opens');
+  equal(nativeAnchors.map((node) => node.parentElement), originalParents, 'native parents stay host-owned');
+  equal(nativeAnchors.every((node) => !node.hasAttribute('data-cgxui-chat-page-native-hidden')), true, 'exact native Q/A is visible');
+  const suffix = x.document.querySelector('[data-h2o-title-list-segment="suffix"]');
+  ok(suffix?.parentElement === x.flow, 'H2O suffix is in the original flow');
+  equal(transaction.titleRowsPrepared[0].parentElement, transaction.titleListContainer, 'selected row stays in prefix');
+  equal(transaction.titleRowsPrepared.slice(1).every((row) => row.parentElement === suffix), true, 'later title rows stay in suffix');
+  equal(nativeAnchors.some((node) => transaction.titleListContainer.contains(node) || suffix.contains(node)), false, 'H2O projection contains no native wrapper');
+  equal(x.safety.hostMoves, 0, 'open performs zero native-wrapper moves');
+});
+await fixture('P03C close restores the complete synthetic list without native restoration', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'opened');
+  const nativeParents = transaction.hostWrappers.map((node) => node.parentElement);
+  const closed = x.api.close(transaction, { rehide: true });
+  equal(closed.status, 'closed', 'closed');
+  equal(transaction.titleRowsPrepared.every((row) => row.parentElement === transaction.titleListContainer), true, 'all title rows return to one H2O list');
+  equal(x.document.querySelectorAll('[data-h2o-title-list-segment="suffix"]').length, 0, 'suffix removed');
+  equal(transaction.hostWrappers.map((node) => node.parentElement), nativeParents, 'native parents never change');
+  equal(transaction.hostWrappers.every((node) => node.getAttribute('data-cgxui-chat-page-native-hidden') === '1'), true, 'native page is hidden again');
+  equal(x.S.titleListOpenStatesByKey.size, 0, 'scalar open state drains');
+  equal(x.safety.hostMoves, 0, 'close performs zero native-wrapper moves');
+});
+await fixture('P03C unmounted canonical target uses one bounded materialization request', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  x.start.wrapper.remove();
+  const first = x.api.open(transaction, member);
+  equal(first.status, 'pending', 'missing exact mount is pending');
+  equal(x.calls.materializations, 1, 'one canonical materialization request');
+  const second = x.api.open(transaction, member);
+  equal(second.status, 'pending', 'repeat remains bounded pending');
+  equal(x.calls.materializations, 1, 'same open identity requests materialization at most once');
+  const reconciled = x.api.openMount(transaction);
+  equal(reconciled.ok, false, 'no ordinal or alternate target is substituted');
+  equal(x.S.titleListOpenStatesByKey.size, 1, 'only scalar pending state is retained');
+  const state = x.S.titleListOpenStatesByKey.values().next().value;
+  equal(Object.values(state).some((value) => value instanceof x.flow.constructor), false, 'pending state retains no native node');
+});
+await fixture('P03C host remount resolves the current MountRegistry wrapper and releases the stale one', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'selected turn opened');
+  const stale = x.start.wrapper;
+  const proof = transaction.wrapperProofs.get(stale);
+  const NodeCtor = x.flow.constructor;
+  const replacement = new NodeCtor('DIV', 'host-turn-slot', x.guard);
+  replacement.setAttribute('data-turn-id-container', proof.identity);
+  const host = new NodeCtor('SECTION', 'native-turn-host', x.guard);
+  const carrier = new NodeCtor('SECTION', 'identity-carrier', x.guard);
+  carrier.setAttribute('data-turn-id', proof.identity);
+  carrier.setAttribute('data-turn', 'user');
+  host.appendChild(carrier);
+  replacement.appendChild(host);
+  x.flow.replaceChild(replacement, stale);
+  x.window.H2O.obs.mounts.set(proof.identity, { el: carrier, shell: replacement });
+  const [result] = x.api.reconcile('observer-hub-remount');
+  equal(result.status, 'current', 'committed projection survives exact remount');
+  const mount = x.api.openMount(transaction);
+  equal(mount.ok, true, 'current canonical mount resolves');
+  equal(mount.anchors.includes(replacement), true, 'replacement wrapper is presented');
+  equal(mount.anchors.includes(stale), false, 'stale wrapper is not presented');
+  equal(transaction.hostWrappers.includes(stale), false, 'transaction releases stale wrapper reference');
+  equal(transaction.wrapperProofs.has(stale), false, 'transaction releases stale proof key');
+  equal(replacement.parentElement, x.flow, 'replacement remains under host flow');
+});
+await fixture('P03C same-wrapper rehydration preserves host-owned nested content', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'selected turn opened');
+  const wrapper = x.start.wrapper;
+  const prior = wrapper.firstChild;
+  const currentHostContent = new x.flow.constructor('DIV', 'host-rehydrated-content', x.guard);
+  wrapper.replaceChild(currentHostContent, prior);
+  const result = x.api.open(transaction, member);
+  equal(result.status, 'open', 'same canonical wrapper remains open');
+  equal(wrapper.firstChild, currentHostContent, 'host rehydrated content is untouched');
+  equal(wrapper.parentElement, x.flow, 'same wrapper remains host-owned');
+});
+await fixture('P03C rapid close and stale reconciliation cannot recreate native ownership state', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'opened');
+  equal(x.api.close(transaction, { rehide: true }).status, 'closed', 'closed');
+  equal(x.api.reconcile('stale-observer-after-close')[0].status, 'current', 'stale callback is bounded reconciliation');
+  equal(x.S.titleListOpenStatesByKey.size, 0, 'stale callback creates no open state');
+  equal(transaction.hostWrappers.every((node) => node.parentElement === x.flow), true, 'all native wrappers remain in host flow');
+  equal(x.safety.hostMoves, 0, 'no native wrapper was reparented');
+});
+await fixture('P03C C9 failed restore cannot leak a native reference because restore state is absent', () => {
+  equal(SOURCE.includes('restoreInlineTurnToFlow'), false, 'no native restore helper remains');
+  equal(SOURCE.includes('_h2oTitleListOrigin'), false, 'no raw native origin can leak');
+});
+await fixture('P03C C10 native-in-place projection cannot create double wrapper ownership', () => {
+  equal(SOURCE.includes('adoptOpenedTurnIntoStack'), false, 'no native adoption helper remains');
+  equal(SOURCE.includes('data-h2o-title-inline-slot'), false, 'no native inline slot remains');
+  equal(SOURCE.includes('reconcileTitleListNativeInPlaceProjection'), true, 'bounded native-in-place projection replaces adoption');
+});
 
 const failed = fixtures.filter((entry) => !entry.ok);
 console.log(`Fixtures: ${fixtures.length - failed.length}/${fixtures.length}`);

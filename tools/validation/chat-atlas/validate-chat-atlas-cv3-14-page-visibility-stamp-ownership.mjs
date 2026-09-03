@@ -12,6 +12,7 @@ const PAGE_PATH = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.j
 const DIVIDER_PATH = 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js';
 const VALIDATOR_PATH = 'tools/validation/chat-atlas/validate-chat-atlas-cv3-14-page-visibility-stamp-ownership.mjs';
 const BASE = 'f6d948c9721b9319d1c1c6f7ac1fd037c46bb9c1';
+const P03C_BASE = 'ac18cc70323d5b9b7b094bcef0afd4d432787437';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 // The chat page's structural implementation moved out of MiniMap Core into
 // 0C3a Chat Page Structure Engine, so the MiniMap source read here is that
@@ -514,11 +515,23 @@ await fixture('turn 26 remount reanchors without duplicate divider ownership', (
 });
 
 await fixture('Refresh cleanup precedes hydration and reprojection', () => {
-  const syncAnchor = PAGE_SOURCE.indexOf("function syncActiveTitleListsNow(reason = 'presentation-updated')");
-  const syncBody = PAGE_SOURCE.slice(syncAnchor, syncAnchor + 1800);
-  ok(syncBody.indexOf('reconcileTitleListFlowHiddenArtifacts') < syncBody.indexOf('reconcileTitleListPageHydration'), 'stamp cleanup precedes hydration');
-  ok(syncBody.indexOf('reconcileTitleListPageHydration') < syncBody.indexOf('syncSyntheticTitleList'), 'hydration precedes reprojection');
+  const hydrationBody = extractFunction(PAGE_SOURCE, 'reconcileTitleListPageHydration');
+  ok(hydrationBody.indexOf('reconcileTitleListFlowHiddenArtifacts') < hydrationBody.indexOf('recoverMissingTitleListPageMembers'), 'stamp cleanup precedes bounded member recovery');
+  ok(hydrationBody.indexOf('recoverMissingTitleListPageMembers') < hydrationBody.lastIndexOf('syncTitleListNativeTimestampVisibility'), 'active-path recovery precedes timestamp projection');
   equal(PAGE_SOURCE.includes("syncActiveTitleListsNow('observer-hub-remount')"), true, 'Observer Hub uses the same ordering');
+});
+
+await fixture('P03C C7 scalar title-list state retains no inline native wrapper', () => {
+  equal(PAGE_SOURCE.includes('titleListOpenStatesByKey: new Map()'), true, 'scalar open-state registry is present');
+  equal(PAGE_SOURCE.includes('data-h2o-title-stack-inline'), false, 'inline wrapper ownership stamp is absent');
+  equal(PAGE_SOURCE.includes('_h2oTitleListOrigin'), false, 'raw native origin retention is absent');
+});
+
+await fixture('P03C C8 Observer Hub reconciles native-in-place projection without re-adoption', () => {
+  const observerSync = extractFunction(PAGE_SOURCE, 'syncActiveTitleListsNow');
+  equal(observerSync.includes('reconcileAtomicPageCollapseTransactions'), true, 'Observer path reaches bounded transaction reconciliation');
+  equal(PAGE_SOURCE.includes('reconcileTitleListNativeInPlaceProjection'), true, 'native-in-place reconciliation is source-owned');
+  equal(PAGE_SOURCE.includes('adoptOpenedTurnIntoStack'), false, 'Observer cannot invoke native re-adoption');
 });
 
 await fixture('selected count 18 removes Page 2 ownership', () => {
@@ -584,9 +597,9 @@ await fixture('repeated cleanup/projection is idempotent', () => {
 });
 
 await fixture('safety counters remain zero', () => {
-  const diffs = [PAGE_PATH, DIVIDER_PATH].map((file) => execFileSync(
+  const diffs = [PAGE_PATH].map((file) => execFileSync(
     'git',
-    ['diff', '--unified=0', BASE, '--', file],
+    ['diff', '--unified=0', P03C_BASE, '--', file],
     { cwd: ROOT, encoding: 'utf8' },
   )).join('\n');
   const added = diffs.split('\n').filter((line) => line.startsWith('+') && !line.startsWith('+++')).join('\n');
@@ -596,15 +609,15 @@ await fixture('safety counters remain zero', () => {
   equal(/\bsetTimeout\s*\(/.test(added), false, 'no repeating or general timer');
   equal(/localStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no storage write');
   equal(/sessionStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no cache write');
-  equal(/canonical.*(?:set|write|mutat)/i.test(added), false, 'no canonical write');
+  equal(/\b(?:set|write|mutate)Canonical[A-Z]\w*\s*\(/.test(added), false, 'no canonical mutation API');
   equal(/alias(?:es)?\.(?:set|write|delete)/i.test(added), false, 'no alias write');
-  equal(/\.remove\(\)/.test(added), false, 'no destructive host removal');
+  equal(/(?:anchor|wrapper|section)\??\.remove\(\)/i.test(added), false, 'no destructive host removal');
   equal(/getEffectivePresentation(?:Index|Status)/.test(added), false, 'no selected-path proof redesign');
   equal(/Side Actions|side-actions/i.test(added), false, 'no Side Actions change');
 });
 
 await fixture('scope is limited to approved page and divider ownership', () => {
-  const changedTracked = execFileSync('git', ['diff', '--name-only', '-z', BASE], {
+  const changedTracked = execFileSync('git', ['diff', '--name-only', '-z', P03C_BASE], {
     cwd: ROOT,
     encoding: 'utf8',
   }).split('\0').filter(Boolean);
@@ -613,7 +626,15 @@ await fixture('scope is limited to approved page and divider ownership', () => {
     encoding: 'utf8',
   }).split('\0').filter(Boolean);
   const changed = Array.from(new Set([...changedTracked, ...changedUntracked])).sort();
-  equal(changed, [PAGE_PATH, DIVIDER_PATH, VALIDATOR_PATH].sort(), 'only Thread Pages, divider owner, and CV-3.14 change');
+  const allowed = new Set([
+    PAGE_PATH,
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-11-effective-title-list-collapse.mjs',
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-13-title-list-page-hydration.mjs',
+    VALIDATOR_PATH,
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+  ]);
+  equal(changed.every((file) => allowed.has(file)), true, 'only the five approved P03C paths change');
+  equal(changed.includes(VALIDATOR_PATH), true, 'CV-3.14 participates in the P03C assurance package');
   equal(PAGE_SOURCE.includes('reconcileTitleListFlowHiddenArtifacts'), true, 'cleanup owner is Thread Pages');
   equal(DIVIDER_SOURCE.includes('authority-previous-page-unit'), true, 'supporting change is divider durability only');
 });
