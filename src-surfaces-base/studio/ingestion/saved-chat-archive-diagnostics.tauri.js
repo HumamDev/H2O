@@ -1207,25 +1207,42 @@
     return issue;
   }
 
-  /* C5.4A read-only, package-centric DB reconciliation. Uses ONLY
-   * store.chats.get / store.snapshots.get / store.snapshots.listByChat /
-   * store.assets.listBySnapshot. Never mutates the DB, never writes packages or
-   * CAS, never repairs/imports. Missing rows / drift are warnings, not blockers;
-   * a missing namespace, missing method, or thrown read degrades to a warning. */
-  async function validateDbChecks(diag, manifest, includeDbChecks) {
-    if (includeDbChecks === false) return;
-    var db = diag.dbChecks;
+  /* M10 P3a: the SAME C5.4A reconciliation, extracted so it can be driven by a
+   * trusted identity instead of a re-parsed manifest.
+   *
+   * Read-only and package-centric. Uses ONLY store.chats.get /
+   * store.snapshots.get / store.snapshots.listByChat / store.assets.listBySnapshot.
+   * Never mutates the DB, never writes packages or CAS, never repairs/imports.
+   * Missing rows / drift are WARNINGS, not blockers; a missing namespace,
+   * missing method, or thrown read degrades to a warning.
+   *
+   * Decision-neutral: it reconciles the identity it is handed and reaches no
+   * conclusion about package validity. `assetShas` is the package-side asset SHA
+   * set — the legacy caller derives it from the verified manifest, the trusted
+   * caller passes P1's already-verified `assetShas`. Neither re-verifies bytes.
+   */
+  async function dbDriftForIdentity(identity, stores) {
+    var ident = safeObject(identity);
+    var db = defaultDbChecks();
+    var warnings = [];
+    function warn(code, message, detail) {
+      var issue = makeIssue(code, message, detail);
+      db.warnings.push(issue);
+      warnings.push(issue);
+      return issue;
+    }
+
     db.checked = true;
-    var stores = getStores();
     if (!stores) {
       db.available = false;
-      addDbWarning(diag, 'db-api-missing', 'H2O.Studio.store is unavailable for DB reconciliation');
-      return;
+      warn('db-api-missing', 'H2O.Studio.store is unavailable for DB reconciliation');
+      return { dbChecks: db, warnings: warnings };
     }
     db.available = true;
-    var chatId = cleanString(diag.chatId);
-    var snapshotId = cleanString(diag.snapshotId);
-    if (!chatId && !snapshotId) return; /* no identity to reconcile (already-blocked package) */
+    var chatId = cleanString(ident.chatId);
+    var snapshotId = cleanString(ident.snapshotId);
+    /* No identity to reconcile (an already-blocked package). */
+    if (!chatId && !snapshotId) return { dbChecks: db, warnings: warnings };
 
     /* chat existence */
     if (chatId) {
@@ -1233,12 +1250,12 @@
         try {
           var chatRow = await stores.chats.get(chatId);
           db.chatExists = !!chatRow;
-          if (!chatRow) addDbWarning(diag, 'missing-db-chat', 'package chatId has no DB chat row', { chatId: chatId });
+          if (!chatRow) warn('missing-db-chat', 'package chatId has no DB chat row', { chatId: chatId });
         } catch (err) {
-          addDbWarning(diag, 'db-check-failed', 'store.chats.get failed', { chatId: chatId, error: String((err && err.message) || err) });
+          warn('db-check-failed', 'store.chats.get failed', { chatId: chatId, error: String((err && err.message) || err) });
         }
       } else {
-        addDbWarning(diag, 'db-api-missing', 'store.chats.get is unavailable');
+        warn('db-api-missing', 'store.chats.get is unavailable');
       }
     }
 
@@ -1248,12 +1265,12 @@
         try {
           var snapRow = await stores.snapshots.get(snapshotId);
           db.snapshotExists = !!(snapRow && (snapRow.snapshot || snapRow.snapshotId || snapRow.id));
-          if (!db.snapshotExists) addDbWarning(diag, 'missing-db-snapshot', 'package snapshotId has no DB snapshot row', { snapshotId: snapshotId });
+          if (!db.snapshotExists) warn('missing-db-snapshot', 'package snapshotId has no DB snapshot row', { snapshotId: snapshotId });
         } catch (err) {
-          addDbWarning(diag, 'db-check-failed', 'store.snapshots.get failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
+          warn('db-check-failed', 'store.snapshots.get failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
         }
       } else {
-        addDbWarning(diag, 'db-api-missing', 'store.snapshots.get is unavailable');
+        warn('db-api-missing', 'store.snapshots.get is unavailable');
       }
     }
 
@@ -1268,39 +1285,60 @@
           db.latestSnapshotId = latestId || null;
           if (latestId && snapshotId) {
             db.packageIsLatest = latestId === snapshotId;
-            if (!db.packageIsLatest) addDbWarning(diag, 'stale-package', 'package snapshot is not the latest DB snapshot for this chat', { packageSnapshotId: snapshotId, latestSnapshotId: latestId });
+            if (!db.packageIsLatest) warn('stale-package', 'package snapshot is not the latest DB snapshot for this chat', { packageSnapshotId: snapshotId, latestSnapshotId: latestId });
           }
         }
       } catch (err) {
-        addDbWarning(diag, 'db-check-failed', 'store.snapshots.listByChat failed', { chatId: chatId, error: String((err && err.message) || err) });
+        warn('db-check-failed', 'store.snapshots.listByChat failed', { chatId: chatId, error: String((err && err.message) || err) });
       }
     } else if (chatId && (!stores.snapshots || typeof stores.snapshots.listByChat !== 'function')) {
-      addDbWarning(diag, 'db-api-missing', 'store.snapshots.listByChat is unavailable');
+      warn('db-api-missing', 'store.snapshots.listByChat is unavailable');
     }
 
-    /* store asset registry vs package manifest.assets[] */
+    /* store asset registry vs the package-side asset SHA set */
     if (snapshotId) {
       if (stores.assets && typeof stores.assets.listBySnapshot === 'function') {
         try {
           var storeAssetRows = asArray(await stores.assets.listBySnapshot(snapshotId));
           var storeShas = uniqStrings(storeAssetRows.map(function (row) { return row && row.sha256; }));
           db.storeAssetCount = storeShas.length;
-          var manifestShas = uniqStrings(asArray(manifest && manifest.assets).map(function (asset) { return asset && asset.sha256; }));
-          var missing = manifestShas.filter(function (sha) { return storeShas.indexOf(sha) < 0; });
-          var extra = storeShas.filter(function (sha) { return manifestShas.indexOf(sha) < 0; });
+          var packageShas = uniqStrings(asArray(ident.assetShas));
+          var missing = packageShas.filter(function (sha) { return storeShas.indexOf(sha) < 0; });
+          var extra = storeShas.filter(function (sha) { return packageShas.indexOf(sha) < 0; });
           db.missingStoreAssets = missing;
           db.extraStoreAssets = extra;
           db.packageAssetSetMatchesStore = missing.length === 0 && extra.length === 0;
           if (!db.packageAssetSetMatchesStore) {
-            addDbWarning(diag, 'store-asset-registry-mismatch', 'store asset registry differs from package manifest assets', { missingStoreAssets: missing, extraStoreAssets: extra });
+            warn('store-asset-registry-mismatch', 'store asset registry differs from package manifest assets', { missingStoreAssets: missing, extraStoreAssets: extra });
           }
         } catch (err) {
-          addDbWarning(diag, 'db-check-failed', 'store.assets.listBySnapshot failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
+          warn('db-check-failed', 'store.assets.listBySnapshot failed', { snapshotId: snapshotId, error: String((err && err.message) || err) });
         }
       } else {
-        addDbWarning(diag, 'db-api-missing', 'store.assets.listBySnapshot is unavailable');
+        warn('db-api-missing', 'store.assets.listBySnapshot is unavailable');
       }
     }
+
+    return { dbChecks: db, warnings: warnings };
+  }
+
+  /* The legacy wrapper. It derives the asset SHA set from the manifest it has
+   * already verified and delegates to the shared helper, so the pre-P3 path
+   * behaves exactly as before. */
+  async function validateDbChecks(diag, manifest, includeDbChecks) {
+    if (includeDbChecks === false) return;
+    var manifestShas = asArray(manifest && manifest.assets).map(function (asset) {
+      return asset && asset.sha256;
+    });
+    var drift = await dbDriftForIdentity({
+      chatId: diag.chatId,
+      snapshotId: diag.snapshotId,
+      assetShas: manifestShas,
+    }, getStores());
+    diag.dbChecks = drift.dbChecks;
+    /* Mirrored to the package warnings so the package status can degrade to
+     * "warning" — exactly as the pre-extraction code did. */
+    drift.warnings.forEach(function (issue) { diag.warnings.push(issue); });
   }
 
   function validateManifestAssets(manifest, diag) {
@@ -1425,18 +1463,29 @@
     }
   }
 
-  async function compareLiveCasAssets(manifestAssets, diag, includeCasChecks) {
-    if (!includeCasChecks) return;
-    diag.assetChecks.liveCasChecked = true;
+  /* M10 P3a: the SAME read-only live-CAS presence observation, extracted so it
+   * can be driven by a trusted asset SHA set.
+   *
+   * Presence only. It reads no package bytes, verifies nothing, and never
+   * decides package validity: a missing CAS body is drift, because the package
+   * itself remains portable. Unreferenced CAS content is NEVER called an
+   * orphan, reclaimable, or safe to delete — no authority here says that.
+   *
+   * `assets` entries are `{ sha256, path? }`; `path` is warning DETAIL only. */
+  async function liveCasPresenceForShas(assets) {
+    var out = { checked: true, available: false, warnings: [] };
+    function warn(code, message, detail) {
+      out.warnings.push({ bucket: 'missingLiveCasAssets', issue: makeIssue(code, message, detail) });
+    }
     var assetCas = getAssetCas();
     if (!assetCas || (typeof assetCas.exists !== 'function' && typeof assetCas.describe !== 'function')) {
-      diag.assetChecks.liveCasAvailable = false;
-      addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-diagnostic-unavailable', 'live CAS read-only diagnostic helper is unavailable');
-      return;
+      warn('live-cas-diagnostic-unavailable', 'live CAS read-only diagnostic helper is unavailable');
+      return out;
     }
-    diag.assetChecks.liveCasAvailable = true;
-    for (var i = 0; i < manifestAssets.length; i += 1) {
-      var asset = manifestAssets[i];
+    out.available = true;
+    var list = asArray(assets);
+    for (var i = 0; i < list.length; i += 1) {
+      var asset = safeObject(list[i]);
       var exists = false;
       try {
         if (typeof assetCas.exists === 'function') exists = !!(await assetCas.exists(asset.sha256));
@@ -1445,13 +1494,25 @@
           exists = !!(desc && desc.exists);
         }
       } catch (err) {
-        addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-check-failed', 'live CAS existence check failed', { sha256: asset.sha256, error: String((err && err.message) || err) });
+        warn('live-cas-check-failed', 'live CAS existence check failed', { sha256: asset.sha256, error: String((err && err.message) || err) });
         continue;
       }
       if (!exists) {
-        addAssetWarning(diag, 'missingLiveCasAssets', 'live-cas-missing-package-portable', 'live CAS asset is missing, but package remains portable when the package asset is valid', { sha256: asset.sha256, path: asset.path });
+        warn('live-cas-missing-package-portable', 'live CAS asset is missing, but package remains portable when the package asset is valid', { sha256: asset.sha256, path: asset.path });
       }
     }
+    return out;
+  }
+
+  /* The legacy wrapper, delegating so the pre-P3 path is unchanged. */
+  async function compareLiveCasAssets(manifestAssets, diag, includeCasChecks) {
+    if (!includeCasChecks) return;
+    var result = await liveCasPresenceForShas(manifestAssets);
+    diag.assetChecks.liveCasChecked = result.checked;
+    diag.assetChecks.liveCasAvailable = result.available;
+    result.warnings.forEach(function (entry) {
+      addAssetWarning(diag, entry.bucket, entry.issue.code, entry.issue.message, entry.issue.detail);
+    });
   }
 
   async function validateSavedChatPackageV1(options, packageSourceOverride) {
@@ -1764,6 +1825,11 @@
     };
   }
 
+  /* M10 P3a: shared, decision-neutral observation helpers. Exported so the
+   * trusted composition can reuse the EXISTING checks instead of restating
+   * them. Neither decides package validity. */
+  H2O.Studio.ingestion.dbDriftForIdentityV1 = dbDriftForIdentity;
+  H2O.Studio.ingestion.liveCasPresenceForShasV1 = liveCasPresenceForShas;
   H2O.Studio.ingestion.diagnoseSavedChatArchiveCapabilitiesV1 = diagnoseSavedChatArchiveCapabilitiesV1;
   H2O.Studio.ingestion.listSavedChatArchivePackagesV1 = function (options) {
     return listSavedChatArchivePackagesV1(options);

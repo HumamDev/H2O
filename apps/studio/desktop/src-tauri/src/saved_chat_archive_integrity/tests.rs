@@ -2,7 +2,9 @@ use super::*;
 use crate::archive_generation_publish::{begin, commit_with_policy, write_member, Member, Publisher};
 use crate::archive_generation_order::UnorderableReason;
 use crate::archive_package_scan::{scan_packages_within, OrderFact};
-use crate::saved_chat_package_verify::tests::{gzip_zero_asset_v3, zero_asset_v3, OwnedPackage};
+use crate::saved_chat_package_verify::tests::{
+    gzip_zero_asset_v3, permanent_v3_fixture, zero_asset_v3, OwnedPackage,
+};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -995,6 +997,80 @@ fn a_granular_verifier_rule_survives_the_whole_chain_and_outranks_the_coarse_cod
 
     // The anti-vacuity property this correction exists to guarantee.
     assert_ne!(GRANULAR, COARSE);
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// M10 P3a — the trusted asset SHA set is PROJECTED where a verified package
+/// exists, and never fabricated where one does not.
+#[test]
+fn trusted_asset_shas_are_projected_only_where_a_verified_package_exists() {
+    // End to end through the real publisher and verifier: an asset-bearing v3
+    // package carries exactly the SHAs its verified manifest declared.
+    let root = scratch("asset-shas");
+    let fixture = permanent_v3_fixture(false);
+    let hash = publish_v3(&root, &fixture);
+    let name = format!("{}.g{hash}.h2ochat", fixture.chat_id);
+    std::fs::write(packages_dir(&root).join("stray.txt"), b"stray").expect("stray");
+
+    let result = project(&scan_packages_within(&root));
+    let projected = find(&result, &name).asset_shas.clone().expect("verified package");
+    assert!(!projected.is_empty(), "the fixture declares assets");
+
+    // Exactly the trusted scanner's own set — normalized, sorted, deduplicated.
+    let scan = scan_packages_within(&root);
+    let trusted = scan
+        .occupants
+        .iter()
+        .find(|o| o.name == name)
+        .map(|o| match &o.class {
+            OccupantClass::VerifiedGeneration(p) | OccupantClass::LegacyPackage(p) => {
+                p.asset_shas.clone()
+            }
+            other => panic!("expected a verified package, got {other:?}"),
+        })
+        .expect("occupant scanned");
+    assert_eq!(projected, trusted, "projected verbatim from the trusted set");
+    let mut sorted = projected.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(projected, sorted, "deterministic order preserved from source");
+
+    // An indeterminate occupant never fabricates one: an empty list would read
+    // as "references no assets", which is a claim nothing proved.
+    assert_eq!(find(&result, "stray.txt").asset_shas, None);
+    let value = json(&result);
+    let stray = value["occupants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == "stray.txt")
+        .unwrap();
+    assert!(!stray.as_object().unwrap().contains_key("assetShas"), "omitted, not empty");
+
+    // Reserved infrastructure likewise carries none.
+    let reserved_scan = scan_of(
+        true,
+        vec![],
+        vec![occupant(".h2o-archive.lock", OccupantClass::ReservedInfrastructure)],
+    );
+    assert_eq!(project(&reserved_scan).occupants[0].asset_shas, None);
+
+    // The wire carries SHAs ONLY — no path, extension or MIME inflation.
+    let wire = value["occupants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|o| o["name"] == name.as_str())
+        .unwrap();
+    let shas = wire["assetShas"].as_array().expect("assetShas array");
+    assert!(shas.iter().all(|v| v.is_string()), "a flat list of strings");
+    for forbidden in ["assetPaths", "assetExt", "assetMime", "assets\":"] {
+        assert!(
+            !value.to_string().contains(forbidden),
+            "the envelope must not inflate with {forbidden}"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

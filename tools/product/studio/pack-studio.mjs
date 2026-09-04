@@ -255,9 +255,14 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // diagnostics into Settings -> Diagnostics via the injected read-only API; no
   // mutation/repair/import/sync/Chrome. Shows Desktop-only message when absent.
   "ingestion/saved-chat-reclamation-ui.studio.js",
-  // M10 P2: pure trusted-facts -> operator-state mapping. Packaged but
-  // deliberately UNWIRED — no production caller consumes it until P3 repoints
-  // Archive Health. No verification, filesystem, invoke or mutation authority.
+  // M10 P3a: the trusted chain. The thin client reads the P1 Rust integrity
+  // command; the composition joins it with the existing separate DB/CAS/renderer
+  // observations and the P2 mapper. Loaded before the diagnostics facade can be
+  // invoked; all three resolve their collaborators lazily, at call time.
+  "ingestion/saved-chat-archive-integrity.tauri.js",
+  "ingestion/saved-chat-archive-health-composition.js",
+  // M10 P2: pure trusted-facts -> operator-state mapping. No verification,
+  // filesystem, invoke or mutation authority.
   "ingestion/saved-chat-archive-health-mapping.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
@@ -1399,6 +1404,8 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-relink.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/saved-chat-reclamation-ui.studio.js",
+  "ingestion/saved-chat-archive-integrity.tauri.js",
+  "ingestion/saved-chat-archive-health-composition.js",
   "ingestion/saved-chat-archive-health-mapping.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal

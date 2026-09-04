@@ -187,6 +187,16 @@ pub struct IntegrityOccupant {
     pub saved_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orderable: Option<bool>,
+    /// Package-side CAS references, exactly as the trusted verifier's manifest
+    /// already established them: normalized, sorted and deduplicated by
+    /// `archive_package_scan`. Projected, never re-read and never re-hashed, and
+    /// deliberately carrying only the SHAs — no path, extension or MIME type.
+    ///
+    /// Present only where a trusted `VerifiedPackage` exists. An indeterminate
+    /// occupant never fabricates one: an empty list there would falsely read as
+    /// "references no assets".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asset_shas: Option<Vec<String>>,
 
     // ---- indeterminate facts ----
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -251,6 +261,9 @@ fn package_occupant(
         logical_snapshot_byte_length: Some(package.logical_snapshot_byte_length),
         saved_at,
         orderable,
+        // Already normalized/sorted/deduplicated upstream; no second ordering
+        // rule is invented here.
+        asset_shas: Some(package.asset_shas.clone()),
         reason: None,
         blockers: Vec::new(),
     }
@@ -272,6 +285,7 @@ fn bare_occupant(occupant: &ClassifiedOccupant, class: &'static str) -> Integrit
         logical_snapshot_byte_length: None,
         saved_at: None,
         orderable: None,
+        asset_shas: None,
         reason: None,
         blockers: Vec::new(),
     }
