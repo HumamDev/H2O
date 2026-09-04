@@ -300,7 +300,7 @@ function buildDiagStore(config = {}) {
   return store;
 }
 
-function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOptions = {}, extraEntries = [], readDirThrows = false, durableTemp = { complete: true, entries: [] }, durableTempThrows = false } = {}) {
+function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOptions = {}, extraEntries = [], readDirThrows = false, durableTemp = { complete: true, entries: [] }, durableTempThrows = false, trustedEnvelope = null } = {}) {
   const dirs = new Set();
   const files = new Map();
   const readCalls = [];
@@ -371,6 +371,42 @@ function createFixtureFs({ missingRoot = false, liveCasMissing = false, storeOpt
         count: (durableTemp.entries || []).length,
         entries: durableTemp.entries || [],
         blockers: durableTemp.blockers || [],
+      };
+    }
+    /* M10 P3b: `diagnoseSavedChatArchiveV1` is now sourced from trusted Rust, so
+       the harness answers the trusted command. By default every fixture package
+       is reported VERIFIED; a test that needs a different trusted verdict
+       supplies its own `trustedEnvelope`. The legacy list/validate entry points
+       tested elsewhere in this suite are untouched by this branch. */
+    if (cmd === 'h2o_saved_chat_archive_integrity') {
+      if (trustedEnvelope) return trustedEnvelope;
+      const occupants = [...dirs]
+        .filter((dir) => dir.startsWith(`${PACKAGE_ROOT}/`) && dir.endsWith('.h2ochat'))
+        .sort()
+        .map((dir) => {
+          const name = dir.slice(PACKAGE_ROOT.length + 1);
+          /* Read the fixture's OWN manifest identity so DB reconciliation has a
+             truthful identity to reconcile; the trusted verdict itself is still
+             supplied by this harness, not derived from bytes. */
+          let manifest = {};
+          try { manifest = JSON.parse(new TextDecoder().decode(files.get(`${dir}/manifest.json`))); } catch (_) { manifest = {}; }
+          return {
+            path: dir, name, class: 'verified-generation',
+            chatId: String(manifest.chatId || name.replace(/\.h2ochat$/, '')),
+            snapshotId: String(manifest.snapshotId || 'snap'),
+            contentHash: String(manifest.contentHash || 'a'.repeat(64)).replace(/^sha256-/, ''),
+            constructionFamily: manifest.payloadVersion === 2 ? 'v2' : 'v1',
+            snapshotEncoding: 'identity', savedAt: '2026-01-01T00:00:00.000Z',
+            orderable: true,
+            assetShas: (manifest.assets || []).map((a) => a && a.sha256).filter(Boolean),
+            blockers: [],
+          };
+        });
+      return {
+        schema: 'h2o.savedChatArchiveIntegrity', schemaVersion: 1,
+        complete: true, blockers: [],
+        observed: { byConstructionFamily: { v1: 0, v2: occupants.length, v3: 0 } },
+        liveGenerationFamily: 'v3', occupants,
       };
     }
     const p = args && args.path;
@@ -474,6 +510,17 @@ function loadModule(fixture) {
   /* M03 T04: load the REAL governed saved-chat package codec, never a mock, so
    * diagnostics is proven against the one shared gzip/verification authority. */
   vm.runInContext(readRepo(CODEC_REL), sandbox, { filename: CODEC_REL });
+  /* M10 P3b: `diagnoseSavedChatArchiveV1` is now sourced from the trusted
+     chain, so the harness must install it. Loading these does NOT change what
+     the legacy list/validate entry points below do — they are still the
+     original JS verifier, which is exactly what most of this suite tests. */
+  for (const rel of [
+    'src-surfaces-base/studio/ingestion/saved-chat-archive-health-mapping.js',
+    'src-surfaces-base/studio/ingestion/saved-chat-archive-integrity.tauri.js',
+    'src-surfaces-base/studio/ingestion/saved-chat-archive-health-composition.js',
+  ]) {
+    vm.runInContext(readRepo(rel), sandbox, { filename: rel });
+  }
   vm.runInContext(readRepo(MODULE_REL), sandbox, { filename: MODULE_REL });
   return sandbox.H2O.Studio.ingestion;
 }
@@ -1353,21 +1400,48 @@ await checkAsync('corrupt package asset and data:image residue block v2 validati
   assert.ok(result.assetChecks.dataImageResidue.some((issue) => issue.code === 'data-image-residue-v2'));
 });
 
-await checkAsync('aggregate diagnostic returns partial for mixed package health', async () => {
-  const fixture = createFixtureFs();
+/* M10 P3b: the aggregate facade is now sourced from TRUSTED verification, so
+   package validity comes from the trusted envelope rather than from JS
+   re-verification of the fixture bytes. The legacy verifier still exists and is
+   still tested directly above via validateSavedChatPackageV1 — this case now
+   pins what the PRODUCTION FACADE reports. */
+await checkAsync('aggregate diagnostic returns partial for mixed trusted package health', async () => {
+  const mixed = {
+    schema: 'h2o.savedChatArchiveIntegrity', schemaVersion: 1, complete: true, blockers: [],
+    observed: { byConstructionFamily: { v1: 2, v2: 2, v3: 0 } },
+    liveGenerationFamily: 'v3',
+    occupants: [
+      { path: `${PACKAGE_ROOT}/chat_diag_v1.h2ochat`, name: 'chat_diag_v1.h2ochat', class: 'verified-generation', chatId: 'chat_diag_v1', snapshotId: 'snap_diag_v1', contentHash: 'a'.repeat(64), constructionFamily: 'v1', snapshotEncoding: 'identity', savedAt: '2026-01-01T00:00:00.000Z', orderable: true, assetShas: [], blockers: [] },
+      { path: `${PACKAGE_ROOT}/chat_diag_v2.h2ochat`, name: 'chat_diag_v2.h2ochat', class: 'verified-generation', chatId: 'chat_diag_v2', snapshotId: 'snap_diag_v2', contentHash: 'b'.repeat(64), constructionFamily: 'v2', snapshotEncoding: 'identity', savedAt: '2026-01-02T00:00:00.000Z', orderable: true, assetShas: [], blockers: [] },
+      { path: `${PACKAGE_ROOT}/chat_diag_bad.h2ochat`, name: 'chat_diag_bad.h2ochat', class: 'indeterminate', reason: 'corrupt', blockers: [{ code: 'generation-v3-snapshot-messages-invalid' }] },
+      { path: `${PACKAGE_ROOT}/chat_diag_bad_asset.h2ochat`, name: 'chat_diag_bad_asset.h2ochat', class: 'indeterminate', reason: 'corrupt', blockers: [{ code: 'generation-asset-sha-mismatch' }] },
+    ],
+  };
+  const fixture = createFixtureFs({ trustedEnvelope: mixed });
   const ingestion = loadModule(fixture);
-  const result = await ingestion.diagnoseSavedChatArchiveV1({ limit: 20 });
-  assert.equal(result.status, 'partial');
+  const result = await ingestion.diagnoseSavedChatArchiveV1({ limit: 20, includeDbChecks: false });
+
+  assert.equal(result.status, 'partial', 'a trusted mix reads Mixed');
   assert.equal(result.counts.packagesTotal, 4);
   assert.equal(result.counts.packagesOk, 2);
   assert.equal(result.counts.packagesBlocked, 2);
-  assert.equal(result.counts.v1, 2);
-  assert.equal(result.counts.v2, 2);
-  assert.ok(result.counts.brokenPackageAssets >= 2);
-  assert.ok(result.counts.dataImageResidue >= 2);
-  assert.equal(result.counts.assetRefMismatches, 0);
-  assert.ok(result.assetChecks.passed >= 2);
-  assert.ok(result.assetChecks.failed >= 1);
+
+  /* M10 P3 metric correction: the approximate integrity counts are RETIRED and
+     renderer hygiene is DEFERRED. None may reappear as a measured-looking 0. */
+  for (const retired of ['brokenPackageAssets', 'assetRefMismatches', 'dataImageResidue']) {
+    assert.ok(!(retired in result.counts), `${retired} must not be emitted`);
+  }
+  assert.equal(result.rendererHygiene.observed, false, 'hygiene availability is explicit');
+  assert.equal(result.rendererHygiene.deferredTo, 'P3.5');
+
+  /* What replaces them: the trusted rule that actually failed, per package. */
+  const blocked = result.packages.filter((p) => p.status === 'blocked');
+  assert.equal(blocked.length, 2);
+  assert.equal(
+    JSON.stringify(blocked.map((p) => p.blockers[0].code).sort()),
+    JSON.stringify(['generation-asset-sha-mismatch', 'generation-v3-snapshot-messages-invalid']),
+  );
+  assert.ok(blocked[0].blockers[0].message.length > 0, 'each blocker is explained');
   assert.equal(fixture.mutationCalls.length, 0);
 });
 

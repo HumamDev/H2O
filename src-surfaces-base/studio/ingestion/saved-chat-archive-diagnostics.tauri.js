@@ -405,6 +405,65 @@
   var RESIDUE_TEMP_PREFIX = '.h2o-durable-';
   var RESIDUE_TEMP_SUFFIX = '.tmp';
 
+  /* M10 P3b: read-only staging/temp residue evidence, observed independently of
+   * package verification.
+   *
+   * The legacy aggregate collected residue while walking the archive to VERIFY
+   * packages. Verification now lives in trusted Rust, so this walks the same
+   * namespace for residue ALONE: it lists entry names, classifies the two
+   * residue families by prefix, and reads nothing inside any package. It
+   * creates nothing, deletes nothing, and reaches no conclusion about package
+   * validity — exactly the M06 T1.3 contract, minus the verification it used to
+   * ride along with. */
+  async function residueObservationV1() {
+    var carrier = { residue: rootResult().residue };
+    var stagingSource = {
+      root: PACKAGE_ROOT,
+      family: RESIDUE_STAGING_PREFIX + '*',
+      complete: false,
+      entries: [],
+      reason: '',
+    };
+    /* Probed on EVERY path: a result that skipped the probe must never present
+     * itself as complete. */
+    var durableSource = await probeDurableTempResidue();
+    try {
+      var rootExists = await fsExists(PACKAGE_ROOT);
+      if (!rootExists) {
+        /* A missing package root is a PROVEN absence of staging residue. */
+        stagingSource.complete = true;
+        finalizeResidue(carrier, [stagingSource, durableSource]);
+        return carrier.residue;
+      }
+      var entries = asArray(await fsReadDir(PACKAGE_ROOT));
+      for (var i = 0; i < entries.length; i += 1) {
+        var name = entryName(entries[i] || {});
+        if (!name) {
+          stagingSource.reason = 'entry-name-unreadable';
+          continue;
+        }
+        /* BOTH reserved families are captured here, exactly as the legacy walk
+         * did: staging lands as a directory and durable temp as a file, and
+         * either can sit in the package root. Filtering to staging alone would
+         * silently shrink the residue evidence. */
+        var residueKind = residueKindForName(name);
+        if (residueKind) {
+          stagingSource.entries.push({
+            path: entryPath(entries[i] || {}, name),
+            name: name,
+            kind: residueKind,
+          });
+        }
+      }
+      stagingSource.complete = !stagingSource.reason;
+    } catch (err) {
+      stagingSource.complete = false;
+      stagingSource.reason = String((err && err.message) || err) || 'staging-scan-failed';
+    }
+    finalizeResidue(carrier, [stagingSource, durableSource]);
+    return carrier.residue;
+  }
+
   function residueKindForName(name) {
     var text = cleanString(name);
     if (!text) return '';
@@ -1734,28 +1793,153 @@
     }
   }
 
-  async function diagnoseSavedChatArchiveV1(options) {
-    var list = await listSavedChatArchivePackagesV1(options);
-    var opts = safeObject(options);
-    var result = rootResult(list.generatedAt);
-    result.blockers = list.blockers.slice();
-    result.warnings = list.warnings.slice();
-    /* rootResult() starts with an EMPTY residue block; without carrying the
-     * inventory's findings the aggregate would report an authoritative zero it
-     * never established. Completeness carries with it. */
-    result.residue = list.residue;
-    result.complete = list.complete;
-    result.truncated = list.truncated;
-    for (var i = 0; i < list.packages.length; i += 1) {
-      result.packages.push(await validateSavedChatPackageV1({
-        packagePath: list.packages[i].packagePath,
-        includeCasChecks: opts.includeCasChecks,
-        includeRendererChecks: opts.includeRendererChecks,
-        includeDbChecks: opts.includeDbChecks,
-      }));
+  /* M10 P3b: the six P2 operator states, expressed in the legacy status
+   * vocabulary the unchanged Health formatter already consumes. No new status
+   * key is introduced. `partial-scan` carries `complete:false`, and the
+   * formatter's FIRST branch turns that into "Partial scan" whatever the
+   * status says. */
+  var LEGACY_STATUS_BY_AGGREGATE = {
+    'healthy': STATUS_OK,
+    'healthy-with-drift': STATUS_WARNING,
+    'mixed': STATUS_PARTIAL,
+    'integrity-problems': STATUS_BLOCKED,
+    'empty': STATUS_EMPTY,
+  };
+
+  /* Projects ONE trusted presentation row into the legacy package shape real
+   * consumers still read. Every identity fact comes from trusted Rust; status,
+   * blockers and the deprecated compatibility names come from P2; warnings and
+   * dbChecks come from the separate observations. Nothing is verified here. */
+  function trustedRowToPackageDiagnostic(row, dbChecks) {
+    var diag = packageDiagnostic(row.packagePath);
+    diag.status = row.status;
+    diag.ok = row.status === STATUS_OK;
+    diag.nameClassification = row.nameClassification;
+    diag.chatId = cleanString(row.chatId);
+    diag.snapshotId = cleanString(row.snapshotId);
+    diag.savedAt = cleanString(row.savedAt);
+    diag.schemaVersion = row.schemaVersion;
+    /* Blockers are the trusted verifier's own rule codes, humanized by P2. */
+    diag.blockers = asArray(row.blockerExplanations).map(function (entry) {
+      return makeIssue(entry.code, entry.text);
+    });
+    diag.warnings = asArray(row.warnings).map(function (text) {
+      return makeIssue('package-drift', text);
+    });
+    /* The RECOMPUTED trusted contentHash. Kept on hashChecks for the existing
+     * consumer that reads `expectedContentHash`; nothing is derived here. */
+    var contentHash = cleanString(row.contentHash);
+    diag.hashChecks.expectedContentHash = contentHash;
+    diag.hashChecks.actualContentHash = contentHash;
+    diag.hashChecks.contentHashOk = !!contentHash;
+    if (isObject(dbChecks)) diag.dbChecks = dbChecks;
+    /* The legacy asset/renderer buckets are NOT observed on the trusted path.
+     * They are removed rather than left at their zero defaults so the UI can
+     * tell "not measured" from "measured none". */
+    delete diag.assetChecks.dataImageResidue;
+    delete diag.assetChecks.assetRefMismatches;
+    delete diag.assetChecks.rendererAssetRefMismatches;
+    return diag;
+  }
+
+  /* M10 P3b — the production Archive Health facade, now sourced EXCLUSIVELY
+   * from the trusted Rust integrity authority.
+   *
+   * There is deliberately NO runtime fallback: if the trusted read, the
+   * trusted contract, or the presentation mapper fails, this rejects and the
+   * Health UI's existing error lifecycle takes over. It never reaches for the
+   * weaker JS verifier, and it never reports Healthy from legacy validation.
+   * Operational rollback is reverting this commit, not a hidden second
+   * authority.
+   *
+   * Coverage and the package Inspector still use the legacy exports; migrating
+   * them is P3.5, and duplicate integrity code is retired only in P4. */
+  function composeTrustedArchiveHealth() {
+    var compose = H2O.Studio.ingestion.composeSavedChatArchiveHealthV1;
+    if (typeof compose !== 'function') {
+      throw new Error('[archive-health] the trusted composition is unavailable');
     }
+    return compose;
+  }
+
+  async function diagnoseSavedChatArchiveV1(options) {
+    var opts = safeObject(options);
+    var composed = await composeTrustedArchiveHealth()({
+      includeCasChecks: opts.includeCasChecks,
+      includeRendererChecks: opts.includeRendererChecks,
+      includeDbChecks: opts.includeDbChecks,
+    });
+    var model = composed.model;
+
+    var result = rootResult();
+    result.complete = model.complete;
+    result.truncated = false;
+    /* Residue is a SEPARATE read-only observation (M06 T1.3), not a package
+     * verdict. It used to ride along with legacy enumeration; it is now
+     * observed on its own so the aggregate still carries the evidence rather
+     * than reporting an authoritative zero it never established. */
+    result.residue = await residueObservationV1();
+    /* Archive-level ENUMERATION blockers, distinct from per-package
+     * verification blockers, exactly as the trusted envelope separates them. */
+    result.blockers = asArray(composed.integrity && composed.integrity.blockers).map(function (code) {
+      return makeIssue(cleanString(code), 'archive enumeration blocker');
+    });
+    result.warnings = asArray(model.archiveWarnings).map(function (text) {
+      return makeIssue('archive-drift', text);
+    });
+
+    asArray(model.packageRows).forEach(function (row) {
+      result.packages.push(
+        trustedRowToPackageDiagnostic(row, composed.dbChecksByPath[row.packagePath]),
+      );
+    });
+
+    updateCounts(result);
+    /* M10 P3 metric correction. `updateCounts` is the SHARED legacy summariser,
+     * so it still seeds these three keys from the legacy asset/renderer buckets
+     * — buckets the trusted path deliberately does not populate. Emitting them
+     * would publish a measured-looking zero for something this path never
+     * measured, so the trusted result carries them not at all:
+     *
+     *   brokenPackageAssets  RETIRED. Canonical verification is fail-fast, so an
+     *                        exact multi-error asset total does not exist. The
+     *                        per-package trusted blocker explanations are the
+     *                        authoritative account of what actually failed.
+     *   assetRefMismatches   RETIRED. It conflated canonical package-integrity
+     *                        mismatches with renderer-hygiene observations; the
+     *                        integrity half is now a trusted blocker code.
+     *   dataImageResidue     DEFERRED to P3.5. Renderer hygiene is a separate
+     *                        observation this phase does not perform. Absent is
+     *                        NOT zero, and it contributes no blocker, no warning
+     *                        and no aggregate-state effect.
+     */
+    delete result.counts.brokenPackageAssets;
+    delete result.counts.assetRefMismatches;
+    delete result.counts.dataImageResidue;
+    /* Renderer hygiene availability, stated explicitly rather than implied by a
+     * missing key. It is informational only and never a severity input. */
+    result.rendererHygiene = { observed: false, deferredTo: 'P3.5' };
+
+    var status = LEGACY_STATUS_BY_AGGREGATE[model.aggregateState];
+    if (!status) {
+      /* partial-scan. `complete:false` already drives the formatter's first
+       * branch; the status still describes what WAS observed, derived by the
+       * same mapper rather than by a second rule here. */
+      var observed = model.observed;
+      status = LEGACY_STATUS_BY_AGGREGATE[
+        H2O.Studio.archiveHealthMapping.selectAggregateState({
+          complete: true,
+          packagesTotal: observed.packagesTotal,
+          packagesBlocked: observed.packagesBlocked,
+          packagesWarning: observed.packagesWarning,
+          archiveWarnings: asArray(model.archiveWarnings).length,
+        })
+      ] || STATUS_OK;
+    }
+    result.status = status;
+    result.ok = status === STATUS_OK;
     state.lastRunAt = result.generatedAt;
-    return setAggregateStatus(result, true);
+    return result;
   }
 
   /* M08 read-only byte-source adapter. The portable container has already

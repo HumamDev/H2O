@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
+const ING = 'src-surfaces-base/studio/ingestion/';
 const MAPPER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-health-mapping.js';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
@@ -377,21 +378,22 @@ check('the mapper implements no verification, hash, filesystem or invoke authori
   assert.ok(!/\bvar\s+cache\b|\blet\s+cache\b/.test(source), 'no cache');
 });
 
-check('P2 is packaged but NOT wired into any production caller', () => {
+check('the mapper is packaged and, since P3b, consumed through the trusted chain', () => {
   const pack = readRepo(PACK_REL);
   const entries = [...pack.matchAll(/"ingestion\/saved-chat-archive-health-mapping\.js"/g)];
   assert.equal(entries.length, 2, 'exactly the source/output manifest pair');
-  // No production consumer references it yet — that is P3's decision.
-  for (const rel of [HEALTH_UI_REL, DIAGNOSTICS_REL, STUDIO_JS_REL]) {
-    assert.ok(
-      !readRepo(rel).includes('archiveHealthMapping'),
-      `${rel} must not consume the mapper in P2`,
-    );
-  }
-  // And the current JS verifier is still the Health authority.
+  /* M10 P3b: the mapper reached production through the COMPOSITION, which is
+     the only intended consumer. The Health UI is deliberately unchanged in its
+     wiring — it still calls the same facade, which is now trusted-sourced. */
+  const composition = readRepo(`${ING}saved-chat-archive-health-composition.js`);
+  assert.ok(composition.includes('mapArchiveHealth'), 'the composition consumes the mapper');
+  assert.ok(
+    !readRepo(HEALTH_UI_REL).includes('archiveHealthMapping'),
+    'the Health UI still consumes the facade, not the mapper directly',
+  );
   assert.ok(
     readRepo(HEALTH_UI_REL).includes('diagnoseSavedChatArchiveV1'),
-    'production Health still calls the existing diagnostics API',
+    'production Health still calls the same facade entry point',
   );
 });
 

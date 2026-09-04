@@ -21,6 +21,7 @@ const MAPPER_REL = `${ING}saved-chat-archive-health-mapping.js`;
 const DIAGNOSTICS_REL = `${ING}saved-chat-archive-diagnostics.tauri.js`;
 const COVERAGE_REL = `${ING}saved-chat-coverage.tauri.js`;
 const INSPECTOR_REL = `${ING}saved-chat-archive-inspector.studio.js`;
+const PACK_REL = 'tools/product/studio/pack-studio.mjs';
 const HEALTH_UI_REL = `${ING}archive-health-ui.studio.js`;
 
 const readRepo = (rel) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
@@ -249,24 +250,75 @@ check('assetShas is a trusted projection, present only where canonical', () => {
 
 /* ---------------- D. P3a remains unwired ---------------- */
 
-check('P3a is UNWIRED: production Health still runs the legacy path', () => {
+check('P3b: the facade is WIRED to the trusted chain, and only to it', () => {
   const diagnostics = readRepo(DIAGNOSTICS_REL);
   assert.ok(
-    !diagnostics.includes('composeSavedChatArchiveHealthV1'),
-    'the facade must not consume the composition in P3a',
+    diagnostics.includes('composeSavedChatArchiveHealthV1'),
+    'the facade consumes the composition',
   );
-  assert.ok(
-    !diagnostics.includes('readSavedChatArchiveIntegrityV1'),
-    'the facade must not consume the trusted client in P3a',
-  );
+  /* The Health UI itself is deliberately NOT repointed: it still calls the same
+     facade entry point, which is what keeps the switch reversible by revert. */
   const healthUi = readRepo(HEALTH_UI_REL);
-  assert.ok(healthUi.includes('diagnoseSavedChatArchiveV1'), 'Health still calls the existing facade');
-  assert.ok(!healthUi.includes('composeSavedChatArchiveHealthV1'), 'Health is not repointed in P3a');
+  assert.ok(healthUi.includes('diagnoseSavedChatArchiveV1'), 'Health still calls the same facade');
+  assert.ok(!healthUi.includes('composeSavedChatArchiveHealthV1'), 'Health is not rewired around the facade');
   // Coverage and Inspector are untouched and remain on the legacy exports.
   for (const rel of [COVERAGE_REL, INSPECTOR_REL]) {
     const src = readRepo(rel);
     assert.ok(src.includes('validateSavedChatPackageV1'), `${rel} still uses the legacy validator`);
     assert.ok(!src.includes('readSavedChatArchiveIntegrityV1'), `${rel} must not be migrated in P3`);
+  }
+});
+
+/* M10 P3.4B: packing a module is not loading it. The Desktop frontend executes
+   studio.html, so the trusted chain must be declared there in dependency order —
+   otherwise `composeSavedChatArchiveHealthV1` never registers and the trusted
+   facade fails at runtime with "the trusted composition is unavailable". */
+check('studio.html loads the trusted chain in strict dependency order', () => {
+  const html = readRepo('src-surfaces-base/studio/studio.html');
+  const ORDER = [
+    'saved-chat-archive-integrity.tauri.js',
+    'saved-chat-archive-health-mapping.js',
+    'saved-chat-archive-health-composition.js',
+    'saved-chat-archive-diagnostics.tauri.js',
+    'archive-health-ui.studio.js',
+  ];
+  const positions = ORDER.map((file) => {
+    const tag = `<script src="./ingestion/${file}"></script>`;
+    const occurrences = html.split(tag).length - 1;
+    assert.equal(occurrences, 1, `${file} must be declared exactly once`);
+    return { file, at: html.indexOf(tag) };
+  });
+  for (let i = 1; i < positions.length; i += 1) {
+    assert.ok(
+      positions[i - 1].at < positions[i].at,
+      `${positions[i - 1].file} must load before ${positions[i].file}`,
+    );
+  }
+  /* No loader system, no dynamic import — plain ordered script tags only. */
+  for (const forbidden of ['import(', 'System.import', 'requirejs', 'defer', 'async src']) {
+    for (const { file } of positions) {
+      const line = html.split('\n').find((l) => l.includes(`ingestion/${file}"`)) || '';
+      assert.ok(!line.includes(forbidden), `${file} must be a plain ordered script tag`);
+    }
+  }
+  /* Each one is also in the pack manifest, so the tag resolves in the bundle. */
+  const pack = readRepo(PACK_REL);
+  for (const { file } of positions) {
+    assert.ok(pack.includes(`"ingestion/${file}"`), `${file} must be packed`);
+  }
+  /* And the facade resolves the composition lazily, AFTER registration. */
+  const diagnostics = readRepo(DIAGNOSTICS_REL);
+  assert.ok(
+    diagnostics.includes('H2O.Studio.ingestion.composeSavedChatArchiveHealthV1'),
+    'the facade resolves the composition from the namespace at call time',
+  );
+  /* The legacy validator still EXISTS in this module for coverage/Inspector
+     (P3.5 owns their migration), so scope the no-fallback check to the facade
+     body itself. */
+  const facade = diagnostics.slice(diagnostics.indexOf('async function diagnoseSavedChatArchiveV1'));
+  const body = facade.slice(0, facade.indexOf('\n  }\n') + 4);
+  for (const forbidden of ['validateSavedChatPackageV1', 'listSavedChatArchivePackagesV1', 'try {']) {
+    assert.ok(!body.includes(forbidden), `the facade body must not contain \`${forbidden}\``);
   }
 });
 

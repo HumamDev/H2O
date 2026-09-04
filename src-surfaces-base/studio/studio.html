@@ -684,10 +684,25 @@
        writer would submit without writing anything. Loads after the codec,
        asset-cas and materializer it borrows. -->
   <script src="./ingestion/saved-chat-projection-probe.tauri.js"></script>
+  <!-- Desktop-only: M10 P1 trusted archive-integrity client. Thin bridge to the
+       Rust command h2o_saved_chat_archive_integrity; no verification, hashing,
+       parsing, filesystem or mutation authority of its own. -->
+  <script src="./ingestion/saved-chat-archive-integrity.tauri.js"></script>
+  <!-- M10 P2 pure presentation mapping: trusted facts + separate drift facts ->
+       the six existing operator states. No verification, no filesystem, no
+       invoke, no state. -->
+  <script src="./ingestion/saved-chat-archive-health-mapping.js"></script>
+  <!-- M10 P3a trusted composition. Joins the trusted client with the existing
+       separate DB/CAS/renderer observations and the P2 mapper. MUST load after
+       BOTH of the above (it resolves readSavedChatArchiveIntegrityV1 and
+       archiveHealthMapping) and BEFORE the diagnostics facade below, which
+       resolves composeSavedChatArchiveHealthV1. -->
+  <script src="./ingestion/saved-chat-archive-health-composition.js"></script>
   <!-- Desktop-only: saved-chat archive diagnostics (Phase C C5.1/C5.2).
        Read-only package inventory + manifest/snapshot/hash validation under
        $APPLOCALDATA/archive/packages. No DB/CAS reconciliation, no repair,
-       no import/recovery, no sync, no UI. -->
+       no import/recovery, no sync, no UI. M10 P3b: the archive-health facade
+       here is now sourced from the trusted chain loaded immediately above. -->
   <script src="./ingestion/saved-chat-archive-diagnostics.tauri.js"></script>
   <!-- Desktop-only: M05 Phase 2.2 per-chat coverage/freshness engine. Stateless;
        composes archive discovery + governed package validation + the current
