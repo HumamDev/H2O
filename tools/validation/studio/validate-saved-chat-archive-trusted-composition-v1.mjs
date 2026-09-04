@@ -261,11 +261,13 @@ check('P3b: the facade is WIRED to the trusted chain, and only to it', () => {
   const healthUi = readRepo(HEALTH_UI_REL);
   assert.ok(healthUi.includes('diagnoseSavedChatArchiveV1'), 'Health still calls the same facade');
   assert.ok(!healthUi.includes('composeSavedChatArchiveHealthV1'), 'Health is not rewired around the facade');
-  // Coverage and Inspector are untouched and remain on the legacy exports.
+  /* M10 P3.5a: Coverage and the Inspector are now trusted as well, reading the
+     envelope directly instead of through this facade. */
   for (const rel of [COVERAGE_REL, INSPECTOR_REL]) {
     const src = readRepo(rel);
-    assert.ok(src.includes('validateSavedChatPackageV1'), `${rel} still uses the legacy validator`);
-    assert.ok(!src.includes('readSavedChatArchiveIntegrityV1'), `${rel} must not be migrated in P3`);
+    assert.ok(src.includes('readSavedChatArchiveIntegrityV1'), `${rel} reads trusted integrity`);
+    assert.ok(!src.includes('validateSavedChatPackageV1'), `${rel} no longer uses the legacy validator`);
+    assert.ok(!src.includes('composeSavedChatArchiveHealthV1'), `${rel} must not route through the Health facade`);
   }
 });
 

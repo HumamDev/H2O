@@ -329,12 +329,16 @@ check('§35 the production Health path contains no dual-authority pattern', () =
   }
 });
 
-check('§26 coverage and the package Inspector are untouched and still legacy', () => {
+/* M10 P3.5a superseded this: Coverage and the Inspector are now trusted too.
+   They still read the trusted envelope DIRECTLY rather than through the Health
+   facade, which is what keeps Health's aggregation out of their answers. */
+check('P3.5a: coverage and the Inspector are trusted, and bypass the Health facade', () => {
   for (const rel of [`${ING}saved-chat-coverage.tauri.js`, `${ING}saved-chat-archive-inspector.studio.js`]) {
     const src = readRepo(rel);
-    assert.ok(src.includes('validateSavedChatPackageV1'), `${rel} still uses the legacy validator`);
-    assert.ok(!src.includes('readSavedChatArchiveIntegrityV1'), `${rel} is NOT migrated in P3`);
-    assert.ok(!src.includes('composeSavedChatArchiveHealthV1'), `${rel} is NOT migrated in P3`);
+    assert.ok(src.includes('readSavedChatArchiveIntegrityV1'), `${rel} reads trusted integrity`);
+    assert.ok(!src.includes('validateSavedChatPackageV1'), `${rel} no longer uses the legacy validator`);
+    assert.ok(!src.includes('composeSavedChatArchiveHealthV1'), `${rel} must not route through the Health facade`);
+    assert.ok(!src.includes('diagnoseSavedChatArchiveV1'), `${rel} must not route through the Health facade`);
   }
 });
 
