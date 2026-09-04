@@ -4,7 +4,7 @@ Status: Normative / M07 COMPLETE / ACCEPTED; G2 passed 2026-09-01
 
 Date: 2026-08-31
 
-Lane: 🗃️ L-SAVED-CHAT-STORAGE — Saved Chat Storage Architecture & Optimization
+Lane: 🗃️ L-STORAGE-SAVED-CHATS — Saved Chats Storage
 
 Mission: M07 — Storage ↔ Transport Object Handoff
 

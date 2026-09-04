@@ -4,7 +4,7 @@ Status: Normative / M08 COMPLETE / ACCEPTED; P0–P3 COMPLETE; G0/G1/G2 PASS; G2
 
 Date: 2026-09-01
 
-Lane: 🗃️ L-SAVED-CHAT-STORAGE — Saved Chat Storage Architecture & Optimization
+Lane: 🗃️ L-STORAGE-SAVED-CHATS — Saved Chats Storage
 
 Mission: M08 — Portable Saved-Chat ZIP Round Trip
 

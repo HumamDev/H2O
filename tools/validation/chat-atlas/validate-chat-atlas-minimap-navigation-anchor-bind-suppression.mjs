@@ -1,6 +1,6 @@
 // @version 1.0.0
 //
-// L-INTERNAL-CHAT performance regression: complete-index mounted-anchor binding
+// L-EXTENSION-INTERNAL-CHAT performance regression: complete-index mounted-anchor binding
 // must not run on every active-sync frame while the MiniMap owns a programmatic
 // navigation.
 //

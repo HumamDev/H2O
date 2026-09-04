@@ -4,7 +4,7 @@ Status: Normative / M02 T01 contract freeze
 
 Date: 2026-08-24
 
-Lane: 🗃️ L-SAVED-CHAT-STORAGE — Saved Chat Storage Architecture & Optimization
+Lane: 🗃️ L-STORAGE-SAVED-CHATS — Saved Chats Storage
 
 Mission: M02 — Establish Non-Redundant, Encoding-Capable `.h2ochat` v3
 

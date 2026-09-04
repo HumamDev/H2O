@@ -4,7 +4,7 @@ Status: Normative / M05 T1.1.1 contract freeze
 
 Date: 2026-08-26
 
-Lane: 🗃️ L-SAVED-CHAT-STORAGE — Saved Chat Storage Architecture & Optimization
+Lane: 🗃️ L-STORAGE-SAVED-CHATS — Saved Chats Storage
 
 Mission: M05 — Establish Immutable Saved-Chat Archive Generations, Freshness &
 Coverage

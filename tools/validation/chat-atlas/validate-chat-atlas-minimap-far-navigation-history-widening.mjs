@@ -1,6 +1,6 @@
 // @version 1.0.0
 //
-// L-INTERNAL-CHAT far-navigation contract: MiniMap reaches a distant native
+// L-EXTENSION-INTERNAL-CHAT far-navigation contract: MiniMap reaches a distant native
 // turn by repeating ChatGPT's own history reveal while a navigation-scoped
 // fetch hook widens only `num_turns` on the host's next matching request.
 //

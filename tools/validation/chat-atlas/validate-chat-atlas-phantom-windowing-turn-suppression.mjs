@@ -1,6 +1,6 @@
 // @version 1.0.0
 //
-// L-INTERNAL-CHAT regression: a mounted answer whose turn is already committed
+// L-EXTENSION-INTERNAL-CHAT regression: a mounted answer whose turn is already committed
 // must not be published as a second logical turn.
 //
 // Windowing can mount an answer whose question shell sits behind a gap. The

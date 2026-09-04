@@ -5,7 +5,7 @@ Status: Normative / M06 Phase P0 contract freeze — **M06 is COMPLETE / ACCEPTE
 
 Date: 2026-08-28
 
-Lane: 🗃️ L-SAVED-CHAT-STORAGE — Saved Chat Storage Architecture & Optimization
+Lane: 🗃️ L-STORAGE-SAVED-CHATS — Saved Chats Storage
 
 Mission: M06 — Reclamation / GC
 
