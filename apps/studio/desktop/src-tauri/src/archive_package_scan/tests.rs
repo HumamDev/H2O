@@ -313,7 +313,7 @@ fn a_name_that_disagrees_with_the_proven_identity_is_never_verified() {
     let scan = scan_packages_within(&root);
     assert!(scan.complete);
     match &find(&scan, &format!("chat_x.g{lying_hash}.h2ochat")).class {
-        OccupantClass::Indeterminate { reason } => {
+        OccupantClass::Indeterminate { reason, .. } => {
             assert_eq!(*reason, IndeterminateReason::IdentityMismatch)
         }
         other => panic!("a lying filename must not verify, got {other:?}"),
@@ -324,7 +324,7 @@ fn a_name_that_disagrees_with_the_proven_identity_is_never_verified() {
     std::fs::rename(&lying, &wrong_chat).expect("rename fixture");
     let scan = scan_packages_within(&root);
     match &find(&scan, &format!("chat_other.g{hash}.h2ochat")).class {
-        OccupantClass::Indeterminate { reason } => {
+        OccupantClass::Indeterminate { reason, .. } => {
             assert_eq!(*reason, IndeterminateReason::IdentityMismatch)
         }
         other => panic!("a lying chatId must not verify, got {other:?}"),
@@ -425,7 +425,7 @@ fn damaged_foreign_and_symlinked_occupants_remain_visible_evidence() {
     assert!(scan.complete, "{:?}", scan.blockers);
 
     let reason_of = |name: &str| match &find(&scan, name).class {
-        OccupantClass::Indeterminate { reason } => reason.clone(),
+        OccupantClass::Indeterminate { reason, .. } => reason.clone(),
         other => panic!("{name}: expected indeterminate, got {other:?}"),
     };
     assert_eq!(
@@ -666,7 +666,7 @@ fn an_untrusted_manifest_cannot_yield_an_empty_reference_set() {
     let scan = scan_packages_within(&root);
     let occupant = find(&scan, &format!("chat_cas.g{hash}.h2ochat"));
     match &occupant.class {
-        OccupantClass::Indeterminate { reason } => {
+        OccupantClass::Indeterminate { reason, .. } => {
             assert_eq!(*reason, IndeterminateReason::Corrupt)
         }
         other => panic!("an unreadable manifest must not verify, got {other:?}"),
@@ -859,7 +859,7 @@ fn scanner_refuses_v3_renderer_members_malformed_gzip_and_false_logical_descript
         let scan = scan_packages_within(&root);
         assert!(scan.complete, "{:?}", scan.blockers);
         match &find(&scan, &name).class {
-            OccupantClass::Indeterminate { reason } => assert!(matches!(
+            OccupantClass::Indeterminate { reason, .. } => assert!(matches!(
                 reason,
                 IndeterminateReason::Corrupt | IndeterminateReason::Partial
             )),
@@ -892,7 +892,7 @@ fn scanner_refuses_missing_and_corrupt_v3_assets() {
         }
         let scan = scan_packages_within(&root);
         match &find(&scan, &name).class {
-            OccupantClass::Indeterminate { reason } => assert!(matches!(
+            OccupantClass::Indeterminate { reason, .. } => assert!(matches!(
                 reason,
                 IndeterminateReason::Corrupt | IndeterminateReason::Partial
             )),
@@ -971,7 +971,7 @@ fn scanner_refuses_v3_descriptor_version_identity_and_member_substitution() {
         install_direct(&root, &name, &package);
         let scan = scan_packages_within(&root);
         match &find(&scan, &name).class {
-            OccupantClass::Indeterminate { reason } => {
+            OccupantClass::Indeterminate { reason, .. } => {
                 assert_eq!(*reason, IndeterminateReason::Corrupt)
             }
             other => panic!("{tag}: invalid v3 must not verify: {other:?}"),
@@ -993,7 +993,8 @@ fn scanner_refuses_v3_descriptor_version_identity_and_member_substitution() {
     assert!(matches!(
         find(&scan, &name).class,
         OccupantClass::Indeterminate {
-            reason: IndeterminateReason::Corrupt
+            reason: IndeterminateReason::Corrupt,
+            ..
         }
     ));
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
@@ -1013,8 +1014,135 @@ fn scanner_refuses_v3_descriptor_version_identity_and_member_substitution() {
     assert!(matches!(
         find(&scan, &name).class,
         OccupantClass::Indeterminate {
-            reason: IndeterminateReason::Partial
+            reason: IndeterminateReason::Partial,
+            ..
         }
     ));
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// M10 P1 §21A — the canonical verifier's refusal code survives VERBATIM from
+/// `verify_occupant_all_supported` into the scanner's classification, and every
+/// scanner-owned classification carries no fabricated blocker.
+///
+/// The expected code is taken from the VERIFIER ITSELF for the same occupant
+/// rather than hard-coded, so this proves survival of whatever the canonical
+/// authority currently says instead of pinning a string that could drift.
+#[test]
+fn the_canonical_verifier_blocker_survives_into_the_classification() {
+    let root = scratch("blocker-seam");
+    let dir = packages_dir(&root);
+
+    // Corrupt: snapshot bytes altered after publication.
+    let corrupt_hash = publish_v1(&root, "chat_corr", "2026-08-10T00:00:00.000Z");
+    let corrupt = format!("chat_corr.g{corrupt_hash}.h2ochat");
+    std::fs::write(
+        dir.join(&corrupt).join("snapshot.json"),
+        b"{\"tampered\":true}",
+    )
+    .expect("corrupt");
+
+    // Partial: a required member removed.
+    let partial_hash = publish_v1(&root, "chat_part", "2026-08-09T00:00:00.000Z");
+    let partial = format!("chat_part.g{partial_hash}.h2ochat");
+    std::fs::remove_file(dir.join(&partial).join("chat.md")).expect("make partial");
+
+    // Unreadable: a symlink standing where a package should be.
+    let good = publish_v1(&root, "chat_ok", "2026-08-08T00:00:00.000Z");
+    let link = format!("chat_link.g{}.h2ochat", "b".repeat(64));
+    std::os::unix::fs::symlink(
+        dir.join(format!("chat_ok.g{good}.h2ochat")),
+        dir.join(&link),
+    )
+    .expect("symlink");
+
+    // Scanner-owned: never a package name, so the verifier is never reached.
+    std::fs::write(dir.join("notes.txt"), b"stray").expect("stray");
+
+    let scan = scan_packages_within(&root);
+    assert!(scan.complete, "{:?}", scan.blockers);
+
+    let packages = confined::Dir::open_existing_nofollow(&dir).expect("packages dir");
+    let canonical_code = |name: &str| -> &'static str {
+        match verify_occupant_all_supported(&packages, name.as_bytes()) {
+            Err((_, code)) => code,
+            Ok(_) => panic!("{name} must not verify"),
+        }
+    };
+    let captured = |name: &str| -> Option<&'static str> {
+        match &find(&scan, name).class {
+            OccupantClass::Indeterminate {
+                verifier_blocker, ..
+            } => *verifier_blocker,
+            other => panic!("{name}: expected indeterminate, got {other:?}"),
+        }
+    };
+
+    for name in [&corrupt, &partial, &link] {
+        let expected = canonical_code(name);
+        assert!(!expected.is_empty(), "{name}: verifier code must be real");
+        assert_eq!(
+            captured(name),
+            Some(expected),
+            "{name}: the scanner must carry the verifier's own code verbatim"
+        );
+    }
+
+    // Corrupt is the reason the contract names explicitly.
+    assert!(matches!(
+        &find(&scan, &corrupt).class,
+        OccupantClass::Indeterminate {
+            reason: IndeterminateReason::Corrupt,
+            verifier_blocker: Some(_)
+        }
+    ));
+
+    // Scanner-owned `None` means "no canonical verifier blocker exists"; no
+    // placeholder string is ever invented for it.
+    assert!(matches!(
+        &find(&scan, "notes.txt").class,
+        OccupantClass::Indeterminate {
+            reason: IndeterminateReason::NotAPackageName,
+            verifier_blocker: None
+        }
+    ));
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// M10 P1 §8 — a name-vs-proven-identity mismatch is SCANNER-owned: the
+/// verifier accepted the occupant, so it produced no blocker and none may be
+/// fabricated to fill the field.
+#[test]
+fn a_scanner_owned_identity_mismatch_carries_no_verifier_blocker() {
+    let root = scratch("mismatch-blocker");
+    let hash = publish_v1(&root, "chat_x", "2026-06-06T00:00:00.000Z");
+    let dir = packages_dir(&root);
+    let lying_hash = "0".repeat(64);
+    std::fs::rename(
+        dir.join(format!("chat_x.g{hash}.h2ochat")),
+        dir.join(format!("chat_x.g{lying_hash}.h2ochat")),
+    )
+    .expect("rename fixture");
+
+    let scan = scan_packages_within(&root);
+    assert!(scan.complete);
+    let name = format!("chat_x.g{lying_hash}.h2ochat");
+
+    // The verifier itself still ACCEPTS these bytes — the refusal is the
+    // scanner's identity rule, which owns no code.
+    let packages = confined::Dir::open_existing_nofollow(&dir).expect("packages dir");
+    assert!(
+        verify_occupant_all_supported(&packages, name.as_bytes()).is_ok(),
+        "the verifier accepts the bytes; only the NAME lies"
+    );
+    assert!(matches!(
+        &find(&scan, &name).class,
+        OccupantClass::Indeterminate {
+            reason: IndeterminateReason::IdentityMismatch,
+            verifier_blocker: None
+        }
+    ));
+
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

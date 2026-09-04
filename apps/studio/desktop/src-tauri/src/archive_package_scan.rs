@@ -183,7 +183,20 @@ pub enum OccupantClass {
     /// accounting stays with T1.3.
     ReservedInfrastructure,
     /// Present, visible, and not safely classifiable.
-    Indeterminate { reason: IndeterminateReason },
+    ///
+    /// `verifier_blocker` carries the canonical publisher-verifier refusal code
+    /// VERBATIM when this classification originated from that trusted verifier,
+    /// and `None` when the classification is scanner-owned so no verifier
+    /// blocker exists (a non-package name, or a refusal this scanner makes
+    /// before or after the verifier). It is DIAGNOSTIC EVIDENCE ONLY: no
+    /// retention, exclusion, protection, reclamation, delete, quarantine or
+    /// recovery decision may read it, and `reason` remains the sole
+    /// classification authority. Carrying the code here rather than re-deriving
+    /// it keeps one verifier, not two.
+    Indeterminate {
+        reason: IndeterminateReason,
+        verifier_blocker: Option<&'static str>,
+    },
 }
 
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
@@ -287,17 +300,27 @@ fn indeterminate_for(outcome: Outcome) -> IndeterminateReason {
 }
 
 /// Verifies one occupant and turns the publisher's proof into trusted facts.
+/// The classification a failed occupant carries: the broad reason, plus the
+/// canonical verifier code when the trusted verifier is what refused it.
+///
+/// `None` is not "unknown" — it means no canonical verifier blocker exists for
+/// this scanner-owned classification. No placeholder string is ever invented.
+type IndeterminateFacts = (IndeterminateReason, Option<&'static str>);
+
 fn verified_package(
     packages: &confined::Dir,
     name: &str,
-) -> Result<VerifiedPackage, IndeterminateReason> {
+) -> Result<VerifiedPackage, IndeterminateFacts> {
+    // The canonical `&'static str` the publisher's verifier already produced
+    // survives here VERBATIM. Verification is not re-run and no second blocker
+    // is inferred; only the existing discard is narrowed.
     let verified = verify_occupant_all_supported(packages, name.as_bytes())
-        .map_err(|(outcome, _)| indeterminate_for(outcome))?;
+        .map_err(|(outcome, code)| (indeterminate_for(outcome), Some(code)))?;
 
     // The publisher derives `sha256-<hex>`; normalize through the existing
     // helper rather than restating the shape here.
     let content_hash = crate::archive_durable_write::normalize_expected_sha(&verified.content_hash)
-        .ok_or(IndeterminateReason::Corrupt)?;
+        .ok_or((IndeterminateReason::Corrupt, None))?;
 
     // Ordering is T1.5's decision, from the verified in-content savedAt.
     // For gzip v3 this value came from the shared verifier's bounded, hashed,
@@ -324,7 +347,7 @@ fn verified_package(
     // A declared asset whose sha is unusable would silently shrink the
     // reference set, so refuse the package rather than under-report it.
     if asset_shas.len() != verified.asset_shas.len() {
-        return Err(IndeterminateReason::Corrupt);
+        return Err((IndeterminateReason::Corrupt, None));
     }
     asset_shas.sort();
     asset_shas.dedup();
@@ -354,12 +377,17 @@ fn verified_package(
 fn classify_one(packages: &confined::Dir, name: &str) -> OccupantClass {
     match name_shape(name) {
         NameShape::Reserved => OccupantClass::ReservedInfrastructure,
+        // Scanner-owned: never reached the verifier, so no verifier blocker.
         NameShape::NotAPackage => OccupantClass::Indeterminate {
             reason: IndeterminateReason::NotAPackageName,
+            verifier_blocker: None,
         },
         NameShape::Legacy { .. } => match verified_package(packages, name) {
             Ok(package) => OccupantClass::LegacyPackage(package),
-            Err(reason) => OccupantClass::Indeterminate { reason },
+            Err((reason, verifier_blocker)) => OccupantClass::Indeterminate {
+                reason,
+                verifier_blocker,
+            },
         },
         NameShape::Generation {
             chat_id,
@@ -370,14 +398,21 @@ fn classify_one(packages: &confined::Dir, name: &str) -> OccupantClass {
             // filename nor the manifest may assert identity on its own.
             Ok(package) => {
                 if package.content_hash != content_hash || package.chat_id != chat_id {
+                    // Scanner-owned name-vs-proven-identity mismatch: the
+                    // verifier ACCEPTED this occupant, so it produced no
+                    // blocker and none may be fabricated here.
                     OccupantClass::Indeterminate {
                         reason: IndeterminateReason::IdentityMismatch,
+                        verifier_blocker: None,
                     }
                 } else {
                     OccupantClass::VerifiedGeneration(package)
                 }
             }
-            Err(reason) => OccupantClass::Indeterminate { reason },
+            Err((reason, verifier_blocker)) => OccupantClass::Indeterminate {
+                reason,
+                verifier_blocker,
+            },
         },
     }
 }

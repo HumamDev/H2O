@@ -105,6 +105,11 @@ pub mod archive_retention_plan;
 /// canonical package namespace. Registers no command and mutates nothing.
 pub mod archive_package_scan;
 
+/// M10 P1 — trusted READ-ONLY projection of what the T2.1 scanner and the
+/// publisher's verifier already observe in the canonical archive. Implements no
+/// verification, no health verdict and no destructive authority of its own.
+pub mod saved_chat_archive_integrity;
+
 /// M09 P2.1 — the one immutable-per-build active generation-family policy.
 /// Exposes one read-only query; there is no setter or persisted feature state.
 pub mod saved_chat_generation_policy;
@@ -2606,6 +2611,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_abort,
             saved_chat_generation_policy::h2o_saved_chat_generation_policy,
             saved_chat_export_root_policy::h2o_saved_chat_export_root_policy,
+            saved_chat_archive_integrity::h2o_saved_chat_archive_integrity,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
@@ -2653,6 +2659,7 @@ macro_rules! h2o_studio_invoke_handler {
             archive_generation_publish::h2o_archive_generation_abort,
             saved_chat_generation_policy::h2o_saved_chat_generation_policy,
             saved_chat_export_root_policy::h2o_saved_chat_export_root_policy,
+            saved_chat_archive_integrity::h2o_saved_chat_archive_integrity,
             archive_transport_handoff::h2o_archive_transport_handoff_begin,
             archive_transport_handoff::h2o_archive_transport_handoff_read,
             archive_transport_handoff::h2o_archive_transport_handoff_end,
