@@ -27,6 +27,7 @@ fn generation_in(
         name: format!("{chat}.g{h}.h2ochat"),
         class: OccupantClass::VerifiedGeneration(VerifiedPackage {
             chat_id: chat.to_string(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: h,
             construction_family,
             snapshot_encoding: "identity".into(),
@@ -59,6 +60,7 @@ fn unorderable(chat: &str, tag: u8) -> ClassifiedOccupant {
         name: format!("{chat}.g{h}.h2ochat"),
         class: OccupantClass::VerifiedGeneration(VerifiedPackage {
             chat_id: chat.to_string(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: h,
             construction_family: ConstructionFamily::V1,
             snapshot_encoding: "identity".into(),
@@ -82,6 +84,7 @@ fn legacy(chat: &str, tag: u8, saved_at: &str) -> ClassifiedOccupant {
         name: format!("{chat}.h2ochat"),
         class: OccupantClass::LegacyPackage(VerifiedPackage {
             chat_id: chat.to_string(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: h,
             construction_family: ConstructionFamily::V1,
             snapshot_encoding: "identity".into(),

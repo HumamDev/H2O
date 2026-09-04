@@ -26,6 +26,7 @@ fn scratch(tag: &str) -> PathBuf {
 fn package(chat_id: &str, family: ConstructionFamily, encoding: &str, saved_at: Option<&str>) -> VerifiedPackage {
     VerifiedPackage {
         chat_id: chat_id.to_string(),
+        snapshot_id: format!("snap-{chat_id}"),
         content_hash: "a".repeat(64),
         construction_family: family,
         snapshot_encoding: encoding.to_string(),
@@ -629,19 +630,19 @@ fn rust_emits_no_aggregate_health_verdict() {
 fn false_healthy_divergence_families_are_never_projected_as_verified() {
     // Families driven through the REAL verifier via on-disk fixtures.
     //
-    // NOTE ON BLOCKER GRANULARITY: the seam this phase captures is
-    // `verify_occupant_all_supported`, whose vocabulary is the COARSE
-    // occupant-level outcome set (`generation-destination-corrupt`,
-    // `generation-partial`, `generation-occupant-unreadable`). The granular
-    // per-rule codes (`generation-v3-persistent-renderer-forbidden` and the
-    // rest) are collapsed one layer deeper, by a SECOND discard inside the
-    // publisher. Surfacing those would mean changing verifier behaviour, which
-    // this phase does not authorize — so the expectation below is taken from
-    // the verifier itself rather than hard-coded, proving verbatim survival of
-    // whatever the canonical seam currently says.
-    let cases: Vec<(&str, OwnedPackage)> = vec![
+    // Each case pins the GRANULAR `saved_chat_package_verify` rule code it must
+    // produce, so the test proves the intended rule fired AND that its code
+    // reached the wire — not merely that something somewhere refused the
+    // package. Every one of these collapsed to the single coarse string
+    // `generation-destination-corrupt` before P1.2.
+    // The expectation is `Option`, because §9's rule is precise: a granular code
+    // exists ONLY when a `saved_chat_package_verify` rule refused the package.
+    // Families rejected by the ADAPTER's own directory-inventory check never
+    // reach that verifier, so they legitimately carry none and none is invented.
+    let cases: Vec<(&str, Option<&str>, OwnedPackage)> = vec![
         (
             "v3-persistent-renderer-forbidden",
+            None,
             {
                 let mut p = zero_asset_v3();
                 p.markdown = Some(b"must not persist".to_vec());
@@ -650,6 +651,7 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
         (
             "v3-invalid-manifest-file-inventory",
+            Some("generation-v3-manifest-file-inventory-invalid"),
             {
                 let mut p = zero_asset_v3();
                 mutate_manifest(&mut p, |m| {
@@ -664,6 +666,7 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
         (
             "absent-chat-id",
+            Some("generation-manifest-chat-id-missing"),
             {
                 let mut p = zero_asset_v3();
                 mutate_manifest(&mut p, |m| {
@@ -674,6 +677,7 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
         (
             "v3-legacy-content-forbidden",
+            Some("generation-v3-snapshot-legacy-content-forbidden"),
             {
                 let mut p = zero_asset_v3();
                 mutate_snapshot(&mut p, |s| {
@@ -685,6 +689,7 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
         (
             "v3-messages-non-array",
+            Some("generation-v3-snapshot-messages-invalid"),
             {
                 let mut p = zero_asset_v3();
                 mutate_snapshot(&mut p, |s| {
@@ -696,6 +701,7 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
         (
             "unexpected-persistent-member",
+            None,
             {
                 let mut p = zero_asset_v3();
                 p.unexpected = vec!["surprise.bin".to_string()];
@@ -704,22 +710,39 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         ),
     ];
 
-    for (tag, package) in cases {
+    for (tag, expected_code, package) in cases {
         let root = scratch(tag);
         let name = generation_name(&package);
         install_direct(&root, &name, &package);
 
-        // The verifier is the AUTHORITY for the expected code.
+        // The admission adapter carries both vocabularies; confirm the granular
+        // one is the pinned rule and that it is genuinely more specific than the
+        // coarse admission classification.
         let packages =
             crate::archive_durable_write::confined::Dir::open_existing_nofollow(&packages_dir(&root))
                 .expect("packages dir");
-        let expected_code = match crate::archive_generation_publish::verify_occupant_all_supported(
-            &packages,
-            name.as_bytes(),
-        ) {
-            Err((_, code)) => code,
-            Ok(_) => panic!("{tag}: this divergence family must not verify"),
-        };
+        let (coarse, granular) =
+            match crate::archive_generation_publish::verify_occupant_all_supported(
+                &packages,
+                name.as_bytes(),
+            ) {
+                Err((_, coarse, granular)) => (coarse, granular),
+                Ok(_) => panic!("{tag}: this divergence family must not verify"),
+            };
+        assert_eq!(
+            granular, expected_code,
+            "{tag}: the granular verifier rule must be preserved exactly"
+        );
+        assert_eq!(
+            coarse, "generation-destination-corrupt",
+            "{tag}: the coarse admission code must be UNCHANGED"
+        );
+        if let Some(code) = expected_code {
+            assert_ne!(
+                code, coarse,
+                "{tag}: the granular code must add information over the coarse one"
+            );
+        }
 
         let result = project(&scan_packages_within(&root));
         let projected = find(&result, &name);
@@ -730,20 +753,16 @@ fn false_healthy_divergence_families_are_never_projected_as_verified() {
         );
         assert_eq!(
             projected.blockers,
-            vec![IntegrityBlocker {
-                code: expected_code.to_string()
-            }],
-            "{tag}: the canonical verifier code must survive verbatim"
+            expected_code
+                .map(|code| vec![IntegrityBlocker { code: code.to_string() }])
+                .unwrap_or_default(),
+            "{tag}: the granular verifier code must reach the wire verbatim"
         );
-        // The captured vocabulary is the seam's own coarse outcome set.
+        // And the coarse admission string is never duplicated into the wire
+        // blocker: `class` and `reason` already carry that classification.
         assert!(
-            [
-                "generation-destination-corrupt",
-                "generation-partial",
-                "generation-occupant-unreadable",
-            ]
-            .contains(&expected_code),
-            "{tag}: unexpected occupant-level code `{expected_code}`"
+            !projected.blockers.iter().any(|b| b.code == coarse),
+            "{tag}: the coarse admission code must not appear as a blocker"
         );
         assert!(
             projected.chat_id.is_none() && projected.content_hash.is_none(),
@@ -833,6 +852,149 @@ fn a_healthy_v3_archive_projects_as_a_verified_generation() {
     assert_eq!(result.observed.verified_generations, 1);
     assert_eq!(result.observed.indeterminate, 0);
     assert_eq!(result.observed.by_construction_family.v3, 1);
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// M10 P1.2 §15 — the trusted snapshotId reaches the wire for verified and
+/// legacy packages, and an indeterminate occupant never carries one.
+#[test]
+fn the_trusted_snapshot_id_reaches_the_envelope_and_is_never_fabricated() {
+    // Synthetic projection: the DTO carries whatever the trusted package proved.
+    let scan = scan_of(
+        true,
+        vec![],
+        vec![
+            occupant(
+                "chat_a.gaa.h2ochat",
+                OccupantClass::VerifiedGeneration(package(
+                    "chat_a",
+                    ConstructionFamily::V3,
+                    "identity",
+                    Some("2026-01-01T00:00:00.000Z"),
+                )),
+            ),
+            occupant(
+                "chat_c.h2ochat",
+                OccupantClass::LegacyPackage(package(
+                    "chat_c",
+                    ConstructionFamily::V1,
+                    "identity",
+                    Some("2026-01-02T00:00:00.000Z"),
+                )),
+            ),
+            occupant(".h2o-archive.lock", OccupantClass::ReservedInfrastructure),
+            occupant(
+                "chat_e.gee.h2ochat",
+                OccupantClass::Indeterminate {
+                    reason: IndeterminateReason::Corrupt,
+                    verifier_blocker: Some("generation-v3-snapshot-messages-invalid"),
+                },
+            ),
+        ],
+    );
+    let result = project(&scan);
+    let value = json(&result);
+
+    assert_eq!(value["occupants"][0]["snapshotId"], "snap-chat_a");
+    assert_eq!(value["occupants"][1]["snapshotId"], "snap-chat_c");
+    // Absent — omitted, never nulled and never invented.
+    for index in [2, 3] {
+        assert!(
+            !value["occupants"][index]
+                .as_object()
+                .unwrap()
+                .contains_key("snapshotId"),
+            "occupant {index} must not carry a snapshotId"
+        );
+    }
+    assert!(find(&result, "chat_e.gee.h2ochat").snapshot_id.is_none());
+    assert!(find(&result, ".h2o-archive.lock").snapshot_id.is_none());
+
+    // End to end through the real publisher and verifier: the fixture's own
+    // snapshotId ("s0") is what reaches the wire.
+    let root = scratch("snapshot-id-wire");
+    let fixture = zero_asset_v3();
+    let hash = publish_v3(&root, &fixture);
+    let name = format!("{}.g{hash}.h2ochat", fixture.chat_id);
+    let live = project(&scan_packages_within(&root));
+    assert_eq!(find(&live, &name).snapshot_id.as_deref(), Some("s0"));
+    assert_eq!(json(&live)["occupants"][0]["snapshotId"], "s0");
+
+    let _ = std::fs::remove_dir_all(root.parent().unwrap());
+}
+
+/// M10 P1.2 §16 — the granular verifier rule survives the WHOLE chain, and is
+/// strictly more informative than the coarse admission code it travels beside.
+///
+/// verify_package(G) → admission (C, K, Some(G)) → scanner Indeterminate{R,
+/// Some(G)} → envelope blockers [{code: G}], with G != K at every hop.
+#[test]
+fn a_granular_verifier_rule_survives_the_whole_chain_and_outranks_the_coarse_code() {
+    let root = scratch("granular-chain");
+    let mut package = zero_asset_v3();
+    mutate_snapshot(&mut package, |s| {
+        s["messages"][0]["contentText"] = "legacy rendering".into();
+    });
+    rebind_identity_snapshot(&mut package);
+    let name = generation_name(&package);
+    install_direct(&root, &name, &package);
+
+    const GRANULAR: &str = "generation-v3-snapshot-legacy-content-forbidden";
+    const COARSE: &str = "generation-destination-corrupt";
+
+    // Hop 1-2: the admission adapter carries both vocabularies.
+    let packages = crate::archive_durable_write::confined::Dir::open_existing_nofollow(
+        &packages_dir(&root),
+    )
+    .expect("packages dir");
+    let (outcome, coarse, granular) =
+        match crate::archive_generation_publish::verify_occupant_all_supported(
+            &packages,
+            name.as_bytes(),
+        ) {
+            Err(failure) => failure,
+            Ok(_) => panic!("the fixture must not verify"),
+        };
+    assert_eq!(
+        outcome,
+        crate::archive_generation_publish::Outcome::GenerationDestinationCorrupt
+    );
+    assert_eq!(coarse, COARSE, "the coarse admission code is unchanged");
+    assert_eq!(granular, Some(GRANULAR));
+
+    // Hop 3: the scanner keeps `reason` (broad) and `verifier_blocker` (granular)
+    // complementary rather than redundant.
+    let scan = scan_packages_within(&root);
+    let classified = scan
+        .occupants
+        .iter()
+        .find(|o| o.name == name)
+        .expect("occupant scanned");
+    match &classified.class {
+        OccupantClass::Indeterminate {
+            reason,
+            verifier_blocker,
+        } => {
+            assert_eq!(*reason, IndeterminateReason::Corrupt);
+            assert_eq!(*verifier_blocker, Some(GRANULAR));
+        }
+        other => panic!("expected indeterminate, got {other:?}"),
+    }
+
+    // Hop 4: the wire carries the granular rule, and never the coarse string.
+    let result = project(&scan);
+    let projected = find(&result, &name);
+    assert_eq!(
+        projected.blockers,
+        vec![IntegrityBlocker {
+            code: GRANULAR.to_string()
+        }]
+    );
+    assert!(!projected.blockers.iter().any(|b| b.code == COARSE));
+
+    // The anti-vacuity property this correction exists to guarantee.
+    assert_ne!(GRANULAR, COARSE);
 
     let _ = std::fs::remove_dir_all(root.parent().unwrap());
 }

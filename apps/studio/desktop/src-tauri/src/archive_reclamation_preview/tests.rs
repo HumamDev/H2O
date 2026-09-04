@@ -22,6 +22,7 @@ fn gen_in(chat: &str, tag: u8, family: ConstructionFamily) -> ClassifiedOccupant
         name: format!("{chat}.g{h}.h2ochat"),
         class: OccupantClass::VerifiedGeneration(VerifiedPackage {
             chat_id: chat.to_string(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: h,
             construction_family: family,
             snapshot_encoding: "identity".into(),
@@ -290,6 +291,7 @@ fn the_preview_carries_every_protection_reason() {
         name: "chat_a.h2ochat".into(),
         class: OccupantClass::LegacyPackage(VerifiedPackage {
             chat_id: "chat_a".into(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: hash(70),
             construction_family: ConstructionFamily::V1,
             snapshot_encoding: "identity".into(),
@@ -308,6 +310,7 @@ fn the_preview_carries_every_protection_reason() {
         name: format!("chat_a.g{}.h2ochat", hash(60)),
         class: OccupantClass::VerifiedGeneration(VerifiedPackage {
             chat_id: "chat_a".into(),
+            snapshot_id: "snap-fixture".to_string(),
             content_hash: hash(60),
             construction_family: ConstructionFamily::V1,
             snapshot_encoding: "identity".into(),

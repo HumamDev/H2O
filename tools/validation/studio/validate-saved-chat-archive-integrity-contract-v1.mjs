@@ -20,6 +20,7 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 const LIB_REL = 'apps/studio/desktop/src-tauri/src/lib.rs';
 const MODULE_REL = 'apps/studio/desktop/src-tauri/src/saved_chat_archive_integrity.rs';
 const SCAN_REL = 'apps/studio/desktop/src-tauri/src/archive_package_scan.rs';
+const PUBLISH_REL = 'apps/studio/desktop/src-tauri/src/archive_generation_publish.rs';
 const RETENTION_REL = 'apps/studio/desktop/src-tauri/src/archive_retention_plan.rs';
 const QUARANTINE_REL = 'apps/studio/desktop/src-tauri/src/archive_occupant_quarantine.rs';
 
@@ -162,6 +163,52 @@ check('the diagnostic blocker never reaches a destructive decision', () => {
       `${label} matches in future-additive form on reason alone`,
     );
   }
+});
+
+/* P1.2 blind-spot A: current-parity identity fields. P1 shipped an envelope
+   that could not identify a snapshot, which no migration could have consumed. */
+check('the occupant contract carries the trusted current-parity identity fields', () => {
+  for (const field of ['pub chat_id:', 'pub snapshot_id:', 'pub content_hash:']) {
+    assert.ok(
+      new RegExp(`pub struct IntegrityOccupant[\\s\\S]*?${field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(mod),
+      `the occupant DTO must carry ${field}`,
+    );
+  }
+  // And the trusted source is the ALREADY-VALIDATED manifest, not a re-parse.
+  const scan = readRepo(SCAN_REL);
+  assert.ok(
+    scan.includes('snapshot_id: verified.manifest.snapshot_id.clone()'),
+    'snapshotId is read from the validated manifest object',
+  );
+  assert.ok(!scan.includes('serde_json::from_slice'), 'the scanner re-parses no manifest bytes');
+});
+
+/* P1.2 blind-spot B: the blocker must be INFORMATIVE. It comes from the distinct
+   optional granular channel; carrying the coarse admission code would duplicate
+   what `class` and `reason` already say. Behavioural proof lives in Rust. */
+check('the verifier blocker comes from the granular channel, not the coarse code', () => {
+  const publish = readRepo(PUBLISH_REL);
+  // The failure payload has a THIRD, optional element distinct from the coarse pair.
+  assert.ok(
+    /pub\(crate\) type AdmissionFailure = \(Outcome, &'static str, Option<&'static str>\);/.test(publish),
+    'admission failure carries a distinct optional granular channel',
+  );
+  // The granular code is PRESERVED from the verifier, not re-derived.
+  assert.ok(
+    publish.includes('Some(granular)'),
+    'the granular verifier code is carried through',
+  );
+  // The scanner reads the granular element and explicitly discards the coarse one.
+  const scan = readRepo(SCAN_REL);
+  assert.ok(
+    scan.includes('.map_err(|(outcome, _coarse, granular)| (indeterminate_for(outcome), granular))'),
+    'the scanner blocker is the granular code; the coarse code feeds `reason` only',
+  );
+  // Admission itself still ignores the granular evidence entirely.
+  assert.ok(
+    publish.includes('Err((outcome, code, _granular)) => return (outcome, code, Vec::new()),'),
+    'publication reads only the coarse pair',
+  );
 });
 
 check('the current JS operator authority is untouched by P1', () => {

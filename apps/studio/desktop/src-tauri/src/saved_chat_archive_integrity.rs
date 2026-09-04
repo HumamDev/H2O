@@ -61,11 +61,15 @@ mod class_labels {
 
 /// One piece of package-verification evidence.
 ///
-/// `code` is the publisher verifier's canonical refusal string, carried
-/// VERBATIM. It is never renamed, collapsed or re-derived. `member` is
-/// deliberately absent in P1: deriving it would mean parsing package internals
-/// or duplicating verification logic, and a correct canonical code is worth
-/// more than decorative context.
+/// `code` is the GRANULAR `saved_chat_package_verify` rule code — which trusted
+/// verification rule failed — carried VERBATIM and never renamed, collapsed or
+/// re-derived. The coarse admission classification is deliberately NOT repeated
+/// here: `class` and `reason` already carry it, so the two vocabularies stay
+/// complementary instead of redundant.
+///
+/// `member` is deliberately absent in P1: deriving it would mean parsing package
+/// internals or duplicating verification logic, and a correct canonical code is
+/// worth more than decorative context.
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrityBlocker {
@@ -157,6 +161,10 @@ pub struct IntegrityOccupant {
     // ---- verified / legacy package facts ----
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chat_id: Option<String>,
+    /// The verifier-established snapshot identity. Present only where a trusted
+    /// `VerifiedPackage` exists; an indeterminate occupant never fabricates one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
     /// RECOMPUTED by the publisher's verifier from the stored bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_hash: Option<String>,
@@ -233,6 +241,7 @@ fn package_occupant(
         name: occupant.name.clone(),
         class,
         chat_id: Some(package.chat_id.clone()),
+        snapshot_id: Some(package.snapshot_id.clone()),
         content_hash: Some(package.content_hash.clone()),
         construction_family: Some(package.construction_family),
         snapshot_encoding: Some(package.snapshot_encoding.clone()),
@@ -253,6 +262,7 @@ fn bare_occupant(occupant: &ClassifiedOccupant, class: &'static str) -> Integrit
         name: occupant.name.clone(),
         class,
         chat_id: None,
+        snapshot_id: None,
         content_hash: None,
         construction_family: None,
         snapshot_encoding: None,
@@ -305,8 +315,11 @@ pub fn integrity_from_scan(
                 observed.indeterminate_by_reason.count(reason);
                 let mut projected = bare_occupant(occupant, class_labels::INDETERMINATE);
                 projected.reason = Some(reason.clone());
-                // At most one, because the verifier is fail-fast. No "primary"
-                // blocker is chosen and none is fabricated.
+                // At most one, because the verifier is fail-fast. Empty when no
+                // rule-level verifier blocker exists — a scanner-owned
+                // classification, or a filesystem/admission failure that never
+                // reached the package verifier. No "primary" blocker is chosen
+                // and none is fabricated.
                 projected.blockers = verifier_blocker
                     .map(|code| {
                         vec![IntegrityBlocker {

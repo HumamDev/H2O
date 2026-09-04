@@ -147,6 +147,14 @@ pub enum OrderFact {
 #[derive(serde::Serialize, Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedPackage {
     pub chat_id: String,
+    /// The snapshot identity the publisher's verifier ALREADY established:
+    /// `ValidatedManifest.snapshot_id`, which `validate_snapshot_cross_binding`
+    /// proved equal to the snapshot's own `snapshotId`. Carried, never re-parsed
+    /// and never inferred from a hash.
+    ///
+    /// An identity fact only: no retention, reclamation, delete, quarantine,
+    /// ordering, contentHash or classification decision may consult it.
+    pub snapshot_id: String,
     /// RECOMPUTED by the publisher's verifier from the stored bytes. Bare
     /// lowercase hex, normalized through the existing archive helper.
     pub content_hash: String,
@@ -303,19 +311,21 @@ fn indeterminate_for(outcome: Outcome) -> IndeterminateReason {
 /// The classification a failed occupant carries: the broad reason, plus the
 /// canonical verifier code when the trusted verifier is what refused it.
 ///
-/// `None` is not "unknown" — it means no canonical verifier blocker exists for
-/// this scanner-owned classification. No placeholder string is ever invented.
+/// `None` is not "unknown" — it means no rule-level verifier blocker exists for
+/// this classification. No placeholder string is ever invented.
 type IndeterminateFacts = (IndeterminateReason, Option<&'static str>);
 
 fn verified_package(
     packages: &confined::Dir,
     name: &str,
 ) -> Result<VerifiedPackage, IndeterminateFacts> {
-    // The canonical `&'static str` the publisher's verifier already produced
-    // survives here VERBATIM. Verification is not re-run and no second blocker
-    // is inferred; only the existing discard is narrowed.
+    // Two distinct vocabularies, deliberately kept apart. `outcome` is the
+    // COARSE admission classification and is what `reason` is derived from, as
+    // before. `granular` is the rule-level `saved_chat_package_verify` code,
+    // carried through VERBATIM as evidence — never the coarse admission string,
+    // which `reason` already represents. Verification is not re-run.
     let verified = verify_occupant_all_supported(packages, name.as_bytes())
-        .map_err(|(outcome, code)| (indeterminate_for(outcome), Some(code)))?;
+        .map_err(|(outcome, _coarse, granular)| (indeterminate_for(outcome), granular))?;
 
     // The publisher derives `sha256-<hex>`; normalize through the existing
     // helper rather than restating the shape here.
@@ -354,6 +364,9 @@ fn verified_package(
 
     Ok(VerifiedPackage {
         chat_id: verified.manifest.chat_id.clone(),
+        // Straight from the already-validated manifest object, beside chat_id —
+        // the bytes are not parsed a second time.
+        snapshot_id: verified.manifest.snapshot_id.clone(),
         content_hash,
         construction_family: match verified.family {
             crate::saved_chat_package_verify::PackageFamily::V1 => ConstructionFamily::V1,
