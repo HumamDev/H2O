@@ -6458,6 +6458,12 @@
       // here silently dropped a durable preference on transient host churn.
       setAtomicTitleListMemory(id, num, false);
       setAtomicCollapsedPageMemory(id, num, false);
+      // Explicit page expansion is the terminal owner of any member-level
+      // title projection left behind by a temporarily unmounted answer. The
+      // helpers inspect current canonical page membership and release only
+      // title-owned sources/markers; no native node reference is retained.
+      clearResidualPageTitleCollapseSources(num);
+      releasePageMemberHideMarkers(num);
     }
     propagateChatPageCollapseToMiniMap(num, id, false);
     getTitleListStackStats(num, id).activeStackId = '';
@@ -6843,6 +6849,18 @@
         // validator sandboxes evaluate extracted slices without the helper.)
         const rebind = rebindCommittedAtomicPageCollapse(transaction);
         if (rebind.ok) current = validateCommittedAtomicPageCollapse(transaction);
+      }
+      if (!current.ok) {
+        const pending = reconcilePendingTitleListMaterialization(transaction, reason);
+        if (pending) {
+          results.push({
+            ok: true,
+            status: 'pending',
+            pageNum: transaction.pageNum,
+            reason: current.reason,
+          });
+          continue;
+        }
       }
       if (current.ok && typeof reconcileTitleListNativeInPlaceProjection === 'function') {
         reconcileTitleListNativeInPlaceProjection(transaction, { reason });
@@ -8940,16 +8958,19 @@
   }
 
   function titleListCurrentNativeMount(transaction = null, member = null) {
-    const fail = (reason = 'canonical-mount-unavailable') => ({ ok: false, reason, anchors: [], member });
+    const fail = (reason = 'canonical-mount-unavailable', anchors = []) => ({ ok: false, reason, anchors, member });
     if (!transaction?.flowRoot || !member?.id) return fail('canonical-member-unavailable');
     const questionSections = memberSectionCandidates(member, 'user');
     const answerSections = member.type === 'answer' ? memberSectionCandidates(member, 'assistant') : [];
-    if (questionSections.length !== 1 || (member.type === 'answer' && answerSections.length !== 1)) {
+    if (questionSections.length > 1 || (member.type === 'answer' && answerSections.length > 1)) {
       return fail('canonical-mount-ambiguous');
     }
-    const requiredSections = [questionSections[0], ...(member.type === 'answer' ? [answerSections[0]] : [])];
+    const requiredSections = [
+      questionSections[0] || null,
+      ...(member.type === 'answer' ? [answerSections[0] || null] : []),
+    ];
     const anchors = [];
-    for (const section of requiredSections) {
+    for (const section of requiredSections.filter(Boolean)) {
       const anchor = getTurnAnchorNode(section);
       const direct = titleListDirectFlowChild(transaction.flowRoot, anchor);
       if (
@@ -8957,15 +8978,15 @@
         || direct?.isConnected !== true
         || direct.parentElement !== transaction.flowRoot
         || !transaction.hostWrappers.includes(direct)
-      ) return fail('canonical-mount-not-in-current-page');
+      ) return fail('canonical-mount-not-in-current-page', anchors);
       if (!anchors.includes(direct)) anchors.push(direct);
     }
-    const complete = requiredSections.every((section) => anchors.some((anchor) => (
+    const complete = requiredSections.every((section) => section && anchors.some((anchor) => (
       anchor === section || anchor.contains?.(section)
     )));
     return complete
       ? { ok: true, reason: null, anchors, member }
-      : fail('canonical-mount-incomplete');
+      : fail('canonical-mount-incomplete', anchors);
   }
 
   function titleListCurrentOpenMount(transaction = null) {
@@ -8981,16 +9002,53 @@
 
   function requestTitleListCanonicalMaterialization(state = null, member = null) {
     if (!state || !member || state.materializationRequested === true) return false;
-    state.materializationRequested = true;
-    state.status = 'pending';
     const canonicalId = String(member.answerId || member.questionId || member.id || '').trim();
     if (!canonicalId) return false;
+    const record = turnRecordForTitleListIdentity(canonicalId, member.turnNo);
+    state.materializationRequested = true;
+    state.materializationTargetQId = String(record?.qId || member.questionId || '').trim();
+    state.status = 'pending';
+    let accepted = false;
     try {
-      return MM_SH()?.api?.rt?.setActiveTurnId?.(
+      accepted = MM_SH()?.api?.rt?.setActiveTurnId?.(
         canonicalId,
         'title-list:native-in-place-materialization'
       ) === true;
-    } catch { return false; }
+    } catch { accepted = false; }
+    const navigation = (() => {
+      try { return MM_SH()?.api?.rt?.getCompleteIndexNavigationStatus?.() || null; } catch { return null; }
+    })();
+    state.materializationGeneration = Math.max(0, Number(navigation?.generation || 0) || 0);
+    state.materializationStatus = String(navigation?.status || (accepted ? 'requested' : 'unavailable'));
+    if (!accepted) state.materializationRequestFailed = true;
+    return accepted;
+  }
+
+  function titleListCanonicalMaterializationTerminal(state = null) {
+    if (!state?.materializationRequested) return null;
+    let navigation = null;
+    try { navigation = MM_SH()?.api?.rt?.getCompleteIndexNavigationStatus?.() || null; } catch {}
+    if (!navigation) return state.materializationRequestFailed === true
+      ? { status: 'unavailable', errorCode: 'request-rejected' }
+      : null;
+    const expectedQId = String(state.materializationTargetQId || state.questionId || '').trim();
+    const targetQId = String(navigation.targetQId || '').trim();
+    if (expectedQId && targetQId && expectedQId !== targetQId) return null;
+    const expectedGeneration = Math.max(0, Number(state.materializationGeneration || 0) || 0);
+    const generation = Math.max(0, Number(navigation.generation || 0) || 0);
+    // Coordinator cancellation advances the same operation's generation.
+    // Reject only an older status; a newer status is still ours when its
+    // canonical target remains exact (checked above).
+    if (expectedGeneration && generation && generation < expectedGeneration) return null;
+    const status = String(navigation.status || '').trim();
+    if (!['unavailable', 'unreachable', 'cancelled', 'stale-route-discarded'].includes(status)) return null;
+    state.materializationStatus = status;
+    return {
+      status,
+      errorCode: String(navigation.errorCode || status || 'materialization-failed'),
+      generation,
+      targetQId,
+    };
   }
 
   function clearTitleListNativeInPlaceProjection(transaction = null, options = {}) {
@@ -9056,18 +9114,69 @@
         } catch {}
       }
     }
-    const mount = titleListCurrentNativeMount(transaction, member);
+    const initialMount = options?.currentMount?.member === member ? options.currentMount : null;
+    const resolvedMount = titleListCurrentNativeMount(transaction, member);
+    const initialStillCurrent = initialMount?.ok === true
+      && resolvedMount.ok === true
+      && initialMount.anchors.length === resolvedMount.anchors.length
+      && initialMount.anchors.every((anchor) => resolvedMount.anchors.includes(anchor));
+    const mount = initialStillCurrent ? initialMount : resolvedMount;
     if (!mount.ok) {
+      const terminal = titleListCanonicalMaterializationTerminal(state);
+      if (terminal) {
+        const cleared = clearTitleListNativeInPlaceProjection(transaction, { rehide: true });
+        if (member.type === 'answer' && member.answerId) {
+          recordManualTitleOverride(member.answerId, 'collapsed', {
+            chatId: transaction.chatId,
+            page: transaction.pageNum,
+            source: 'answer-title',
+          });
+          setTitleListMemberCollapsed(member, true);
+        }
+        return {
+          ...cleared,
+          status: `materialization-${terminal.status}-cleared`,
+          reason: terminal.errorCode,
+          mutations: mutations + cleared.mutations,
+        };
+      }
+      state.pending = true;
+      state.status = 'pending';
       mutations += restoreTitleListProjectionRows(transaction);
+      const pendingEligible = new Set(mount.anchors || []);
       for (const node of transaction.hostWrappers || []) {
         if (node?.isConnected !== true || node.parentElement !== transaction.flowRoot) continue;
+        if (pendingEligible.has(node)) {
+          if (node.hasAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN)) {
+            try { node.removeAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN); mutations += 1; } catch {}
+          }
+          if (clearTitleListFlowHiddenNode(node)) mutations += 1;
+          continue;
+        }
         if (node.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(transaction.pageNum)) continue;
         try { node.setAttribute(ATTR_CHAT_PAGE_NATIVE_HIDDEN, String(transaction.pageNum)); mutations += 1; } catch {}
       }
       if (selectedRow.getAttribute?.('data-h2o-title-row-pending') !== '1') {
         try { selectedRow.setAttribute('data-h2o-title-row-pending', '1'); mutations += 1; } catch {}
       }
-      requestTitleListCanonicalMaterialization(state, member);
+      const requested = requestTitleListCanonicalMaterialization(state, member);
+      if (!requested && state.materializationRequestFailed === true) {
+        const cleared = clearTitleListNativeInPlaceProjection(transaction, { rehide: true });
+        if (member.type === 'answer' && member.answerId) {
+          recordManualTitleOverride(member.answerId, 'collapsed', {
+            chatId: transaction.chatId,
+            page: transaction.pageNum,
+            source: 'answer-title',
+          });
+          setTitleListMemberCollapsed(member, true);
+        }
+        return {
+          ...cleared,
+          status: 'materialization-unavailable-cleared',
+          reason: 'request-rejected',
+          mutations: mutations + cleared.mutations,
+        };
+      }
       return { ok: true, status: 'pending', mutations, anchors: 0, materializationRequested: state.materializationRequested === true };
     }
     const visible = new Set(mount.anchors);
@@ -9132,6 +9241,11 @@
     ) {
       return reconcileTitleListNativeInPlaceProjection(transaction, { reason: 'row-open-repeat' });
     }
+    // Resolve the exact current mount before publishing even scalar pending
+    // intent. The reference is task-local only and is revalidated during the
+    // projection write, so host replacement cannot turn it into retained
+    // native ownership.
+    const currentMount = titleListCurrentNativeMount(transaction, member);
     const state = {
       chatId: String(transaction.chatId || ''),
       pageNum: Number(transaction.pageNum || 0),
@@ -9143,13 +9257,34 @@
       generation: Number(transaction.generation || 0),
       effectiveFingerprint: String(transaction.effectiveFingerprint || ''),
       rowKey: String(member.id || ''),
-      pending: true,
+      pending: currentMount.ok !== true,
       materializationRequested: false,
-      status: 'pending',
+      materializationTargetQId: '',
+      materializationGeneration: 0,
+      materializationStatus: '',
+      materializationRequestFailed: false,
+      status: currentMount.ok === true ? 'opening' : 'pending',
       sequence: ++S.titleListOpenSequence,
     };
     S.titleListOpenStatesByKey.set(key, state);
-    return reconcileTitleListNativeInPlaceProjection(transaction, { reason: 'row-open' });
+    return reconcileTitleListNativeInPlaceProjection(transaction, {
+      reason: 'row-open',
+      currentMount,
+    });
+  }
+
+  function reconcilePendingTitleListMaterialization(transaction = null, reason = 'presentation-updated') {
+    if (!transaction) return null;
+    const state = S.titleListOpenStatesByKey.get(
+      titleListOpenStateKey(transaction.pageNum, transaction.chatId)
+    ) || null;
+    if (
+      !titleListOpenStateCurrent(transaction, state)
+      || state.pending !== true
+      || state.status !== 'pending'
+    ) return null;
+    const result = reconcileTitleListNativeInPlaceProjection(transaction, { reason });
+    return result?.status === 'pending' ? result : null;
   }
 
   function resetOpenedTitleListRows(pageNum = 0, chatId = '') {
@@ -9188,6 +9323,63 @@
     };
   }
 
+  function setTitleListMemberCollapsed(member = null, collapsed = false) {
+    if (!member?.answerId) return { ok: true, executor: 'no-answer' };
+    const routes = getConfiguredDividerRoutes();
+    const engineDriver = routes.dividerDotRoute === 'engine/unmount';
+    const um = UM_PUBLIC();
+    if (engineDriver && um) {
+      try {
+        let result = null;
+        if (collapsed && typeof um.collapseManyByIds === 'function') {
+          result = um.collapseManyByIds([member.answerId], {
+            source: 'title-list-row',
+            preserveShell: 'title-list-row',
+            emitLegacyAnswerCollapse: false,
+          });
+        } else if (!collapsed && typeof um.expandManyByIds === 'function') {
+          const results = [];
+          const hasSource = (source) => {
+            try { return typeof um.isCollapsedById !== 'function' || um.isCollapsedById(member.answerId, { source }); } catch { return true; }
+          };
+          if (hasSource('title-list-row')) {
+            results.push(um.expandManyByIds([member.answerId], {
+              source: 'title-list-row',
+              emitLegacyAnswerCollapse: false,
+            }));
+          }
+          // A pre-existing manual title collapse is the same row's own
+          // source. Opening that row clears it without touching unrelated
+          // page-collapse/background/windowing sources.
+          if (hasSource('answer-title')) {
+            results.push(um.expandManyByIds([member.answerId], {
+              source: 'answer-title',
+              emitLegacyAnswerCollapse: false,
+            }));
+          }
+          // No matching engine source means the engine did no work. Fall
+          // through to the local executor so a legacy DOM residue left by
+          // a route change can still be expanded instead of producing an
+          // empty "opened" row.
+          result = results.length
+            ? { ok: results.every((entry) => !!entry && entry.ok !== false), results }
+            : null;
+        }
+        if (result && result.ok !== false) return { ok: true, executor: 'engine', result };
+      } catch {}
+    }
+    // Fail-closed legacy fallback. The title-intent source makes the Title
+    // Bar API compare actual DOM residue rather than the override written
+    // immediately before this call, and does not record a second override.
+    try {
+      const result = AT_PUBLIC()?.setCollapsed?.(member.answerId, collapsed, {
+        animate: false,
+        source: 'title-intent:stack-row',
+      });
+      return { ok: !!result && result.ok !== false, executor: 'legacy', result };
+    } catch { return { ok: false, executor: 'none' }; }
+  }
+
   // DOUBLE-click on a stacked title bar opens/closes ONLY that member's turn
   // — the page stays in title-list mode and every other bar stays in the
   // stack with its turn hidden. This capture handler runs before the bar's
@@ -9212,67 +9404,6 @@
     const container = transaction?.titleListContainer || null;
     if (!member || !pageNum || !transaction || !container) return;
     const opened = row.getAttribute('data-h2o-title-row-opened') === '1';
-    const at = AT_PUBLIC();
-    // The single-turn undo MUST use the same executor the page batch used:
-    // in the engine route, collapseManyByIds detached the answer body into
-    // the Unmount engine's record — at.setCollapsed alone cannot bring it
-    // back, which is why Engine-mode opens looked like they did nothing.
-    const routes = getConfiguredDividerRoutes();
-    const engineDriver = routes.dividerDotRoute === 'engine/unmount';
-    const um = UM_PUBLIC();
-    const setMemberCollapsed = (collapsed) => {
-      if (!member.answerId) return { ok: true, executor: 'no-answer' };
-      if (engineDriver && um) {
-        try {
-          let result = null;
-          if (collapsed && typeof um.collapseManyByIds === 'function') {
-            result = um.collapseManyByIds([member.answerId], {
-              source: 'title-list-row',
-              preserveShell: 'title-list-row',
-              emitLegacyAnswerCollapse: false,
-            });
-          } else if (!collapsed && typeof um.expandManyByIds === 'function') {
-            const results = [];
-            const hasSource = (source) => {
-              try { return typeof um.isCollapsedById !== 'function' || um.isCollapsedById(member.answerId, { source }); } catch { return true; }
-            };
-            if (hasSource('title-list-row')) {
-              results.push(um.expandManyByIds([member.answerId], {
-                source: 'title-list-row',
-                emitLegacyAnswerCollapse: false,
-              }));
-            }
-            // A pre-existing manual title collapse is the same row's own
-            // source. Opening that row clears it without touching unrelated
-            // page-collapse/background/windowing sources.
-            if (hasSource('answer-title')) {
-              results.push(um.expandManyByIds([member.answerId], {
-                source: 'answer-title',
-                emitLegacyAnswerCollapse: false,
-              }));
-            }
-            // No matching engine source means the engine did no work. Fall
-            // through to the local executor so a legacy DOM residue left by
-            // a route change can still be expanded instead of producing an
-            // empty "opened" row.
-            result = results.length
-              ? { ok: results.every((entry) => !!entry && entry.ok !== false), results }
-              : null;
-          }
-          if (result && result.ok !== false) return { ok: true, executor: 'engine', result };
-        } catch {}
-      }
-      // Fail-closed legacy fallback. The title-intent source makes the Title
-      // Bar API compare actual DOM residue rather than the override we wrote
-      // immediately before this call, and does not record a second override.
-      try {
-        const result = at?.setCollapsed?.(member.answerId, collapsed, {
-          animate: false,
-          source: 'title-intent:stack-row',
-        });
-        return { ok: !!result && result.ok !== false, executor: 'legacy', result };
-      } catch { return { ok: false, executor: 'none' }; }
-    };
     if (!opened) {
       let executorResult = { ok: true, executor: 'no-answer' };
       if (member.type === 'answer') {
@@ -9280,7 +9411,7 @@
         // unhydrated members — ledger only), then expand while the page-owned
         // native hide stamp remains active.
         recordManualTitleOverride(member.answerId, 'expanded', { chatId, page: pageNum, source: 'answer-title' });
-        executorResult = setMemberCollapsed(false);
+        executorResult = setTitleListMemberCollapsed(member, false);
       } else {
         restoreNoAnswerMemberContent(member, row);
       }
@@ -9291,7 +9422,7 @@
         clearTitleListNativeInPlaceProjection(transaction, { rehide: true });
         if (member.type === 'answer') {
           recordManualTitleOverride(member.answerId, 'collapsed', { chatId, page: pageNum, source: 'answer-title' });
-          setMemberCollapsed(true);
+          setTitleListMemberCollapsed(member, true);
         }
         setTitleListMemberFlowHidden(member, pageNum, true);
         try { syncSyntheticTitleList(pageNum, chatId, true, { reason: 'row-open-failed' }); } catch {}
@@ -9304,7 +9435,7 @@
       clearTitleListNativeInPlaceProjection(transaction, { rehide: true });
       if (member.type === 'answer') {
         recordManualTitleOverride(member.answerId, 'collapsed', { chatId, page: pageNum, source: 'answer-title' });
-        setMemberCollapsed(true);
+        setTitleListMemberCollapsed(member, true);
       }
       try { syncSyntheticTitleList(pageNum, chatId, true, { reason: 'row-closed' }); } catch {}
     }
@@ -9399,6 +9530,25 @@
         // projection the user never asked to expand.
         const rebind = rebindCommittedAtomicPageCollapse(transaction);
         if (rebind.ok) current = validateCommittedAtomicPageCollapse(transaction);
+      }
+      if (!current.ok) {
+        const pending = reconcilePendingTitleListMaterialization(transaction, reason);
+        if (pending) {
+          return {
+            ok: true,
+            status: 'pending',
+            pageNum: num,
+            rows: transaction.titleRowsPrepared.length,
+            stackId: transaction.titleListContainer.id,
+            reason,
+            titleOnly: {
+              ok: true,
+              status: 'pending',
+              hidden: transaction.hostWrappers.length,
+              mutations: Number(pending.mutations || 0),
+            },
+          };
+        }
       }
       if (current.ok) {
         reconcileTitleListNativeInPlaceProjection(transaction, { reason });
