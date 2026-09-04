@@ -58,6 +58,8 @@
     partial: 'Some packages have integrity problems; others are healthy and portable.',
     blocked: 'One or more saved chat packages are corrupt or unreadable and need attention.',
     empty: 'Save a chat to a folder to create a package.',
+    warningHygiene: 'Warnings include renderer residue left inside otherwise valid packages. The saved packages remain valid and portable.',
+    partialHygiene: 'Some packages have integrity problems; others are healthy and portable, though some carry cosmetic renderer residue.',
   };
 
   /* The label the package-details renderer already uses for an absent value;
@@ -83,6 +85,27 @@
   function nowIso() {
     try { return new Date().toISOString(); }
     catch (_) { return ''; }
+  }
+
+  /* M10 P3.5b: cause-aware drift copy. Renderer hygiene introduces a THIRD
+   * drift cause alongside DB and asset-cache drift, and it is the only one that
+   * is purely cosmetic — a package carrying renderer residue is valid and
+   * portable. Saying so is a copy refinement, NOT a seventh operator state: the
+   * state, pill and tone are unchanged, and hygiene never moves severity. The
+   * unqualified drift wording would now be actively misleading, since it names
+   * two causes that may not be the ones that fired. */
+  function hygieneFindingCount(result) {
+    var hygiene = safeObject(result && result.rendererHygiene);
+    if (hygiene.observed !== true) return 0;
+    return (hygiene.dataImageResidue || 0) + (hygiene.assetRefDrift || 0);
+  }
+
+  function explanationFor(status, result) {
+    var base = EXPLAIN[status] || '';
+    if (status !== 'warning' && status !== 'partial') return base;
+    if (!hygieneFindingCount(result)) return base;
+    if (status === 'warning') return EXPLAIN.warningHygiene;
+    return EXPLAIN.partialHygiene;
   }
 
   /* Pure: map a diagnoseSavedChatArchiveV1 result to a status-only summary. */
@@ -111,10 +134,10 @@
       return { state: 'ready', status: 'ok', pill: { label: 'Healthy', tone: 'ok' }, headline: TEXT.ok, explanation: EXPLAIN.ok };
     }
     if (status === 'warning') {
-      return { state: 'ready', status: 'warning', pill: { label: 'Healthy with drift', tone: 'warn' }, headline: TEXT.warning, explanation: EXPLAIN.warning };
+      return { state: 'ready', status: 'warning', pill: { label: 'Healthy with drift', tone: 'warn' }, headline: TEXT.warning, explanation: explanationFor('warning', result) };
     }
     if (status === 'partial') {
-      return { state: 'ready', status: 'partial', pill: { label: 'Mixed', tone: 'block' }, headline: TEXT.blocked, explanation: EXPLAIN.partial };
+      return { state: 'ready', status: 'partial', pill: { label: 'Mixed', tone: 'block' }, headline: TEXT.blocked, explanation: explanationFor('partial', result) };
     }
     if (status === 'blocked') {
       return { state: 'ready', status: 'blocked', pill: { label: 'Integrity problems', tone: 'block' }, headline: TEXT.blocked, explanation: EXPLAIN.blocked };
@@ -160,6 +183,32 @@
     if (Array.isArray(value)) return value.length;
     if (typeof value === 'number' && isFinite(value)) return value;
     return null;
+  }
+
+  /* M10 P3.5b: renderer hygiene is now OBSERVED, but only for packages the
+   * observation could actually reach. Anything not observed stays `n/a` rather
+   * than becoming a clean zero, and an observation that reached no package at
+   * all publishes no counts — only its own unavailability. Hygiene is drift:
+   * its findings already reached the aggregate as package warnings, so these
+   * counts are a readout, never a second severity input. */
+  function rendererHygieneCounts(result) {
+    var hygiene = safeObject(result && result.rendererHygiene);
+    if (hygiene.observed !== true) {
+      return [unavailableCount('rendererHygiene', 'rendererHygiene')];
+    }
+    var counts = [
+      formatCount('dataImageResidue', 'rendererHygiene.dataImageResidue',
+        listCountOrUnavailable(hygiene.dataImageResidue)),
+      formatCount('rendererAssetRefDrift', 'rendererHygiene.assetRefDrift',
+        listCountOrUnavailable(hygiene.assetRefDrift)),
+    ];
+    /* Partial coverage is stated, not hidden: some packages were observed and
+     * others could not be, so the counts above are not archive-wide. */
+    if (hygiene.packagesUnavailable > 0) {
+      counts.push(formatCount('hygieneUnobservedPackages', 'rendererHygiene.packagesUnavailable',
+        hygiene.packagesUnavailable));
+    }
+    return counts;
   }
 
   /* Pure: groups the diagnostic result into C6.2 summary sections. */
@@ -208,11 +257,7 @@
           formatCount('orphanedPackages', 'orphanedPackages', countValue(counts, 'orphanedPackages')),
           formatCount('stalePackages', 'stalePackages', countValue(counts, 'stalePackages')),
           formatCount('storeAssetMismatches', 'storeAssetMismatches', countValue(counts, 'storeAssetMismatches')),
-          /* Renderer hygiene is a SEPARATE observation this phase does not
-           * perform. It is shown as unavailable rather than as a clean zero,
-           * and it has no effect on the archive's aggregate state. */
-          unavailableCount('rendererHygiene', 'rendererHygiene'),
-        ],
+        ].concat(rendererHygieneCounts(result)),
       },
       {
         key: 'db-checks',

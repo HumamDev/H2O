@@ -260,6 +260,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // observations and the P2 mapper. Loaded before the diagnostics facade can be
   // invoked; all three resolve their collaborators lazily, at call time.
   "ingestion/saved-chat-archive-integrity.tauri.js",
+  // M10 P3.5b: read-only renderer DRIFT observation over trusted-valid
+  // packages. Owns no gzip; decodes via the codec's bounded non-verifying
+  // decoder. Resolved lazily by the composition below.
+  "ingestion/saved-chat-archive-renderer-hygiene.js",
   "ingestion/saved-chat-archive-health-composition.js",
   // M10 P2: pure trusted-facts -> operator-state mapping. No verification,
   // filesystem, invoke or mutation authority.
@@ -1405,6 +1409,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/saved-chat-reclamation-ui.studio.js",
   "ingestion/saved-chat-archive-integrity.tauri.js",
+  "ingestion/saved-chat-archive-renderer-hygiene.js",
   "ingestion/saved-chat-archive-health-composition.js",
   "ingestion/saved-chat-archive-health-mapping.js",
   "ingestion/archive-health-ui.studio.js",

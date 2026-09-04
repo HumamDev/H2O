@@ -692,6 +692,13 @@
        the six existing operator states. No verification, no filesystem, no
        invoke, no state. -->
   <script src="./ingestion/saved-chat-archive-health-mapping.js"></script>
+  <!-- M10 P3.5b renderer hygiene. A read-only DRIFT observation over the
+       snapshot member of trusted-VALID packages only; it decides no package
+       validity and owns no gzip of its own, decoding V3/gzip snapshots through
+       the codec's single bounded NON-VERIFYING decoder. MUST load after the
+       package codec above and BEFORE the composition below, which resolves
+       observeSavedChatRendererHygieneV1. -->
+  <script src="./ingestion/saved-chat-archive-renderer-hygiene.js"></script>
   <!-- M10 P3a trusted composition. Joins the trusted client with the existing
        separate DB/CAS/renderer observations and the P2 mapper. MUST load after
        BOTH of the above (it resolves readSavedChatArchiveIntegrityV1 and

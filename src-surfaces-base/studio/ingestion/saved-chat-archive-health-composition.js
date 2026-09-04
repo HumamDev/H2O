@@ -25,6 +25,13 @@
  *                                      story about validity)
  *   trusted V1/V2, valid     -> MAY run, as separate DETAIL only
  *
+ * Renderer HYGIENE (M10 P3.5b) is a DIFFERENT observation with a different
+ * rule. The detail rule above concerns persistent renderer MEMBERS, which V3
+ * forbids; hygiene concerns residue inside snapshot CONTENT, which V3 packages
+ * still carry. So hygiene runs for every trusted-valid occupant regardless of
+ * family, and skips only what trusted integrity already refused. Like every
+ * observation here it can add drift warnings and nothing else.
+ *
  * Public API (H2O.Studio.ingestion):
  *   composeSavedChatArchiveHealthV1(deps) -> Promise<presentation model + detail>
  */
@@ -77,6 +84,12 @@
     return cleanString(occupant.constructionFamily) !== 'v3';
   }
 
+  /* Hygiene applies to every trusted-VALID occupant, V3 included. The only
+   * exclusion is an occupant trusted integrity refused. */
+  function hygieneObservationApplies(occupant) {
+    return isTrustedValidPackage(occupant);
+  }
+
   async function composeSavedChatArchiveHealthV1(deps) {
     var options = isObject(deps) ? deps : {};
 
@@ -93,6 +106,7 @@
     var dbDrift = resolve(options, 'dbDrift', 'dbDriftForIdentityV1');
     var casPresence = resolve(options, 'casPresence', 'liveCasPresenceForShasV1');
     var rendererDetail = typeof options.rendererDetail === 'function' ? options.rendererDetail : null;
+    var rendererHygiene = resolve(options, 'rendererHygiene', 'observeSavedChatRendererHygieneV1');
     var stores = options.stores !== undefined ? options.stores : resolveStores();
     var includeDbChecks = options.includeDbChecks !== false;
     var includeCasChecks = options.includeCasChecks !== false;
@@ -105,6 +119,16 @@
     var packageWarnings = {};
     var dbChecksByPath = {};
     var detailByPath = {};
+    /* Hygiene is summarised explicitly so consumers can tell "observed and
+     * clean" from "not observed" without inferring it from a missing key. */
+    var hygieneSummary = {
+      attempted: false,
+      packagesObserved: 0,
+      packagesUnavailable: 0,
+      packagesSkipped: 0,
+      dataImageResidue: 0,
+      assetRefDrift: 0,
+    };
 
     var occupants = asArray(integrity && integrity.occupants);
     for (var i = 0; i < occupants.length; i += 1) {
@@ -169,6 +193,49 @@
         }
       }
 
+      /* Renderer HYGIENE. Drift only: its warnings join the same presentation
+       * bucket every other observation uses, so it can never produce a blocker
+       * or alter the trusted classification. An unavailable observation
+       * contributes no warning and is counted as unavailable, never as clean. */
+      if (includeRendererChecks && rendererHygiene) {
+        if (!hygieneObservationApplies(occupant)) {
+          hygieneSummary.packagesSkipped += 1;
+        } else {
+          hygieneSummary.attempted = true;
+          var hygiene = null;
+          try {
+            hygiene = await rendererHygiene({
+              packagePath: packagePath,
+              class: occupant.class,
+              constructionFamily: occupant.constructionFamily,
+              snapshotEncoding: occupant.snapshotEncoding,
+              snapshotPhysicalByteLength: occupant.snapshotPhysicalByteLength,
+              logicalSnapshotByteLength: occupant.logicalSnapshotByteLength,
+              assetShas: occupant.assetShas,
+            });
+          } catch (_) {
+            hygiene = { applicable: true, observed: false, reason: 'renderer-hygiene-threw', warnings: [] };
+          }
+          if (isObject(hygiene)) {
+            detailByPath[packagePath] = detailByPath[packagePath] || {};
+            detailByPath[packagePath].rendererHygiene = hygiene;
+            if (hygiene.observed === true) {
+              hygieneSummary.packagesObserved += 1;
+              var findings = isObject(hygiene.findings) ? hygiene.findings : {};
+              if (findings.dataImageResidue === true) hygieneSummary.dataImageResidue += 1;
+              if (asArray(findings.assetRefDrift).length) hygieneSummary.assetRefDrift += 1;
+              asArray(hygiene.warnings).forEach(function (entry) {
+                warnings.push(cleanString(entry && entry.message) || cleanString(entry && entry.code));
+              });
+            } else if (hygiene.applicable === false) {
+              hygieneSummary.packagesSkipped += 1;
+            } else {
+              hygieneSummary.packagesUnavailable += 1;
+            }
+          }
+        }
+      }
+
       var kept = warnings.filter(Boolean);
       if (kept.length) packageWarnings[packagePath] = kept;
     }
@@ -189,6 +256,7 @@
       integrity: integrity,
       dbChecksByPath: dbChecksByPath,
       detailByPath: detailByPath,
+      rendererHygiene: hygieneSummary,
     };
   }
 

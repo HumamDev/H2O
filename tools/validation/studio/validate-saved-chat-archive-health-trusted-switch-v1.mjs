@@ -263,10 +263,16 @@ await checkAsync('19-21. retired metrics are absent, and unavailable is never ze
     assert.ok(!(retired in counts), `${retired} must not be emitted at all`);
     assert.notEqual(counts[retired], 0, `${retired} must never appear as a measured zero`);
   }
-  /* C. Renderer hygiene is deferred, and stated as unobserved rather than 0. */
+  /* C. Renderer hygiene is PERFORMED as of P3.5b, but this harness installs no
+     observer, so it must still state unobserved rather than a clean 0 — the
+     same absent-is-not-zero rule, now expressed by its own availability fields
+     instead of the retired P3.5 deferral marker. */
   assert.ok(!('dataImageResidue' in counts), 'dataImageResidue must not be emitted as a count');
   assert.equal(view.result.rendererHygiene.observed, false, 'availability is explicit');
-  assert.equal(view.result.rendererHygiene.deferredTo, 'P3.5');
+  assert.equal(view.result.rendererHygiene.attempted, false, 'no observer installed here');
+  assert.equal(view.result.rendererHygiene.deferredTo, undefined, 'the P3.5 deferral is retired');
+  assert.ok(!('dataImageResidue' in view.result.rendererHygiene),
+    'an unobserved hygiene run publishes no finding count');
   /* And the per-package buckets are absent, not empty. */
   for (const p of view.result.packages) {
     for (const field of ['dataImageResidue', 'assetRefMismatches', 'rendererAssetRefMismatches']) {

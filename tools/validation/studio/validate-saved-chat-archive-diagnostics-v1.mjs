@@ -1426,13 +1426,16 @@ await checkAsync('aggregate diagnostic returns partial for mixed trusted package
   assert.equal(result.counts.packagesOk, 2);
   assert.equal(result.counts.packagesBlocked, 2);
 
-  /* M10 P3 metric correction: the approximate integrity counts are RETIRED and
-     renderer hygiene is DEFERRED. None may reappear as a measured-looking 0. */
+  /* M10 P3 metric correction: the approximate integrity counts are RETIRED, and
+     the legacy dataImageResidue COUNT stays retired even now that P3.5b
+     performs hygiene — hygiene reports separately, under its own availability.
+     None may reappear as a measured-looking 0. */
   for (const retired of ['brokenPackageAssets', 'assetRefMismatches', 'dataImageResidue']) {
     assert.ok(!(retired in result.counts), `${retired} must not be emitted`);
   }
   assert.equal(result.rendererHygiene.observed, false, 'hygiene availability is explicit');
-  assert.equal(result.rendererHygiene.deferredTo, 'P3.5');
+  assert.equal(result.rendererHygiene.deferredTo, undefined, 'the P3.5 deferral is retired');
+  assert.equal(result.rendererHygiene.packagesObserved, 0);
 
   /* What replaces them: the trusted rule that actually failed, per package. */
   const blocked = result.packages.filter((p) => p.status === 'blocked');

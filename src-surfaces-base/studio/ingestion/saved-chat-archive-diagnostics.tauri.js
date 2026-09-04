@@ -1908,17 +1908,34 @@
      *   assetRefMismatches   RETIRED. It conflated canonical package-integrity
      *                        mismatches with renderer-hygiene observations; the
      *                        integrity half is now a trusted blocker code.
-     *   dataImageResidue     DEFERRED to P3.5. Renderer hygiene is a separate
-     *                        observation this phase does not perform. Absent is
-     *                        NOT zero, and it contributes no blocker, no warning
-     *                        and no aggregate-state effect.
+     *   dataImageResidue     RETIRED as a legacy COUNT. Renderer hygiene is now
+     *                        performed (P3.5b), but as a separate drift
+     *                        observation reported under `rendererHygiene` with
+     *                        its own availability. It is not folded back into
+     *                        this legacy blocker-bucket total, whose semantics
+     *                        were "package verification failures".
      */
     delete result.counts.brokenPackageAssets;
     delete result.counts.assetRefMismatches;
     delete result.counts.dataImageResidue;
-    /* Renderer hygiene availability, stated explicitly rather than implied by a
-     * missing key. It is informational only and never a severity input. */
-    result.rendererHygiene = { observed: false, deferredTo: 'P3.5' };
+    /* Renderer hygiene (P3.5b). Reported with its OWN availability rather than
+     * implied by a missing key, and never a severity input of its own: its
+     * findings already reached the aggregate as ordinary package drift
+     * warnings, through the same presentation bucket every other observation
+     * uses. Counts appear only for what was actually observed — a package that
+     * could not be read contributes to `packagesUnavailable`, never a zero. */
+    var hygiene = safeObject(composed.rendererHygiene);
+    result.rendererHygiene = {
+      observed: hygiene.packagesObserved > 0,
+      attempted: hygiene.attempted === true,
+      packagesObserved: hygiene.packagesObserved || 0,
+      packagesUnavailable: hygiene.packagesUnavailable || 0,
+      packagesSkipped: hygiene.packagesSkipped || 0,
+    };
+    if (result.rendererHygiene.observed) {
+      result.rendererHygiene.dataImageResidue = hygiene.dataImageResidue || 0;
+      result.rendererHygiene.assetRefDrift = hygiene.assetRefDrift || 0;
+    }
 
     var status = LEGACY_STATUS_BY_AGGREGATE[model.aggregateState];
     if (!status) {
