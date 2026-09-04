@@ -716,7 +716,6 @@
     byAId: new Map(),
     aToPrimaryAId: new Map(),
     aliasToTurnId: new Map(),
-    paginationDrafts: null,
     crossQIdAnswerConflictCount: 0,
     recentCrossQIdAnswerConflicts: [],
     lastCrossQIdAnswerConflict: null,
@@ -1512,7 +1511,7 @@
 
   // Phase 4 Step 2.2: optional `preScanned` parameter avoids a redundant DOM
   // scan when refresh() has already collected the same node set. When omitted
-  // (e.g. called from reconcileTurnRecordsFromPaginationSnapshot), the function
+  // (e.g. called by an explicit presentation reconciliation), the function
   // falls back to its original behavior of scanning the document itself.
   function buildLiveTurnDrafts(preScanned) {
     const nodes = Array.isArray(preScanned)
@@ -1550,48 +1549,6 @@
     return buildTurnDraftsFromEntries(entries);
   }
 
-  function buildPaginationTurnDrafts(rows = []) {
-    const entries = [];
-    const sourceRows = Array.isArray(rows) ? rows : [];
-    for (let index = 0; index < sourceRows.length; index += 1) {
-      const row = sourceRows[index];
-      const role = String(row?.role || '').trim();
-      const node = row?.node || null;
-      const answerEl = row?.answerEl || row?.primaryAEl || null;
-      const structure = readTurnEntryStructure(node || answerEl, null, index);
-      if (role === 'user') {
-        entries.push({
-          role,
-          qEl: node,
-          qId: node ? getQId(node) : null,
-          aliasIds: [
-            row?.turnId,
-            row?.uid,
-            node ? getMsgIdAttr(node) : '',
-            String(node?.dataset?.turnId || '').trim(),
-          ],
-          structure,
-        });
-      } else if (role === 'assistant') {
-        const aEl = answerEl || node || null;
-        entries.push({
-          role,
-          aEl,
-          aId: normalizeTurnAlias(row?.answerId || getMsgIdAttr(aEl)),
-          aliasIds: [
-            row?.turnId,
-            row?.uid,
-            row?.answerId,
-            String(aEl?.dataset?.turnId || '').trim(),
-            aEl ? getMsgIdAttr(aEl) : '',
-          ],
-          structure,
-        });
-      }
-    }
-    return buildTurnDraftsFromEntries(entries);
-  }
-
   function canonicalDraftHasStructuralQuestionProof(draft) {
     const structure = draft?.structure || null;
     return structure?.structureKnown === true
@@ -1606,13 +1563,6 @@
     const recordQId = normalizeTurnAlias(record?.qId || '');
     const draftQId = normalizeTurnAlias(draft?.qId || '');
     return !!recordQId && !!draftQId && recordQId !== draftQId;
-  }
-
-  function canonicalRecordMatchesMountedQuestionShell(record, draft) {
-    const mounted = canonicalMountedQuestionIdentity(draft);
-    if (!mounted.qId || !mounted.shellTurnId) return false;
-    const identities = canonicalRecordIdentityValues(record);
-    return identities.has(mounted.shellTurnId) || identities.has(`turn:${mounted.shellTurnId}`);
   }
 
   function recordCanonicalCrossQIdConflict(record, draft, basis = 'unproven-cross-qid-match') {
@@ -1655,29 +1605,12 @@
     for (const aliasId of draft?.aliasIds || []) {
       pushRecord(getRecordByTurnIdInternal(aliasId), 'historical-alias-only');
     }
-    if (
-      !candidates.length
-      && !(turnState.paginationDrafts && turnState.paginationDrafts.length)
-      // Host turn ordinals are window-relative and reassign on rematerialization,
-      // so ordinal adoption is only a legacy-scan crutch. Under complete-index
-      // authority every canonical draft carries stable identity: a draft that
-      // matches no record is a genuinely new turn and must append, never adopt
-      // an unrelated record by position.
-      && !(typeof chatAtlasCompleteIndexAuthorityActive === 'function'
-        && chatAtlasCompleteIndexAuthorityActive())
-    ) {
-      pushRecord(getRecordByTurnNoInternal(draft?.turnNo || 0), 'ordinal-fallback');
-    }
-
     for (const candidate of candidates) {
       if (
         normalizeTurnAlias(candidate.record?.qId || '')
         && !normalizeTurnAlias(draft?.qId || '')
       ) continue;
       if (!canonicalQIdsConflict(candidate.record, draft)) return candidate;
-      if (canonicalRecordMatchesMountedQuestionShell(candidate.record, draft)) {
-        return { record: candidate.record, basis: 'mounted-question-shell' };
-      }
       recordCanonicalCrossQIdConflict(candidate.record, draft, candidate.basis);
     }
     return { record: null, basis: 'unmatched' };
@@ -1829,69 +1762,6 @@
     return refreshLegacyTurnCompat(record);
   }
 
-  function syncDurableCurrentQuestionIdentity(previousQId, currentQId, draft) {
-    const previous = normalizeTurnAlias(previousQId || '');
-    const current = normalizeTurnAlias(currentQId || '');
-    if (!previous || !current || previous === current) return false;
-    ensureDurableTurnCache();
-    const order = turnState.durableOrder;
-    const byKey = turnState.durableByKey;
-    const previousKey = `q:${previous}`;
-    let sourceKey = byKey.has(previousKey) ? previousKey : '';
-    if (!sourceKey) return false;
-
-    const retained = byKey.get(sourceKey);
-    if (!retained) return false;
-    const next = slimTurnDraft({
-      ...retained,
-      qId: current,
-      answerIds: Array.from(new Set([...(retained.answerIds || []), ...(draft?.answerIds || [])])),
-      aliasIds: Array.from(new Set([...(retained.aliasIds || []), ...(draft?.aliasIds || []), previous])),
-    });
-    const currentKey = `q:${current}`;
-    const sourceIndex = order.indexOf(sourceKey);
-    const existingCurrent = currentKey !== sourceKey ? byKey.get(currentKey) : null;
-    const existingIndex = existingCurrent ? order.indexOf(currentKey) : -1;
-    if (existingCurrent) {
-      next.answerIds = Array.from(new Set([...(existingCurrent.answerIds || []), ...next.answerIds]));
-      next.aliasIds = Array.from(new Set([...(existingCurrent.aliasIds || []), ...next.aliasIds, previous]));
-    }
-    byKey.delete(sourceKey);
-    byKey.set(currentKey, next);
-    const occupiedIndexes = [sourceIndex, existingIndex].filter((index) => index >= 0);
-    const replacementIndex = occupiedIndexes.length ? Math.min(...occupiedIndexes) : order.length;
-    for (const index of occupiedIndexes.sort((a, b) => b - a)) {
-      order.splice(index, 1);
-    }
-    order.splice(replacementIndex, 0, currentKey);
-    return true;
-  }
-
-  function promoteCanonicalCurrentQuestionIdentity(record, draft, match = {}) {
-    const mounted = canonicalMountedQuestionIdentity(draft);
-    const currentQId = mounted.qId;
-    const previousQId = normalizeTurnAlias(record?.qId || '');
-    if (!record || !currentQId) return { changed: false, reason: 'mounted-question-id-unavailable' };
-    if (currentQId === previousQId) return { changed: false, reason: 'already-current' };
-    const positiveBasis = match?.basis === 'mounted-question-shell';
-    if (!positiveBasis) return { changed: false, reason: 'selected-path-proof-missing' };
-
-    record._aliasIds = Array.from(new Set([
-      ...(record._aliasIds || []),
-      previousQId,
-    ].map((value) => normalizeTurnAlias(value)).filter(Boolean)));
-    record.qId = currentQId;
-    record.hasQuestion = true;
-    record.turnId = buildCanonicalTurnId(record);
-    syncDurableCurrentQuestionIdentity(previousQId, currentQId, draft);
-    return {
-      changed: true,
-      reason: match.basis,
-      previousQId: previousQId || null,
-      currentQId,
-    };
-  }
-
   function applyCanonicalDraft(record, draft, opts = {}) {
     const turnNo = Math.max(1, Number(draft?.turnNo || record?.turnNo || 1) || 1);
     const incomingAnswerIds = Array.isArray(draft?.answerIds) ? draft.answerIds.slice() : [];
@@ -1980,49 +1850,14 @@
 
   function applyLiveDraft(record, draft, match = {}) {
     if (!record || !draft) return record;
-    let shouldRebuildTurnId = false;
     record.live = {
       qEl: draft?.live?.qEl || null,
       primaryAEl: draft?.live?.primaryAEl || null,
       answerEls: Array.isArray(draft?.live?.answerEls) ? draft.live.answerEls.filter(Boolean) : [],
       connected: !!draft?.live?.connected,
     };
-    // Once a globally-proven index owns historical identity, mounted evidence
-    // may bind elements/geometry but may not remove variants, flip NO ANSWER,
-    // rekey the question, or replace the selected historical primary.
-    if (record.completeIndexAuthority === true) return refreshLegacyTurnCompat(record);
-    const questionPromotion = promoteCanonicalCurrentQuestionIdentity(record, draft, match);
-    if (questionPromotion.changed) {
-      shouldRebuildTurnId = true;
-    } else if (
-      !record.qId
-      && canonicalMountedQuestionIdentity(draft).qId
-      && canonicalDraftHasStructuralQuestionProof(draft)
-    ) {
-      record.qId = canonicalMountedQuestionIdentity(draft).qId;
-      record.hasQuestion = true;
-      shouldRebuildTurnId = true;
-    }
-    if (draft?.noAnswer === true) {
-      record.answerIds = [];
-      record.primaryAId = null;
-      record.hasAssistant = false;
-      record.noAnswer = true;
-      shouldRebuildTurnId = true;
-    } else if (Array.isArray(draft?.answerIds) && draft.answerIds.length) {
-      const answerState = mergeCanonicalAnswerState(
-        record?.answerIds,
-        draft.answerIds,
-        draft?.primaryAId,
-        record?.primaryAId,
-      );
-      record.answerIds = answerState.answerIds;
-      record.primaryAId = answerState.primaryAId;
-      record.hasAssistant = !!record.answerIds.length;
-      record.noAnswer = false;
-      shouldRebuildTurnId = true;
-    }
-    if (shouldRebuildTurnId) record.turnId = buildCanonicalTurnId(record);
+    // Mounted evidence is presentation-only. Canonical/effective draft owners
+    // already supplied every logical identity and membership field.
     return refreshLegacyTurnCompat(record);
   }
 
@@ -2073,7 +1908,7 @@
       const record = existing || createTurnRecord('', draft.turnNo);
       applyCanonicalDraft(record, draft, {
         basis: previousMatch.basis,
-        allowQIdTransition: previousMatch.basis === 'mounted-question-shell',
+        allowQIdTransition: false,
         completeIndexAuthority: draft?.completeIndexAuthority === true,
       });
       used.add(record);
@@ -2097,6 +1932,8 @@
     }
 
     for (const draft of unmatchedLiveDrafts) {
+      // canonical-membership-only: mounted/native rows may hydrate an existing
+      // canonical record, but cannot create a new logical member.
       // A trusted branch transition replaces mounted content while the
       // committed list still describes the outgoing branch. A mounted turn
       // that cannot be matched against current authority in that window
@@ -2124,11 +1961,6 @@
         turnState.ambiguousAnswerOwnerCount += 1;
         continue;
       }
-      const record = createTurnRecord('', nextRecords.length + 1);
-      draft.turnNo = nextRecords.length + 1;
-      applyCanonicalDraft(record, draft);
-      applyLiveDraft(record, draft, { record, basis: 'new-live-turn', candidateCount: 1 });
-      nextRecords.push(record);
     }
 
     for (const record of nextRecords) refreshLegacyTurnCompat(record);
@@ -2456,6 +2288,15 @@
   // callers (e.g. boot retry paths) pass nothing and behave identically
   // to the prior implementation.
   function buildTurns(preScanned) {
+    if (!chatAtlasCompleteIndexAuthorityActive()) {
+      turnState.lastStructureDecision = Object.freeze({
+        accepted: false,
+        basis: 'canonical-membership-unavailable',
+        reasons: Object.freeze(['canonical-membership-unavailable']),
+      });
+      commitTurnDrafts([], []);
+      return;
+    }
     const pairing = readBootSplitPairEvidence();
     const liveReconciliation = reconcileBootSplitTurnDrafts(buildLiveTurnDrafts(preScanned), pairing);
     const rawSectionDrafts = buildSectionTurnDrafts();
@@ -2463,73 +2304,15 @@
       ? reconcileBootSplitTurnDrafts(rawSectionDrafts, pairing).drafts
       : rawSectionDrafts;
     const liveDrafts = supplementSegmentShellVariants(liveReconciliation.drafts, sectionDrafts);
-    if (chatAtlasCompleteIndexAuthorityActive()) {
-      // Core, Ledger and presentation consumers share one membership source.
-      // A proven selected-path overlay is not merely a MiniMap view over the
-      // outgoing canonical list; it is the immutable effective branch index.
-      const index = getEffectivePresentationIndex()
-        || chatAtlasCompleteIndexAuthorityIndex();
-      const authorityDrafts = chatAtlasCompleteIndexCanonicalDrafts(index);
-      const boundedLiveDrafts = chatAtlasCompleteIndexLiveDrafts(liveDrafts, index);
-      const pendingDrafts = chatAtlasCompleteIndexPendingCanonicalDrafts(index);
-      commitTurnDrafts([...authorityDrafts, ...pendingDrafts], boundedLiveDrafts);
-      return;
-    }
-    const sectionAuthority = sectionDraftAuthorityDecision(sectionDrafts, liveDrafts);
-    turnState.lastStructureDecision = sectionAuthority;
-    const sectionDraftsAreAuthoritative = sectionAuthority.accepted;
-    const baseDrafts = sectionDraftsAreAuthoritative
-      ? sectionDrafts
-      : liveDrafts;
-    let legacyCanonicalDrafts = null;
-    if (Array.isArray(turnState.paginationDrafts) && turnState.paginationDrafts.length) {
-      legacyCanonicalDrafts = turnState.paginationDrafts;
-    } else if (sectionDraftsAreAuthoritative) {
-      // Every turn section remains mounted even when its message content is
-      // virtualized. Once that complete map wins the existing source-choice
-      // rule, replace the same-route durable cache so a shorter branch can
-      // retire records that no longer exist. Hydrated live drafts are still
-      // applied by commitTurnDrafts() below to upgrade the retained records.
-      seedDurableTurnDrafts(sectionDrafts);
-      legacyCanonicalDrafts = sectionDrafts.slice();
-    } else {
-      legacyCanonicalDrafts = mergeDurableTurnDrafts(baseDrafts, {
-        authoritativeReplacement: false,
-      });
-    }
-    const legacyReconciliation = reconcileBootSplitTurnDrafts(legacyCanonicalDrafts, pairing);
-    legacyCanonicalDrafts = legacyReconciliation.drafts;
-    if (legacyReconciliation.reconciledCount > 0) seedDurableTurnDrafts(legacyCanonicalDrafts);
-    const canonicalDrafts = selectChatAtlasCanonicalDrafts(legacyCanonicalDrafts);
-    commitTurnDrafts(canonicalDrafts, liveDrafts);
-  }
-
-  function reconcileTurnRecordsFromPaginationSnapshot(rows = []) {
-    // A proven complete index owns membership and identity. Pagination remains
-    // free to patch page/mount presentation through patchTurnPageState(), but
-    // its legacy master snapshot must never replace the proven row set.
-    if (chatAtlasCompleteIndexAuthorityActive()) {
-      turnState.paginationDrafts = null;
-      return listTurnRecords();
-    }
-    const drafts = buildPaginationTurnDrafts(rows);
-    turnState.paginationDrafts = drafts.length ? drafts : null;
-    // The pagination master index is full-chat authoritative: refresh the
-    // durable cache from it so retention stays correct after teardown.
-    if (drafts.length) seedDurableTurnDrafts(drafts);
-    const legacyCanonicalDrafts = turnState.paginationDrafts || buildLiveTurnDrafts();
-    commitTurnDrafts(selectChatAtlasCanonicalDrafts(legacyCanonicalDrafts), buildLiveTurnDrafts());
-    return listTurnRecords();
-  }
-
-  function clearPaginationTurnSnapshot() {
-    for (const record of turnState.turns) {
-      record.page = createEmptyPageState();
-      refreshLegacyTurnCompat(record);
-    }
-    turnState.paginationDrafts = null;
-    buildTurns();
-    return listTurnRecords();
+    // Core, Ledger and presentation consumers share one membership source.
+    // A proven selected-path overlay is not merely a MiniMap view over the
+    // outgoing canonical list; it is the immutable effective branch index.
+    const index = getEffectivePresentationIndex()
+      || chatAtlasCompleteIndexAuthorityIndex();
+    const authorityDrafts = chatAtlasCompleteIndexCanonicalDrafts(index);
+    const boundedLiveDrafts = chatAtlasCompleteIndexLiveDrafts(liveDrafts, index);
+    const pendingDrafts = chatAtlasCompleteIndexPendingCanonicalDrafts(index);
+    commitTurnDrafts([...authorityDrafts, ...pendingDrafts], boundedLiveDrafts);
   }
 
   function patchTurnPageState(turnId, partialPageState, opts = {}) {
@@ -2993,8 +2776,6 @@
     listTurnRecords,
     patchTurnPageState: (turnId, partialPageState, opts = {}) => patchTurnPageState(turnId, partialPageState, opts),
     patchTurnMountState: (turnId, partialMountState, opts = {}) => patchTurnMountState(turnId, partialMountState, opts),
-    _reconcilePaginationSnapshot: (rows = []) => reconcileTurnRecordsFromPaginationSnapshot(rows),
-    _clearPaginationSnapshot: () => clearPaginationTurnSnapshot(),
   });
 
   /* ── Host surface consumed by 0A3b Chat Atlas Ledger via the 0A3a broker ──

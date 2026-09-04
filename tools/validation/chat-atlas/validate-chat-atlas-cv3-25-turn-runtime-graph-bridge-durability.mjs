@@ -16,12 +16,11 @@ const PAGE_REL = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js
 const CAPABILITY_VALIDATOR_REL = 'tools/validation/chat-atlas/validate-chat-atlas-cv3-24-rendered-boundary-collapse-capability.mjs';
 const PARENT_COMMIT = '9bd4a69e7daaac7cde34df59067c0802cc6f547d';
 const PRE_BRIDGE_COMMIT = '1b88533ba7f2d331dfc81370ddc26977518b41cf';
-// Milestone 2B-2 moved the central Chat Atlas authority out of H2O Core into
-// 0A3a Chat Atlas Core. This validator asserts on that implementation, so the
-// H2O Core source it reads is the aggregate of the files the code now lives in.
-// No assertion changes; negative checks span both owners, which is stronger.
 const CHAT_ATLAS_CORE_REL = 'src-runtime-base/0A3a.⬛️🧭 Chat Atlas Core 🧭.js';
-const CURRENT_CORE = `${fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8')}\n${fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8')}`;
+const CHAT_ATLAS_HEADER = '// @h2o-id             0a3a.chatatlas.core';
+const H2O_CORE_SOURCE = fs.readFileSync(path.join(ROOT, CORE_REL), 'utf8');
+const CHAT_ATLAS_CORE_SOURCE = fs.readFileSync(path.join(ROOT, CHAT_ATLAS_CORE_REL), 'utf8');
+const CURRENT_CORE = `${H2O_CORE_SOURCE}\n${CHAT_ATLAS_CORE_SOURCE}`;
 const CURRENT_REBUILD = fs.readFileSync(path.join(ROOT, REBUILD_REL), 'utf8');
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_REL), 'utf8');
 const PARENT_REBUILD = execFileSync('git', ['show', `${PARENT_COMMIT}:${REBUILD_REL}`], {
@@ -56,6 +55,37 @@ async function fixture(name, run) {
   } catch (error) {
     fixtures.push({ name, ok: false, error: String(error?.stack || error) });
   }
+}
+
+function extractFunctionSource(source, name) {
+  const anchors = [`  function ${name}(`, `  async function ${name}(`];
+  const starts = anchors.map((anchor) => source.indexOf(anchor)).filter((index) => index >= 0);
+  if (starts.length !== 1) throw new Error(`function-anchor-invalid:${name}`);
+  const start = starts[0];
+  const bodyStart = source.indexOf('{', start);
+  let depth = 0;
+  let quote = '';
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    const ch = source[index];
+    const next = source[index + 1];
+    if (lineComment) { if (ch === '\n') lineComment = false; continue; }
+    if (blockComment) { if (ch === '*' && next === '/') { blockComment = false; index += 1; } continue; }
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '/' && next === '/') { lineComment = true; index += 1; continue; }
+    if (ch === '/' && next === '*') { blockComment = true; index += 1; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue; }
+    if (ch === '{') depth += 1;
+    else if (ch === '}' && --depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`function-boundary-invalid:${name}`);
 }
 
 function aliasModeFromRebuild(source) {
@@ -101,13 +131,28 @@ function publishAliasLikeLiveRefresh(aliasPath, liveRoot) {
 }
 
 function instrumentCoreForColdLoad(source) {
-  const marker = String(source).split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS'));
+  const input = String(source);
+  const atlasHeaderIndex = input.indexOf(CHAT_ATLAS_HEADER);
+  const atlasModuleIndex = atlasHeaderIndex < 0 ? -1 : input.lastIndexOf('// ==H2O Module==', atlasHeaderIndex);
+  const corePart = atlasModuleIndex < 0 ? input : input.slice(0, atlasModuleIndex);
+  const atlasPart = atlasModuleIndex < 0 ? '' : input.slice(atlasModuleIndex);
+  const marker = corePart.split('\n').find((line) => line.includes('🟨 7) TIME / OBSERVERS'));
   if (!marker) throw new Error('core-observer-marker-unavailable');
-  const markerIndex = source.indexOf(marker);
+  const markerIndex = corePart.indexOf(marker);
   if (markerIndex < 0) throw new Error('core-observer-marker-invalid');
-  return `${source.slice(0, markerIndex)}
+  const instrumentedCore = `${corePart.slice(0, markerIndex)}
   globalThis.__CV325_RUNTIME__ = H2O.turnRuntime;
   globalThis.__CV325_H2O__ = H2O;
+})();
+`;
+  if (!atlasPart) return [instrumentedCore];
+  const exportAnchor = '  const CHAT_ATLAS_CORE_API = {';
+  const bootApply = '  try { chatAtlasApplyCompleteIndexProjectionPreferenceAtBoot(); } catch {}';
+  if (!atlasPart.includes(exportAnchor) || !atlasPart.includes(bootApply)) {
+    throw new Error('chat-atlas-instrumentation-anchor-invalid');
+  }
+  const instrumentedAtlas = atlasPart
+    .replace(exportAnchor, `
   globalThis.__CV325_SEED_GRAPH__ = (retained, authority) => {
     selectedPathAcquisitionState.graph = retained;
     Object.assign(completeTurnIndexAuthorityState, authority);
@@ -115,8 +160,9 @@ function instrumentCoreForColdLoad(source) {
   globalThis.__CV325_CLEAR_GRAPH__ = () => {
     selectedPathAcquisitionState.graph = null;
   };
-})();
-`;
+${exportAnchor}`)
+    .replace(bootApply, '  /* CV-3.25: preference boot suppressed in this read-only harness. */');
+  return [instrumentedCore, instrumentedAtlas];
 }
 
 function coldLoadRuntime(source) {
@@ -274,10 +320,11 @@ function coldLoadRuntime(source) {
   sandbox.globalThis = sandbox;
   const context = vm.createContext(sandbox, { codeGeneration: { strings: false, wasm: false } });
   const execute = () => {
-    vm.runInContext(instrumentCoreForColdLoad(source), context, {
-      filename: CORE_ALIAS,
+    const programs = instrumentCoreForColdLoad(source);
+    programs.forEach((program, index) => vm.runInContext(program, context, {
+      filename: index === 0 ? CORE_ALIAS : CHAT_ATLAS_CORE_REL,
       timeout: 4_000,
-    });
+    }));
     return context.__CV325_RUNTIME__;
   };
   execute();
@@ -522,7 +569,12 @@ await fixture('root cause is GRAPH_BRIDGE_BUILD_BYTES_STALE', () => {
 
 const corrected = buildCorrectedPublication();
 const stage2c = loadStage2cHarness();
-const stage2cLive = stage2c.createLiveCapabilityHarness();
+const stage2cRetiredInlineSlot = stage2c.createLiveCapabilityHarness({
+  rangeFixtureExtraKind: 'inline-slot',
+});
+const stage2cLive = stage2c.createLiveCapabilityHarness({
+  rangeFixtureExtraKind: 'title-list',
+});
 
 function seedCorrected(generation = 1, fingerprint = 'djb2:1yue4v7') {
   const scope = makeGraphScope(generation, fingerprint);
@@ -770,12 +822,20 @@ await fixture('Page 2 cold exact-wrapper capability succeeds in the loaded runti
   equal(stage2cLive.end.boundaryWrapperConnected, true, 'Page 2 wrapper retained');
 });
 
-await fixture('Page 1 range diagnostics retain the accepted exact topology', () => {
+await fixture('Page 1 range diagnostics retain current topology and reject retired inline slots', () => {
   equal(stage2cLive.pageOneRange.supported, true, 'range supported');
   equal(stage2cLive.pageOneRange.rangeProven, true, 'range proven');
   equal(stage2cLive.pageOneRange.hostWrapperCount, 50, '50 host wrappers');
   equal(stage2cLive.pageOneRange.h2oNodeCount, 3, '3 H2O nodes');
   equal(stage2cLive.pageOneRange.ambiguousWrapperCount, 0, 'zero ambiguity');
+  equal(stage2cRetiredInlineSlot.pageOneRange.supported, false, 'retired inline slot unsupported');
+  equal(stage2cRetiredInlineSlot.pageOneRange.rangeProven, false, 'retired inline slot range unproven');
+  equal(
+    stage2cRetiredInlineSlot.pageOneRange.reason,
+    'range-wrapper-ambiguous',
+    'retired inline slot fails closed as an ambiguous wrapper',
+  );
+  equal(stage2cRetiredInlineSlot.pageOneRange.ambiguousWrapperCount, 1, 'one retired wrapper is ambiguous');
 });
 
 await fixture('Page collapse capability retains rendered prerequisites and installed transaction', () => {
@@ -842,6 +902,48 @@ await fixture('public runtime contains no duplicate graph API under alternate ob
   ));
   equal(owners.length, 1, 'one graph API owner');
   equal(owners[0], h2o.turnRuntime, 'turnRuntime is the sole owner');
+});
+
+await fixture('retired Pagination membership seams are absent from H2O Core and turnRuntime', () => {
+  equal(H2O_CORE_SOURCE.includes('paginationDrafts'), false, 'no retained Pagination membership drafts');
+  equal(H2O_CORE_SOURCE.includes('reconcileTurnRecordsFromPaginationSnapshot'), false, 'no Pagination reconciliation authority');
+  equal(H2O_CORE_SOURCE.includes('_reconcilePaginationSnapshot'), false, 'no callable Pagination reconciliation seam');
+  equal(H2O_CORE_SOURCE.includes('_clearPaginationSnapshot'), false, 'no callable Pagination clear/repopulate seam');
+  equal(typeof corrected.loaded.runtime?._reconcilePaginationSnapshot, 'undefined', 'runtime façade exposes no Pagination membership writer');
+  equal(typeof corrected.loaded.runtime?._clearPaginationSnapshot, 'undefined', 'runtime façade exposes no Pagination membership clear/rebuild writer');
+});
+
+await fixture('H2O Core buildTurns fails closed without current canonical authority', () => {
+  const buildTurnsSource = extractFunctionSource(H2O_CORE_SOURCE, 'buildTurns');
+  equal(buildTurnsSource.includes('sectionDraftAuthorityDecision'), false, 'mounted sections cannot become membership authority');
+  equal(buildTurnsSource.includes('mergeDurableTurnDrafts'), false, 'durable DOM-derived rows cannot become membership authority');
+  equal(buildTurnsSource.includes('buildPaginationTurnDrafts'), false, 'Pagination drafts cannot become membership authority');
+  equal(buildTurnsSource.includes('canonical-membership-unavailable'), true, 'unavailable authority has an explicit empty boundary');
+});
+
+await fixture('H2O Core mounted evidence can attach but never append logical members', () => {
+  const commitSource = extractFunctionSource(H2O_CORE_SOURCE, 'commitTurnDrafts');
+  equal(commitSource.includes("basis: 'new-live-turn'"), false, 'unmatched mounted rows never append');
+  equal(commitSource.includes('canonical-membership-only'), true, 'commit is explicitly canonical-membership-only');
+  equal(commitSource.includes('applyLiveDraft(record, draft, match)'), true, 'matched mounted presentation attachment remains');
+});
+
+await fixture('H2O Core ordinal and unproven shell evidence cannot establish identity', () => {
+  const matchSource = extractFunctionSource(H2O_CORE_SOURCE, 'findPreviousTurnRecordMatch');
+  const commitSource = extractFunctionSource(H2O_CORE_SOURCE, 'commitTurnDrafts');
+  equal(matchSource.includes('ordinal-fallback'), false, 'ordinal record adoption retired');
+  equal(matchSource.includes('canonicalRecordMatchesMountedQuestionShell'), false, 'cross-qId mounted shell adoption retired');
+  equal(commitSource.includes("allowQIdTransition: previousMatch.basis === 'mounted-question-shell'"), false, 'unproven shell cannot rekey canonical identity');
+});
+
+await fixture('turnRuntime remains a read-compatible façade without legacy membership writers', () => {
+  const runtime = corrected.loaded.runtime;
+  equal(typeof runtime?.listTurns, 'function');
+  equal(typeof runtime?.getTurnRecordByQId, 'function');
+  equal(typeof runtime?.getCompleteTurnIndexProjectionStatus, 'function');
+  equal(typeof runtime?.getEffectivePresentationIndex, 'function');
+  equal(typeof runtime?.getGraphIdentityDiagnostics, 'function');
+  equal(typeof runtime?._reconcilePaginationSnapshot, 'undefined');
 });
 
 const failures = fixtures.filter((item) => !item.ok);

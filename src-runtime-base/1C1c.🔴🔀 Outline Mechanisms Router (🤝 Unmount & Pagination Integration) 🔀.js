@@ -34,10 +34,13 @@
   const KEY_CHUB_CHAT_MECHANISMS_V1 = 'h2o:prm:cgx:cntrlhb:state:chat-mechanisms:v1';
   const EV_CHAT_MECHANISMS_CHANGED = 'evt:h2o:chat-mechanisms:changed';
 
+  // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED
+  // Stored physical values are migration inputs only. Effective gesture routes
+  // stay with the existing local logical collapse and Thread Pages owners.
   const GESTURE_BACKENDS = new Set(['legacy', 'engine', 'off']);
-  const ANSWER_TITLE_DBLCLICK_MODES = new Set(['local-dom', 'unmount-engine']);
-  const DIVIDER_DOT_CLICK_MODES = new Set(['local-dom', 'unmount-engine']);
-  const DIVIDER_DBLCLICK_MODES = new Set(['pagination-focus-page', 'unmount-page-collapse']);
+  const ANSWER_TITLE_DBLCLICK_MODES = new Set(['local-dom']);
+  const DIVIDER_DOT_CLICK_MODES = new Set(['local-dom']);
+  const DIVIDER_DBLCLICK_MODES = new Set(['pagination-focus-page']);
 
   function safeDispatch(name, detail) {
     try { W.dispatchEvent(new CustomEvent(name, { detail })); } catch (_) {}
@@ -116,23 +119,26 @@
   }
 
   function defaultEngineActionMode(gestureBackend) {
-    return gestureBackend === 'engine' ? 'unmount-engine' : 'local-dom';
+    return 'local-dom';
   }
 
   function normalizeAnswerTitleMode(value, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const raw = String(value || fallback).trim().toLowerCase();
+    if (raw === 'unmount-engine') return 'local-dom';
     return ANSWER_TITLE_DBLCLICK_MODES.has(raw) ? raw : fallback;
   }
 
   function normalizeDividerDotMode(value, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const raw = String(value || fallback).trim().toLowerCase();
+    if (raw === 'unmount-engine') return 'local-dom';
     return DIVIDER_DOT_CLICK_MODES.has(raw) ? raw : fallback;
   }
 
   function normalizeDividerMode(value) {
     const raw = String(value || 'pagination-focus-page').trim().toLowerCase();
+    if (raw === 'unmount-page-collapse') return 'pagination-focus-page';
     return DIVIDER_DBLCLICK_MODES.has(raw) ? raw : 'pagination-focus-page';
   }
 

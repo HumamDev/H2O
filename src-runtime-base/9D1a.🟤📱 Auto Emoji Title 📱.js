@@ -233,20 +233,18 @@
 
   function MIG_AE_keys(chatId){
     const emoji = readLegacyEmoji(chatId);
-    if (emoji) {
-      try {
-        chatTitleApi()?.setEmoji?.({
-          chatId,
-          emoji,
-          source: 'migration:autoemoji',
-          priority: 70,
-          confidence: 0.8,
-          reason: '9d-legacy-fallback',
-        }, { reason: '9d-legacy-fallback' });
-      } catch {}
-    }
-    try { localStorage.removeItem(KEY_AE_.DONE_LEG(chatId)); } catch {}
-    try { localStorage.removeItem(KEY_AE_.EMOJI_LEG(chatId)); } catch {}
+    const api = chatTitleApi();
+    if (!emoji || typeof api?.migrateLegacyEmojiDurably !== 'function') return emoji;
+    Promise.resolve(api.migrateLegacyEmojiDurably(chatId, {
+      candidate: emoji,
+      reason: '9d-legacy-fallback',
+    })).then((result) => {
+      if (!result?.ok || !['migrated', 'already-complete'].includes(result.status)) return;
+      runtimeDone[chatId] = 1;
+      emitAutoEmojiChanged(chatId, result.emoji || emoji, '9d-legacy-migrated');
+    }).catch((err) => {
+      try { console.warn('[H2O.AutoEmojiTitle] legacy migration deferred', err); } catch {}
+    });
     return emoji;
   }
 

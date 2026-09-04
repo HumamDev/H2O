@@ -1,8 +1,8 @@
 # ADR-0011: Title Management Contract
 
-- Status: Accepted through Stage 1D; Stage 1E-a source implementation pending canary
+- Status: Accepted through Stage 1F; canonical Native runtime adopted and default-on
 - Date: 2026-07-21
-- Amended: 2026-07-30
+- Amended: 2026-09-02
 - Scope: Pure contract, source-only DTO boundaries, and executable validation
 
 ## Context
@@ -10,19 +10,26 @@
 Native ChatGPT title handling and Studio title handling currently expose overlapping ideas with incompatible version conventions. Native legacy data uses numeric version `1`; Studio legacy data uses string version `"1.0.0"`. Neither version expresses independent title and emoji authority, trusted Native confirmation, route transaction identity, durable migration evidence, or deterministic cross-surface merge behavior.
 
 Stage 0B established the delivered title-interface baseline and proved that
-`9B0a`, `9B1a`, and `9C1a` are active while `9D1a` remains disabled. Stage 1A
+`9B0a`, `9B1a`, and `9C1a` were active while `9D1a` was disabled at that
+baseline. Stage 1A
 defined the shared pure contract. Stage 1B delivered a non-authoritative
 classic-script bridge, and Stage 1C added formatter-parity observation while
 keeping the legacy display result authoritative. Stage 1D corrected the
 browser-neutral source contract and coordinated the accepted public bridge.
-Stage 1E-a introduces a disabled-by-default Native runtime adoption path while
-retaining the full legacy path for immediate rollback.
+Stage 1E-a introduced a disabled-by-default Native runtime adoption path while
+retaining the full legacy path for immediate rollback. Stage 1F acceptance made
+that path default-on, and `9D1a` is now enabled for Auto Emoji, picker, and badge
+orchestration without becoming a competing canonical title authority.
 
 ## Decision
 
 ### Canonical ownership direction
 
-`9B0a` is the future single canonical title-state owner for the Native surface. Studio will consume the same contract through adapters in a later stage. The Stage 1A package supplies decisions and immutable data structures only; it is not a coordinator, adapter, persistence implementation, or renderer.
+`9B0a` is the sole H2O whole-conversation title/emoji semantic coordinator for
+the Native surface. Studio will consume the same contract through adapters in a
+later stage. The Stage 1A package supplies decisions and immutable data
+structures only; it is not a coordinator, adapter, persistence implementation,
+or renderer.
 
 ### Canonical record
 
@@ -333,13 +340,14 @@ authoritative runtime adoption.
   exact pathname comparison; project-scoped chat routes are not silently
   excluded.
 - Flag-off rollback removes all visual effects immediately and restores the
-  exact Native source and accessibility state. `9D1a` remains disabled. Stage
-  1E-b adds no Studio, persistence, migration, receipt, NativeTitleAdapter, or
-  inactive-chat architecture and claims source acceptance only; browser
-  acceptance remains a later protected canary. Disabled `9D1a` retains its
-  original loader dependency/order metadata and does not depend on `9B2a`.
-- `9D1a` will be decomposed into suggestion and explicit emoji-intent responsibilities; it remains disabled.
-- Storage migration, NativeTitleAdapter, read-back receipts, Studio
+  exact Native source and accessibility state. At Stage 1E-b, `9D1a` remained
+  disabled; it is now enabled in loader authority as the Auto Emoji, picker,
+  and badge orchestrator. That activation grants no competing whole-title
+  semantic authority and introduces no dependency on `9B2a`.
+- `9D1a` owns suggestion, explicit emoji-intent/picker, and badge orchestration;
+  `9B0a` remains the sole H2O whole-conversation title/emoji semantic
+  coordinator.
+- Generalized storage-migration architecture, NativeTitleAdapter, read-back receipts, Studio
   convergence, and generalized transaction architecture are not part of Stage
   1E-a or Stage 1E-b and remain deferred.
 

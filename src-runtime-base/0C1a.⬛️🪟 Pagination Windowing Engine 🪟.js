@@ -3,10 +3,10 @@
 // @name               0C1a.⬛️🪟 Pagination Windowing Engine 🪟
 // @namespace          H2O.Premium.CGX.pagination.windowing
 // @author             HumamDev
-// @version            1.1.0
-// @revision           002
-// @build              260328-002627
-// @description        Engine facade for client-side answer pagination/windowing. Preserves the existing window.H2O_Pagination contract while delegating ChatGPT DOM/render work to the chat adapter.
+// @version            2.0.0
+// @revision           003
+// @build              260902-000000
+// @description        Retired physical Pagination compatibility facade. ChatGPT owns transcript hydration/windowing; H2O logical page authorities remain independent.
 // @match              https://chatgpt.com/*
 // @run-at             document-idle
 // @grant              none
@@ -14,6 +14,202 @@
 
 (() => {
   'use strict';
+
+  {
+    // P02A_PHYSICAL_PAGINATION_RETIRED
+    const RETIRED_TOK = 'PW';
+    const RETIRED_PID = 'pgnwndw';
+    const RETIRED_SUITE = 'prm';
+    const RETIRED_HOST = 'cgx';
+    const RETIRED_DSID = RETIRED_PID;
+    const RETIRED_NS_DISK = `h2o:${RETIRED_SUITE}:${RETIRED_HOST}:${RETIRED_DSID}`;
+    const RETIRED_RUNTIME_KEY = `${RETIRED_NS_DISK}:pagination:cfg:v1`;
+    const RETIRED_DIAG_KEY = `${RETIRED_NS_DISK}:pagination:diag:v1`;
+    const RETIRED_W = (typeof unsafeWindow !== 'undefined' && unsafeWindow) ? unsafeWindow : window;
+    const RETIRED_H2O = (RETIRED_W.H2O = RETIRED_W.H2O || {});
+    RETIRED_H2O[RETIRED_TOK] = RETIRED_H2O[RETIRED_TOK] || {};
+    const RETIRED_VAULT = (
+      RETIRED_H2O[RETIRED_TOK][RETIRED_PID]
+      = RETIRED_H2O[RETIRED_TOK][RETIRED_PID] || {}
+    );
+    RETIRED_VAULT.meta = RETIRED_VAULT.meta || {};
+    RETIRED_VAULT.meta.role = 'retired-engine';
+    RETIRED_VAULT.meta.retired = true;
+    RETIRED_VAULT.state = RETIRED_VAULT.state || {};
+    const RETIRED_STATE = RETIRED_VAULT.state;
+
+    const SAFE_RUNTIME = Object.freeze({
+      enabled: false,
+      retired: true,
+      pageSize: 25,
+      bufferAnswers: 0,
+      autoLoadSentinel: false,
+      shortcutsEnabled: false,
+    });
+    const SAFE_DIAG = Object.freeze({
+      retired: true,
+      status: 'retired',
+      styleMode: 'off',
+      swapMode: 'retired',
+      debug: false,
+      useObserverHub: false,
+    });
+
+    function migrateRetiredRuntimeConfig() {
+      let legacy = {};
+      try {
+        const raw = RETIRED_W.localStorage?.getItem?.(RETIRED_RUNTIME_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') legacy = parsed;
+        }
+      } catch (_) {}
+      const migrated = {
+        ...legacy,
+        enabled: false,
+        retired: true,
+        autoLoadSentinel: false,
+        shortcutsEnabled: false,
+      };
+      try { RETIRED_W.localStorage?.setItem?.(RETIRED_RUNTIME_KEY, JSON.stringify(migrated)); } catch (_) {}
+      RETIRED_STATE.runtimeConfig = { ...SAFE_RUNTIME };
+      RETIRED_STATE.persistedStateMigration = 'legacy-enabled-normalized-disabled-retired';
+    }
+
+    function readRetiredDiagConfig() {
+      let legacy = {};
+      try {
+        const raw = RETIRED_W.localStorage?.getItem?.(RETIRED_DIAG_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') legacy = parsed;
+        }
+      } catch (_) {}
+      return Object.freeze({ ...legacy, ...SAFE_DIAG });
+    }
+
+    function retiredStableHash36(input) {
+      const text = String(input || '');
+      let hash = 2166136261;
+      for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+      }
+      return (hash >>> 0).toString(36);
+    }
+    function retiredChatId() {
+      const path = String(RETIRED_W.location?.pathname || '/');
+      const match = path.match(/\/c\/([^/?#]+)/i) || path.match(/\/g\/([^/?#]+)/i);
+      if (match?.[1]) {
+        try { return decodeURIComponent(match[1]); } catch (_) { return match[1]; }
+      }
+      return `path_${retiredStableHash36(`${RETIRED_W.location?.origin || ''}${path}${RETIRED_W.location?.search || ''}`)}`;
+    }
+
+    function retiredConfig() { return { ...SAFE_RUNTIME, ...SAFE_DIAG }; }
+    function retiredDiagConfig() { return { ...RETIRED_STATE.diagConfig }; }
+    function retiredPageInfo() {
+      return {
+        chatId: retiredChatId(),
+        pageIndex: 0,
+        pageCount: 1,
+        enabled: false,
+        retired: true,
+        status: 'retired',
+        pageSize: 25,
+        bufferAnswers: 0,
+        autoLoadSentinel: false,
+        shortcutsEnabled: false,
+        totalTurns: 0,
+        totalAnswers: 0,
+        answerRange: null,
+        bufferedAnswerRange: null,
+        turnRange: { startGid: 0, endGid: 0 },
+      };
+    }
+    function inertAction() { return false; }
+    function retiredAdapter() {
+      return RETIRED_VAULT.chatAdapter && typeof RETIRED_VAULT.chatAdapter === 'object'
+        ? RETIRED_VAULT.chatAdapter
+        : null;
+    }
+    function attachRetiredAdapter(adapter) {
+      if (!adapter || typeof adapter !== 'object') return null;
+      RETIRED_VAULT.chatAdapter = adapter;
+      return adapter;
+    }
+    function detachRetiredAdapter() {
+      const previous = retiredAdapter();
+      RETIRED_VAULT.chatAdapter = null;
+      return previous;
+    }
+    function retireLegacySession(reason = 'retired') {
+      const adapter = retiredAdapter();
+      if (typeof adapter?.retireLegacySession === 'function') return adapter.retireLegacySession(reason);
+      return { ok: true, status: 'retired', reason: String(reason || 'retired') };
+    }
+
+    migrateRetiredRuntimeConfig();
+    RETIRED_STATE.diagConfig = readRetiredDiagConfig();
+    RETIRED_STATE.retired = true;
+
+    // Do not invoke the previous adapter's unguarded dispose. The following
+    // module consumes only shared legacy state for one provenance-checked
+    // restore-first transition and then attaches its inert adapter.
+    RETIRED_VAULT.chatAdapter = null;
+    RETIRED_VAULT.engine = Object.freeze({
+      retired: true,
+      attachChatAdapter: attachRetiredAdapter,
+      detachChatAdapter: detachRetiredAdapter,
+      isAdapterReady: () => !!retiredAdapter(),
+      getChatAdapter: retiredAdapter,
+      getConfig: retiredConfig,
+      emitConfigChanged: () => null,
+    });
+
+    const RETIRED_API = Object.freeze({
+      retired: true,
+      state: RETIRED_STATE,
+      getPageInfo: retiredPageInfo,
+      getConfig: retiredConfig,
+      applySetting: inertAction,
+      getDiagConfig: retiredDiagConfig,
+      setDiagConfig: retiredDiagConfig,
+      setEnabled: inertAction,
+      getSummary: () => 'Retired • ChatGPT owns physical transcript windowing',
+      goToAnswerGid: inertAction,
+      ensureVisibleById: (anyId) => Promise.resolve({
+        ok: false,
+        reason: 'pagination-retired',
+        id: String(anyId || '').trim(),
+      }),
+      goToPage: inertAction,
+      goToPageStart: inertAction,
+      getDividerPaginationState: () => ({
+        active: false,
+        transient: false,
+        enabled: false,
+        retired: true,
+        chatId: retiredChatId(),
+        pageIndex: -1,
+      }),
+      goOlder: inertAction,
+      goNewer: inertAction,
+      goFirst: inertAction,
+      goLast: inertAction,
+      resolveAnyIdToTurnRecord: () => null,
+      resolveAnyIdToPage: () => null,
+      rebuildIndex: inertAction,
+      boot: inertAction,
+      teardownRuntimeSession: retireLegacySession,
+      dispose: retireLegacySession,
+    });
+
+    try { RETIRED_W.H2O?.commandBar?.removeOwner?.('pw'); } catch (_) {}
+    RETIRED_W.H2O_Pagination = RETIRED_API;
+  }
+  return;
+  // P02A_UNREACHABLE_LEGACY_IMPLEMENTATION
 
   /* ============================================================================
    * 💧 H2O — Pagination Windowing Engine (Pass 1 structural split)

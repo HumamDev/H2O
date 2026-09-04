@@ -32,6 +32,9 @@
   const MIGRATION_KEY = 'h2o:prm:cgx:library:chat-title:migration:v1';
   const LEGACY_BOOT_CACHE_KEY_PREFIX = 'h2o:chat-title:boot-cache:v1:';
   const LEGACY_MIGRATION_KEY = 'h2o:chat-title:migration:v1';
+  const LEGACY_EMOJI_KEY_PREFIX = 'ho:autoemoji:emoji:';
+  const LEGACY_EMOJI_DONE_KEY_PREFIX = 'ho:autoemoji:done:';
+  const LEGACY_EMOJI_MIGRATION_TIMEOUT_MS = 2000;
   const BOOT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
   const TITLE_WRITE_TTL_MS = 900;
   const ACTIVE_TRANSIENT_KEY = '__active_transient__';
@@ -88,6 +91,7 @@
   let routeToken = 0;
   let lastIdentityKey = '';
   let opSeq = 0;
+  let legacyEmojiMigrationSeq = 0;
   let bodyObserver = null;
   let titleObserver = null;
   let refreshTimer = 0;
@@ -106,6 +110,7 @@
   let renameOperationSeq = 0;
   let activeRenameOperation = null;
   const emojiAssignmentQueues = new Map();
+  const legacyEmojiMigrationOperations = new Map();
   const nativeReconcileTimers = new Map();
   const nativeReconciledThisSession = new Set();
   const nativeRepairAttemptedThisSession = new Set();
@@ -1255,10 +1260,15 @@
 
     const eventState = composeState(rec, targetIdentity, options?.reason || input.reason || 'set-emoji');
     emitEvent('emoji-updated', eventState, options?.reason || input.reason || 'set-emoji');
-    if (key === activeRecordKey) notify(options?.reason || input.reason || 'set-emoji', rec);
+    if (key === activeRecordKey) notify(
+      options?.reason || input.reason || 'set-emoji',
+      options?.deferPersistence === true ? null : rec,
+    );
     else {
       emitEvent('changed', eventState, options?.reason || input.reason || 'set-emoji');
-      persistRecord(rec, options?.reason || input.reason || 'set-emoji');
+      if (options?.deferPersistence !== true) {
+        persistRecord(rec, options?.reason || input.reason || 'set-emoji');
+      }
     }
     return true;
   }
@@ -1269,7 +1279,7 @@
       const rec = ensureRecord(chatId, chatId);
       if (!rec.hydrated) {
         readBootCache(chatId, null);
-        migrateLegacyEmoji(chatId, null);
+        void migrateLegacyEmojiDurably(chatId, { reason: 'get-state-legacy-migration' });
       }
       return { ...composeState(rec, targetIdentity, 'get-state') };
     }
@@ -1363,40 +1373,295 @@
   function writeMigrationIndex(index) {
     try {
       localStorage.setItem(MIGRATION_KEY, JSON.stringify(index || {}));
+      const confirmed = JSON.parse(localStorage.getItem(MIGRATION_KEY) || '{}');
+      return !!(confirmed && typeof confirmed === 'object');
     } catch (err) {
       warn('migration.write-index', err);
+      return false;
     }
   }
 
-  function migrateLegacyEmoji(chatId, capture) {
-    if (!canPersistChatId(chatId, 'chat')) return false;
-    if (capture && !isCaptureCurrent(capture)) return false;
-    const index = readMigrationIndex();
-    if (index[chatId]) return false;
-    let emoji = '';
+  function legacyEmojiMigrationResult(ok, status, details) {
+    return Object.freeze({ ok: ok === true, status, ...(details || {}) });
+  }
+
+  function readLegacyEmojiMigrationFixture(chatId) {
     const modernKey = `h2o:prm:cgx:tmjttl:state:emoji_${safeId(chatId)}:v1`;
-    const legacyKey = `ho:autoemoji:emoji:${chatId}`;
-    try { emoji = norm(localStorage.getItem(modernKey) || ''); } catch {}
-    if (!emoji) {
-      try { emoji = norm(localStorage.getItem(legacyKey) || ''); } catch {}
+    const legacyEmojiKey = `${LEGACY_EMOJI_KEY_PREFIX}${chatId}`;
+    const legacyDoneKey = `${LEGACY_EMOJI_DONE_KEY_PREFIX}${chatId}`;
+    try {
+      const modernRaw = localStorage.getItem(modernKey);
+      const legacyEmojiRaw = localStorage.getItem(legacyEmojiKey);
+      const legacyDoneRaw = localStorage.getItem(legacyDoneKey);
+      return {
+        ok: true,
+        modernKey,
+        legacyEmojiKey,
+        legacyDoneKey,
+        modernRaw,
+        legacyEmojiRaw,
+        legacyDoneRaw,
+        candidate: norm(modernRaw || legacyEmojiRaw || ''),
+      };
+    } catch (err) {
+      return { ok: false, error: err };
     }
-    if (emoji) {
-      storageStatus.migratedFromLegacyLocalStorage = true;
-      setEmoji({
+  }
+
+  function legacyEmojiFixtureIsCurrent(fixture) {
+    try {
+      return localStorage.getItem(fixture.modernKey) === fixture.modernRaw
+        && localStorage.getItem(fixture.legacyEmojiKey) === fixture.legacyEmojiRaw
+        && localStorage.getItem(fixture.legacyDoneKey) === fixture.legacyDoneRaw;
+    } catch {
+      return false;
+    }
+  }
+
+  function durableMigrationRecordMatches(actual, expected) {
+    if (!actual || typeof actual !== 'object') return false;
+    return JSON.stringify(snapshotRecord(actual)) === JSON.stringify(snapshotRecord(expected));
+  }
+
+  function awaitLegacyMigrationStep(operation, timeoutMs) {
+    let timer = 0;
+    return Promise.race([
+      Promise.resolve().then(operation).then(
+        (value) => ({ status: 'fulfilled', value }),
+        (error) => ({ status: 'rejected', error }),
+      ),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ status: 'timeout' }), timeoutMs);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  async function runLegacyEmojiMigration(operation, options) {
+    const chatId = operation.chatId;
+    const fixture = readLegacyEmojiMigrationFixture(chatId);
+    if (!fixture.ok) {
+      return legacyEmojiMigrationResult(false, 'legacy-storage-unavailable', {
         chatId,
-        emoji,
-        source: 'migration:autoemoji',
-        priority: EMOJI_PRIORITY.migration,
-        confidence: 0.8,
-        reason: 'legacy-autoemoji-migration',
-      }, { reason: 'legacy-autoemoji-migration' });
+        operationId: operation.id,
+      });
     }
-    try { localStorage.removeItem(legacyKey); } catch {}
-    try { localStorage.removeItem(`ho:autoemoji:done:${chatId}`); } catch {}
+
+    const suppliedCandidate = options && Object.prototype.hasOwnProperty.call(options, 'candidate')
+      ? norm(options.candidate)
+      : fixture.candidate;
+    const index = readMigrationIndex();
+    if (index[chatId]) {
+      return legacyEmojiMigrationResult(true, 'already-complete', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+    if (suppliedCandidate !== fixture.candidate) {
+      return legacyEmojiMigrationResult(false, 'invalid-candidate', {
+        chatId,
+        operationId: operation.id,
+      });
+    }
+    if (!suppliedCandidate) {
+      return legacyEmojiMigrationResult(true, 'no-migration-needed', {
+        chatId,
+        operationId: operation.id,
+      });
+    }
+    if (graphemes(suppliedCandidate).length !== 1 || !isEmojiCluster(suppliedCandidate)) {
+      return legacyEmojiMigrationResult(false, 'invalid-candidate', {
+        chatId,
+        operationId: operation.id,
+      });
+    }
+
+    const adapter = storeAdapter;
+    if (!adapter || !isStoreHealthy(adapter) || !storageStatus.durable || !storageStatus.healthy) {
+      return legacyEmojiMigrationResult(false, 'durable-storage-unavailable', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    setEmoji({
+      chatId,
+      emoji: suppliedCandidate,
+      source: 'migration:autoemoji',
+      priority: EMOJI_PRIORITY.migration,
+      confidence: 0.8,
+      reason: options?.reason || 'legacy-autoemoji-migration',
+    }, {
+      reason: options?.reason || 'legacy-autoemoji-migration',
+      deferPersistence: true,
+    });
+
+    const rec = records.get(chatId);
+    if (!rec || rec.emoji !== suppliedCandidate || legacyEmojiMigrationOperations.get(chatId) !== operation) {
+      return legacyEmojiMigrationResult(false, 'superseded', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+    const expectedRev = rec.rev;
+    const expectedPayload = snapshotRecord(rec);
+    const timeoutMs = Math.max(10, Math.min(
+      10000,
+      Number(options?.timeoutMs || LEGACY_EMOJI_MIGRATION_TIMEOUT_MS),
+    ));
+
+    // The boot cache remains a best-effort recovery mirror. It is deliberately
+    // not inspected as the receipt that authorizes destructive legacy cleanup.
+    writeBootCache(rec, { fallbackActive: false });
+
+    const write = await awaitLegacyMigrationStep(
+      () => adapter.set(storageKey(chatId), expectedPayload),
+      timeoutMs,
+    );
+    if (write.status === 'timeout') {
+      return legacyEmojiMigrationResult(false, 'timeout', {
+        chatId,
+        operationId: operation.id,
+        phase: 'durable-write',
+        emoji: suppliedCandidate,
+      });
+    }
+    if (write.status === 'rejected') {
+      fail('migration.store.set', write.error);
+      return legacyEmojiMigrationResult(false, 'durable-write-failed', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    const latestAfterWrite = records.get(chatId);
+    if (
+      legacyEmojiMigrationOperations.get(chatId) !== operation
+      || !latestAfterWrite
+      || latestAfterWrite.rev !== expectedRev
+    ) {
+      return legacyEmojiMigrationResult(false, 'superseded', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    const readback = await awaitLegacyMigrationStep(
+      () => adapter.get(storageKey(chatId)),
+      timeoutMs,
+    );
+    if (readback.status === 'timeout') {
+      return legacyEmojiMigrationResult(false, 'timeout', {
+        chatId,
+        operationId: operation.id,
+        phase: 'durable-readback',
+        emoji: suppliedCandidate,
+      });
+    }
+    if (readback.status === 'rejected') {
+      fail('migration.store.get', readback.error);
+      return legacyEmojiMigrationResult(false, 'durable-readback-failed', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+    if (!durableMigrationRecordMatches(readback.value, expectedPayload)) {
+      return legacyEmojiMigrationResult(false, 'durable-readback-mismatch', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    const latestBeforeCleanup = records.get(chatId);
+    if (
+      legacyEmojiMigrationOperations.get(chatId) !== operation
+      || !latestBeforeCleanup
+      || latestBeforeCleanup.rev !== expectedRev
+      || !legacyEmojiFixtureIsCurrent(fixture)
+    ) {
+      return legacyEmojiMigrationResult(false, 'superseded', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    try {
+      localStorage.removeItem(fixture.legacyEmojiKey);
+      localStorage.removeItem(fixture.legacyDoneKey);
+      if (
+        localStorage.getItem(fixture.legacyEmojiKey) !== null
+        || localStorage.getItem(fixture.legacyDoneKey) !== null
+      ) {
+        throw new Error('legacy keys remain after cleanup');
+      }
+    } catch (err) {
+      warn('migration.legacy-cleanup', err);
+      return legacyEmojiMigrationResult(false, 'legacy-cleanup-failed', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+      });
+    }
+
+    const completedAt = now();
+    const completedIndex = readMigrationIndex();
+    completedIndex[chatId] = completedAt;
+    if (!writeMigrationIndex(completedIndex) || readMigrationIndex()[chatId] !== completedAt) {
+      return legacyEmojiMigrationResult(false, 'completion-record-failed', {
+        chatId,
+        operationId: operation.id,
+        emoji: suppliedCandidate,
+        durable: true,
+        legacyCleaned: true,
+      });
+    }
+
+    storageStatus.migratedFromLegacyLocalStorage = true;
     storageStatus.localStorageFallbackUsedThisSession = true;
-    index[chatId] = now();
-    writeMigrationIndex(index);
-    return !!emoji;
+    return legacyEmojiMigrationResult(true, 'migrated', {
+      chatId,
+      operationId: operation.id,
+      emoji: suppliedCandidate,
+      durable: true,
+      readbackMatched: true,
+      legacyCleaned: true,
+      completedAt,
+    });
+  }
+
+  function migrateLegacyEmojiDurably(chatIdRaw, options) {
+    const chatId = String(chatIdRaw || options?.chatId || '').trim();
+    if (!canPersistChatId(chatId, 'chat')) {
+      return Promise.resolve(legacyEmojiMigrationResult(false, 'invalid-chat-id', { chatId }));
+    }
+    const existing = legacyEmojiMigrationOperations.get(chatId);
+    if (existing) return existing.promise;
+
+    const operation = {
+      id: ++legacyEmojiMigrationSeq,
+      chatId,
+      promise: null,
+    };
+    legacyEmojiMigrationOperations.set(chatId, operation);
+    operation.promise = Promise.resolve().then(() => runLegacyEmojiMigration(operation, options || {})).catch((err) => {
+      fail('migration.legacy-emoji', err);
+      return legacyEmojiMigrationResult(false, 'migration-failed', {
+        chatId,
+        operationId: operation.id,
+      });
+    }).finally(() => {
+      if (legacyEmojiMigrationOperations.get(chatId) === operation) {
+        legacyEmojiMigrationOperations.delete(chatId);
+      }
+    });
+    return operation.promise;
   }
 
   function storageKey(chatId) {
@@ -1529,7 +1794,9 @@
       notify(reason || 'store-attached', null);
       emitEvent('storage', state, reason || 'store-attached');
       if (identity.chatId && canPersistChatId(identity.chatId, identity.routeKind)) {
-        hydrateFromStore(identity.chatId, reason || 'store-attached');
+        hydrateFromStore(identity.chatId, reason || 'store-attached').finally(() => {
+          void migrateLegacyEmojiDurably(identity.chatId, { reason: 'store-attached-legacy-migration' });
+        });
       }
     } catch (err) {
       fail('store.attach', err);
@@ -2317,8 +2584,8 @@
       const capture = captureFor(identity.chatId);
       if (identity.chatId && canPersistChatId(identity.chatId, identity.routeKind)) {
         readBootCache(identity.chatId, capture);
-        migrateLegacyEmoji(identity.chatId, capture);
         hydrateFromStore(identity.chatId, reason || 'route-change').finally(() => {
+          void migrateLegacyEmojiDurably(identity.chatId, { reason: 'route-change-legacy-migration' });
           scheduleNativeReconcile(identity.chatId, reason || 'route-change');
         });
       }
@@ -2938,6 +3205,7 @@
     setTitle,
     setEmoji,
     setEmojiAndPersist,
+    migrateLegacyEmojiDurably,
     removeLeadingEmojiAndPersist,
     renameNative,
     readNativeTitle: readNativeConversationTitle,

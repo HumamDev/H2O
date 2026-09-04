@@ -225,11 +225,164 @@ const requestFor = (order, qId = `fixture-q-${String(order).padStart(2, '0')}`) 
   descriptor: { qId, turnId: `turn:${qId}`, order, total: 38, answerVariants: [`a-${order}`] },
 });
 
-await fixture('gate disabled preserves legacy navigation ownership', async () => {
+const sourceHas = (pattern) => pattern instanceof RegExp ? pattern.test(source) : source.includes(pattern);
+const countFallbackClasses = (patterns) => patterns.reduce((count, pattern) => count + (sourceHas(pattern) ? 1 : 0), 0);
+const p03bFallbackCounts = Object.freeze({
+  pagination: countFallbackClasses([
+    'function getPaginationCanonicalTurnByIndex(',
+    'api.ensureVisibleById(',
+    'pw.goToPageStart(',
+    'const answers = Array.isArray(ps?.masterAnswers)',
+    'const turns = Array.isArray(ps?.masterTurns)',
+  ]),
+  unmount: countFallbackClasses([
+    'api.requestMountByUid(',
+    'EVT_MSG_MOUNT_REQUEST',
+    'EVT_MSG_REMOUNTED',
+    'function waitForRemountByMsgId(',
+    'function dispatchMountRequest(',
+  ]),
+  legacyIdentity: countFallbackClasses([
+    'function resolveTurnRecord(',
+    'function resolveAnswerTarget(',
+    'function resolveQuestionTarget(',
+    'function MINI_getCanonicalTargetCtx(',
+    'function MINI_resolveTargetElement(',
+    'function MINI_estimateScrollToTurn(',
+    'getPaginationCanonicalTurnByIndex(firstTurnIdx)',
+    'getPaginationCanonicalTurnByIndex(turnIdx)',
+  ]),
+  domTarget: countFallbackClasses([
+    'ans.previousElementSibling',
+    'compareDocumentPosition(ans)',
+    'const users = qq(\'[data-message-author-role="user"]\')',
+    'const answers = qq(answersSelector())',
+    'const turnHosts = qq(\'[data-testid="conversation-turn"]\')',
+  ]),
+  unprovenTarget: countFallbackClasses([
+    'const paginationTurn = turnIdx > 0',
+    'core?.getTurnList?.()?.[firstTurnIdx - 1]',
+    'resolveTurnRecord(answerId || turnId || questionId, answerId)',
+  ]),
+  approximateTarget: countFallbackClasses([
+    'function MINI_estimateScrollToTurn(',
+    '((pageNum - 1) * 25) + 1',
+    '(index - 0.5) / total',
+  ]),
+});
+
+const directNavigationCounters = {
+  canonical: 0,
+  legacyContext: 0,
+  legacyResolve: 0,
+  legacyMaterialize: 0,
+  legacyWait: 0,
+};
+const directNavigationContext = vm.createContext({
+  MINI_completeIndexNavigationEnabled: () => false,
+  completeIndexNavigationCoordinator: {
+    navigate: async () => {
+      directNavigationCounters.canonical += 1;
+      return { handled: true, navigated: false, status: 'unavailable', errorCode: 'canonical-authority-unavailable', hops: 0 };
+    },
+  },
+  MINI_getCanonicalTargetCtx: (ctx, surface) => {
+    directNavigationCounters.legacyContext += 1;
+    return { ...(ctx || {}), surface };
+  },
+  MINI_resolveTargetElement: () => {
+    directNavigationCounters.legacyResolve += 1;
+    return null;
+  },
+  MINI_hiddenPageHandleForElement: () => null,
+  MINI_resolveCollapsedPageHandle: () => null,
+  MINI_materializeTarget: async (ctx) => {
+    directNavigationCounters.legacyMaterialize += 1;
+    return ctx;
+  },
+  MINI_waitForResolvedTarget: async () => {
+    directNavigationCounters.legacyWait += 1;
+    return null;
+  },
+  isVirtualizedConversation: () => false,
+  derr() {},
+  Promise,
+  Number,
+  String,
+});
+vm.runInContext(`${extractFunction('MINI_navigateTurnTarget')}\nthis.navigateTurnTarget = MINI_navigateTurnTarget;`, directNavigationContext);
+
+await fixture('gate disabled fails closed under canonical navigation ownership', async () => {
   const env = makeHarness({ enabled: false });
   const result = await env.coordinator.navigate(requestFor(1));
-  equal(result, { handled: false, navigated: false, status: 'disabled' });
+  equal(result, {
+    handled: true,
+    navigated: false,
+    status: 'unavailable',
+    errorCode: 'canonical-authority-unavailable',
+  });
   equal(env.moveHops.length, 0);
+});
+
+await fixture('turn navigation cannot bypass canonical coordinator when authority is unavailable', async () => {
+  const result = await directNavigationContext.navigateTurnTarget({ qId: 'fixture-q-01' }, 'answer');
+  equal(result.completeIndexHandled === true, true);
+  equal(String(result.navigationStatus || ''), 'unavailable');
+  equal(directNavigationCounters.canonical, 1);
+  equal(directNavigationCounters.legacyContext, 0);
+  equal(directNavigationCounters.legacyResolve, 0);
+  equal(directNavigationCounters.legacyMaterialize, 0);
+  equal(directNavigationCounters.legacyWait, 0);
+});
+
+await fixture('Pagination materializer and navigation fallbacks are absent', () => {
+  equal(p03bFallbackCounts.pagination, 0);
+});
+
+await fixture('Global Unmount materializer and remount fallbacks are absent', () => {
+  equal(p03bFallbackCounts.unmount, 0);
+});
+
+await fixture('ordinal index and legacy-record target substitutions are absent', () => {
+  equal(p03bFallbackCounts.legacyIdentity, 0);
+});
+
+await fixture('DOM-relative target substitution is absent', () => {
+  equal(p03bFallbackCounts.domTarget, 0);
+});
+
+await fixture('raw cache button and unqualified publication target substitutions are absent', () => {
+  equal(p03bFallbackCounts.unprovenTarget, 0);
+});
+
+await fixture('noncanonical proportional and page-derived target substitutions are absent', () => {
+  equal(p03bFallbackCounts.approximateTarget, 0);
+});
+
+await fixture('canonical descriptor is mandatory before mount or materialization work', async () => {
+  const env = makeHarness();
+  const result = await env.coordinator.navigate({ surface: 'answer', descriptor: null });
+  equal(result.status, 'unreachable');
+  equal(result.errorCode, 'target-not-owned');
+  equal(env.moveHops.length, 0);
+});
+
+await fixture('mount lookup remains presentation-only after canonical descriptor proof', () => {
+  const resolverSource = extractFunction('MINI_resolveCompleteIndexMounted');
+  ok(resolverSource.includes('descriptor?.qId'));
+  ok(resolverSource.includes('findTurnHostById(descriptor.qId)'));
+  equal(resolverSource.includes('dataset?.turnIdx'), false);
+  equal(resolverSource.includes('getTurnList'), false);
+});
+
+await fixture('unmounted canonical target retains bounded host-native reveal and exact re-resolution', () => {
+  const waitSource = extractFunction('MINI_waitForCompleteIndexMounted');
+  const moveSource = extractFunction('MINI_moveTowardCompleteIndexTarget');
+  ok(source.includes('materializeFar: MINI_materializeFarTarget'));
+  ok(waitSource.includes('ownedIds.has(normalizeNavId(entry?.id))'));
+  ok(waitSource.includes('MINI_resolveCompleteIndexMounted(descriptor, surface)'));
+  equal(moveSource.includes('requestMountByUid'), false);
+  equal(moveSource.includes('dispatchMountRequest'), false);
 });
 
 await fixture('mounted target navigates immediately without convergence', async () => {
@@ -450,5 +603,7 @@ for (const row of failures) console.error(`FAIL ${row.name}\n${row.error}`);
 console.log(`CV-3.4 complete index navigation: ${fixtures.length - failures.length}/${fixtures.length} fixtures, ${assertionCount} assertions, ${failures.length} failures`);
 console.log(`Navigation counters: moves ${totals.moves}, waits ${totals.waits}, precise ${totals.preciseNavigations}, abort cleanups ${totals.abortCleanups}`);
 console.log(`Safety counters: cache writes ${totals.cacheWrites}, network writes ${totals.networkWrites}, source setters ${totals.sourceSetters}, automatic canary ${totals.automaticCanaryExecutions}`);
+console.log(`P03B fallback counters: Pagination ${p03bFallbackCounts.pagination}, Unmount ${p03bFallbackCounts.unmount}, legacy identity ${p03bFallbackCounts.legacyIdentity}, DOM target ${p03bFallbackCounts.domTarget}, unproven target ${p03bFallbackCounts.unprovenTarget}, approximate target ${p03bFallbackCounts.approximateTarget}`);
+console.log(`P03B direct navigation: canonical ${directNavigationCounters.canonical}, legacy context ${directNavigationCounters.legacyContext}, legacy resolve ${directNavigationCounters.legacyResolve}, legacy materialize ${directNavigationCounters.legacyMaterialize}, legacy wait ${directNavigationCounters.legacyWait}`);
 
 if (failures.length) process.exitCode = 1;

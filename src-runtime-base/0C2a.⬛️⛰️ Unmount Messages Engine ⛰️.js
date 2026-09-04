@@ -47,6 +47,110 @@
   };
   VAULT.meta.role = 'engine';
 
+  {
+    // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED
+    // ChatGPT owns native message hydration and physical transcript lifecycle.
+    // This facade consumes the legacy persisted state once, remains hard-off in
+    // memory even if migration storage is unavailable, and keeps only a stable
+    // compatibility/status contract for callers that may outlive the engine.
+    const RETIRED_CFG_KEY = 'h2o:prm:cgx:nmntmssgs:cfg:runtime:v1';
+    const RETIRED_PENDING_BOOT_KEY = 'UM:nmntmssgs:guard:pendingBoot';
+    const RETIRED_CFG = Object.freeze({
+      enabled: false,
+      umEnabled: false,
+      retired: true,
+      status: 'retired',
+    });
+
+    try {
+      const raw = W.localStorage?.getItem?.(RETIRED_CFG_KEY);
+      const legacy = raw ? JSON.parse(raw) : {};
+      W.localStorage?.setItem?.(RETIRED_CFG_KEY, JSON.stringify({
+        ...((legacy && typeof legacy === 'object' && !Array.isArray(legacy)) ? legacy : {}),
+        ...RETIRED_CFG,
+      }));
+    } catch (_) {
+      // Storage failure must never restore physical authority.
+    }
+
+    VAULT.cfg = RETIRED_CFG;
+    VAULT.state = (VAULT.state && typeof VAULT.state === 'object') ? VAULT.state : {};
+    VAULT.state.booted = false;
+    VAULT.state.scheduled = false;
+    VAULT.state.retired = true;
+    VAULT.state.status = 'retired';
+    VAULT.chatAdapter = null;
+
+    const retiredSingle = (id) => ({
+      ok: false,
+      status: 'unmount-retired',
+      id: String(id || '').replace(/^conversation-turn-/, '').trim(),
+      collapsed: false,
+      retired: true,
+    });
+    const retiredMany = (ids) => ({
+      ok: false,
+      status: 'unmount-retired',
+      ids: Array.isArray(ids) ? ids.slice() : [],
+      changed: 0,
+      retired: true,
+    });
+    const getConfig = () => ({ ...RETIRED_CFG });
+
+    const RETIRED_API = Object.freeze({
+      retired: true,
+      boot: () => false,
+      dispose: () => false,
+      forceRemountByUid: () => false,
+      collapseById: retiredSingle,
+      expandById: retiredSingle,
+      toggleById: retiredSingle,
+      collapseManyByIds: retiredMany,
+      expandManyByIds: retiredMany,
+      isCollapsedById: () => false,
+      getManualCollapsedIds: () => [],
+      getRestoreGuardStats: () => ({}),
+      requestMountByUid: () => false,
+      requestMountPairByUid: () => false,
+      remountAll: () => 0,
+      waitUntilRemounted: (uid, timeoutMs = 0) => Promise.resolve({
+        ok: false,
+        reason: 'unmount-retired',
+        uid: String(uid || '').replace(/^conversation-turn-/, '').trim(),
+        timeoutMs: Number(timeoutMs || 0) || 0,
+        retired: true,
+      }),
+      resolvePrimaryUid: (id) => String(id || '').replace(/^conversation-turn-/, '').trim(),
+      getConfig,
+      applySetting: () => false,
+      setEnabled: () => false,
+      runPass: () => false,
+      getCollapsedGroupCount: () => 0,
+    });
+
+    VAULT.engine = Object.freeze({
+      retired: true,
+      attachChatAdapter(adapterApi) {
+        VAULT.chatAdapter = (adapterApi && adapterApi.retired === true) ? adapterApi : null;
+        return VAULT.chatAdapter;
+      },
+      detachChatAdapter() {
+        const previous = VAULT.chatAdapter || null;
+        VAULT.chatAdapter = null;
+        return previous;
+      },
+      isAdapterReady: () => false,
+      getChatAdapter: () => VAULT.chatAdapter || null,
+      getConfigSnapshot: getConfig,
+      emitConfigChanged: () => ({ source: 'unmount-messages', status: 'retired', config: getConfig() }),
+    });
+    VAULT.api = RETIRED_API;
+    try { delete W[RETIRED_PENDING_BOOT_KEY]; } catch (_) {}
+    return;
+  }
+
+  // P02B_UNREACHABLE_LEGACY_IMPLEMENTATION
+
   const NS_MEM_UNMOUNTM_ROOT = `${TOK}:${PID}:guard`;
   const KEY_UNMOUNTM_CFG_V1 = `h2o:${SUITE}:${HOST}:${DsID}:cfg:runtime:v1`;
   const KEY_UNMOUNTM_PENDING_BOOT = `${NS_MEM_UNMOUNTM_ROOT}:pendingBoot`;

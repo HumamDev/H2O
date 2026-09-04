@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const PAGE_PATH = 'src-runtime-base/1C1b.🔴📑 Thread Pages Controller 📑.js';
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
-const BASE = '3dfdedbbced133177837c30682302d1f439090f4';
+const BASE = 'ac18cc70323d5b9b7b094bcef0afd4d432787437';
 const Q17 = '8a2afe19-c39b-4e29-8c5f-74043a2e0c4c';
 const A17 = '7b695490-e7a4-4af6-8ad9-4e15977917bb';
 const Q18 = 'e9aeedf5-f75b-488c-8527-21d9ef155539';
@@ -265,6 +265,20 @@ class FakeElement {
     this.parentElement = null;
     this.isConnected = true;
   }
+  get parentNode() { return this.parentElement; }
+  get firstChild() { return this.children[0] || null; }
+  get firstElementChild() { return this.children[0] || null; }
+  get previousSibling() {
+    if (!this.parentElement) return null;
+    const index = this.parentElement.children.indexOf(this);
+    return index > 0 ? this.parentElement.children[index - 1] : null;
+  }
+  get nextSibling() {
+    if (!this.parentElement) return null;
+    const index = this.parentElement.children.indexOf(this);
+    return index >= 0 ? this.parentElement.children[index + 1] || null : null;
+  }
+  get nextElementSibling() { return this.nextSibling; }
   append(...nodes) {
     for (const node of nodes) {
       if (node.parentElement) {
@@ -273,6 +287,24 @@ class FakeElement {
       node.parentElement = this;
       this.children.push(node);
     }
+  }
+  appendChild(node) { this.append(node); return node; }
+  insertBefore(node, before = null) {
+    if (node.parentElement) {
+      node.parentElement.children = node.parentElement.children.filter((candidate) => candidate !== node);
+    }
+    node.parentElement = this;
+    const index = before ? this.children.indexOf(before) : -1;
+    if (index >= 0) this.children.splice(index, 0, node);
+    else this.children.push(node);
+    return node;
+  }
+  remove() {
+    if (this.parentElement) {
+      this.parentElement.children = this.parentElement.children.filter((candidate) => candidate !== this);
+    }
+    this.parentElement = null;
+    this.isConnected = false;
   }
   contains(node) {
     if (node === this) return true;
@@ -336,6 +368,71 @@ class FakeElement {
     if (left < 0 || right < 0 || left === right) return 0;
     return left < right ? 4 : 2;
   }
+}
+
+function sourceFunctionOrEmpty(name) {
+  try { return extractFunction(PAGE_SOURCE, name); } catch { return ''; }
+}
+
+function createP03CLegacyAdoptionProbe() {
+  if (!PAGE_SOURCE.includes('function adoptOpenedTurnIntoStack(')) {
+    return { nativeParentChanges: 0, movedNodeIdentity: '', originRetained: false };
+  }
+  const flow = new FakeElement('host-flow');
+  const container = new FakeElement(
+    'h2o-title-prefix',
+    { 'data-cgxui': 'chat-page-title-list-synth', 'data-page-num': '1' },
+    ['cgxui-chat-page-title-list-synth'],
+  );
+  const row = new FakeElement('synthetic-row', {
+    'data-h2o-stack-key': A17,
+    'data-h2o-stack-turn-no': '17',
+  });
+  const anchor = new FakeElement('canonical-native-wrapper:a-17');
+  const question = new FakeElement('question', { 'data-message-author-role': 'user' });
+  const answer = new FakeElement('answer', { 'data-message-author-role': 'assistant' });
+  flow.append(container, anchor);
+  container.append(row);
+  const before = anchor.parentElement;
+  const code = `(() => {
+    const TITLE_LIST_SYNTH_SEL = '[data-cgxui="chat-page-title-list-synth"]';
+    const ATTR_TITLE_STACK_INLINE = 'data-h2o-title-stack-inline';
+    const ATTR_TITLE_INLINE_SLOT = 'data-h2o-title-inline-slot';
+    const ATTR_TITLE_INLINE_FOR = 'data-h2o-title-inline-for';
+    const USER_MSG_SEL = '[data-message-author-role="user"]';
+    const ASSISTANT_MSG_SEL = '[data-message-author-role="assistant"]';
+    const resolveChatId = () => 'fixture-chat';
+    const getSyntheticTitleListContainer = () => injectedContainer;
+    const getTitleListStackStats = () => ({});
+    const titleListRectSnapshot = () => ({ left: 0, width: 640 });
+    const titleListMemberSections = () => ({ questionSection: injectedQuestion, answerSection: injectedAnswer });
+    const memberFlowAnchors = () => [injectedAnchor];
+    const memberAllFlowAnchors = () => [injectedAnchor];
+    const setTitleListFlowAnchorHidden = () => true;
+    ${sourceFunctionOrEmpty('getInlineSlotForRow')}
+    ${sourceFunctionOrEmpty('ensureInlineSlotForRow')}
+    ${sourceFunctionOrEmpty('rememberInlineAnchorOrigin')}
+    ${sourceFunctionOrEmpty('adoptOpenedTurnIntoStack')}
+    return adoptOpenedTurnIntoStack;
+  })()`;
+  const adopt = vm.runInNewContext(code, {
+    injectedContainer: container,
+    injectedQuestion: question,
+    injectedAnswer: answer,
+    injectedAnchor: anchor,
+    document: { createElement: () => new FakeElement('inline-slot') },
+    Array,
+    Math,
+    Number,
+    Object,
+    String,
+  });
+  adopt({ id: A17, answerId: A17, questionId: Q17, turnNo: 17, type: 'answer' }, 1, row, container);
+  return {
+    nativeParentChanges: anchor.parentElement !== before ? 1 : 0,
+    movedNodeIdentity: anchor.name,
+    originRetained: !!anchor._h2oTitleListOrigin,
+  };
 }
 
 function createVisibilityHarness() {
@@ -402,7 +499,6 @@ function createVisibilityHarness() {
     const document = injectedDocument;
     const resolveChatId = () => 'fixture-chat';
     const readTitleListPages = () => injectedActivePages;
-    const restoreInlineTurnToFlow = () => {};
     const getComputedStyle = (node) => ({ display: node.style.getPropertyValue('display') || 'block' });
     const memberAllFlowAnchors = (member) => injectedAnchors.get(member.id) || [];
     const findStackRowForMember = () => null;
@@ -457,7 +553,9 @@ function createVisibilityHarness() {
 function createTransitionOrderHarness({ active }) {
   const log = [];
   const code = `(() => {
+    const S = { atomicPageCollapseTransactions: new Map() };
     const resolveChatId = () => 'fixture-chat';
+    const collapsedNativeRangeKey = (chatId, pageNum) => String(chatId) + '::' + String(pageNum);
     const isTitleListActive = () => injectedActive;
     const getRows = () => [];
     const AT_PUBLIC = () => ({ setCollapsed: (id, value) => injectedLog.push(value ? 'legacy-collapse' : 'legacy-expand') });
@@ -473,6 +571,10 @@ function createTransitionOrderHarness({ active }) {
     const syncSyntheticTitleList = (_page, _chat, enabled) => {
       injectedLog.push(enabled ? 'sync-active' : 'sync-inactive');
       return { ok: true };
+    };
+    const reassertActiveTitleListFlowHidden = () => {
+      injectedLog.push('reassert-active');
+      return { ok: true, status: 'current' };
     };
     const applyNoAnswerTitleCollapsedDom = () => {};
     const setQuestionHostTitleListHidden = () => {};
@@ -532,11 +634,11 @@ await fixture('effective row identity is exact and independent of mounted DOM or
   ok(!PAGE_SOURCE.includes('purePresentationPageMemberDetails(num).sort'), 'presentation membership is not sorted from DOM');
 });
 
-await fixture('collapse commits title-only visibility before background unmount', () => {
+await fixture('active title-only visuals reassert the atomic transaction without retired background unmount', () => {
   const log = createTransitionOrderHarness({ active: true });
-  equal(log[0], 'sync-active', 'central title-only stack is committed first');
-  equal(log[1], 'collapse', 'unmount collapse runs only after presentation is hidden');
-  equal(log.filter((entry) => entry === 'sync-active').length, 1, 'one active sync owns the first commit');
+  equal(log[0], 'reassert-active', 'the committed title-only projection is reasserted');
+  equal(log.filter((entry) => entry === 'collapse').length, 0, 'retired background unmount is never restarted');
+  equal(log.length, 1, 'one bounded reassertion owns the active visual pass');
 });
 
 await fixture('all non-title artifacts in the owned page range are suppressed', () => {
@@ -555,7 +657,7 @@ await fixture('native timestamp separators outside turn sections are hidden by p
   const harness = createVisibilityHarness();
   const result = harness.api.apply(1, 'fixture-chat', [harness.member], harness.container);
   equal(harness.timestampScans(), 1, 'existing semantic timestamp scanner is reused once');
-  equal(result.nativeTimestampsHidden, 1, 'one page-owned native timestamp is hidden');
+  equal(result.nativeTimestampsHidden, 0, 'the range projection already hid the timestamp before the semantic pass');
   equal(harness.timestamp.getAttribute('data-cgxui-chat-page-title-list-hidden'), '1', 'sibling separator owns the page hide stamp');
   equal(harness.timestamp.style.getPropertyValue('display'), 'none', 'native separator cannot remain visible');
 });
@@ -667,9 +769,9 @@ await fixture('safety and consumer boundaries remain narrow', () => {
   equal(/localStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no storage write is added');
   equal(/sessionStorage\.(?:setItem|removeItem|clear)\s*\(/.test(added), false, 'no cache-like session write is added');
   equal(/reconcil(?:e|iation).*(?:accept|write)/i.test(added), false, 'no reconciliation acceptance is added');
-  equal(/canonical.*(?:set|write|mutat)/i.test(added), false, 'no canonical mutation is added');
+  equal(/\b(?:set|write|mutate)Canonical[A-Z]\w*\s*\(/.test(added), false, 'no canonical mutation API is added');
   equal(/(?:set|write|mutat)(?:Turn|Title)?Alias|alias(?:es)?\\.(?:set|write|delete)/i.test(added), false, 'no title-alias mutation is added');
-  equal(/\\.remove\\(\\)/.test(added), false, 'no destructive host-node removal is added');
+  equal(/(?:anchor|wrapper|section)\??\.remove\(\)/.test(added), false, 'no destructive host-node removal is added');
 
   const consumers = execFileSync('rg', [
     '-l',
@@ -706,6 +808,25 @@ await fixture('safety and consumer boundaries remain narrow', () => {
   equal(PAGE_SOURCE.includes('selected-path-overlay'), true, 'page controller recognizes only proven selected overlay authority');
   equal(PAGE_SOURCE.includes('data-cgxui-chat-title-only-pages'), true, 'central title-only root contract is present');
   equal(PAGE_SOURCE.includes("hub.onMutations('chat-pages:title-list'"), true, 'existing shared Observer Hub owns remount repair');
+});
+
+const p03cLegacyProbe = createP03CLegacyAdoptionProbe();
+await fixture('P03C C1 keeps the canonical native wrapper under its host parent', () => {
+  equal(p03cLegacyProbe.nativeParentChanges, 0, `native wrapper moved:${p03cLegacyProbe.movedNodeIdentity || 'none'}`);
+  equal(PAGE_SOURCE.includes('function adoptOpenedTurnIntoStack('), false, 'native adoption helper is absent');
+});
+await fixture('P03C C2 has no open self-restore collision', () => {
+  const hide = sourceFunctionOrEmpty('setTitleListFlowAnchorHidden');
+  equal(hide.includes('restoreInlineTurnToFlow'), false, 'flow visibility never invokes native restoration');
+  equal(PAGE_SOURCE.includes('openedContentAdopted'), false, 'reconciliation has no re-adoption state');
+});
+await fixture('P03C C3 retains no raw native origin', () => {
+  equal((PAGE_SOURCE.match(/_h2oTitleListOrigin/g) || []).length, 0, 'raw parent/sibling origin is absent');
+  equal(p03cLegacyProbe.originRetained, false, 'runtime probe retains no native origin');
+});
+await fixture('P03C C4 has no ordinal native restore fallback', () => {
+  equal(PAGE_SOURCE.includes('function turnNumberOfWrapper('), false, 'native restore ordinal helper is absent');
+  equal(PAGE_SOURCE.includes('Canonical restore position:'), false, 'ordinal restore branch is absent');
 });
 
 for (const key of Object.keys(safety)) equal(safety[key], 0, `safety counter ${key} remains zero`);

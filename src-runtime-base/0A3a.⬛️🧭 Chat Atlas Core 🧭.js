@@ -10935,7 +10935,7 @@
   function chatAtlasResolveCompleteIndexProjectionPreference() {
     if (completeTurnIndexAuthorityState.preferenceResolved) {
       return {
-        enabled: completeTurnIndexAuthorityState.preferenceResolution === 'stored-enabled',
+        enabled: true,
         resolution: completeTurnIndexAuthorityState.preferenceResolution,
       };
     }
@@ -10947,9 +10947,9 @@
       raw = W.localStorage?.getItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY) ?? null;
     } catch {
       completeTurnIndexAuthorityState.preferenceStoredValue = null;
-      completeTurnIndexAuthorityState.preferenceResolution = 'read-failed-disabled';
+      completeTurnIndexAuthorityState.preferenceResolution = 'read-failed-enabled';
       completeTurnIndexAuthorityState.preferenceReadErrorCode = 'preference-read-failed';
-      return { enabled: false, resolution: 'read-failed-disabled' };
+      return { enabled: true, resolution: 'read-failed-enabled' };
     }
     if (raw === '1') {
       completeTurnIndexAuthorityState.preferenceStoredValue = '1';
@@ -10958,8 +10958,8 @@
     }
     if (raw === '0') {
       completeTurnIndexAuthorityState.preferenceStoredValue = '0';
-      completeTurnIndexAuthorityState.preferenceResolution = 'stored-disabled';
-      return { enabled: false, resolution: 'stored-disabled' };
+      completeTurnIndexAuthorityState.preferenceResolution = 'legacy-stored-disabled-ignored';
+      return { enabled: true, resolution: 'legacy-stored-disabled-ignored' };
     }
     // Diagnostic accuracy: both branches below resolve to the COMPILED
     // DEFAULT, which has been enabled since the logical authority became the
@@ -11012,26 +11012,31 @@
 
   function setCompleteTurnIndexProjectionPreference(value) {
     completeTurnIndexAuthorityState.preferenceSetterCallCount += 1;
-    const enabled = value === true || value === '1';
+    const requestedEnabled = value === true || value === '1';
     const disabled = value === false || value === '0';
-    if (!enabled && !disabled) {
+    if (!requestedEnabled && !disabled) {
       return chatAtlasFreeze({ ok: false, changed: false, errorCode: 'preference-value-invalid', ...getCompleteTurnIndexProjectionPreference() });
     }
-    const storedValue = enabled ? '1' : '0';
+    // P03A: this legacy setter remains for compatibility, but normal product
+    // runtime no longer has a disable state. A historical/requested false is
+    // migration input only and is rewritten to the governed enabled value.
+    const storedValue = '1';
+    const applied = chatAtlasApplyCompleteIndexProjectionEnabled(true, 'governed-preference-setter');
     try {
       W.localStorage?.setItem?.(COMPLETE_TURN_INDEX_PREFERENCE_KEY, storedValue);
     } catch {
       completeTurnIndexAuthorityState.preferenceWriteFailureCount += 1;
       completeTurnIndexAuthorityState.preferenceWriteErrorCode = 'preference-write-failed';
-      return chatAtlasFreeze({ ...getCompleteTurnIndexProjectionStatus(), ok: false, changed: false, errorCode: 'preference-write-failed' });
+      return chatAtlasFreeze({ ...getCompleteTurnIndexProjectionStatus(), ok: false, changed: applied.changed, errorCode: 'preference-write-failed' });
     }
     completeTurnIndexAuthorityState.preferenceWriteCount += 1;
     completeTurnIndexAuthorityState.preferenceWriteErrorCode = null;
     completeTurnIndexAuthorityState.preferenceResolved = true;
     completeTurnIndexAuthorityState.preferenceStoredValue = storedValue;
-    completeTurnIndexAuthorityState.preferenceResolution = enabled ? 'stored-enabled' : 'stored-disabled';
-    const applied = chatAtlasApplyCompleteIndexProjectionEnabled(enabled, 'persisted-preference-setter');
-    return chatAtlasFreeze({ ok: true, persisted: true, storedValue, ...applied });
+    completeTurnIndexAuthorityState.preferenceResolution = disabled
+      ? 'legacy-disable-request-migrated-enabled'
+      : 'stored-enabled';
+    return chatAtlasFreeze({ ok: true, persisted: true, storedValue, disableRequestIgnored: disabled, ...applied });
   }
 
   function clearCompleteTurnIndexProjectionPreference() {
@@ -11047,7 +11052,7 @@
     completeTurnIndexAuthorityState.preferenceWriteErrorCode = null;
     completeTurnIndexAuthorityState.preferenceResolved = true;
     completeTurnIndexAuthorityState.preferenceStoredValue = null;
-    completeTurnIndexAuthorityState.preferenceResolution = 'compiled-default-disabled';
+    completeTurnIndexAuthorityState.preferenceResolution = 'compiled-default-enabled';
     const applied = chatAtlasApplyCompleteIndexProjectionEnabled(COMPLETE_TURN_INDEX_COMPILED_DEFAULT, 'preference-cleared');
     return chatAtlasFreeze({ ok: true, cleared: true, ...applied });
   }

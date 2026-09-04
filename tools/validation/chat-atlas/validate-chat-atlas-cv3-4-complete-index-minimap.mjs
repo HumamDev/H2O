@@ -410,6 +410,10 @@ function createEnvironment({ records = acceptedRecords(), status = defaultStatus
     getComputedStyle: () => ({ getPropertyValue: () => '', display: 'block', visibility: 'visible' }),
     localStorage: storage.api,
     sessionStorage: makeStorage().api,
+    // Historical MiniMap fallback code references the shared runtime through
+    // this legacy free variable. Provide the real fixture runtime so negative
+    // replay observes legacy membership publication, not a harness ReferenceError.
+    rt: turnRuntime,
     H2O: { turnRuntime, SEL: {}, util: { getChatId: () => CHAT_ID } },
     H2O_Pagination: { getPageInfo: () => ({ enabled: false }) },
   };
@@ -493,13 +497,52 @@ function addMountedAnswers(environment, count) {
   }
 }
 
-await fixture('gate-disabled status preserves legacy projection behavior', () => {
+await fixture('disabled canonical authority fails closed instead of consuming turnRuntime rows', () => {
   const env = createEnvironment({ records: acceptedRecords().slice(0, 4), status: defaultStatus() });
   const result = env.api.rebuildNow('fixture-disabled');
   equal(result.ok, true);
-  equal(env.api.getTurnList().length, 4);
-  equal(boxCount(env), 4);
+  equal(env.api.getTurnList().length, 0);
+  equal(boxCount(env), 0);
   equal(env.api.getCompleteIndexMiniMapDiagnostics().enabled, false);
+});
+
+await fixture('retired Pagination master rows cannot establish MiniMap membership', () => {
+  const env = createEnvironment({ records: [], status: defaultStatus() });
+  env.context.H2O_Pagination.state = {
+    masterTurnUnits: [
+      { turnId: 'pw-turn-1', answerId: 'legacy-pagination-a-1', answerIndex: 1 },
+      { turnId: 'pw-turn-2', answerId: 'legacy-pagination-a-2', answerIndex: 2 },
+    ],
+  };
+  const snapshot = env.api.getAuthoritativeTurnSnapshot();
+  equal(snapshot.list.length, 0);
+  equal(snapshot.completeness, 'unavailable');
+});
+
+await fixture('H2O.turn and mounted answer order cannot establish MiniMap membership', () => {
+  const env = createEnvironment({ records: [], status: defaultStatus() });
+  env.context.H2O.turn = { getTurns: () => acceptedRecords().slice(0, 2) };
+  addMountedAnswers(env, 3);
+  const snapshot = env.api.getAuthoritativeTurnSnapshot();
+  equal(snapshot.list.length, 0);
+  equal(snapshot.completeness, 'unavailable');
+});
+
+await fixture('all unavailable canonical states reject unqualified runtime membership', () => {
+  const cases = [
+    ['missing', { enabled: true, authoritative: false, status: 'full-index-unavailable' }],
+    ['stale', { enabled: true, authoritative: false, status: 'stale' }],
+    ['route-mismatch', { enabled: true, authoritative: false, status: 'route-mismatch' }],
+    ['generation-mismatch', { enabled: true, authoritative: false, status: 'generation-mismatch' }],
+    ['incomplete', { enabled: true, authoritative: false, status: 'loading-full-index' }],
+    ['ambiguous', { enabled: true, authoritative: false, status: 'ambiguous' }],
+  ];
+  for (const [label, overrides] of cases) {
+    const env = createEnvironment({ records: acceptedRecords().slice(0, 3), status: defaultStatus(overrides) });
+    const snapshot = env.api.getAuthoritativeTurnSnapshot();
+    equal(snapshot.list.length, 0, label);
+    equal(snapshot.completeness, 'unavailable', label);
+  }
 });
 
 await fixture('loading without cache renders an accessible bounded marker and zero normal boxes', () => {
@@ -713,7 +756,7 @@ await fixture('canonical count mismatch fails closed instead of falling back to 
   equal(boxCount(env), 0);
 });
 
-await fixture('gate rollback restores legacy projection on rebuild', () => {
+await fixture('validator-only gate rollback fails closed and never restores legacy projection', () => {
   const env = createEnvironment({ status: completeStatus() });
   env.api.rebuildNow('fixture-authority');
   equal(env.api.getTurnList().length, 38);
@@ -721,8 +764,23 @@ await fixture('gate rollback restores legacy projection on rebuild', () => {
   env.holder.status = defaultStatus();
   const rollback = env.api.rebuildNow('fixture-rollback');
   equal(env.api.getCompleteIndexMiniMapDiagnostics().enabled, false);
-  ok(rollback.cacheMerge?.mode !== 'complete-index-authority', 'rollback must restore legacy cache merge semantics');
-  equal(env.api.getTurnList().length, 38);
+  equal(rollback.cacheMerge == null, true, 'no legacy cache merge is admitted');
+  equal(env.api.getTurnList().length, 0);
+  equal(boxCount(env), 0);
+});
+
+await fixture('unproven MiniMap cache cannot publish membership while authority is unavailable', () => {
+  const env = createEnvironment({ records: [], status: defaultStatus() });
+  const legacyRows = acceptedRecords().slice(0, 3).map((row) => ({
+    ...row,
+    layer: 'current',
+    currentProof: 'proven-current',
+  }));
+  equal(env.api.saveTurnCache(CHAT_ID, legacyRows).ok, true);
+  const result = env.api.renderFromCache(CHAT_ID);
+  equal(result.status, 'complete-index-authority');
+  equal(result.renderedCount, 0);
+  equal(env.api.getTurnList().length, 0);
 });
 
 await fixture('state listener schedules rebuild but never invokes a setter', () => {

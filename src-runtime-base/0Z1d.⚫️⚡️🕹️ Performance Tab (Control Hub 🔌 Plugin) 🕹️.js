@@ -125,105 +125,14 @@
     }
   }
 
-  function setUnmountSetting(key, val) {
-    const api = getUnmountApi();
-    return !!safeCall(() => api?.applySetting?.(key, val));
-  }
-
-  function runUnmountPass(reason = 'control-hub') {
-    const api = getUnmountApi();
-    const ok = !!safeCall(() => api?.runPass?.(reason));
-    return { message: ok ? 'Pass completed.' : 'Unmount module unavailable.' };
-  }
-
-  function remountAll(reason = 'control-hub') {
-    const api = getUnmountApi();
-    const count = Number(safeCall(() => api?.remountAll?.(reason)) || 0);
-    return { message: count > 0 ? `Remounted ${count} turn(s).` : 'No collapsed turns were found.' };
-  }
-
-  function getPaginationApi() {
-    return TOPW.H2O_Pagination || W.H2O_Pagination || null;
-  }
-
-  function getPaginationConfig() {
-    return safeCall(() => getPaginationApi()?.getConfig?.()) || null;
-  }
-
-  function getPaginationPageInfo() {
-    return safeCall(() => getPaginationApi()?.getPageInfo?.()) || null;
-  }
-
-  function paginationPageLabel(info) {
-    const model = info && typeof info === 'object' ? info : getPaginationPageInfo();
-    if (!model || typeof model !== 'object') return 'Page info unavailable.';
-    const pageIndex = Number(model.pageIndex) || 0;
-    const pageCount = Math.max(1, Number(model.pageCount) || 1);
-    const totalAnswers = Math.max(0, Number(model.totalAnswers) || 0);
-    return `Page ${pageIndex + 1}/${pageCount} • ${totalAnswers} answers`;
-  }
-
-  function getPaginationSetting(key, fallback) {
-    const cfg = getPaginationConfig();
-    if (!cfg || typeof cfg !== 'object') return fallback;
-
-    switch (String(key || '')) {
-      case 'pwEnabled': return cfg.enabled !== false;
-      case 'pwPageSize': return Number(cfg.pageSize) || fallback;
-      case 'pwBufferAnswers': return Number(cfg.bufferAnswers) || fallback;
-      case 'pwShortcutsEnabled': return cfg.shortcutsEnabled !== false;
-      case 'pwAutoLoadSentinel': return !!cfg.autoLoadSentinel;
-      case 'pwStyleMode': return String(cfg.styleMode || fallback || 'normal');
-      case 'pwSwapMode': return String(cfg.swapMode || fallback || 'root');
-      case 'pwDebug': return !!cfg.debug;
-      default: return fallback;
-    }
-  }
-
-  function setPaginationSetting(key, val) {
-    const api = getPaginationApi();
-    return !!safeCall(() => api?.applySetting?.(key, val));
-  }
-
-  function goPagination(direction) {
-    const api = getPaginationApi();
-    if (!api) return { message: 'Pagination module unavailable.' };
-
-    const infoBefore = getPaginationPageInfo();
-    const handlers = {
-      first: () => api.goFirst?.('control-hub:first'),
-      older: () => api.goOlder?.('control-hub:older'),
-      newer: () => api.goNewer?.('control-hub:newer'),
-      last: () => api.goLast?.('control-hub:last'),
-    };
-    const run = handlers[String(direction || '')];
-    const ok = !!safeCall(() => run?.());
-    if (!ok) {
-      const enabled = getPaginationSetting('pwEnabled', true);
-      return { message: enabled ? 'No page change.' : 'Pagination is disabled.' };
-    }
-
-    return {
-      message: paginationPageLabel(infoBefore) === paginationPageLabel()
-        ? 'Already there.'
-        : paginationPageLabel(),
-    };
-  }
-
-  function rebuildPagination(reason = 'control-hub:rebuild') {
-    const api = getPaginationApi();
-    const ok = !!safeCall(() => api?.rebuildIndex?.(reason));
-    return { message: ok ? paginationPageLabel() : 'Pagination rebuild failed or is unavailable.' };
-  }
-
   function getChatMechanismsApi() {
     return TOPW.H2O?.CM?.chtmech?.api || W.H2O?.CM?.chtmech?.api || null;
   }
 
   function readLiveGlobals() {
     return {
-      globalUnmount: getUnmountSetting('umEnabled', false),
-      globalPagination: getPaginationSetting('pwEnabled', false),
+      globalUnmount: false,
+      globalPagination: false,
     };
   }
 
@@ -233,24 +142,24 @@
   }
 
   function defaultEngineActionMode(gestureBackend) {
-    return gestureBackend === 'engine' ? 'unmount-engine' : 'local-dom';
+    return 'local-dom';
   }
 
   function normalizeAnswerTitleMode(raw, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const val = String(raw || fallback).trim().toLowerCase();
-    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
+    return val === 'unmount-engine' ? 'local-dom' : (val === 'local-dom' ? val : fallback);
   }
 
   function normalizeDividerDotMode(raw, gestureBackend) {
     const fallback = defaultEngineActionMode(gestureBackend);
     const val = String(raw || fallback).trim().toLowerCase();
-    return (val === 'local-dom' || val === 'unmount-engine') ? val : fallback;
+    return val === 'unmount-engine' ? 'local-dom' : (val === 'local-dom' ? val : fallback);
   }
 
   function normalizeDividerMode(raw) {
     const val = String(raw || 'pagination-focus-page').trim().toLowerCase();
-    return (val === 'pagination-focus-page' || val === 'unmount-page-collapse') ? val : 'pagination-focus-page';
+    return val === 'unmount-page-collapse' ? 'pagination-focus-page' : 'pagination-focus-page';
   }
 
   function normalizeOnOff(raw, fallback = 'on') {
@@ -388,7 +297,7 @@
       isEngineRouting: master === 'engine',
       isActionsOff: master === 'off',
       globalUnmount: getUnmountSetting('umEnabled', false),
-      globalPagination: getPaginationSetting('pwEnabled', false),
+      globalPagination: false,
     };
   }
 
@@ -509,23 +418,11 @@
   function renderAnswerTitleModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.answerTitleDblClickMode || 'local-dom';
-    // Labels describe user-visible behavior (§1A / §8G). The backend choice
-    // is an Advanced routing detail: in Default view the select shows only
-    // the behavior label for the stored value (no engine wording); the
-    // backend variants appear once Advanced Diagnostics is revealed.
-    // Internal option VALUES are unchanged — stored preferences keep working.
     return buildMechanismsSelect({
       value: current,
       disabled: state.isActionsOff,
-      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
-      options: advanced
-        ? [
-          ['local-dom', 'Collapse/Expand This Q&A'],
-          ['unmount-engine', 'Collapse/Expand This Q&A (engine-assisted)'],
-        ]
-        : [[current, 'Collapse/Expand This Q&A']],
+      options: [['local-dom', 'Collapse/Expand This Q&A']],
       note: 'Double-clicking an answer’s title bar folds or unfolds that question-and-answer pair.',
       onChange(value) {
         setChatMechanismsConfig({ answerTitleDblClickMode: value });
@@ -536,18 +433,11 @@
   function renderDividerDotModeControl({ row }) {
     const state = getMechanismsUiState();
     markMechanismRowDisabled(row, state.isActionsOff);
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.dividerDotClickMode || 'local-dom';
     return buildMechanismsSelect({
       value: current,
       disabled: state.isActionsOff,
-      disabledValues: advanced && state.isLocalRouting ? ['unmount-engine'] : [],
-      options: advanced
-        ? [
-          ['local-dom', 'Show/Hide Page Title List'],
-          ['unmount-engine', 'Show/Hide Page Title List (engine-assisted)'],
-        ]
-        : [[current, 'Show/Hide Page Title List']],
+      options: [['local-dom', 'Show/Hide Page Title List']],
       note: 'The page divider’s circle lists every title in the page. Double-click a listed title to open just that turn.',
       onChange(value) {
         setChatMechanismsConfig({ dividerDotClickMode: value });
@@ -564,23 +454,12 @@
     // CSS/logical page lightening (the router never detaches or focuses).
     // Only the user-facing label is corrected here; renaming the mode id
     // requires a versioned config migration (deferred).
-    const advanced = isMechanismsAdvancedRevealed();
     const current = state.cfg.dividerDblClickMode || 'pagination-focus-page';
-    const note = current === 'pagination-focus-page'
-      ? 'Folds the whole page to lighten the chat. The page divider stays visible so the page can be expanded again.'
-      : 'Folds the page by collapsing each turn individually. The page divider stays visible as the restore handle.';
-    const behaviorLabel = current === 'unmount-page-collapse'
-      ? 'Collapse/Expand Page (fold each turn)'
-      : 'Collapse/Expand Page (lightening)';
+    const note = 'Folds the whole page to lighten the chat. The page divider stays visible so the page can be expanded again.';
     return buildMechanismsSelect({
       value: current,
       disabled,
-      options: advanced
-        ? [
-          ['unmount-page-collapse', 'Collapse/Expand Page (fold each turn)'],
-          ['pagination-focus-page', 'Collapse/Expand Page (lightening)'],
-        ]
-        : [[current, behaviorLabel]],
+      options: [['pagination-focus-page', 'Collapse/Expand Page (lightening)']],
       note,
       onChange(value) {
         setChatMechanismsConfig({ dividerDblClickMode: value });
@@ -604,37 +483,11 @@
     });
   }
 
-  function renderGlobalUnmountControl({ row }) {
-    const state = getMechanismsUiState();
-    markMechanismRowDisabled(row, state.isLocalRouting);
-    return buildMechanismsToggle({
-      enabled: !!state.globalUnmount,
-      disabled: state.isLocalRouting,
-      note: 'Advanced: ChatGPT now virtualizes message bodies natively. This legacy optimizer detaches body content into cached fragments — enable for diagnostics only.',
-      onToggle(next) {
-        setUnmountSetting('umEnabled', !!next);
-      },
-    });
-  }
-
-  function renderGlobalPaginationControl({ row }) {
-    const state = getMechanismsUiState();
-    markMechanismRowDisabled(row, state.isLocalRouting);
-    return buildMechanismsToggle({
-      enabled: !!state.globalPagination,
-      disabled: state.isLocalRouting,
-      note: 'Advanced: physically windows whole turns in and out of the page. ChatGPT’s native virtualization already keeps far content light — enable for diagnostics only.',
-      onToggle(next) {
-        setPaginationSetting('pwEnabled', !!next);
-      },
-    });
-  }
-
   // ── Advanced Diagnostics disclosure (Phase 1b) ────────────────────────────
   // Hub Mode Default shows only normal product controls. The Advanced /
-  // Diagnostics group (Master Action Routing + the legacy physical
-  // optimizers) and the two engine subtabs are revealed by this persisted
-  // toggle. SAFETY RULE: while Global Unmount, Global Pagination, or the
+  // Diagnostics group (Master Action Routing + legacy Global Unmount) and the
+  // remaining engine subtab are revealed by this persisted toggle. SAFETY
+  // RULE: while Global Unmount or the
   // developer 'off' routing state is ACTIVE, Advanced auto-reveals — the
   // off-switch of an active mechanism must never be hidden (§1B).
   const KEY_MECHANISMS_ADVANCED_V1 = 'h2o:prm:cgx:cntrlhb:state:mechanisms-advanced:v1';
@@ -759,7 +612,7 @@
       key: 'cmAdvancedDisclosure',
       label: 'Advanced Diagnostics',
       group: 'Advanced',
-      help: 'Reveals backend routing and the legacy physical optimizers (diagnostics only). Shown automatically while an advanced mechanism is active.',
+      help: 'Reveals backend routing and legacy Global Unmount diagnostics. Shown automatically while an advanced mechanism is active.',
       def: 'hidden',
       opts: [
         ['hidden', 'Hidden'],
@@ -771,9 +624,9 @@
         invalidateHubSoon();
       },
     },
-    // ── Advanced / Diagnostics (§8G: backend routing + legacy physical
-    // optimizers — native ChatGPT now virtualizes message bodies natively;
-    // these are diagnostics, not normal product options). Hidden in Hub Mode
+    // ── Advanced / Diagnostics (§8G: backend routing + legacy Global Unmount;
+    // native ChatGPT now virtualizes message bodies natively, so this is a
+    // diagnostic rather than a normal product option). Hidden in Hub Mode
     // Default unless the disclosure above is on or a mechanism is active —
     // see getChatMechanismsControls(). ──────────────────────────────────────
     {
@@ -784,25 +637,13 @@
       group: 'Advanced / Diagnostics',
       render(ctx) { return renderMasterRoutingControl(ctx); },
     },
-    {
-      type: 'custom',
-      key: 'cmGlobalUnmount',
-      stackBelowLabel: true,
-      label: 'Global Unmount (legacy physical optimizer)',
-      group: 'Advanced / Diagnostics',
-      render(ctx) { return renderGlobalUnmountControl(ctx); },
-    },
-    {
-      type: 'custom',
-      key: 'cmGlobalPagination',
-      stackBelowLabel: true,
-      label: 'Global Pagination (legacy physical windowing)',
-      group: 'Advanced / Diagnostics',
-      render(ctx) { return renderGlobalPaginationControl(ctx); },
-    },
   ];
 
-  const UNMOUNT_CONTROLS = [
+  // P02B_PHYSICAL_GLOBAL_UNMOUNT_RETIRED: same-page re-registration drains
+  // controls held by the Hub without exposing a physical mutation surface.
+  const RETIRED_UNMOUNT_CONTROLS = Object.freeze([]);
+  /* P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS
+  const LEGACY_UNMOUNT_CONTROLS = [
     {
       type: 'toggle',
       key: 'umEnabled',
@@ -922,8 +763,11 @@
       ],
     },
   ];
+  P02B_UNREACHABLE_LEGACY_UNMOUNT_CONTROLS */
 
-  const PAGINATION_CONTROLS = [
+  const RETIRED_PAGINATION_CONTROLS = Object.freeze([]);
+  /* P02A_UNREACHABLE_LEGACY_PAGINATION_CONTROLS
+  const LEGACY_PAGINATION_CONTROLS = [
     {
       type: 'toggle',
       key: 'pwEnabled',
@@ -1041,6 +885,7 @@
       ],
     },
   ];
+  P02A_UNREACHABLE_LEGACY_PAGINATION_CONTROLS */
 
   // Hub Mode Default: hide the Advanced / Diagnostics group unless the
   // disclosure is on or an advanced mechanism is active (safety auto-reveal).
@@ -1063,14 +908,18 @@
       });
       api.registerPlugin({
         key: 'unmountMessages',
+        retired: true,
         getControls() {
-          return UNMOUNT_CONTROLS;
+          return RETIRED_UNMOUNT_CONTROLS;
         },
       });
+      // Re-registering the retired key drains any controls retained by a
+      // same-page module replacement without exposing a mutating surface.
       api.registerPlugin({
         key: 'paginationWindowing',
+        retired: true,
         getControls() {
-          return PAGINATION_CONTROLS;
+          return RETIRED_PAGINATION_CONTROLS;
         },
       });
       LAST_API = api;

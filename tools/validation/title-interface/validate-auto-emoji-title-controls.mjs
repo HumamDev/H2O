@@ -28,6 +28,21 @@ function extractFunction(text, name) {
   throw new Error(`unterminated function ${name}`);
 }
 
+function countHeatPillOwnershipWrites(text) {
+  const patterns = [
+    /\.dataset\.hoHeatPillOwner\s*(?:=(?!=)|\?\?=|&&=|\|\|=|[+\-*/%&|^]=|\+\+|--)/gu,
+    /(?:\+\+|--)\s*[^;\n]*\.dataset\.hoHeatPillOwner\b/gu,
+    /\bdelete\s+[^;\n]*\.dataset\.hoHeatPillOwner\b/gu,
+    /\.(?:setAttribute|removeAttribute|toggleAttribute)\(\s*['"]data-ho-heat-pill-owner['"]/gu,
+  ];
+  return patterns.reduce((count, pattern) => count + (text.match(pattern) || []).length, 0);
+}
+
+function assertSingleHeatPillOwnershipWriter(text) {
+  assert.equal(countHeatPillOwnershipWrites(text), 1,
+    'decorateLink must remain the sole Heat Pill ownership-stamp writer');
+}
+
 assert.match(source.order, /^🟢\t9D1a\.🟤📱 Auto Emoji Title 📱\.js$/mu,
   'the established Auto Emoji owner is enabled in the runtime order');
 assert.match(source.controls, /label:\s*'Automatically assign emoji'[\s\S]*group:\s*'Automation'[\s\S]*def:\s*DEFAULT_AE_AUTO_ASSIGN/,
@@ -267,8 +282,20 @@ for (const key of ['auto', 'list']) {
 
 assert.match(source.list, /btn\.dataset\.hoHeatPillOwner = "9A1b"/u,
   'the existing Heat Pill decoration path stamps the ownership hook the restoration selects on');
-assert.equal((source.list.match(/dataset\.hoHeatPillOwner/gu) || []).length, 1,
-  'exactly one Heat Pill ownership stamp exists, so no second Heat Pill implementation appears');
+const decorateLinkBody = extractFunction(source.list, 'decorateLink');
+const mutationAdmissionBody = extractFunction(source.list, 'hoMutationsAffectChatList');
+assert.equal(countHeatPillOwnershipWrites(decorateLinkBody), 1,
+  'decorateLink contains the canonical Heat Pill ownership-stamp write');
+assertSingleHeatPillOwnershipWriter(source.list);
+assert.match(mutationAdmissionBody, /dataset\.hoHeatPillOwner === '9A1b'/u,
+  'mutation admission may observe the Heat Pill ownership stamp by strict equality');
+assert.equal(countHeatPillOwnershipWrites(mutationAdmissionBody), 0,
+  'the mutation-admission ownership observation is read-only');
+assert.throws(
+  () => assertSingleHeatPillOwnershipWriter(`${source.list}\nbtn.dataset.hoHeatPillOwner = "duplicate";`),
+  /sole Heat Pill ownership-stamp writer/u,
+  'an injected second Heat Pill ownership writer is rejected',
+);
 assert.match(source.auto, /setBadgeDisplay\(badge, badgeEmoji, 'side'\)/u,
   'sidebar placeholders carry the side context the themed restoration is scoped to');
 assert.match(source.auto, /entry\.insertBefore\(badge, entry\.firstChild\)/u,

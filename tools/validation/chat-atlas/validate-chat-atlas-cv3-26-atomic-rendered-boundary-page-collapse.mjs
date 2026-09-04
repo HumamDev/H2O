@@ -220,12 +220,17 @@ function createTransactionHarness(options = {}) {
     productionSource: SOURCE,
     coldEnd: true,
     middleCount: 48,
-    extraKind: 'inline-slot',
+    extraKind: 'title-list',
     count: 39,
   });
   rangeFactory.prime(rangeHarness);
   const rawPlan = rangeHarness.api.plan(1);
   if (!rawPlan?.ok) throw new Error(`range-plan-unavailable:${rawPlan?.diagnostic?.reason}`);
+  // The range probe needs one already-owned H2O node to prove exclusion. It
+  // is not the transaction's title list, so remove it before exercising the
+  // real detached-list preparation/commit path below.
+  rangeHarness.guard.locked = false;
+  rangeHarness.extra?.remove?.();
   const model = buildTitleModel(Number(options.count || 39));
   const titleRows = model.pages[0]?.turnRecords || [];
   const plan = {
@@ -282,6 +287,11 @@ function createTransactionHarness(options = {}) {
     nativeOrdinals: 0,
     testArithmetic: 0,
     persistence: 0,
+    materializations: 0,
+    mountCandidateReads: 0,
+    mountCandidateReadsAtOpenStateSet: [],
+    pendingSelfBlockingSuppressions: 0,
+    residualSourceReleases: 0,
   };
   const control = {
     model,
@@ -291,6 +301,14 @@ function createTransactionHarness(options = {}) {
     nextCapability: plan.nextCapability,
     activationReady: options.activationReady !== false,
     beforeFinalValidation: null,
+    navigationGeneration: 0,
+    navigationStatus: Object.freeze({
+      status: 'idle',
+      targetQId: '',
+      generation: 0,
+      errorCode: null,
+    }),
+    collapseSources: new Map(),
   };
   const flow = rangeHarness.flow;
   const originalFlowInsert = flow.insertBefore.bind(flow);
@@ -325,6 +343,12 @@ function createTransactionHarness(options = {}) {
   flow.scrollHeight = 90000;
   flow.clientHeight = 1000;
   flow.scrollTop = 0;
+  class TitleListOpenStateMap extends Map {
+    set(key, value) {
+      calls.mountCandidateReadsAtOpenStateSet.push(calls.mountCandidateReads);
+      return super.set(key, value);
+    }
+  }
   const S = {
     atomicPageCollapseTransactions: new Map(),
     atomicPageCollapseGuards: new Set(),
@@ -332,10 +356,13 @@ function createTransactionHarness(options = {}) {
     collapsedPagesByChat: new Map(),
     titleListPagesByChat: new Map(),
     titleListStacksByKey: new Map(),
+    titleListOpenStatesByKey: new TitleListOpenStateMap(),
+    titleListOpenSequence: 0,
     collapsedBoundaryDiagnostics: new Map(),
   };
   const stackStats = {};
   const W = {
+    H2O: { obs: { mounts: new Map() } },
     getComputedStyle: () => ({ overflowY: 'visible' }),
     scrollBy() {
       safety.nonAnchorScrolling += 1;
@@ -373,24 +400,72 @@ function createTransactionHarness(options = {}) {
     'setAtomicCollapsedPageMemory',
     'prepareDetachedPageTitleList',
     'revalidateAtomicPageCollapsePlan',
+    'hasTitleCollapseInlineResidue',
+    'getPageMemberCollapseSources',
+    'pageMemberFlowScopes',
+    'releasePageMemberProjection',
+    'releasePageMemberHideMarkers',
+    'clearResidualPageTitleCollapseSources',
+    'titleListOpenStateKey',
+    'getTitleListSuffixContainers',
+    'ensureTitleListSuffixContainer',
+    'restoreTitleListProjectionRows',
+    'titleListCanonicalMemberForOpenState',
+    'titleListOpenStateCurrent',
+    'titleListCurrentNativeMount',
+    'titleListCurrentOpenMount',
+    'requestTitleListCanonicalMaterialization',
+    'titleListCanonicalMaterializationTerminal',
+    'clearTitleListNativeInPlaceProjection',
+    'reconcileTitleListNativeInPlaceProjection',
+    'openTitleListNativeInPlace',
+    'reconcilePendingTitleListMaterialization',
+    'resetOpenedTitleListRows',
+    'setTitleListMemberCollapsed',
     'releaseAtomicPageCollapseState',
     'rollbackAtomicPageCollapse',
     'validateCommittedAtomicPageCollapse',
+    'rebindCommittedAtomicPageCollapse',
     'collapsePageWithRenderedBoundaries',
     'applyExpandedCollapseControlState',
     'expandPageWithRenderedBoundaries',
     'reconcileAtomicPageCollapseTransactions',
+    'syncSyntheticTitleList',
     'expandAllAtomicPageCollapses',
   ];
+  const correctionFallbacks = Object.freeze({
+    titleListCanonicalMaterializationTerminal:
+      "  function titleListCanonicalMaterializationTerminal() { return null; }",
+    reconcilePendingTitleListMaterialization:
+      "  function reconcilePendingTitleListMaterialization() { return null; }",
+    setTitleListMemberCollapsed:
+      "  function setTitleListMemberCollapsed() { return { ok: true, executor: 'legacy-inline' }; }",
+  });
   const api = vm.runInNewContext(`(() => {
     const document = injectedDocument;
     const W = injectedWindow;
+    const TOPW = W;
     const S = injectedState;
     const TITLE_LIST_PAGE_SIZE = 25;
     const TURN_HOST_SEL = '[data-testid="conversation-turn"], [data-testid^="conversation-turn-"]';
     const ATTR_CHAT_PAGE_NATIVE_HIDDEN = 'data-cgxui-chat-page-native-hidden';
+    const ATTR_CHAT_PAGE_HIDDEN = 'data-cgxui-chat-page-hidden';
+    const ATTR_CHAT_PAGE_QUESTION_HIDDEN = 'data-cgxui-chat-page-question-hidden';
+    const ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN = 'data-cgxui-chat-page-no-answer-question-hidden';
+    const ATTR_CHAT_PAGE_WRAPPER_HIDDEN = 'data-cgxui-chat-page-wrapper-hidden';
+    const ATTR_TITLE_LIST_FLOW_HIDDEN = 'data-cgxui-chat-page-title-list-hidden';
     const ATTR_TITLE_LIST_NUM = 'data-cgxui-chat-page-title-list-num';
+    const ATTR_TITLE_LIST_SEGMENT = 'data-h2o-title-list-segment';
+    const TITLE_LIST_SUFFIX_SEL = '[data-h2o-title-list-segment="suffix"]';
     const COLLAPSE_UNAVAILABLE_STATUS = 'collapsed-exact-boundary-unavailable';
+    const MEMBER_RELEASE_MARKERS = [
+      'data-cgxui-at-hidden',
+      'data-at-question-hidden',
+      ATTR_CHAT_PAGE_QUESTION_HIDDEN,
+      ATTR_CHAT_PAGE_NO_ANSWER_QUESTION_HIDDEN,
+      ATTR_TITLE_LIST_FLOW_HIDDEN,
+    ];
+    const MEMBER_RELEASE_SEL = MEMBER_RELEASE_MARKERS.map((attr) => '[' + attr + ']').join(',');
     const resolveChatId = () => 'chat-stage-2c2';
     const collapsedNativeRangeKey = (chatId, pageNum) => String(chatId) + '::' + String(pageNum);
     const titleListStackRegistryKey = (pageNum, chatId) => String(chatId) + '::' + String(pageNum);
@@ -415,6 +490,36 @@ function createTransactionHarness(options = {}) {
         return bar;
       },
     });
+    const UM_PUBLIC = () => ({
+      isCollapsedById(id, options = {}) {
+        const sources = injectedControl.collapseSources.get(String(id || '')) || new Set();
+        const source = String(options?.source || '');
+        return source ? sources.has(source) : sources.size > 0;
+      },
+      expandManyByIds(ids, options = {}) {
+        const source = String(options?.source || '');
+        for (const id of ids || []) {
+          const key = String(id || '');
+          const sources = injectedControl.collapseSources.get(key) || new Set();
+          if (source && sources.delete(source)) injectedCalls.residualSourceReleases += 1;
+          if (sources.size) injectedControl.collapseSources.set(key, sources);
+          else injectedControl.collapseSources.delete(key);
+        }
+        return { ok: true };
+      },
+      collapseManyByIds(ids, options = {}) {
+        const source = String(options?.source || 'title-list-row');
+        for (const id of ids || []) {
+          const key = String(id || '');
+          const sources = injectedControl.collapseSources.get(key) || new Set();
+          sources.add(source);
+          injectedControl.collapseSources.set(key, sources);
+        }
+        return { ok: true };
+      },
+    });
+    const getConfiguredDividerRoutes = () => ({ dividerDotRoute: 'engine/unmount' });
+    const recordManualTitleOverride = () => true;
     const onSyntheticTitleRowDblClick = () => {};
     const resolveSyntheticRowTitle = (member) => ({
       text: 'Title ' + String(member.turnNo),
@@ -424,7 +529,7 @@ function createTransactionHarness(options = {}) {
     });
     const projectSyntheticRowTitle = () => ({ changed: false, preventedDowngrade: false });
     const applyStackedTitleBarWash = () => ({ status: 'painted' });
-    const restoreAllInlineTurns = () => 0;
+    const replayDeferredPageCollapseIntent = () => [];
     const releaseTitleStackBars = () => 0;
     const getTitleListStackStats = () => injectedStackStats;
     const syncTitleOnlyModeRootAttribute = () => {};
@@ -440,6 +545,72 @@ function createTransactionHarness(options = {}) {
     const renderedBoundaryTransitionActive = (projection) => projection?.selectedPathConfirmationPending === true;
     const renderedBoundaryRecordStreaming = (record) => record?.livePendingStreaming === true;
     const buildTitleListPresentationPageModel = () => injectedControl.model;
+    const memberSectionCandidates = (member, role) => {
+      injectedCalls.mountCandidateReads += 1;
+      const identity = role === 'user' ? member?.questionId : member?.answerId;
+      return Array.from(injectedPlan.flowRoot.children || []).filter((node) => (
+        pageCollapseRangeNodeCarriesIdentity(node, identity)
+      ));
+    };
+    const getTurnAnchorNode = (section) => section;
+    const titleListDirectFlowChild = (flowRoot, node) => (
+      node?.parentElement === flowRoot ? node : null
+    );
+    const titleListMemberSections = (member) => ({
+      record: null,
+      questionSection: memberSectionCandidates(member, 'user')[0] || null,
+      answerSection: member?.type === 'answer' ? (memberSectionCandidates(member, 'assistant')[0] || null) : null,
+    });
+    const memberAllFlowAnchors = (member) => [
+      ...memberSectionCandidates(member, 'user'),
+      ...(member?.type === 'answer' ? memberSectionCandidates(member, 'assistant') : []),
+    ];
+    const turnRecordForTitleListIdentity = (anyId = '', turnNo = 0) => (
+      injectedControl.model.pages
+        .flatMap((page) => page.turnRecords)
+        .find((candidate) => (
+          [candidate.id, candidate.questionId, candidate.answerId].includes(String(anyId || ''))
+          || Number(candidate.turnNo || 0) === Number(turnNo || 0)
+        )) || null
+    );
+    const pureCanonicalPageMemberDetails = () => injectedControl.model.pages[0].turnRecords;
+    const _clearRestoreProps = (node) => {
+      for (const prop of ['max-height', 'height', 'overflow', 'opacity', 'pointer-events']) {
+        try {
+          if (typeof node?.style?.removeProperty === 'function') node.style.removeProperty(prop);
+          else node?.style?.setProperty?.(prop, '');
+        } catch {}
+      }
+    };
+    const clearTitleListFlowHiddenNode = (node) => {
+      if (!node?.hasAttribute?.('data-cgxui-chat-page-title-list-hidden')) return false;
+      node.removeAttribute('data-cgxui-chat-page-title-list-hidden');
+      return true;
+    };
+    const MM_SH = () => ({ api: { rt: {
+      setActiveTurnId(id) {
+        injectedCalls.materializations += 1;
+        const member = injectedControl.model.pages
+          .flatMap((page) => page.turnRecords)
+          .find((candidate) => [candidate.id, candidate.questionId, candidate.answerId].includes(String(id || ''))) || null;
+        const selectedAnchors = member ? memberAllFlowAnchors(member) : [];
+        injectedCalls.pendingSelfBlockingSuppressions += selectedAnchors.filter((node) => (
+          node?.getAttribute?.(ATTR_CHAT_PAGE_NATIVE_HIDDEN) === String(injectedPlan.pageNum)
+          || node?.getAttribute?.(ATTR_TITLE_LIST_FLOW_HIDDEN) === String(injectedPlan.pageNum)
+        )).length;
+        injectedControl.navigationGeneration += 1;
+        injectedControl.navigationStatus = Object.freeze({
+          status: 'mounting-target',
+          targetQId: String(member?.questionId || ''),
+          generation: injectedControl.navigationGeneration,
+          errorCode: null,
+        });
+        return true;
+      },
+      getCompleteIndexNavigationStatus() {
+        return injectedControl.navigationStatus;
+      },
+    } } });
     const evaluatePageCollapseCapability = () => {
       injectedCalls.capability += 1;
       injectedCalls.plans += 1;
@@ -453,7 +624,13 @@ function createTransactionHarness(options = {}) {
           : null,
       };
     };
-    ${extractedNames.map((name) => extractFunction(SOURCE, name)).join('\n')}
+    ${extractedNames.map((name) => {
+      try { return extractFunction(SOURCE, name); }
+      catch (error) {
+        if (correctionFallbacks[name]) return correctionFallbacks[name];
+        throw error;
+      }
+    }).join('\n')}
     const originalPrepare = prepareDetachedPageTitleList;
     prepareDetachedPageTitleList = (plan) => {
       const result = originalPrepare(plan);
@@ -478,10 +655,17 @@ function createTransactionHarness(options = {}) {
       collapse: collapsePageWithRenderedBoundaries,
       expand: expandPageWithRenderedBoundaries,
       reconcile: reconcileAtomicPageCollapseTransactions,
+      sync: syncSyntheticTitleList,
       expandAll: expandAllAtomicPageCollapses,
       prepare: prepareDetachedPageTitleList,
       revalidate: revalidateAtomicPageCollapsePlan,
       memberCurrent: pageCollapseMemberIdentityCurrent,
+      nativeMount: titleListCurrentNativeMount,
+      open: openTitleListNativeInPlace,
+      reconcileOpen: reconcileTitleListNativeInPlaceProjection,
+      close: clearTitleListNativeInPlaceProjection,
+      resetOpen: resetOpenedTitleListRows,
+      openMount: titleListCurrentOpenMount,
       state: S,
     });
   })()`, {
@@ -519,6 +703,7 @@ function createTransactionHarness(options = {}) {
     calls,
     control,
     capability,
+    window: W,
   };
 }
 
@@ -782,12 +967,10 @@ await fixture('product feedback excludes technical internals', () => {
   ok(!/native-slot|graph|wrapper|fingerprint/.test(String(h.capability.productReason)), 'safe product reason');
 });
 await fixture('1C1b is sole native-hidden transaction writer', () => {
-  // Two statements, one owner: the commit stamp in applyCollapsedNativeRange
-  // and the committed-state maintenance restamp in
-  // rebindCommittedAtomicPageCollapse (host element replacement inside a
-  // hidden range delivers replacements without the stamp). Both live in this
-  // module's transaction owner; no other module writes the attribute.
-  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 2, 'transaction-owner writer statements');
+  // P03C adds bounded unhide/rehide writes for the currently selected native
+  // mount, but all statements remain inside this transaction/presentation
+  // owner. No lifecycle helper or second module receives the attribute.
+  equal((SOURCE.match(/setAttribute\(ATTR_CHAT_PAGE_NATIVE_HIDDEN/g) || []).length, 5, 'bounded transaction-owner writer statements');
 });
 await fixture('1A1b remains Page-unit-only', () => {
   const core = fs.readFileSync(path.join(ROOT, 'src-runtime-base/1A1b.🟥🗺️ MiniMap Core 🧱🗺️.js'), 'utf8');
@@ -799,6 +982,279 @@ await fixture('range diagnostics remain semantically unchanged', () => {
   equal(h.rawPlan.diagnostic.hostWrapperCount, 50, 'range count unchanged');
 });
 await fixture('graph bridge remains required', () => ok(SOURCE.includes('getGraphIdentityDiagnostics'), 'graph getter consumed'));
+
+function createTransitionTimeMountLossHarness() {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed before transition-time loss');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  const preOpenMount = x.api.nativeMount(transaction, member);
+  const selectedRow = transaction.titleRowsPrepared[0];
+  const lostAnswer = x.answer1.wrapper;
+  const proof = transaction.wrapperProofs.get(lostAnswer);
+  let lossTriggered = false;
+  const originalSetAttribute = selectedRow.setAttribute.bind(selectedRow);
+  selectedRow.setAttribute = (name, value) => {
+    const result = originalSetAttribute(name, value);
+    if (!lossTriggered && name === 'data-h2o-title-row-opened' && String(value) === '1') {
+      lossTriggered = true;
+      lostAnswer.remove();
+    }
+    return result;
+  };
+  x.calls.mountCandidateReads = 0;
+  const opened = x.api.open(transaction, member);
+  selectedRow.setAttribute = originalSetAttribute;
+  return {
+    x,
+    transaction,
+    member,
+    selectedRow,
+    lostAnswer,
+    proof,
+    preOpenMount,
+    lossTriggered,
+    opened,
+  };
+}
+
+await fixture('P04B transition target is exactly mounted immediately before title open', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  equal(scenario.preOpenMount.ok, true, 'exact selected Q/A mount exists before open');
+  equal(scenario.preOpenMount.anchors.length, 2, 'both selected native anchors are current before open');
+});
+await fixture('P04B host lifecycle loss during the real open projection enters scalar pending', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  equal(scenario.lossTriggered, true, 'host replacement occurs during selected-row projection');
+  equal(scenario.opened.status, 'pending', 'transition-time loss enters pending');
+  equal(scenario.x.calls.materializations, 1, 'one bounded canonical materialization is requested');
+  const state = scenario.x.S.titleListOpenStatesByKey.values().next().value;
+  equal(Object.values(state).some((value) => value instanceof scenario.x.flow.constructor), false, 'pending state is scalar-only');
+  const synchronized = scenario.x.api.sync(
+    scenario.transaction.pageNum,
+    scenario.transaction.chatId,
+    true,
+    { reason: 'row-opened' },
+  );
+  equal(synchronized.status, 'pending', 'same-turn synchronous repair preserves bounded pending state');
+  equal(scenario.x.S.atomicPageCollapseTransactions.size, 1, 'pending repair does not expand the committed page');
+  equal(scenario.x.calls.materializations, 1, 'pending repair does not arm a second materialization request');
+});
+await fixture('P04B open resolves the current canonical mount before committing pending state', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  equal(scenario.x.calls.mountCandidateReadsAtOpenStateSet.at(-1) > 0, true, 'current mount was read before scalar state commit');
+});
+await fixture('P04B pending reveal is not self-blocked by selected whole-flow suppression', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  equal(scenario.x.calls.pendingSelfBlockingSuppressions, 0, 'selected surviving anchor remains materialization-eligible');
+  equal(scenario.x.start.wrapper.hasAttribute('data-cgxui-chat-page-native-hidden'), false, 'selected current question anchor is exposed while answer remount is pending');
+});
+await fixture('P04B terminal no-progress clears the failed open projection coherently', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  const state = scenario.x.S.titleListOpenStatesByKey.values().next().value;
+  scenario.x.control.navigationStatus = Object.freeze({
+    status: 'unreachable',
+    targetQId: scenario.member.questionId,
+    generation: Number(state?.materializationGeneration || scenario.x.control.navigationGeneration),
+    errorCode: 'no-progress',
+  });
+  const terminal = scenario.x.api.reconcileOpen(scenario.transaction, { reason: 'materialization-terminal' });
+  equal(terminal.status.includes('cleared'), true, 'terminal materialization failure clears projection');
+  equal(scenario.x.S.titleListOpenStatesByKey.size, 0, 'failed scalar open state is drained');
+  equal(scenario.selectedRow.hasAttribute('data-h2o-title-row-opened'), false, 'selected row no longer advertises an unavailable open turn');
+  equal(scenario.selectedRow.hasAttribute('data-h2o-title-row-pending'), false, 'pending row state is drained');
+});
+await fixture('P04B replacement remount settles the exact canonical native turn in place', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  const NodeCtor = scenario.x.flow.constructor;
+  const replacement = new NodeCtor('DIV', 'host-turn-slot', scenario.x.guard);
+  replacement.setAttribute('data-turn-id-container', scenario.proof.identity);
+  const host = new NodeCtor('SECTION', 'native-turn-host', scenario.x.guard);
+  const carrier = new NodeCtor('SECTION', 'identity-carrier', scenario.x.guard);
+  carrier.setAttribute('data-turn-id', scenario.proof.identity);
+  carrier.setAttribute('data-turn', 'assistant');
+  host.appendChild(carrier);
+  replacement.appendChild(host);
+  const nextWrapper = scenario.transaction.hostWrappers[2] || scenario.x.end.wrapper;
+  scenario.x.flow.insertBefore(replacement, nextWrapper);
+  scenario.x.window.H2O.obs.mounts.set(scenario.proof.identity, { el: carrier, shell: replacement });
+  const [result] = scenario.x.api.reconcile('observer-hub-remount');
+  equal(result.status, 'current', 'replacement reconciliation preserves the committed title page');
+  equal(scenario.x.api.openMount(scenario.transaction).ok, true, 'replacement resolves by exact canonical identity');
+  equal(replacement.hasAttribute('data-cgxui-chat-page-native-hidden'), false, 'replacement selected anchor is visible');
+  equal(scenario.transaction.hostWrappers.includes(scenario.lostAnswer), false, 'stale predecessor reference is released');
+  equal(scenario.transaction.wrapperProofs.has(scenario.lostAnswer), false, 'stale predecessor proof key is released');
+  equal(replacement.parentElement, scenario.x.flow, 'replacement remains under the host-owned flow');
+  equal(scenario.transaction.titleRowsPrepared[0].parentElement, scenario.transaction.titleListContainer, 'selected row remains in the H2O prefix');
+  equal(scenario.transaction.titleRowsPrepared.slice(1).every((row) => row.parentElement?.getAttribute?.('data-h2o-title-list-segment') === 'suffix'), true, 'nonselected rows remain in the H2O suffix');
+});
+await fixture('P04B explicit page close drains virtualized collapsed-flow residue', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = x.model.pages[0].turnRecords[0];
+  const questionAnchor = x.api.nativeMount(transaction, member).anchors[0];
+  x.control.collapseSources.set(member.answerId, new Set(['title-list-row', 'answer-title']));
+  questionAnchor.setAttribute('data-at-collapsed', '1');
+  questionAnchor.style.setProperty('max-height', '0px');
+  x.answer1.wrapper.remove();
+  const result = expand(x);
+  equal(result.status, 'expanded', 'explicit page close completes');
+  equal(x.control.collapseSources.size, 0, 'retired title collapse sources are cleared without a mounted answer');
+  equal(questionAnchor.hasAttribute('data-at-collapsed'), false, 'question-side collapse residue is released');
+  equal(String(questionAnchor.style.getPropertyValue('max-height') || ''), '', 'collapsed inline projection residue is released');
+});
+await fixture('P04B close during pending prevents stale remount from reopening title state', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  equal(scenario.x.api.close(scenario.transaction, { rehide: true }).status, 'closed', 'pending state closes');
+  const NodeCtor = scenario.x.flow.constructor;
+  const replacement = new NodeCtor('DIV', 'host-turn-slot', scenario.x.guard);
+  replacement.setAttribute('data-turn-id-container', scenario.proof.identity);
+  const carrier = new NodeCtor('SECTION', 'identity-carrier', scenario.x.guard);
+  carrier.setAttribute('data-turn-id', scenario.proof.identity);
+  carrier.setAttribute('data-turn', 'assistant');
+  replacement.appendChild(carrier);
+  scenario.x.flow.insertBefore(replacement, scenario.transaction.hostWrappers[2] || scenario.x.end.wrapper);
+  scenario.x.window.H2O.obs.mounts.set(scenario.proof.identity, { el: carrier, shell: replacement });
+  scenario.x.api.reconcile('stale-observer-after-pending-close');
+  equal(scenario.x.S.titleListOpenStatesByKey.size, 0, 'stale remount does not recreate open or pending state');
+  equal(replacement.getAttribute('data-cgxui-chat-page-native-hidden'), '1', 'cancelled selected replacement remains governed by closed title-list projection');
+});
+await fixture('P04B reset during pending drains scalar request state', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  scenario.x.api.resetOpen(scenario.transaction.pageNum, scenario.transaction.chatId);
+  equal(scenario.x.S.titleListOpenStatesByKey.size, 0, 'reset drains the pending scalar state');
+  equal(scenario.selectedRow.hasAttribute('data-h2o-title-row-pending'), false, 'reset clears pending row presentation');
+  equal(scenario.selectedRow.hasAttribute('data-h2o-title-row-opened'), false, 'reset clears unavailable open presentation');
+});
+await fixture('P04B route or generation transition during pending cannot preserve stale open intent', () => {
+  const scenario = createTransitionTimeMountLossHarness();
+  scenario.transaction.routeKey = '/c/replaced-route';
+  const [result] = scenario.x.api.reconcile('route-transition-during-pending');
+  equal(result.status, 'expanded', 'stale pending transaction expands safely');
+  equal(scenario.x.S.titleListOpenStatesByKey.size, 0, 'route transition drains stale pending state');
+  equal(scenario.x.S.atomicPageCollapseTransactions.size, 0, 'route transition releases the stale committed transaction');
+});
+
+await fixture('P03C opens the exact canonical native turn in place between H2O prefix and suffix', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  const nativeAnchors = transaction.hostWrappers.filter((node) => (
+    node === x.start.wrapper || node === x.answer1.wrapper
+  ));
+  const originalParents = nativeAnchors.map((node) => node.parentElement);
+  const opened = x.api.open(transaction, member);
+  equal(opened.status, 'open', 'canonical mounted target opens');
+  equal(nativeAnchors.map((node) => node.parentElement), originalParents, 'native parents stay host-owned');
+  equal(nativeAnchors.every((node) => !node.hasAttribute('data-cgxui-chat-page-native-hidden')), true, 'exact native Q/A is visible');
+  const suffix = x.document.querySelector('[data-h2o-title-list-segment="suffix"]');
+  ok(suffix?.parentElement === x.flow, 'H2O suffix is in the original flow');
+  equal(transaction.titleRowsPrepared[0].parentElement, transaction.titleListContainer, 'selected row stays in prefix');
+  equal(transaction.titleRowsPrepared.slice(1).every((row) => row.parentElement === suffix), true, 'later title rows stay in suffix');
+  equal(nativeAnchors.some((node) => transaction.titleListContainer.contains(node) || suffix.contains(node)), false, 'H2O projection contains no native wrapper');
+  equal(x.safety.hostMoves, 0, 'open performs zero native-wrapper moves');
+});
+await fixture('P03C close restores the complete synthetic list without native restoration', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'opened');
+  const nativeParents = transaction.hostWrappers.map((node) => node.parentElement);
+  const closed = x.api.close(transaction, { rehide: true });
+  equal(closed.status, 'closed', 'closed');
+  equal(transaction.titleRowsPrepared.every((row) => row.parentElement === transaction.titleListContainer), true, 'all title rows return to one H2O list');
+  equal(x.document.querySelectorAll('[data-h2o-title-list-segment="suffix"]').length, 0, 'suffix removed');
+  equal(transaction.hostWrappers.map((node) => node.parentElement), nativeParents, 'native parents never change');
+  equal(transaction.hostWrappers.every((node) => node.getAttribute('data-cgxui-chat-page-native-hidden') === '1'), true, 'native page is hidden again');
+  equal(x.S.titleListOpenStatesByKey.size, 0, 'scalar open state drains');
+  equal(x.safety.hostMoves, 0, 'close performs zero native-wrapper moves');
+});
+await fixture('P03C unmounted canonical target uses one bounded materialization request', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  x.start.wrapper.remove();
+  const first = x.api.open(transaction, member);
+  equal(first.status, 'pending', 'missing exact mount is pending');
+  equal(x.calls.materializations, 1, 'one canonical materialization request');
+  const second = x.api.open(transaction, member);
+  equal(second.status, 'pending', 'repeat remains bounded pending');
+  equal(x.calls.materializations, 1, 'same open identity requests materialization at most once');
+  const reconciled = x.api.openMount(transaction);
+  equal(reconciled.ok, false, 'no ordinal or alternate target is substituted');
+  equal(x.S.titleListOpenStatesByKey.size, 1, 'only scalar pending state is retained');
+  const state = x.S.titleListOpenStatesByKey.values().next().value;
+  equal(Object.values(state).some((value) => value instanceof x.flow.constructor), false, 'pending state retains no native node');
+});
+await fixture('P03C host remount resolves the current MountRegistry wrapper and releases the stale one', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'selected turn opened');
+  const stale = x.start.wrapper;
+  const proof = transaction.wrapperProofs.get(stale);
+  const NodeCtor = x.flow.constructor;
+  const replacement = new NodeCtor('DIV', 'host-turn-slot', x.guard);
+  replacement.setAttribute('data-turn-id-container', proof.identity);
+  const host = new NodeCtor('SECTION', 'native-turn-host', x.guard);
+  const carrier = new NodeCtor('SECTION', 'identity-carrier', x.guard);
+  carrier.setAttribute('data-turn-id', proof.identity);
+  carrier.setAttribute('data-turn', 'user');
+  host.appendChild(carrier);
+  replacement.appendChild(host);
+  x.flow.replaceChild(replacement, stale);
+  x.window.H2O.obs.mounts.set(proof.identity, { el: carrier, shell: replacement });
+  const [result] = x.api.reconcile('observer-hub-remount');
+  equal(result.status, 'current', 'committed projection survives exact remount');
+  const mount = x.api.openMount(transaction);
+  equal(mount.ok, true, 'current canonical mount resolves');
+  equal(mount.anchors.includes(replacement), true, 'replacement wrapper is presented');
+  equal(mount.anchors.includes(stale), false, 'stale wrapper is not presented');
+  equal(transaction.hostWrappers.includes(stale), false, 'transaction releases stale wrapper reference');
+  equal(transaction.wrapperProofs.has(stale), false, 'transaction releases stale proof key');
+  equal(replacement.parentElement, x.flow, 'replacement remains under host flow');
+});
+await fixture('P03C same-wrapper rehydration preserves host-owned nested content', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'selected turn opened');
+  const wrapper = x.start.wrapper;
+  const prior = wrapper.firstChild;
+  const currentHostContent = new x.flow.constructor('DIV', 'host-rehydrated-content', x.guard);
+  wrapper.replaceChild(currentHostContent, prior);
+  const result = x.api.open(transaction, member);
+  equal(result.status, 'open', 'same canonical wrapper remains open');
+  equal(wrapper.firstChild, currentHostContent, 'host rehydrated content is untouched');
+  equal(wrapper.parentElement, x.flow, 'same wrapper remains host-owned');
+});
+await fixture('P03C rapid close and stale reconciliation cannot recreate native ownership state', () => {
+  const x = createTransactionHarness();
+  equal(collapse(x).ok, true, 'page collapse committed');
+  const transaction = x.S.atomicPageCollapseTransactions.values().next().value;
+  const member = transaction.titleRows[0];
+  equal(x.api.open(transaction, member).status, 'open', 'opened');
+  equal(x.api.close(transaction, { rehide: true }).status, 'closed', 'closed');
+  equal(x.api.reconcile('stale-observer-after-close')[0].status, 'current', 'stale callback is bounded reconciliation');
+  equal(x.S.titleListOpenStatesByKey.size, 0, 'stale callback creates no open state');
+  equal(transaction.hostWrappers.every((node) => node.parentElement === x.flow), true, 'all native wrappers remain in host flow');
+  equal(x.safety.hostMoves, 0, 'no native wrapper was reparented');
+});
+await fixture('P03C C9 failed restore cannot leak a native reference because restore state is absent', () => {
+  equal(SOURCE.includes('restoreInlineTurnToFlow'), false, 'no native restore helper remains');
+  equal(SOURCE.includes('_h2oTitleListOrigin'), false, 'no raw native origin can leak');
+});
+await fixture('P03C C10 native-in-place projection cannot create double wrapper ownership', () => {
+  equal(SOURCE.includes('adoptOpenedTurnIntoStack'), false, 'no native adoption helper remains');
+  equal(SOURCE.includes('data-h2o-title-inline-slot'), false, 'no native inline slot remains');
+  equal(SOURCE.includes('reconcileTitleListNativeInPlaceProjection'), true, 'bounded native-in-place projection replaces adoption');
+});
 
 const failed = fixtures.filter((entry) => !entry.ok);
 console.log(`Fixtures: ${fixtures.length - failed.length}/${fixtures.length}`);
