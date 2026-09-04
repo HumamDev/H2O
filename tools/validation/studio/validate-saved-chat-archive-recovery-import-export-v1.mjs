@@ -323,9 +323,29 @@ check('[H.2] inspector is Desktop-only (detectTauri + isDesktopCapable gate)', (
   assert.match(inspectorCode, /isDesktopCapable/);
 });
 
-check('[H.2] inspector reuses the read-only diagnostics validation (validateSavedChatPackageV1 + listSavedChatArchivePackagesV1)', () => {
-  assert.ok(inspectorCode.includes('validateSavedChatPackageV1'), 'inspector must reuse validateSavedChatPackageV1');
-  assert.ok(inspectorCode.includes('listSavedChatArchivePackagesV1'), 'inspector must reuse the package inventory list');
+/* M10 P3.5 superseded the original H.2 assertion. The Inspector used to reuse
+ * the read-only JS diagnostics walk (validateSavedChatPackageV1 +
+ * listSavedChatArchivePackagesV1); archive integrity is now read from the
+ * TRUSTED native authority and partitioned through the canonical archive-health
+ * mapping, so requiring the legacy verifier would now assert the architecture
+ * P3.5 deliberately retired. The read-only, no-write, no-HTML-execution and
+ * status-vocabulary guarantees around it are unchanged and still asserted by
+ * the sibling checks below.
+ *
+ * `mapInspectStatus` deliberately REMAINS in the Inspector for the M08 portable
+ * importer carveout; P3.6 retires it. This check therefore constrains only the
+ * archive-integrity decision path. */
+check('[H.2] inspector decides archive integrity from the trusted native authority, not the legacy JS verifier', () => {
+  assert.ok(inspectorCode.includes('readSavedChatArchiveIntegrityV1'),
+    'inspector must read archive integrity from the trusted native client');
+  assert.ok(inspectorCode.includes('partitionOccupants'),
+    'inspector must partition occupants through the canonical archive-health mapping');
+  assert.ok(inspectorCode.includes('mapTrustedInspectStatus'),
+    'inspector must map the TRUSTED occupant into its status vocabulary');
+  for (const retired of ['validateSavedChatPackageV1', 'listSavedChatArchivePackagesV1']) {
+    assert.ok(!inspectorCode.includes(retired),
+      'inspector must not decide archive integrity through the retired legacy verifier: ' + retired);
+  }
 });
 
 check('[H.2] inspector exposes the granular status vocabulary', () => {

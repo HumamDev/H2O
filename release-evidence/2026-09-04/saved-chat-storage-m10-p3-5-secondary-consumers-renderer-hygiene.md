@@ -371,6 +371,93 @@ None repeated. The repair restores established contracts and adds no filesystem,
 codec, admission-write or publication semantics, and the export-share suite exercises
 the affected portable path directly with the real modules.
 
+## P3.5.8 — recovery validation restored at the trusted native boundary
+
+The two carried validator failures above are now closed. This step changed
+validators and evidence only: **zero product delta, zero Rust delta.**
+
+### Baseline methodology correction
+
+The earlier export-share `no S0F0j/S0F1j files are staged by J.2` failure was
+recorded as genuine baseline debt. It was not. It was an **extraction
+environment artifact**: the check shells `git diff --cached`, and the accepted-P3
+tree had been extracted with `git archive` into a plain directory that was not a
+Git repository. Re-run inside a real throwaway Git repository, accepted P3
+`0cb18cf7` reports **zero** export-share failures. Baselines for Git-shelling
+validators are established that way from here on.
+
+Accepted-P3 baselines, real-Git execution boundary:
+
+| validator | accepted P3 `0cb18cf7` |
+| --- | --- |
+| export-share | PASS 56 checks |
+| import-recovery-harness | PASS 77 checks |
+| recovery-import-export | PASS 34 checks |
+
+### The 31 dependency failures
+
+Closed exactly as diagnosed: `STORE_MODULES` now loads the real
+`saved-chat-archive-integrity.tauri.js` and `saved-chat-archive-health-mapping.js`
+in the production-faithful order studio.html uses (codec → integrity client →
+diagnostics → mapping → inspector), and the harness's existing `mockInvoke`
+answers `h2o_saved_chat_archive_integrity` with the canonical
+`h2o.savedChatArchiveIntegrity` / `schemaVersion: 1` envelope.
+
+### The 32nd — corrupt gzip, resolved without a JS verifier
+
+The blocking concern above was right that a manifest-derived envelope must not
+decide validity, and wrong that the harness therefore needed byte-level facts.
+It needed neither. Package-byte validity is **Rust's**, and Rust already proves
+this case:
+
+- `archive_package_scan::tests::scanner_refuses_v3_renderer_members_malformed_gzip_and_false_logical_descriptor`
+  — case `scan-v3-gzip-malformed`, asserting `Indeterminate` with
+  `Corrupt | Partial`, and deliberately **no** granular blocker code.
+- `saved_chat_package_verify::tests::v3_rejects_gzip_logical_descriptor_and_bounded_decode_failures`
+  — granular refusals for descriptor and bounded-decode failures.
+- `saved_chat_package_verify::tests::permanent_identity_and_gzip_fixtures_verify_to_one_js_identity`
+  — both permanent V3 fixtures verify, anchoring the valid declarations.
+
+So each scenario **declares** the trusted outcome the native boundary is proven
+to return, and the test double replays it. `writeV3` now refuses to run without
+an explicit declaration — there is no inferred default. Nothing in the harness
+inspects bytes, hashes, decodes gzip, or calls a JS validator to decide validity.
+
+The assertion changed accordingly: `corrupt gzip must report blockers` demanded
+specificity the trusted boundary does not guarantee. It now asserts the
+downstream truth — status `corrupted`, `ok: false`, not verified — while keeping
+the guarantee that unverified payload never reaches semantic JSON parsing.
+
+One further honest consequence: the P4.11 sibling stored under a generation
+basename whose hash does not match its proven identity is declared
+`indeterminate` / `identity-mismatch`, matching the `NameShape::Generation` arm
+in `archive_package_scan.rs`. Its explicit-selection assertions still pass.
+
+### The obsolete H.2 assertion
+
+`[H.2] inspector reuses the read-only diagnostics validation` required the
+Inspector to call `validateSavedChatPackageV1` and
+`listSavedChatArchivePackagesV1` — the architecture P3.5a retired. It now asserts
+the accepted one: the Inspector reads `readSavedChatArchiveIntegrityV1`,
+partitions through `partitionOccupants`, maps via `mapTrustedInspectStatus`, and
+references neither retired symbol for archive-integrity decisions. The sibling
+read-only, no-store-write, no-HTML-execution and status-vocabulary assertions are
+untouched. `mapInspectStatus` legitimately remains for the M08 carveout.
+
+### Result
+
+| validator | before | after | accepted P3 |
+| --- | --- | --- | --- |
+| export-share | 56 checks, 0 fail | 56 checks, 0 fail | 56 checks |
+| import-recovery-harness | 45 pass / 32 fail | **PASS 77 checks** | 77 checks |
+| recovery-import-export | 33 pass / 1 fail | **PASS 34 checks** | 34 checks |
+
+No runtime acceptance was repeated: this step modifies validation and evidence
+only, so the renderer-hygiene and portable-import runtime evidence above still
+applies unchanged.
+
+P3.5 is **not** self-accepted here. It returns for independent final review.
+
 ## Still owed
 
 P3.6 must retire the temporary legacy `mapInspectStatus` together with the M08 JS

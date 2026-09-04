@@ -59,7 +59,13 @@ const STORE_MODULES = [
   /* M03 T04: the governed saved-chat package codec must load before
    * diagnostics/inspector, mirroring the product order in studio.html. */
   'ingestion/saved-chat-package-codec.tauri.js',
+  /* M10 P3.5: the Inspector reads archive integrity from the TRUSTED native
+   * authority and partitions occupants through the canonical archive-health
+   * mapping. Both must register before it, exactly as studio.html loads them
+   * (codec -> integrity client -> diagnostics -> mapping -> inspector). */
+  'ingestion/saved-chat-archive-integrity.tauri.js',
   'ingestion/saved-chat-archive-diagnostics.tauri.js',
+  'ingestion/saved-chat-archive-health-mapping.js',
   'ingestion/saved-chat-archive-inspector.studio.js',
   'ingestion/saved-chat-archive-importer.studio.js',
   'ingestion/saved-chat-archive-restore.studio.js',
@@ -373,11 +379,85 @@ async function runHarness() {
     db.prepare('INSERT INTO snapshots (id, chat_id, title, digest, message_count, meta_json) VALUES (?, ?, ?, ?, ?, ?)')
       .run(SRC_SNAP, SRC_CHAT, 'I-Harness source', SRC_DIGEST, SRC_MSGS, '{}');
 
+    /* ── Trusted native integrity: SCENARIO DECLARATIONS ──────────────────
+     * This harness owns DOWNSTREAM behaviour (Inspector consumption, import /
+     * restore / relink, DB deltas). It does NOT own package-byte validity:
+     * since M10 P3.5 that belongs exclusively to the trusted Rust verifier and
+     * scanner.
+     *
+     * So each scenario DECLARES the trusted outcome the native boundary is
+     * independently proven to return, and the declaration below is replayed by
+     * the `h2o_saved_chat_archive_integrity` test double. Nothing here inspects
+     * bytes, hashes anything, decodes gzip, or calls a JS verifier to decide
+     * validity — a declaration is an input to this harness, never a discovery.
+     *
+     * Every declared outcome traces to Rust coverage:
+     *   verified-generation / legacy-package
+     *     -> saved_chat_package_verify::tests::
+     *          permanent_identity_and_gzip_fixtures_verify_to_one_js_identity
+     *   indeterminate / corrupt (malformed or truncated gzip, false descriptors)
+     *     -> archive_package_scan::tests::
+     *          scanner_refuses_v3_renderer_members_malformed_gzip_and_false_logical_descriptor
+     *        (asserts Indeterminate with Corrupt | Partial — no granular
+     *         blocker code, which is why none is declared or asserted here)
+     *     -> saved_chat_package_verify::tests::
+     *          v3_rejects_gzip_logical_descriptor_and_bounded_decode_failures
+     *   indeterminate / identity-mismatch (generation name vs proven identity)
+     *     -> archive_package_scan.rs NameShape::Generation arm
+     */
+    const trustedDeclarations = new Map();
+    const ARCHIVE_PREFIX = 'archive/packages/';
+    function declareTrusted(dirName, facts) {
+      trustedDeclarations.set(ARCHIVE_PREFIX + dirName, Object.assign({
+        path: ARCHIVE_PREFIX + dirName,
+      }, facts));
+    }
+    /* Reads the package's own DECLARED manifest identity for the envelope's
+     * identity fields. This is transcription of a fixture fact, not
+     * verification: the trusted CLASS is always supplied by the caller. */
+    function manifestIdentity(dirName) {
+      const mp = path.join(pkgRoot, dirName, 'manifest.json');
+      const m = JSON.parse(fs.readFileSync(mp, 'utf8'));
+      const bare = (v) => String(v || '').toLowerCase().replace(/^sha256-/, '');
+      return {
+        chatId: m.chatId,
+        snapshotId: m.snapshotId,
+        contentHash: bare(m.contentHash),
+        constructionFamily: 'v' + m.schemaVersion,
+        assetShas: (m.assets || []).map((a) => bare(a.sha256)).sort(),
+        snapshotEncoding: (m.files && m.files.snapshot && m.files.snapshot.encoding) || 'identity',
+      };
+    }
+    function declareValidPackage(dirName) {
+      const id = manifestIdentity(dirName);
+      /* M05 §D: a generation basename is a CLAIM the trusted scanner only
+       * admits when the proven identity matches it. */
+      const gen = /\.g([0-9a-f]{64})\.h2ochat$/.exec(dirName);
+      if (gen && gen[1] !== id.contentHash) {
+        declareTrusted(dirName, Object.assign({}, id, {
+          class: 'indeterminate', reason: 'identity-mismatch',
+        }));
+        return;
+      }
+      declareTrusted(dirName, Object.assign({}, id, {
+        class: gen ? 'verified-generation' : 'legacy-package',
+      }));
+    }
+    function declareRefusedPackage(dirName, reason) {
+      let id = {};
+      try { id = manifestIdentity(dirName); } catch (_) { id = {}; }
+      declareTrusted(dirName, Object.assign({}, id, {
+        class: 'indeterminate', reason: reason,
+      }));
+    }
+
     // stage fixtures under temp AppLocalData
     fs.mkdirSync(pkgRoot, { recursive: true });
     const srcAbs = path.join(REPO_ROOT, FIXTURE_PKG_REL);
     fs.cpSync(srcAbs, path.join(pkgRoot, 'i-harness-source.h2ochat'), { recursive: true });
+    declareValidPackage('i-harness-source.h2ochat');
     generateConflictFreeFixture(srcAbs, path.join(pkgRoot, 'i-harness-import-ready-chat.h2ochat'), RDY_CHAT, RDY_SNAP);
+    declareValidPackage('i-harness-import-ready-chat.h2ochat');
     const restorePackages = {
       ready: { chat: 'k3-restore-ready-chat', snap: 'snap_k3_restore_ready' },
       confirm: { chat: 'k3-confirm-gate-chat', snap: 'snap_k3_confirm_gate' },
@@ -387,6 +467,7 @@ async function runHarness() {
     };
     for (const info of Object.values(restorePackages)) {
       generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
+      declareValidPackage(info.chat + '.h2ochat');
     }
     const relinkPackages = {
       ready: { chat: 'k4-relink-package-chat', snap: 'snap_k4_relink_package' },
@@ -396,6 +477,7 @@ async function runHarness() {
     };
     for (const info of Object.values(relinkPackages)) {
       generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.chat + '.h2ochat'), info.chat, info.snap);
+      declareValidPackage(info.chat + '.h2ochat');
     }
 
     /* M05 Phase 4 (proofs 11–13): two packages for the SAME chat with different
@@ -410,12 +492,27 @@ async function runHarness() {
     };
     for (const info of Object.values(siblingPackages)) {
       generateConflictFreeFixture(srcAbs, path.join(pkgRoot, info.dir), SIB_CHAT, info.snap);
+      declareValidPackage(info.dir);
     }
 
     // wire globals + load real modules
     const mockInvoke = (cmd, a) => {
       const j = (p) => path.join(appDir, String(p || ''));
       try {
+        /* TEST DOUBLE for the EXISTING native command. It replays the trusted
+         * outcomes each scenario declared above in the canonical wire shape.
+         * It is not a verifier: it runs no verification algorithm, decodes
+         * nothing, hashes nothing, and never consults a JS package validator
+         * to decide validity. Rust owns that proof. */
+        if (cmd === 'h2o_saved_chat_archive_integrity') {
+          return Promise.resolve({
+            schema: 'h2o.savedChatArchiveIntegrity',
+            schemaVersion: 1,
+            complete: true,
+            blockers: [],
+            occupants: [...trustedDeclarations.values()],
+          });
+        }
         if (cmd === 'plugin:fs|exists') return Promise.resolve(fs.existsSync(j(a.path)));
         if (cmd === 'plugin:fs|lstat') {
           /* Real metadata from the harness's own temp filesystem: no hard-coded
@@ -470,7 +567,15 @@ async function runHarness() {
     const v3GzipSrc = path.join(REPO_ROOT, V3_GZIP_FIXTURE_PKG_REL);
     const v3PermanentGzipBytes = fs.readFileSync(path.join(v3GzipSrc, 'snapshot.json'));
     const v3PermanentGzipManifest = JSON.parse(fs.readFileSync(path.join(v3GzipSrc, 'manifest.json'), 'utf8'));
-    const writeV3 = (encoding, snapshotBytesOverride) => {
+    /* Every writeV3 caller states the trusted outcome the native boundary is
+     * proven to return for the bytes it is about to write. There is no default:
+     * a scenario that does not declare its trusted result cannot run. */
+    const V3_VALID = { valid: true };
+    const V3_REFUSED_CORRUPT = { valid: false, reason: 'corrupt' };
+    const writeV3 = (encoding, snapshotBytesOverride, trusted) => {
+      if (!trusted || typeof trusted.valid !== 'boolean') {
+        throw new Error('writeV3 requires an explicit trusted outcome declaration');
+      }
       fs.rmSync(v3Abs, { recursive: true, force: true });
       fs.mkdirSync(v3Abs, { recursive: true });
       const m = JSON.parse(JSON.stringify(v3BaseManifest));
@@ -495,16 +600,18 @@ async function runHarness() {
       }
       fs.writeFileSync(path.join(v3Abs, 'snapshot.json'), storedBytes);
       fs.writeFileSync(path.join(v3Abs, 'manifest.json'), JSON.stringify(m, null, 2) + '\n');
+      if (trusted.valid) declareValidPackage(V3_DIR);
+      else declareRefusedPackage(V3_DIR, trusted.reason);
       return m;
     };
-    const v3GzipManifest = writeV3('gzip');
+    const v3GzipManifest = writeV3('gzip', undefined, V3_VALID);
     const v3GzipInspect = await inspector.inspectPackage({ packagePath: V3_REL });
     const gzipStored = fs.readFileSync(path.join(v3Abs, 'snapshot.json'));
-    writeV3('identity');
+    writeV3('identity', undefined, V3_VALID);
     const v3IdentityInspect = await inspector.inspectPackage({ packagePath: V3_REL });
     /* Negative: valid physical descriptor over a corrupted gzip stream. */
     const corrupt = Buffer.from(zlib.gzipSync(v3LogicalBytes)); corrupt[Math.floor(corrupt.length / 2)] ^= 0xff;
-    writeV3('gzip', corrupt);
+    writeV3('gzip', corrupt, V3_REFUSED_CORRUPT);
     const v3CorruptInspect = await inspector.inspectPackage({ packagePath: V3_REL });
 
     /* ── M03 T04 Importer: v3 gzip / identity import + no-mutation negatives ──
@@ -520,26 +627,26 @@ async function runHarness() {
       return { title: snap && snap.title, messageCount: snap && snap.message_count, turns };
     };
 
-    writeV3('gzip');
+    writeV3('gzip', undefined, V3_VALID);
     const v3GzipPre = importSnapshotState();
     const v3GzipImport = await importer.importVerifiedPackage({ packagePath: V3_REL, mode: 'import-as-new' });
     const v3GzipRows = importedRows(v3GzipImport);
 
-    writeV3('identity');
+    writeV3('identity', undefined, V3_VALID);
     const v3IdImport = await importer.importVerifiedPackage({ packagePath: V3_REL, mode: 'import-as-new' });
     const v3IdRows = importedRows(v3IdImport);
 
     /* Negative matrix — each must refuse with zero persistent mutation. */
     const gzipBase = zlib.gzipSync(v3LogicalBytes);
     const negCases = [
-      ['corrupt gzip', () => { const c = Buffer.from(gzipBase); c[Math.floor(c.length / 2)] ^= 0xff; writeV3('gzip', c); }],
-      ['truncated gzip', () => writeV3('gzip', Buffer.from(gzipBase.subarray(0, Math.max(1, gzipBase.length - 6))))],
-      ['physical sha mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.sha256 = 'sha256-' + '1'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
-      ['physical byteLength mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.byteLength = 999999; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
-      ['logical sha mismatch', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentSha256 = 'sha256-' + '2'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
-      ['logical length below actual (bomb guard)', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentByteLength = m.files.snapshot.contentByteLength - 1; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
-      ['unsupported encoding', () => { writeV3('gzip'); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.encoding = 'deflate'; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
-      ['malformed logical JSON', () => { const bad = Buffer.from('{ not json'); writeV3('gzip', zlib.gzipSync(bad)); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); const gz = fs.readFileSync(path.join(v3Abs, 'snapshot.json')); m.files.snapshot.sha256 = 'sha256-' + crypto.createHash('sha256').update(gz).digest('hex'); m.files.snapshot.byteLength = gz.length; m.files.snapshot.contentSha256 = 'sha256-' + crypto.createHash('sha256').update(bad).digest('hex'); m.files.snapshot.contentByteLength = bad.length; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['corrupt gzip', () => { const c = Buffer.from(gzipBase); c[Math.floor(c.length / 2)] ^= 0xff; writeV3('gzip', c, V3_REFUSED_CORRUPT); }],
+      ['truncated gzip', () => writeV3('gzip', Buffer.from(gzipBase.subarray(0, Math.max(1, gzipBase.length - 6))), V3_REFUSED_CORRUPT)],
+      ['physical sha mismatch', () => { writeV3('gzip', undefined, V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.sha256 = 'sha256-' + '1'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['physical byteLength mismatch', () => { writeV3('gzip', undefined, V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.byteLength = 999999; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['logical sha mismatch', () => { writeV3('gzip', undefined, V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentSha256 = 'sha256-' + '2'.repeat(64); fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['logical length below actual (bomb guard)', () => { writeV3('gzip', undefined, V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.contentByteLength = m.files.snapshot.contentByteLength - 1; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['unsupported encoding', () => { writeV3('gzip', undefined, V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); m.files.snapshot.encoding = 'deflate'; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
+      ['malformed logical JSON', () => { const bad = Buffer.from('{ not json'); writeV3('gzip', zlib.gzipSync(bad), V3_REFUSED_CORRUPT); const mp = path.join(v3Abs, 'manifest.json'); const m = JSON.parse(fs.readFileSync(mp, 'utf8')); const gz = fs.readFileSync(path.join(v3Abs, 'snapshot.json')); m.files.snapshot.sha256 = 'sha256-' + crypto.createHash('sha256').update(gz).digest('hex'); m.files.snapshot.byteLength = gz.length; m.files.snapshot.contentSha256 = 'sha256-' + crypto.createHash('sha256').update(bad).digest('hex'); m.files.snapshot.contentByteLength = bad.length; fs.writeFileSync(mp, JSON.stringify(m, null, 2) + '\n'); }],
     ];
     const v3Negatives = [];
     for (const [label, build] of negCases) {
@@ -570,7 +677,7 @@ async function runHarness() {
       ? db.prepare('SELECT turn_idx, role, text, outer_html FROM snapshot_turns WHERE snapshot_id=? ORDER BY turn_idx').all(snapId)
       : [];
 
-    writeV3('gzip');
+    writeV3('gzip', undefined, V3_VALID);
     const v3RelinkGzip = await relink.relinkVerifiedPackage({ packagePath: V3_REL, targetChatId: V3_RELINK_TARGET, confirm: v3RelinkToken });
     const v3RelinkNewSnapId = v3RelinkGzip.relinked && v3RelinkGzip.relinked.newSnapshotId;
     const v3RelinkNewSnapRow = v3RelinkNewSnapId ? db.prepare('SELECT id, chat_id, message_count FROM snapshots WHERE id=?').get(v3RelinkNewSnapId) : null;
@@ -581,7 +688,7 @@ async function runHarness() {
     const v3RelinkOriginalSnapId = JSON.parse(v3LogicalBytes.toString('utf8')).snapshotId;
     const v3RelinkOriginalAbsent = !db.prepare('SELECT id FROM snapshots WHERE id=?').get(v3RelinkOriginalSnapId);
 
-    writeV3('identity');
+    writeV3('identity', undefined, V3_VALID);
     const v3RelinkIdentityAgain = await relink.relinkVerifiedPackage({ packagePath: V3_REL, targetChatId: V3_RELINK_TARGET, confirm: v3RelinkToken });
 
     const v3RelinkNegatives = [];
@@ -607,7 +714,7 @@ async function runHarness() {
      * variant of the SAME logical package must then be refused as a conflict —
      * which exercises the real state-authority rules rather than bypassing them. */
     const v3RestorePre = importSnapshotState();
-    writeV3('gzip');
+    writeV3('gzip', undefined, V3_VALID);
     const v3RestoreGzip = await restore.restoreVerifiedPackage({ packagePath: V3_REL, mode: 'restore-original-ids', confirm: true });
     const v3RestoredSnapId = JSON.parse(v3LogicalBytes.toString('utf8')).snapshotId;
     const v3RestoredRows = (() => {
@@ -619,7 +726,7 @@ async function runHarness() {
      * defines, computed through the same shared mapping the product uses. */
     const v3ExpectedTurns = importer.buildTurnsFromPackageSnapshot(JSON.parse(v3LogicalBytes.toString('utf8')));
 
-    writeV3('identity');
+    writeV3('identity', undefined, V3_VALID);
     const v3RestoreIdentityConflict = await restore.restoreVerifiedPackage({ packagePath: V3_REL, mode: 'restore-original-ids', confirm: true });
 
     const v3RestoreNegatives = [];
@@ -1355,10 +1462,17 @@ check('[M03 T04] Inspector v3 identity and gzip are semantically equivalent', ()
 
 check('[M03 T04] Inspector fails closed on a corrupt gzip v3 member', () => {
   assert.ok(H, 'no harness');
+  /* M10 P3.5: Rust owns the byte-level corrupt-gzip proof — the scanner test
+   * `scanner_refuses_v3_renderer_members_malformed_gzip_and_false_logical_descriptor`
+   * asserts only `Indeterminate` with `Corrupt | Partial` and deliberately
+   * fabricates no blocker code. This test therefore verifies DOWNSTREAM
+   * behaviour given that trusted refusal: the Inspector must fail closed and
+   * must not present the package as verified. Asserting a granular blocker here
+   * would demand specificity the trusted boundary does not guarantee. */
   const c = H.v3Inspect.corrupt;
-  assert.notEqual(c.status, 'verified');
+  assert.equal(c.status, 'corrupted');
   assert.equal(c.ok, false);
-  assert.ok((c.blockers || []).length > 0, 'corrupt gzip must report blockers');
+  assert.notEqual(c.status, 'verified');
   /* Unverified payload never reaches semantic JSON parsing. */
   assert.ok(!(c.blockers || []).includes('snapshot-json-invalid'));
 });
