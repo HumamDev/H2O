@@ -255,6 +255,10 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // diagnostics into Settings -> Diagnostics via the injected read-only API; no
   // mutation/repair/import/sync/Chrome. Shows Desktop-only message when absent.
   "ingestion/saved-chat-reclamation-ui.studio.js",
+  // M10 P2: pure trusted-facts -> operator-state mapping. Packaged but
+  // deliberately UNWIRED — no production caller consumes it until P3 repoints
+  // Archive Health. No verification, filesystem, invoke or mutation authority.
+  "ingestion/saved-chat-archive-health-mapping.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an
@@ -1395,6 +1399,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-relink.studio.js",
   "ingestion/saved-chat-archive-materializer.tauri.js",
   "ingestion/saved-chat-reclamation-ui.studio.js",
+  "ingestion/saved-chat-archive-health-mapping.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an
