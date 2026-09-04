@@ -27,6 +27,11 @@ const HTML_SANITIZER = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const CODEC = 'src-surfaces-base/studio/ingestion/saved-chat-package-codec.tauri.js';
 const PORTABLE_ZIP = 'src-surfaces-base/studio/ingestion/saved-chat-portable-zip.studio.js';
 const DIAGNOSTICS = 'src-surfaces-base/studio/ingestion/saved-chat-archive-diagnostics.tauri.js';
+/* M10 P3.5: the Inspector resolves these two at call time. Loading the REAL
+ * modules keeps this harness production-faithful — the alternative, stubbing
+ * inspectPackage, would stop exercising the very path M08 import depends on. */
+const TRUSTED_INTEGRITY = 'src-surfaces-base/studio/ingestion/saved-chat-archive-integrity.tauri.js';
+const HEALTH_MAPPING = 'src-surfaces-base/studio/ingestion/saved-chat-archive-health-mapping.js';
 const INSPECTOR = 'src-surfaces-base/studio/ingestion/saved-chat-archive-inspector.studio.js';
 const IMPORTER = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
 const FOLDER_PUBLISH_NATIVE = 'apps/studio/desktop/src-tauri/src/saved_chat_folder_publish.rs';
@@ -266,7 +271,71 @@ function createBehaviorFs(config = {}) {
       dirs.delete(entry);
     }
   }
+  /* M10 P1 trusted archive-integrity envelope, answered from the EXPLICIT
+   * fixture facts this suite already installed (the manifest each test wrote),
+   * never by running the legacy package verifier and relabelling its output.
+   * Classification is honest: a package whose manifest is absent or unparseable
+   * is reported indeterminate rather than quietly verified.
+   *
+   * The wire form for contentHash and assetShas is BARE canonical hex, matching
+   * the real Rust command; the Inspector is what re-applies the `sha256-`
+   * prefix outwardly. */
+  function trustedIntegrityEnvelope() {
+    const roots = new Set();
+    for (const entry of files.keys()) {
+      const { baseDir, path: p } = splitKey(entry);
+      if (baseDir !== APP) continue;
+      const m = /^(archive\/packages\/[^/]+)\//.exec(p);
+      if (m) roots.add(m[1]);
+    }
+    const bare = (value) => String(value || '').trim().toLowerCase().replace(/^sha256-/, '');
+    const occupants = [...roots].sort().map((root) => {
+      const name = root.slice('archive/packages/'.length);
+      const raw = files.get(key(APP, `${root}/manifest.json`));
+      let manifest = null;
+      try { manifest = raw ? JSON.parse(raw.toString('utf8')) : null; } catch { manifest = null; }
+      if (!manifest || !manifest.chatId || !manifest.contentHash) {
+        return {
+          path: root,
+          name,
+          class: 'indeterminate',
+          reason: 'corrupt',
+          blockers: [{ code: 'generation-manifest-json-invalid' }],
+        };
+      }
+      const schemaVersion = Number(manifest.schemaVersion) || 1;
+      const snapshot = (manifest.files && manifest.files.snapshot) || {};
+      return {
+        path: root,
+        name,
+        /* `.g<hash>.h2ochat` is the generation basename the publisher writes. */
+        class: /\.g[0-9a-f]{64}\.h2ochat$/.test(name) ? 'verified-generation' : 'legacy-package',
+        chatId: String(manifest.chatId),
+        snapshotId: String(manifest.snapshotId || ''),
+        contentHash: bare(manifest.contentHash),
+        constructionFamily: `v${schemaVersion}`,
+        snapshotEncoding: String(snapshot.encoding || 'identity'),
+        snapshotPhysicalByteLength: snapshot.byteLength,
+        logicalSnapshotByteLength: snapshot.contentByteLength,
+        logicalSnapshotSha256: bare(snapshot.contentSha256),
+        assetShas: (manifest.assets || []).map((a) => bare(a && a.sha256)).filter(Boolean).sort(),
+        savedAt: (manifest.provenance && manifest.provenance.generatedAt) || '',
+        orderable: true,
+      };
+    });
+    return {
+      schema: 'h2o.savedChatArchiveIntegrity',
+      schemaVersion: 1,
+      complete: true,
+      blockers: [],
+      occupants,
+    };
+  }
+
   async function invoke(command, body, metadata) {
+    if (command === 'h2o_saved_chat_archive_integrity') {
+      return trustedIntegrityEnvelope();
+    }
     if (command === 'h2o_saved_chat_export_root_policy') {
       if (config.exportPolicyError) throw new Error(String(config.exportPolicyError));
       if (config.exportPolicyWire !== undefined) return config.exportPolicyWire;
@@ -559,7 +628,8 @@ function loadBehaviorRuntime(mem, storeOverride, cryptoOverride) {
    * mirroring the product load order in studio.html. The REAL codec source is
    * loaded here - never a mock - so this harness exercises the same single
    * gzip/verification authority that product consumers use. */
-  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, CODEC, PORTABLE_ZIP, DIAGNOSTICS, INSPECTOR, IMPORTER, EXPORTER]) {
+  for (const relPath of [HTML_SANITIZER, PACKAGE_OWNER, CODEC, PORTABLE_ZIP, DIAGNOSTICS,
+    TRUSTED_INTEGRITY, HEALTH_MAPPING, INSPECTOR, IMPORTER, EXPORTER]) {
     vm.runInContext(readRepo(relPath), sandbox, { filename: relPath });
   }
   return sandbox;

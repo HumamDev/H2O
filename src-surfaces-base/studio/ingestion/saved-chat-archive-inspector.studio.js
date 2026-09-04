@@ -33,6 +33,7 @@
  *   listPackages() -> Promise<[{ packagePath, packageDirName, status }]>
  *   inspectPackage({ packagePath }) -> Promise<inspection result>
  *   mapInspectStatus(diag, readError) -> status string (pure)
+ *     TEMPORARY M08 compatibility pending P3.6; legacy diagnostics only.
  *   renderArchiveInspectorCard(container, options)
  *   mountArchiveInspectorCard(healthContainer, options)
  *
@@ -91,9 +92,16 @@
   /* The canonical version triple, from the trusted construction family. */
   var SCHEMA_VERSION_BY_FAMILY = { v1: 1, v2: 2, v3: 3 };
   var PAYLOAD_VERSION_BY_FAMILY = { v1: null, v2: 2, v3: 3 };
-  function bareHash(value) {
+  /* PRESENTATION ONLY. The trusted occupant carries the contentHash as bare
+   * canonical hex; every outward Inspector consumer (exporter, relink's
+   * expectedDigest comparison, the export/share contract) has always read the
+   * `sha256-` prefixed form. This formats the already-trusted value and does not
+   * hash, re-hash, canonicalize or compare anything — trusted Rust remains the
+   * sole contentHash authority. */
+  function prefixedHash(value) {
     var text = cleanString(value).toLowerCase();
-    return text.indexOf('sha256-') === 0 ? text.slice(7) : text;
+    if (!text) return '';
+    return text.indexOf('sha256-') === 0 ? text : 'sha256-' + text;
   }
   function isDesktopCapable() {
     return detectTauri() && !!getTrustedIntegrityFn() && !!getPartitionFn();
@@ -226,12 +234,17 @@
   /* Pure: map ONE trusted occupant (plus a local read error) into the
    * inspector's presentation vocabulary. Deterministic and total.
    *
+   * INTERNAL. The trusted archive path is the only caller, and the symbol is
+   * deliberately not exported: the public `mapInspectStatus` below speaks a
+   * different trust domain, and one ambiguous dual-domain mapper is exactly the
+   * confusion that broke M08 portable import.
+   *
    * Package validity is decided entirely by trusted Rust; this only chooses how
    * to name the trusted verdict. It never derives causality the trusted facts do
    * not support, which is why the canonical `Partial` reason becomes
    * `incomplete` rather than `missing-files`, and why a version-triple refusal
    * falls through to `corrupted` rather than claiming an unsupported version. */
-  function mapInspectStatus(occupant, readError) {
+  function mapTrustedInspectStatus(occupant, readError) {
     if (readError) return 'read-error';
     var o = safeObject(occupant);
     var klass = cleanString(o.class);
@@ -252,6 +265,42 @@
      * blocker, an unexpected outcome, an incoherent version triple, or an
      * admission-adapter refusal that carries no granular code. */
     return 'corrupted';
+  }
+
+  /* TEMPORARY M08 compatibility pending P3.6.
+   *
+   * The accepted-P3 mapper, restored verbatim in behaviour. It speaks the LEGACY
+   * diagnostic shape produced by the read-only package validation entry points
+   * in saved-chat-archive-diagnostics.tauri.js, and exists only because portable
+   * import remains on the approved JS byte-verification carveout. Its single
+   * intended production consumer is saved-chat-archive-importer.studio.js.
+   *
+   * These historical labels and heuristics — including `missing-files`,
+   * `unsupported-version` and the /sha|hash/i fallback — are valid ONLY here.
+   * They must never reach the trusted Archive Inspector, which uses
+   * mapTrustedInspectStatus above. P3.6 retires this function together with the
+   * legacy validity path it serves.
+   *
+   * Pure: map the read-only validator diagnostic + a read error into the
+   * inspector's granular status vocabulary (most-specific first). */
+  function mapInspectStatus(diag, readError) {
+    if (readError) return 'read-error';
+    var d = safeObject(diag);
+    var codes = blockerCodes(d);
+    var hashChecks = safeObject(d.hashChecks);
+    var assetChecks = safeObject(d.assetChecks);
+    if (codes.some(function (c) { return /^(manifest|snapshot|markdown|html)-missing$/.test(c); })) return 'missing-files';
+    if (hashChecks.contentHashOk === false || hashChecks.snapshotShaOk === false
+        || asArray(assetChecks.hashMismatches).length
+        || codes.some(function (c) { return /sha|hash/i.test(c); })) return 'hash-mismatch';
+    /* M03 T04: gzip v3 is decoded and verified by the governed codec inside
+     * diagnostics, so the pre-M03 gzip-not-enabled blocker no longer exists. Only a
+     * genuinely unsupported encoding value maps to unsupported-encoding; every
+     * governed integrity failure falls through to the hash/corrupted branches. */
+    if (codes.indexOf('snapshot-encoding-invalid') >= 0) return 'unsupported-encoding';
+    if (!isVersionSupported(d.schemaVersion, d.payloadVersion)) return 'unsupported-version';
+    if (cleanString(d.status) === 'blocked' || codes.length) return 'corrupted';
+    return 'verified';
   }
 
   function titleFromMarkdown(md) {
@@ -285,7 +334,7 @@
           return {
             packagePath: packagePath,
             packageDirName: cleanString(o.name) || packageDirNameForPath(packagePath),
-            status: mapInspectStatus(o, null),
+            status: mapTrustedInspectStatus(o, null),
           };
         }).filter(function (o) { return !!o.packagePath && packagePathIsScoped(o.packagePath); });
       })
@@ -344,7 +393,7 @@
       .then(function () {
         var d = safeObject(occupant);
         var m = safeObject(manifest);
-        var status = mapInspectStatus(d, readError);
+        var status = mapTrustedInspectStatus(d, readError);
         var family = cleanString(d.constructionFamily);
         var schemaVersion = Object.prototype.hasOwnProperty.call(SCHEMA_VERSION_BY_FAMILY, family)
           ? SCHEMA_VERSION_BY_FAMILY[family]
@@ -352,7 +401,7 @@
         var payloadVersion = Object.prototype.hasOwnProperty.call(PAYLOAD_VERSION_BY_FAMILY, family)
           ? PAYLOAD_VERSION_BY_FAMILY[family]
           : (m.payloadVersion != null ? m.payloadVersion : null);
-        var trustedHash = bareHash(d.contentHash);
+        var trustedHash = prefixedHash(d.contentHash);
         return {
           ok: status === 'verified',
           status: status,

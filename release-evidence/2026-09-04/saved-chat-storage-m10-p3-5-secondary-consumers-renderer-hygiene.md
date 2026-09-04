@@ -148,10 +148,13 @@ Two validators asserted the now-removed `deferredTo: 'P3.5'` marker and were
 updated to assert the delivered behaviour instead — that an observation which
 reached no package still publishes no count.
 
-> Carried, pre-existing: `validate-saved-chat-archive-export-share-v1.mjs` fails
-> **15** checks. Verified as a BASELINE failure by temporarily restoring every
-> changed file to `61994567` and re-running: 15 failing checks before, 15 after,
-> unchanged. Not a regression from this step, and not fixed here.
+> **CORRECTED — see the P3.5.6B section below.** The statement that followed here
+> was: `validate-saved-chat-archive-export-share-v1.mjs` fails 15 checks, verified
+> as a baseline failure by restoring every changed file to `61994567`. That
+> measurement was correct but the REFERENCE was wrong: `61994567` is P3.5a, not
+> accepted P3. It showed only that P3.5b added nothing further; it did not show
+> that P3.5 as a whole matched accepted P3. It did not. The classification is left
+> in place above rather than erased, because the misreading is the point.
 
 ## Real disposable Desktop acceptance
 
@@ -236,3 +239,142 @@ No Rust change. No P3.6 (legacy verifier retirement, M08 carveout). No P4. The
 legacy verifier code, the M08 byte-source carveout and its `data-image-residue-v2`
 code are all untouched. No repair, delete, quarantine or restore authority was
 added, and no persistent observability state was created.
+
+
+---
+
+# P3.5.6B — Inspector compatibility repair (2026-09-05)
+
+## What the earlier comparison got wrong
+
+The P3.5b review measured its export-share failures against **`61994567`**, which
+is P3.5a. That comparison was valid for what it asked — P3.5b itself introduced no
+further export-share failures — and invalid for what it was taken to mean: it never
+established that P3.5 as a whole matched accepted P3.
+
+Independent review compared true accepted P3, **`0cb18cf7`**, and found:
+
+| tree | export-share failures |
+| --- | --- |
+| accepted P3 `0cb18cf7` | **1** |
+| P3.5a `61994567` | 16 |
+| P3.5b `bd6974a7` | 16 |
+
+> Measurement note. Those counts are from like-for-like EXTRACTED trees. The single
+> accepted-P3 failure is `no S0F0j/S0F1j files are staged by J.2`, whose check shells
+> out to `git diff --cached`; outside a git repository that command errors, so the
+> check fails for environmental reasons. Given each extracted tree its own throwaway
+> repository, accepted P3 scores **0**. In the live repository the same three trees
+> score 0 / 15 / 15. Both measurement modes agree on the quantity that matters:
+> **P3.5 introduced exactly 15 export-share failures.** The J.2 item is untouched by
+> this repair and behaves identically to accepted P3 under either mode.
+
+## Why a harness-only repair was not enough
+
+The first attempted repair fixed only the validator dependency graph. It recovered
+13 of the 15 and left two, which turned out to be genuine PRODUCT compatibility
+regressions that P3.5a had introduced silently:
+
+**A — the published mapper contract changed.** `mapInspectStatus(diag, readError)`
+was the accepted-P3 public API consuming the LEGACY diagnostic shape. P3.5a changed
+its implementation to consume trusted occupants while keeping the same published
+symbol. The untouched M08 portable importer still calls
+`getInspector().mapInspectStatus(diag, null)` with a legacy diagnostic, which carries
+no `class` — so the trusted mapper returned `read-error` and portable import became
+`rejected`. A live M08 product regression.
+
+**B — the public contentHash representation changed.** Accepted-P3 Inspector output
+was `identity.contentHash = sha256-<64hex>`; P3.5a exposed bare `<64hex>`. The trusted
+value was right, the outward representation was not. Relink compares
+`identity.digest || identity.contentHash` against a DB digest written in the prefixed
+form, so the comparison would have failed silently rather than thrown.
+
+## The repair
+
+One product file: `saved-chat-archive-inspector.studio.js`.
+
+**Two explicit trust-domain mappers.**
+
+| symbol | domain | visibility | caller |
+| --- | --- | --- | --- |
+| `mapInspectStatus(diag, readError)` | legacy diagnostic | **public** | `saved-chat-archive-importer.studio.js`, and nothing else |
+| `mapTrustedInspectStatus(occupant, readError)` | trusted occupant | **internal** | `inspectPackage` and `listPackages` only |
+
+The legacy mapper is restored to accepted-P3 behaviour verbatim, including the
+historical `missing-files`, `unsupported-version` and `/sha|hash/i` heuristics —
+valid only inside it. The trusted mapper keeps the final HDA taxonomy, and a
+source-scoped assertion proves the retired labels appear in the legacy mapper and
+nowhere else in the module. No shape sniffing; no dual-domain mapper.
+
+**Representation, not authority.** `prefixedHash()` formats the already-trusted
+contentHash and does not hash, re-hash, canonicalize or compare. Trusted Rust remains
+the sole contentHash authority, and `contentHashVerified` still derives from trusted
+status rather than legacy `hashChecks`. Restoring the prefix also repairs a display
+bug: the manifest's claimed hash is stored prefixed, so under the bare form the
+Inspector card always rendered the "does not match verified" warning.
+
+**Harness dependency repair.** The export-share suite now loads the REAL
+`saved-chat-archive-integrity.tauri.js` and `saved-chat-archive-health-mapping.js`
+before the Inspector, mirroring `studio.html`, and its native invoke stub answers
+`h2o_saved_chat_archive_integrity` with a canonical `h2o.savedChatArchiveIntegrity`
+v1 envelope built from the manifests each test already installed — bare canonical hex
+on the wire, honest classification (an unparseable manifest is reported
+indeterminate). Nothing is stubbed, hard-coded verified, or routed back through the
+legacy validator.
+
+## Recovery attribution, measured
+
+Each contribution was isolated in its own extracted tree:
+
+| tree | failures | recovered |
+| --- | --- | --- |
+| P3.5b `bd6974a7` | 16 | — |
+| \+ harness dependency repair only | 3 | **13** |
+| \+ restored `mapInspectStatus` | 2 | **1** (`M08 portable ZIP reaches the shared import-as-new core`) |
+| \+ restored prefixed contentHash | 2 | **1** (`M05 P4 zero-asset v2 exports`) |
+| full repair | **1** | 15 total |
+
+Final export-share result matches accepted P3 exactly: the sole remaining item is the
+same J.2 debt, neither suppressed nor repaired.
+
+## Residual — P3.5 regression surface is NOT fully closed
+
+Export-share is back to baseline, but two further validators that accepted P3 passed
+cleanly are still failing, and this repair did not close them:
+
+| validator | accepted P3 | P3.5b | after this repair |
+| --- | --- | --- | --- |
+| `validate-saved-chat-archive-import-recovery-harness-v1` | 0 | 32 | **32** |
+| `validate-saved-chat-archive-recovery-import-export-v1` | 0 | 2 | **1** |
+| `validate-studio-import-bundle` | 16 | 16 | 16 (genuinely pre-existing, unrelated) |
+
+Diagnosed in scratch, not committed: **31 of those 32 are the identical harness
+dependency debt** — `STORE_MODULES` does not load the two trusted modules and the
+mock invoke has no `h2o_saved_chat_archive_integrity` case. Applying the same two-hunk
+fix takes it from 32 failures to 1.
+
+The 32nd, `[M03 T04] Inspector fails closed on a corrupt gzip v3 member`, cannot be
+closed the same way. A package with a byte-corrupt gzip member still has a valid,
+parseable manifest, so a manifest-derived envelope classifies it verified while the
+real Rust verifier would refuse it. Answering honestly needs the harness to establish
+trusted facts from member BYTES, which is a design decision this step has no authority
+to make — and faking it by running the legacy verifier and relabelling its output is
+exactly what the trusted-envelope rule forbids.
+
+The remaining `recovery-import-export` failure is `[H.2] inspector reuses the
+read-only diagnostics validation`, an assertion superseded by the P3.5a trusted
+migration by design.
+
+## Runtime acceptance
+
+None repeated. The repair restores established contracts and adds no filesystem,
+codec, admission-write or publication semantics, and the export-share suite exercises
+the affected portable path directly with the real modules.
+
+## Still owed
+
+P3.6 must retire the temporary legacy `mapInspectStatus` together with the M08 JS
+validation authority it serves: establish trusted native portable byte-source
+verification, migrate importer/exporter off the legacy diagnostic validity path, stop
+passing legacy diagnostics through Inspector mapping, keep the trusted internal
+mapper, and retire the exporter's private contentHash authority.

@@ -121,6 +121,29 @@ check('the importer is untouched and still uses the portable byte validator', ()
     'the importer must NOT be migrated in P3.5 — that is P3.6');
 });
 
+/* ── P3.5.6B: mapper trust-domain ownership ─────────────────────────────── */
+
+check('mapInspectStatus has exactly one production consumer, and it is the importer', () => {
+  const INSPECTOR = `${ING}saved-chat-archive-inspector.studio.js`;
+  /* Comment-stripped, and excluding the module that defines and exports it.
+     `[^d]` keeps mapTrustedInspectStatus from matching as a substring. */
+  const consumers = productionFiles()
+    .filter((rel) => rel !== INSPECTOR)
+    .filter((rel) => /[^d]mapInspectStatus\b/.test(codeOf(rel)));
+  assert.deepEqual(consumers, [`${ING}saved-chat-archive-importer.studio.js`],
+    'the temporary M08 legacy mapper must serve the portable importer and nothing else');
+});
+
+check('mapTrustedInspectStatus is module-internal', () => {
+  const INSPECTOR = `${ING}saved-chat-archive-inspector.studio.js`;
+  const elsewhere = productionFiles()
+    .filter((rel) => rel !== INSPECTOR)
+    .filter((rel) => codeOf(rel).includes('mapTrustedInspectStatus'));
+  assert.deepEqual(elsewhere, [], 'the trusted mapper must not be reachable outside the Inspector');
+  assert.ok(!/mapTrustedInspectStatus\s*:/.test(readRepo(INSPECTOR)),
+    'and it must not be exported from the Inspector either');
+});
+
 console.log('');
 if (FAIL.length) {
   console.log(`[saved-chat-legacy-integrity-reachability] ${FAIL.length} failed, ${PASS.length} passed`);

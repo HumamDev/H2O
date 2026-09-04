@@ -19,6 +19,16 @@ const MODULE_REL = `${ING}saved-chat-archive-inspector.studio.js`;
 const MAPPER_REL = `${ING}saved-chat-archive-health-mapping.js`;
 const readRepo = (rel) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 
+/* Source slice for ONE named function, so trust-domain assertions can be made
+   per mapper instead of over the whole module. */
+function bodyOf(src, name) {
+  const start = src.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `function ${name} not found`);
+  const end = src.indexOf('\n  }\n', start);
+  assert.ok(end > start, `end of ${name} not found`);
+  return src.slice(start, end);
+}
+
 const PASS = [];
 const FAIL = [];
 function check(label, fn) {
@@ -73,16 +83,29 @@ check('the final taxonomy is exactly the approved set', () => {
   for (const added of ['incomplete', 'unreadable', 'identity-mismatch']) {
     assert.ok(src.includes(`'${added}':`), `added label missing: ${added}`);
   }
-  /* RETIRED — must not be produced or presented any more. Checked against a
-     comment-stripped view: the module's own prose names them to explain WHY
-     they were retired. */
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  /* RETIRED from the TRUSTED path. P3.5.6B restored the accepted-P3 legacy
+     mapper beside it for the M08 portable carveout, so these labels legitimately
+     survive in that one function — the property under test is that they cannot
+     reach the trusted mapper. Both views are comment-stripped: the module's own
+     prose names them to explain WHY they were retired. */
+  const strip = (text) => text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  const trustedBody = bodyOf(src, 'mapTrustedInspectStatus');
+  const legacyBody = bodyOf(src, 'mapInspectStatus');
+  const trusted = strip(trustedBody);
   for (const retired of ['missing-files', 'unsupported-version']) {
-    assert.ok(!code.includes(retired), `retired label still present in code: ${retired}`);
+    assert.ok(!trusted.includes(retired), `retired label still in the TRUSTED mapper: ${retired}`);
   }
   /* And no regex-derived causal classification survives (code, not prose). */
-  assert.ok(!/\/sha\|hash\/i/.test(code), 'no /sha|hash/i heuristic');
-  assert.ok(!/manifest\|snapshot\|markdown\|html\)-missing/.test(code), 'no member-missing heuristic');
+  assert.ok(!/\/sha\|hash\/i/.test(trusted), 'no /sha|hash/i heuristic in the trusted mapper');
+  assert.ok(!/manifest\|snapshot\|markdown\|html\)-missing/.test(trusted), 'no member-missing heuristic in the trusted mapper');
+  /* The retired labels exist ONLY in the temporary legacy mapper, so no other
+     part of the module can quietly reintroduce them. */
+  const legacy = strip(legacyBody);
+  const elsewhere = strip(src.replace(trustedBody, ' ').replace(legacyBody, ' '));
+  for (const retired of ['missing-files', 'unsupported-version']) {
+    assert.ok(legacy.includes(retired), `legacy M08 mapper must keep accepted-P3 label: ${retired}`);
+    assert.ok(!elsewhere.includes(retired), `retired label leaked outside the legacy mapper: ${retired}`);
+  }
 });
 
 check('every trusted-refusal label renders as a problem, never benign', () => {
@@ -96,20 +119,28 @@ check('every trusted-refusal label renders as a problem, never benign', () => {
   assert.match(table.split('\n').find((l) => l.includes("'read-error':")), /tone: 'neutral'/);
 });
 
-check('the deterministic trusted status contract', () => {
-  const api = load();
-  const map = api.mapInspectStatus;
+/* P3.5.6B: the trusted mapper is internal, so the contract is exercised through
+   the PUBLIC trusted entry point rather than by exporting an internal symbol.
+   `inspectPackage` resolves the occupant through the real trusted client and the
+   real canonical partition; its direct file reads fail in this harness, which is
+   exactly right — they are PREVIEW ONLY and never decide the status. */
+await checkAsync('the deterministic trusted status contract', async () => {
+  const map = async (occupant) => {
+    const api = load({ occupants: [occupant] });
+    const out = await api.inspectPackage({ packagePath: occupant.path });
+    return out.status;
+  };
 
   // A. verified classes
-  assert.equal(map(verified({ constructionFamily: 'v1' })), 'verified');
-  assert.equal(map(verified({ constructionFamily: 'v2' })), 'verified');
-  assert.equal(map(verified({ constructionFamily: 'v3' })), 'verified');
-  assert.equal(map(verified({ class: 'legacy-package', constructionFamily: 'v1' })), 'verified');
+  assert.equal(await map(verified({ constructionFamily: 'v1' })), 'verified');
+  assert.equal(await map(verified({ constructionFamily: 'v2' })), 'verified');
+  assert.equal(await map(verified({ constructionFamily: 'v3' })), 'verified');
+  assert.equal(await map(verified({ class: 'legacy-package', constructionFamily: 'v1' })), 'verified');
 
   // B/C/D. broad canonical reasons
-  assert.equal(map(bad('partial')), 'incomplete', 'Partial means missing OR unreadable members');
-  assert.equal(map(bad('unreadable')), 'unreadable');
-  assert.equal(map(bad('identity-mismatch')), 'identity-mismatch');
+  assert.equal(await map(bad('partial')), 'incomplete', 'Partial means missing OR unreadable members');
+  assert.equal(await map(bad('unreadable')), 'unreadable');
+  assert.equal(await map(bad('identity-mismatch')), 'identity-mismatch');
 
   // E. EXACT hash-blocker membership only
   for (const code of [
@@ -119,25 +150,30 @@ check('the deterministic trusted status contract', () => {
     'generation-v3-gzip-decoded-sha-mismatch',
     'generation-v3-identity-logical-sha-mismatch',
   ]) {
-    assert.equal(map(bad('corrupt', [code])), 'hash-mismatch', code);
+    assert.equal(await map(bad('corrupt', [code])), 'hash-mismatch', code);
   }
   // A code that merely MENTIONS a hash is not a hash mismatch.
-  assert.equal(map(bad('corrupt', ['generation-manifest-content-hash-invalid'])), 'corrupted',
+  assert.equal(await map(bad('corrupt', ['generation-manifest-content-hash-invalid'])), 'corrupted',
     'exact membership only — no substring inference');
 
   // F. exact encoding gate
-  assert.equal(map(bad('corrupt', ['generation-v3-snapshot-encoding-invalid'])), 'unsupported-encoding');
+  assert.equal(await map(bad('corrupt', ['generation-v3-snapshot-encoding-invalid'])), 'unsupported-encoding');
 
   // G. everything else the trusted authority refused
-  assert.equal(map(bad('corrupt', [])), 'corrupted', 'corrupt without a granular blocker');
-  assert.equal(map(bad('unexpected-outcome', [])), 'corrupted');
-  assert.equal(map(bad('corrupt', ['generation-manifest-version-triple-incoherent'])), 'corrupted',
+  assert.equal(await map(bad('corrupt', [])), 'corrupted', 'corrupt without a granular blocker');
+  assert.equal(await map(bad('unexpected-outcome', [])), 'corrupted');
+  assert.equal(await map(bad('corrupt', ['generation-manifest-version-triple-incoherent'])), 'corrupted',
     'a version-triple refusal is a trusted refusal, never unsupported-version');
-  assert.equal(map(bad('corrupt', ['generation-v3-persistent-renderer-forbidden'])), 'corrupted',
+  assert.equal(await map(bad('corrupt', ['generation-v3-persistent-renderer-forbidden'])), 'corrupted',
     'an admission-adapter refusal without a granular hash/encoding code');
 
-  // read error wins
-  assert.equal(map(verified(), 'boom'), 'read-error');
+  /* Read error wins over an otherwise-verified occupant. Through the public
+     path the read error is the real one — the trusted read failing — rather than
+     an argument handed straight to the mapper. */
+  const unavailable = load({ occupants: [verified()], integrityThrows: true });
+  const out = await unavailable.inspectPackage({ packagePath: verified().path });
+  assert.equal(out.status, 'read-error', 'a failed trusted read outranks a verified occupant');
+  assert.equal(out.ok, false);
 });
 
 await checkAsync('listPackages enumerates trusted package occupants only', async () => {
@@ -190,6 +226,79 @@ check('the Inspector holds no verification authority and no destructive action',
   /* Read-only actions only. */
   for (const forbidden of ['repair', 'delete', 'restore', 'quarantine', 'rewrite', 'rebuild']) {
     assert.ok(!code.toLowerCase().includes(forbidden), `no destructive action: ${forbidden}`);
+  }
+});
+
+/* ── P3.5.6B: two mappers, two trust domains ────────────────────────────── */
+
+check('the trusted mapper stays INTERNAL', () => {
+  const api = load();
+  assert.equal(api.mapTrustedInspectStatus, undefined,
+    'mapTrustedInspectStatus must not be exported, not even for tests');
+  const src = readRepo(MODULE_REL);
+  assert.ok(!/mapTrustedInspectStatus\s*:/.test(src),
+    'mapTrustedInspectStatus must not appear on any exported object literal');
+});
+
+check('the legacy M08 mapper stays PUBLIC', () => {
+  const api = load();
+  assert.equal(typeof api.mapInspectStatus, 'function',
+    'the M08 portable importer calls this published symbol');
+});
+
+check('the legacy mapper speaks accepted-P3 legacy diagnostics', () => {
+  const map = load().mapInspectStatus;
+  /* Read error wins. */
+  assert.equal(map({}, 'boom'), 'read-error');
+  /* A clean legacy diagnostic verifies — the case the M08 importer depends on,
+     and precisely what the trusted mapper got wrong by returning read-error for
+     a shape carrying no `class`. */
+  assert.equal(map({ status: 'ok', schemaVersion: 2, payloadVersion: 2, blockers: [] }), 'verified');
+  assert.equal(map({ status: 'ok', schemaVersion: 1, payloadVersion: null, blockers: [] }), 'verified');
+  /* Accepted-P3 legacy vocabulary, valid ONLY here. */
+  assert.equal(map({ blockers: [{ code: 'manifest-missing' }] }), 'missing-files');
+  assert.equal(map({ blockers: [{ code: 'snapshot-missing' }] }), 'missing-files');
+  assert.equal(map({ hashChecks: { contentHashOk: false } }), 'hash-mismatch');
+  assert.equal(map({ hashChecks: { snapshotShaOk: false } }), 'hash-mismatch');
+  assert.equal(map({ assetChecks: { hashMismatches: [{}] } }), 'hash-mismatch');
+  assert.equal(map({ blockers: [{ code: 'asset-sha-mismatch' }] }), 'hash-mismatch');
+  assert.equal(map({ blockers: [{ code: 'snapshot-encoding-invalid' }] }), 'unsupported-encoding');
+  assert.equal(map({ schemaVersion: 9, payloadVersion: 9, blockers: [] }), 'unsupported-version');
+  assert.equal(map({ status: 'blocked', schemaVersion: 3, payloadVersion: 3, blockers: [] }), 'corrupted');
+});
+
+check('a legacy diagnostic never reaches the trusted mapper, and vice versa', () => {
+  const src = readRepo(MODULE_REL);
+  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  const whole = strip(src);
+  /* The trusted path calls only the trusted mapper. */
+  assert.equal((whole.match(/mapTrustedInspectStatus\(/g) || []).length, 3,
+    'one definition plus exactly the two trusted call sites');
+  /* And the legacy mapper is called nowhere inside this module. */
+  assert.equal((whole.match(/[^d]mapInspectStatus\(/g) || []).length, 1,
+    'mapInspectStatus is defined here and called only by the M08 importer');
+});
+
+await checkAsync('public identity.contentHash is sha256-prefixed, and nothing is hashed', async () => {
+  const occupant = verified({ contentHash: 'b'.repeat(64) });
+  const api = load({ occupants: [occupant] });
+  const out = await api.inspectPackage({ packagePath: occupant.path });
+  assert.match(out.identity.contentHash, /^sha256-[0-9a-f]{64}$/,
+    'exporter and relink expectedDigest read the prefixed form');
+  assert.equal(out.identity.contentHash, `sha256-${'b'.repeat(64)}`,
+    'the trusted value is formatted, never recomputed');
+  /* §10: trusted validity authority is unchanged by the representation repair. */
+  assert.equal(out.identity.contentHashVerified, true);
+
+  /* An already-prefixed trusted value is not double-prefixed. */
+  const pre = verified({ contentHash: `sha256-${'c'.repeat(64)}` });
+  const out2 = await load({ occupants: [pre] }).inspectPackage({ packagePath: pre.path });
+  assert.equal(out2.identity.contentHash, `sha256-${'c'.repeat(64)}`);
+
+  /* No hashing authority anywhere in the module. */
+  const code = readRepo(MODULE_REL).replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  for (const banned of ['subtle', 'digest(', 'createHash', 'canonicalJson', 'sha256(']) {
+    assert.ok(!code.includes(banned), `the Inspector must not hash: ${banned}`);
   }
 });
 
