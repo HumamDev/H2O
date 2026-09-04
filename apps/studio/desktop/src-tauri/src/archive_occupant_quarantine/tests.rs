@@ -5,6 +5,7 @@ use crate::archive_generation_publish::{
 };
 use crate::archive_instance_lock::ArchiveInstanceState;
 use crate::archive_package_scan::scan_packages_within;
+use crate::saved_chat_package_verify::derive_content_hash_v3;
 use std::path::{Path, PathBuf};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -26,7 +27,7 @@ fn sha_of(bytes: &[u8]) -> String {
 
 fn snapshot_for(chat: &str, saved_at: &str) -> Vec<u8> {
     format!(
-        r#"{{"schemaVersion":1,"chatId":"{chat}","snapshotId":"s1","savedAt":"{saved_at}","messages":[{{"id":"m0","turnIndex":0,"contentText":"body-{saved_at}"}}]}}"#
+        r#"{{"schema":"h2o.savedChatSnapshot","schemaVersion":3,"chatId":"{chat}","snapshotId":"s1","savedAt":"{saved_at}","messages":[{{"id":"m0","turnIndex":0,"content":[{{"type":"text","text":"body-{saved_at}"}}],"assetRefs":[]}}]}}"#
     )
     .into_bytes()
 }
@@ -34,9 +35,11 @@ fn snapshot_for(chat: &str, saved_at: &str) -> Vec<u8> {
 /// The canonical basename the real publisher WILL choose for this content.
 /// Derived from the same bytes, so a fixture can occupy that exact destination.
 fn generation_name(chat: &str, saved_at: &str) -> String {
+    let snapshot_sha = sha_of(&snapshot_for(chat, saved_at));
+    let content_hash = derive_content_hash_v3(&snapshot_sha, &[]).expect("v3 content hash");
     format!(
         "{chat}.g{}.h2ochat",
-        sha256_hex(&snapshot_for(chat, saved_at))
+        content_hash.strip_prefix("sha256-").unwrap()
     )
 }
 
@@ -45,21 +48,17 @@ fn generation_name(chat: &str, saved_at: &str) -> String {
 fn try_publish(root: &Path, chat: &str, saved_at: &str) -> PublishResult {
     let publisher = Publisher::new(root.to_path_buf());
     let snapshot = snapshot_for(chat, saved_at);
-    let markdown = format!("# {chat}\n").into_bytes();
-    let html = format!("<!doctype html><p>{chat}</p>").into_bytes();
-    let content_hash = sha_of(&snapshot);
+    let snapshot_sha = sha_of(&snapshot);
+    let content_hash = derive_content_hash_v3(&snapshot_sha, &[]).expect("v3 content hash");
     let manifest = format!(
-        r#"{{"schema":"h2o.savedChatPackage","schemaVersion":1,"chatId":"{chat}","snapshotId":"s1","contentHash":"{content_hash}","files":{{"snapshot":{{"path":"snapshot.json","sha256":"{}","byteLength":{}}},"markdown":{{"path":"chat.md","sha256":"{}","byteLength":{}}},"html":{{"path":"chat.html","sha256":"{}","byteLength":{}}}}},"assets":[]}}"#,
-        sha_of(&snapshot), snapshot.len(),
-        sha_of(&markdown), markdown.len(),
-        sha_of(&html), html.len(),
-    ).into_bytes();
+        r#"{{"schema":"h2o.savedChatPackage","schemaVersion":3,"payloadVersion":3,"chatId":"{chat}","snapshotId":"s1","contentHash":"{content_hash}","files":{{"snapshot":{{"path":"snapshot.json","sha256":"{snapshot_sha}","byteLength":{},"encoding":"identity"}}}},"assets":[]}}"#,
+        snapshot.len(),
+    )
+    .into_bytes();
     let begun = begin(&publisher, chat);
     assert!(begun.ok, "begin refused: {:?}", begun.blockers);
     let t = begun.token;
     assert!(write_member(&publisher, t, Member::Snapshot, &snapshot).ok);
-    assert!(write_member(&publisher, t, Member::Markdown, &markdown).ok);
-    assert!(write_member(&publisher, t, Member::Html, &html).ok);
     assert!(write_member(&publisher, t, Member::Manifest, &manifest).ok);
     commit(&publisher, t, None)
 }
