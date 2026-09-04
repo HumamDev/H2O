@@ -22,6 +22,33 @@ const P03C_PATHS = Object.freeze([
   VALIDATOR_PATH,
   'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
 ]);
+
+// ---------------------------------------------------------------------------
+// Multi-boundary verified product ledger.
+//
+// Three classes are tracked, and they are never conflated:
+//
+//   A. The immutable historical P03C package. BASE..P03C_VERIFIED_HEAD must
+//      remain the exact five-path set above, permanently. It is never
+//      repointed, and it never absorbs later descendant maintenance.
+//   B. The later, independently verified product correction. The product source
+//      may advance only across the pinned, explicitly enumerated correction
+//      package below, and only as far as the pinned
+//      CURRENT_VERIFIED_PRODUCT_HEAD.
+//   C. Later validator/test-only maintenance descendants of the current
+//      verified product boundary. These may accumulate without a further
+//      boundary rewrite, but may never carry a product-source path and may
+//      never move the verified product blob.
+//
+// The executing HEAD is never itself product authority: it is admitted only as
+// a class-C validator-only descendant of the pinned current verified boundary.
+// ---------------------------------------------------------------------------
+const CURRENT_VERIFIED_PRODUCT_HEAD = 'd53a98044f4ba77b525ed3ecd05c487165813d48';
+const CURRENT_VERIFIED_PAGE_BLOB = '4548df7176b22e499e2aea851f8a02ed91d6e7fc';
+const VERIFIED_PRODUCT_CORRECTION_PATHS = Object.freeze([
+  PAGE_PATH,
+  'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+]);
 const PAGE_SOURCE = fs.readFileSync(path.join(ROOT, PAGE_PATH), 'utf8');
 // The chat page's structural implementation moved out of MiniMap Core into
 // 0C3a Chat Page Structure Engine, so the MiniMap source read here is that
@@ -89,20 +116,66 @@ function isValidatorMaintenancePath(file = '') {
     && !value.includes('//');
 }
 
-function verifiedDescendantScopeValid({
-  verifiedAncestor = false,
-  verifiedBlob = '',
+function isProductSourcePath(file = '') {
+  return !isValidatorMaintenancePath(file);
+}
+
+// Class A. The immutable historical P03C package: exact five-path set equality
+// against pinned literal endpoints, plus the pinned historical product blob.
+function historicalPackageExact({ historicalPaths = [], historicalVerifiedBlob = '' } = {}) {
+  return exactPathSet(historicalPaths, P03C_PATHS)
+    && historicalVerifiedBlob === P03C_VERIFIED_PAGE_BLOB;
+}
+
+// Class B. The independently verified product correction segment. Every changed
+// path must be either explicitly enumerated in the pinned correction package or
+// validator/test maintenance, and every product-source path in the range must
+// be explicitly enumerated. No arbitrary product path is admitted, and valid
+// ancestry alone never admits a product change.
+function correctionSegmentValid({ correctionAncestor = false, correctionPaths = [] } = {}) {
+  return correctionAncestor === true
+    && correctionPaths.every((file) => VERIFIED_PRODUCT_CORRECTION_PATHS.includes(file)
+      || isValidatorMaintenancePath(file))
+    && correctionPaths
+      .filter((file) => isProductSourcePath(file))
+      .every((file) => VERIFIED_PRODUCT_CORRECTION_PATHS.includes(file));
+}
+
+// Class C. Validator/test-only maintenance descendants of the current verified
+// product boundary. The correction package is NOT admissible here: a product
+// path that was legitimate inside class B is still rejected in class C.
+function currentDescendantValid({ currentAncestor = false, descendantPaths = [] } = {}) {
+  return currentAncestor === true
+    && descendantPaths.every(isValidatorMaintenancePath);
+}
+
+// The pinned current verified product blob must be intact at the boundary
+// commit, at the executing HEAD, and in the worktree, with no dirty or
+// untracked product-source path anywhere.
+function currentProductBlobSafe({
+  currentVerifiedBlob = '',
   currentBlob = '',
   workingBlob = '',
-  descendantPaths = [],
   dirtyNonValidatorPaths = [],
 } = {}) {
-  return verifiedAncestor === true
-    && verifiedBlob === P03C_VERIFIED_PAGE_BLOB
-    && currentBlob === verifiedBlob
-    && workingBlob === verifiedBlob
-    && descendantPaths.every(isValidatorMaintenancePath)
+  return currentVerifiedBlob === CURRENT_VERIFIED_PAGE_BLOB
+    && currentBlob === CURRENT_VERIFIED_PAGE_BLOB
+    && workingBlob === CURRENT_VERIFIED_PAGE_BLOB
     && dirtyNonValidatorPaths.length === 0;
+}
+
+function verifiedProductBoundaryValid(evidence = {}) {
+  return historicalPackageExact(evidence)
+    && correctionSegmentValid(evidence)
+    && currentDescendantValid(evidence)
+    && currentProductBlobSafe(evidence);
+}
+
+function blobAt(rev, file = PAGE_PATH) {
+  return execFileSync('git', ['rev-parse', `${rev}:${file}`], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  }).trim();
 }
 
 function gitPathList(args = []) {
@@ -677,8 +750,11 @@ await fixture('scope is limited to approved page and divider ownership', () => {
   const historicalPaths = gitPathList([
     'diff', '--name-only', '-z', `${P03C_BASE}..${P03C_VERIFIED_HEAD}`,
   ]);
+  const correctionPaths = gitPathList([
+    'diff', '--name-only', '-z', `${P03C_VERIFIED_HEAD}..${CURRENT_VERIFIED_PRODUCT_HEAD}`,
+  ]);
   const descendantPaths = gitPathList([
-    'diff', '--name-only', '-z', `${P03C_VERIFIED_HEAD}..HEAD`,
+    'diff', '--name-only', '-z', `${CURRENT_VERIFIED_PRODUCT_HEAD}..HEAD`,
   ]);
   const dirtyTracked = [
     ...gitPathList(['diff', '--name-only', '-z']),
@@ -687,48 +763,148 @@ await fixture('scope is limited to approved page and divider ownership', () => {
   const dirtyUntracked = gitPathList(['ls-files', '--others', '--exclude-standard', '-z']);
   const dirtyNonValidatorPaths = Array.from(new Set([...dirtyTracked, ...dirtyUntracked]))
     .filter((file) => !isValidatorMaintenancePath(file));
-  const verifiedBlob = execFileSync(
-    'git', ['rev-parse', `${P03C_VERIFIED_HEAD}:${PAGE_PATH}`], { cwd: ROOT, encoding: 'utf8' },
-  ).trim();
-  const currentBlob = execFileSync(
-    'git', ['rev-parse', `HEAD:${PAGE_PATH}`], { cwd: ROOT, encoding: 'utf8' },
-  ).trim();
+  const historicalVerifiedBlob = blobAt(P03C_VERIFIED_HEAD);
+  const currentVerifiedBlob = blobAt(CURRENT_VERIFIED_PRODUCT_HEAD);
+  const currentBlob = blobAt('HEAD');
   const workingBlob = execFileSync(
     'git', ['hash-object', PAGE_PATH], { cwd: ROOT, encoding: 'utf8' },
   ).trim();
-  const currentEvidence = {
-    verifiedAncestor: isAncestor(P03C_VERIFIED_HEAD),
-    verifiedBlob,
+  const evidence = {
+    historicalPaths,
+    historicalVerifiedBlob,
+    correctionAncestor: isAncestor(P03C_VERIFIED_HEAD, CURRENT_VERIFIED_PRODUCT_HEAD),
+    correctionPaths,
+    currentAncestor: isAncestor(CURRENT_VERIFIED_PRODUCT_HEAD),
+    descendantPaths,
+    currentVerifiedBlob,
     currentBlob,
     workingBlob,
-    descendantPaths,
     dirtyNonValidatorPaths,
   };
 
+  // Class A -- immutable historical P03C package.
   equal(exactPathSet(historicalPaths, P03C_PATHS), true, 'historical P03C package is the exact five-path set');
-  equal(verifiedDescendantScopeValid(currentEvidence), true, 'verified P03C production blob survives validator-only descendants');
-  equal(descendantPaths.every(isValidatorMaintenancePath), true, 'committed descendant delta is validator maintenance only');
-  equal(dirtyNonValidatorPaths, [], 'worktree has no dirty or untracked product/source path');
+  equal(historicalPaths.length, 5, 'historical P03C package is exactly five paths');
+  equal(historicalVerifiedBlob, P03C_VERIFIED_PAGE_BLOB, 'historical P03C verified 1C1b blob is unchanged');
+  equal(historicalPackageExact(evidence), true, 'immutable historical P03C package is intact');
   equal(P03C_PATHS.includes(VALIDATOR_PATH), true, 'CV-3.14 participates in the historical P03C assurance package');
 
+  // Class B -- independently verified product correction segment.
+  equal(correctionSegmentValid(evidence), true, 'verified product correction segment stays inside the pinned correction package');
+  equal(
+    correctionPaths.filter((file) => isProductSourcePath(file)),
+    [PAGE_PATH],
+    'the only product-source path in the verified correction segment is 1C1b',
+  );
+  equal(
+    correctionPaths.filter((file) => isProductSourcePath(file))
+      .every((file) => VERIFIED_PRODUCT_CORRECTION_PATHS.includes(file)),
+    true,
+    'every correction-segment product path is explicitly enumerated',
+  );
+
+  // Class C -- validator-only descendants of the current verified boundary.
+  equal(currentDescendantValid(evidence), true, 'current descendant delta is validator maintenance only');
+  equal(descendantPaths.every(isValidatorMaintenancePath), true, 'committed descendant delta is validator maintenance only');
+
+  // Current verified product blob safety.
+  equal(currentVerifiedBlob, CURRENT_VERIFIED_PAGE_BLOB, 'pinned current verified boundary carries the verified 1C1b blob');
+  equal(currentBlob, CURRENT_VERIFIED_PAGE_BLOB, 'executing HEAD carries the verified 1C1b blob');
+  equal(workingBlob, CURRENT_VERIFIED_PAGE_BLOB, 'worktree 1C1b matches the verified 1C1b blob');
+  equal(dirtyNonValidatorPaths, [], 'worktree has no dirty or untracked product/source path');
+
+  equal(verifiedProductBoundaryValid(evidence), true, 'verified product carry-forward holds across the multi-boundary ledger');
+
+  // Preserved historical negative controls.
   equal(exactPathSet(P03C_PATHS, P03C_PATHS), true, 'exact historical set is accepted');
   equal(
     exactPathSet([...P03C_PATHS, 'src-runtime-base/unauthorized-p03c-expansion.js'], P03C_PATHS),
     false,
     'historical production-path expansion is rejected',
   );
-  equal(verifiedDescendantScopeValid({
-    ...currentEvidence,
+
+  // G. A legitimate validator-only descendant is accepted, and stays accepted
+  // for further validator-only descendants without another boundary rewrite.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
     descendantPaths: ['tools/validation/chat-atlas/synthetic-maintenance.mjs'],
   }), true, 'validator-only descendant is accepted');
-  equal(verifiedDescendantScopeValid({
-    ...currentEvidence,
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    descendantPaths: [...descendantPaths, 'tools/validation/chat-atlas/synthetic-future-maintenance.mjs'],
+  }), true, 'further validator-only descendant is accepted without a boundary rewrite');
+
+  // A. Current 1C1b blob mismatch.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
     currentBlob: '0000000000000000000000000000000000000000',
   }), false, 'current 1C1b blob mismatch is rejected');
-  equal(verifiedDescendantScopeValid({
-    ...currentEvidence,
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    currentBlob: P03C_VERIFIED_PAGE_BLOB,
+  }), false, 'reverting 1C1b to the historical verified blob is still a current-boundary mismatch');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    currentVerifiedBlob: '0000000000000000000000000000000000000000',
+  }), false, 'a repointed current verified boundary blob is rejected');
+
+  // B. Unauthorized product path after the current verified boundary.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
     descendantPaths: [...descendantPaths, 'src-runtime-base/unauthorized-descendant.js'],
   }), false, 'descendant production path is rejected');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    descendantPaths: [...descendantPaths, PAGE_PATH],
+  }), false, 'a further 1C1b change after the verified boundary is rejected even though 1C1b is in the correction package');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    currentAncestor: false,
+  }), false, 'an executing HEAD that does not descend from the current verified boundary is rejected');
+
+  // C. Unauthorized product path inside the verified correction segment.
+  equal(correctionSegmentValid({
+    ...evidence,
+    correctionPaths: [...correctionPaths, 'src-runtime-base/unauthorized-correction.js'],
+  }), false, 'correction-segment production path outside the pinned package is rejected by the segment predicate');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    correctionPaths: [...correctionPaths, 'src-runtime-base/unauthorized-correction.js'],
+  }), false, 'correction-segment production path outside the pinned package is rejected');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    correctionAncestor: false,
+  }), false, 'a correction segment that does not descend from the historical boundary is rejected');
+
+  // D. Altered historical P03C package.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    historicalPaths: [...P03C_PATHS, 'src-runtime-base/unauthorized-p03c-expansion.js'],
+  }), false, 'a six-path historical P03C package is rejected');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    historicalPaths: P03C_PATHS.slice(0, 4),
+  }), false, 'a shrunken historical P03C package is rejected');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    historicalPaths: [...P03C_PATHS, 'tools/validation/chat-atlas/validate-chat-atlas-cv3-24-rendered-boundary-collapse-capability.mjs'],
+  }), false, 'later validator maintenance cannot be absorbed into the historical P03C package');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    historicalVerifiedBlob: CURRENT_VERIFIED_PAGE_BLOB,
+  }), false, 'repointing the historical verified blob to the current blob is rejected');
+
+  // E. Dirty or untracked product source.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    dirtyNonValidatorPaths: [PAGE_PATH],
+  }), false, 'a dirty or untracked product-source path is rejected');
+
+  // F. Worktree 1C1b differs from the committed verified blob.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    workingBlob: '0000000000000000000000000000000000000000',
+  }), false, 'worktree 1C1b divergence from the verified blob is rejected');
   equal(PAGE_SOURCE.includes('reconcileTitleListFlowHiddenArtifacts'), true, 'cleanup owner is Thread Pages');
   equal(DIVIDER_SOURCE.includes('authority-previous-page-unit'), true, 'supporting change is divider durability only');
 });
