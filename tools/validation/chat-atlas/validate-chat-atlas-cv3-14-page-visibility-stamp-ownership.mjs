@@ -116,6 +116,61 @@ function isValidatorMaintenancePath(file = '') {
     && !value.includes('//');
 }
 
+// The Mission-3 acceptance surface: every path class whose bytes P04A certifies
+// or whose behaviour it exercises. A path here is NEVER unrelated, whatever any
+// allowlist below says. This exclusion is checked FIRST so a future allowlist
+// edit cannot accidentally admit an acceptance-surface path.
+const MISSION3_ACCEPTANCE_SURFACE_PREFIXES = Object.freeze([
+  'src-runtime-base/',
+  'config/',
+  'tools/loader/',
+  'tools/validation/chat-atlas/',
+  'tools/validation/library/',
+]);
+
+// Class D allowlist. Affirmative subsystem identity only - never "everything
+// that is not Mission-3". A path qualifies solely by matching one of these
+// pinned prefixes.
+const UNRELATED_SUBSYSTEM_PREFIXES = Object.freeze([
+  'apps/studio/',
+  'src-surfaces-base/studio/',
+  'tools/product/studio/',
+  'tools/validation/studio/',
+]);
+
+// release-evidence/ is written by EVERY mission, so the directory alone proves
+// nothing and must not be allowlisted. Only a dated evidence file whose own
+// name affirmatively identifies the unrelated subsystem qualifies.
+const UNRELATED_SUBSYSTEM_EVIDENCE = /^release-evidence\/[0-9]{4}-[0-9]{2}-[0-9]{2}\/saved-chat-[A-Za-z0-9._-]+\.md$/;
+
+function isMission3AcceptanceSurfacePath(file = '') {
+  const value = String(file || '');
+  return MISSION3_ACCEPTANCE_SURFACE_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
+// Class D. Unrelated-subsystem mainline advance. A shared repository means
+// sibling lanes merge their own work into main while an Internal acceptance
+// head is pinned; those advances are not validator maintenance and are not a
+// verified product correction, so classes C and B both reject them even when
+// every guarded byte is identical.
+//
+// This admits such a path ONLY on affirmative subsystem identity. Anything
+// unknown, shared, root-level or cross-cutting - a bare filename, a new
+// top-level directory, node_modules, package.json, docs/, an undated or
+// differently-named evidence file - matches nothing here and fails closed,
+// which routes it to GOV review rather than silently widening the boundary.
+function isUnrelatedSubsystemPath(file = '') {
+  const value = String(file || '');
+  if (!value || value.includes('/../') || value.includes('//')) return false;
+  if (isMission3AcceptanceSurfacePath(value)) return false;
+  if (UNRELATED_SUBSYSTEM_PREFIXES.some((prefix) => value.startsWith(prefix))) return true;
+  return UNRELATED_SUBSYSTEM_EVIDENCE.test(value);
+}
+
+function isAdmissibleDescendantPath(file = '') {
+  return isValidatorMaintenancePath(file) || isUnrelatedSubsystemPath(file);
+}
+
 function isProductSourcePath(file = '') {
   return !isValidatorMaintenancePath(file);
 }
@@ -141,12 +196,14 @@ function correctionSegmentValid({ correctionAncestor = false, correctionPaths = 
       .every((file) => VERIFIED_PRODUCT_CORRECTION_PATHS.includes(file));
 }
 
-// Class C. Validator/test-only maintenance descendants of the current verified
-// product boundary. The correction package is NOT admissible here: a product
-// path that was legitimate inside class B is still rejected in class C.
+// Classes C and D. Descendants of the current verified product boundary are
+// admissible only as validator/test maintenance (class C) or as an affirmatively
+// classified unrelated-subsystem mainline advance (class D). The correction
+// package is NOT admissible here: a product path that was legitimate inside
+// class B is still rejected, and so is any Mission-3 acceptance-surface path.
 function currentDescendantValid({ currentAncestor = false, descendantPaths = [] } = {}) {
   return currentAncestor === true
-    && descendantPaths.every(isValidatorMaintenancePath);
+    && descendantPaths.every(isAdmissibleDescendantPath);
 }
 
 // The pinned current verified product blob must be intact at the boundary
@@ -803,9 +860,21 @@ await fixture('scope is limited to approved page and divider ownership', () => {
     'every correction-segment product path is explicitly enumerated',
   );
 
-  // Class C -- validator-only descendants of the current verified boundary.
-  equal(currentDescendantValid(evidence), true, 'current descendant delta is validator maintenance only');
-  equal(descendantPaths.every(isValidatorMaintenancePath), true, 'committed descendant delta is validator maintenance only');
+  // Classes C and D -- admissible descendants of the current verified boundary.
+  equal(currentDescendantValid(evidence), true, 'current descendant delta is admissible (validator maintenance or unrelated subsystem)');
+  equal(descendantPaths.every(isAdmissibleDescendantPath), true, 'committed descendant delta is admissible');
+  equal(
+    descendantPaths.filter((file) => isMission3AcceptanceSurfacePath(file)
+      && !isValidatorMaintenancePath(file)),
+    [],
+    'no Mission-3 acceptance-surface product path entered the descendant delta',
+  );
+  equal(
+    descendantPaths.filter((file) => isUnrelatedSubsystemPath(file)
+      && isMission3AcceptanceSurfacePath(file)),
+    [],
+    'class D never admits a Mission-3 acceptance-surface path',
+  );
 
   // Current verified product blob safety.
   equal(currentVerifiedBlob, CURRENT_VERIFIED_PAGE_BLOB, 'pinned current verified boundary carries the verified 1C1b blob');
@@ -833,6 +902,62 @@ await fixture('scope is limited to approved page and divider ownership', () => {
     ...evidence,
     descendantPaths: [...descendantPaths, 'tools/validation/chat-atlas/synthetic-future-maintenance.mjs'],
   }), true, 'further validator-only descendant is accepted without a boundary rewrite');
+
+  // G2. Class D -- unrelated-subsystem mainline advance is admitted, but only
+  // on affirmative subsystem identity.
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    descendantPaths: [...descendantPaths, 'apps/studio/desktop/src-tauri/src/lib.rs'],
+  }), true, 'an unrelated Studio subsystem path is admitted');
+  equal(verifiedProductBoundaryValid({
+    ...evidence,
+    descendantPaths: [...descendantPaths, 'release-evidence/2026-09-04/saved-chat-storage-m09-final-closure.md'],
+  }), true, 'a dated saved-chat evidence file is admitted');
+
+  // G3. Fail-closed. Unknown, shared, root-level, cross-cutting and ambiguous
+  // paths must NOT be admitted merely for lying outside Mission-3. Each of
+  // these is outside the acceptance surface and must still be rejected.
+  for (const ambiguous of [
+    'package.json',
+    'README.md',
+    'docs/architecture/some-note.md',
+    'node_modules/left-pad/index.js',
+    'apps/desktop/src/main.rs',
+    'src-surfaces-base/desk/desk.js',
+    'tools/product/pack-something.mjs',
+    'release-evidence/saved-chat-undated.md',
+    'release-evidence/2026-09-04/title-interface-note.md',
+    'release-evidence/2026-09-04/saved-chat-note.txt',
+    'some-new-top-level/file.js',
+  ]) {
+    equal(isUnrelatedSubsystemPath(ambiguous), false, `ambiguous path is not class D: ${ambiguous}`);
+    equal(verifiedProductBoundaryValid({
+      ...evidence,
+      descendantPaths: [...descendantPaths, ambiguous],
+    }), false, `ambiguous descendant path is rejected: ${ambiguous}`);
+  }
+
+  // G4. The acceptance surface is never class D, even for paths that also match
+  // an allowlisted prefix shape.
+  for (const surface of [
+    PAGE_PATH,
+    'src-runtime-base/0A2a.js',
+    'config/anything.json',
+    'tools/loader/make-aliases.mjs',
+    'tools/validation/chat-atlas/validate-chat-atlas-cv3-26-atomic-rendered-boundary-page-collapse.mjs',
+    'tools/validation/library/validate-chat-atlas-cv3-48-chat-list-decorator-write-and-read-cost.mjs',
+  ]) {
+    equal(isUnrelatedSubsystemPath(surface), false, `acceptance-surface path is never class D: ${surface}`);
+  }
+  equal(isMission3AcceptanceSurfacePath(PAGE_PATH), true, '1C1b is on the Mission-3 acceptance surface');
+  equal(isUnrelatedSubsystemPath('apps/studio/../src-runtime-base/1C1b.js'), false, 'path traversal is rejected');
+
+  // G5. Class D does not weaken class B: the correction segment still refuses a
+  // product path outside the pinned package even if it is an unrelated subsystem.
+  equal(correctionSegmentValid({
+    ...evidence,
+    correctionPaths: [...correctionPaths, 'apps/studio/desktop/src-tauri/src/lib.rs'],
+  }), false, 'class D does not widen the verified correction segment');
 
   // A. Current 1C1b blob mismatch.
   equal(verifiedProductBoundaryValid({
