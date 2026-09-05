@@ -77,13 +77,21 @@ check('CLAIM 3 — Coverage and Inspector consume the trusted client and the can
   }
 });
 
-check('CLAIM 4 — the M08 portable carveout is down to the exporter alone', () => {
-  const consumers = callersOf('validateSavedChatPackageBytesV1').sort();
-  /* M10 P3.6b migrated the IMPORTER to trusted native portable verification.
-     The exporter is the last legacy consumer and P3.6c retires it; a third
-     would mean the carveout grew instead of shrinking. */
-  assert.deepEqual(consumers, [`${ING}saved-chat-archive-exporter.studio.js`],
-    'only the exporter still uses the legacy byte validator');
+check('CLAIM 4 — the M08 portable carveout is CLOSED', () => {
+  /* M10 P3.6 migrated both portable consumers to trusted native verification.
+     The legacy JS byte validator has no production consumer left; its code stays
+     physically present for P4 to remove. */
+  assert.deepEqual(callersOf('validateSavedChatPackageBytesV1'), [],
+    'zero production consumers of the legacy portable byte validator');
+});
+
+check('CLAIM 6 — portable import AND export both use the trusted native client', () => {
+  const consumers = callersOf('verifySavedChatPortablePackageV1').sort();
+  assert.deepEqual(consumers, [
+    `${ING}saved-chat-archive-exporter.studio.js`,
+    `${ING}saved-chat-archive-importer.studio.js`,
+    `${ING}saved-chat-portable-package-verification.tauri.js`,
+  ], 'exactly the two portable consumers plus the client that defines it');
 });
 
 check('CLAIM 5 — no production archive consumer reaches the filesystem package source', () => {
@@ -108,8 +116,13 @@ check('the exporter still gates on `verified` and fails closed on every new labe
   /* Version gating does not depend on the retired Inspector label. */
   assert.ok(/schemaVersion === 1 \|\| schemaVersion === 2/.test(exporter),
     'the exporter validates supported manifest versions independently');
-  /* And the portable byte authority is untouched. */
-  assert.ok(exporter.includes('validateSavedChatPackageBytesV1'), 'portable byte validation retained');
+  /* M10 P3.6c: portable byte validation is now trusted native code, and the
+     exporter's own semantic contentHash authority is retired. */
+  assert.ok(!exporter.includes('validateSavedChatPackageBytesV1'),
+    'the legacy portable byte validator is gone from the exporter');
+  assert.ok(exporter.includes('verifySavedChatPortablePackageV1'), 'trusted portable client');
+  assert.ok(!exporter.includes('contentHashExpected'),
+    'the private semantic contentHash authority is retired');
 });
 
 check('the importer verifies portable packages through trusted native code', () => {

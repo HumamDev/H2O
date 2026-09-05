@@ -343,6 +343,41 @@ await check('the importer keeps no legacy validity path and invents no hash spec
     'portable status mapping invents no hash specificity');
 });
 
+await check('the exporter verifies ONCE, before the ZIP exists', () => {
+  const exporter = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js');
+  const code = codeOnly(exporter);
+  /* Exactly one semantic verification call: in assembly, on the members, before
+     any container is built. Verifying again after the write would be ceremony —
+     the read-back already proves the published bytes are those bytes. */
+  assert.equal((code.match(/await verify\(/g) || []).length, 1,
+    'exactly one trusted verification, performed once');
+  const assemble = exporter.slice(
+    exporter.indexOf('async function assemblePortablePackage('),
+    exporter.indexOf('function bytesEqual('),
+  );
+  assert.ok(assemble.includes('await verify('), 'verification happens during assembly');
+  assert.ok(!assemble.includes('buildPortableZip'), 'and before any ZIP is built');
+
+  /* The read-back is transport identity only — it no longer re-runs semantics. */
+  const readback = exporter.slice(
+    exporter.indexOf('async function verifyPortableZipReadback('),
+    exporter.indexOf('async function dryRunExportPackageZip('),
+  );
+  assert.ok(readback.includes('bytesEqual'), 'read-back proves byte equality');
+  assert.ok(!readback.includes('getPortableVerifier'), 'and performs no second verification');
+});
+
+await check('the exporter owns no semantic hash authority, only transport hashing', () => {
+  const code = codeOnly(readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-exporter.studio.js'));
+  for (const retired of ['contentHashExpected', 'canonicalJson', 'validateSavedChatPackageBytesV1']) {
+    assert.ok(!code.includes(retired), `retired: ${retired}`);
+  }
+  /* sha256Prefixed survives for TRANSPORT identity: copied-member equality and
+     the published ZIP's own byte identity. */
+  assert.ok(code.includes('sha256Prefixed'), 'transport hashing is retained');
+  assert.ok(code.includes('prefixedHash'), 'the trusted hash is formatted, not recomputed');
+});
+
 console.log('');
 if (FAIL.length) {
   console.log(`[saved-chat-portable-verification-client] ${FAIL.length} failed, ${PASS.length} passed`);

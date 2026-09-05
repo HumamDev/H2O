@@ -1057,12 +1057,21 @@ check('M09 P0.3c ZIP bytes use FD-bound create-only publication from native-owne
   assert.doesNotMatch(nativeProduction, /std::fs::rename|rename_within|promote_exclusive\(/);
 });
 
-check('J.2 exporter verifies copied hashes and contentHash after copy', () => {
+check('J.2 exporter verifies copied bytes, and owns no semantic identity', () => {
+  /* Byte-faithfulness of the copy is TRANSPORT assurance and stays. */
   assertIncludes(exporterCode, 'verifyCopiedFiles');
   assertIncludes(exporterCode, 'sha256Prefixed');
-  assertIncludes(exporterCode, 'contentHashExpected');
-  assertIncludes(exporterCode, 'copied package contentHash mismatch');
   assertIncludes(exporterCode, 'copied file hash mismatch');
+  assertIncludes(exporterCode, 'copied file byteLength mismatch');
+  /* M10 P3.6c retired the exporter's private semantic contentHash authority.
+     Package identity now comes from the trusted Archive Inspector for the
+     source and from trusted native verification for the assembled portable
+     package; the exporter recomputes neither. */
+  const code = exporterCode.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  for (const retired of ['contentHashExpected', 'canonicalJson', 'copied package contentHash mismatch']) {
+    assert.ok(!code.includes(retired), `retired exporter identity authority: ${retired}`);
+  }
+  assertIncludes(exporterCode, 'verifySavedChatPortablePackageV1');
 });
 
 check('M02 T05 uses the sanctioned v3 renderer surface and keeps companions outside logical identity', () => {
