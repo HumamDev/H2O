@@ -35,6 +35,8 @@ const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 const UI_REL = 'src-surfaces-base/studio/ingestion/saved-chat-recovery-center-ui.studio.js';
 const ADAPTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-presentation.studio.js';
+const IMPORTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js';
+const SANITIZER_REL = 'src-surfaces-base/studio/platform/html-sanitizer.js';
 const HEALTH_UI_REL = 'src-surfaces-base/studio/ingestion/archive-health-ui.studio.js';
 const HTML_REL = 'src-surfaces-base/studio/studio.html';
 const PACK_REL = 'tools/product/studio/pack-studio.mjs';
@@ -122,13 +124,109 @@ function findByAction(node, action) {
  * loaded for real, not stubbed: the labels an operator reads are part of what
  * this surface promises. */
 function loadUi(document) {
-  const ctx = vm.createContext({ console, Promise, setTimeout });
+  const ctx = vm.createContext({ console, Promise, setTimeout, TextDecoder, TextEncoder });
   ctx.window = ctx;
   ctx.globalThis = ctx;
   ctx.document = document;
   vm.runInContext(readRepo(ADAPTER_REL), ctx, { filename: ADAPTER_REL });
+  /* The REAL snapshot->turns mapper and the REAL Studio sanitizer. The preview
+   * proof is worthless against stubs of the two things it must reuse. */
+  vm.runInContext(readRepo(IMPORTER_REL), ctx, { filename: IMPORTER_REL });
+  vm.runInContext(readRepo(SANITIZER_REL), ctx, { filename: SANITIZER_REL });
   vm.runInContext(uiSrc, ctx, { filename: UI_REL });
-  return { ctx, api: ctx.H2O.Studio.recoveryCenterUi, ingestion: ctx.H2O.Studio.ingestion };
+  return {
+    ctx,
+    api: ctx.H2O.Studio.recoveryCenterUi,
+    ingestion: ctx.H2O.Studio.ingestion,
+    buildTurns: ctx.H2O.Studio.archiveImporter.buildTurnsFromPackageSnapshot,
+    extractText: ctx.H2O.Studio.html.sanitize.extractTextFromHtml,
+  };
+}
+
+/* ── Preview fixtures ─────────────────────────────────────────────────────
+ * Written in the two shapes the shipping writer actually produces: v3 typed
+ * content parts, and the v1/v2 scalar `contentText`. */
+const enc = (obj) => new TextEncoder().encode(JSON.stringify(obj));
+
+const V3_MANIFEST = { schemaVersion: 3, files: { snapshot: { path: 'snapshot.json', encoding: 'gzip', sha256: 'x' } } };
+const V1_MANIFEST = { schemaVersion: 1 };
+const V3_SNAPSHOT = {
+  schemaVersion: 3, title: 'Third version', capturedAt: '2026-08-22T00:00:00.000Z',
+  messages: [
+    { role: 'user', content: [{ type: 'text', text: 'what did I save?' }] },
+    { role: 'assistant', content: [{ type: 'html', html: '<script>steal()</script><p onclick="x()">the archived answer</p>' }] },
+  ],
+};
+const V1_SNAPSHOT = {
+  schemaVersion: 1, title: 'Legacy version',
+  messages: [{ role: 'user', contentText: 'legacy scalar body' }],
+};
+
+/* Declared as a function so it resolves the hash constants at call time rather
+ * than at module-evaluation time, where they are not yet initialized. */
+function identityForPath(packagePath) {
+  return ({
+    'archive/packages/chat_a.g1.h2ochat': HASH_CUR,
+    'archive/packages/chat_a.g2.h2ochat': HASH_MID,
+    'archive/packages/chat_a.g3.h2ochat': HASH_OLD,
+    'archive/packages/chat_b.legacy.h2ochat': HASH_OLD,
+  })[packagePath] || HASH_CUR;
+}
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+/* A faithful stand-in for the governed codec seam: it records exactly what the
+ * surface asked for, so the caps and the v3/v1 routing are provable. */
+/* A faithful stand-in for the governed codec seam.
+ *
+ * It models a PACKAGE ON DISK and enforces the same descriptor contract the real
+ * codec does: the verified-member path refuses when the descriptor it is handed
+ * does not match the bytes actually present, and the bounded path reports the
+ * digest and length of what it actually read. Without that, every substitution
+ * proof below would pass vacuously against a stub that returns whatever it is
+ * asked for. */
+function codecStub(opts = {}) {
+  const calls = [];
+  const disk = opts.disk || { snapshot: V3_SNAPSHOT, ...anchors('1', 'v3', 'gzip') };
+  return {
+    calls,
+    codec: {
+      __installed: true,
+      LOGICAL_SNAPSHOT_CAP_BYTES: 8 * 1024 * 1024,
+      readBoundedPackageMemberBytes(input) {
+        calls.push({ fn: 'readBoundedPackageMemberBytes', ...input });
+        if (opts.boundedFails) return Promise.reject(new Error('saved-chat-member-read-failed'));
+        return Promise.resolve({
+          storedBytes: opts.malformedSnapshot
+            ? new TextEncoder().encode('{not json')
+            : enc(disk.snapshot),
+          physicalSha256: disk.snapshotPhysicalSha256,
+          physicalByteLength: disk.snapshotPhysicalByteLength,
+        });
+      },
+      readVerifiedPackageMember(input) {
+        calls.push({ fn: 'readVerifiedPackageMember', ...input });
+        if (opts.verifiedFails) return Promise.reject(new Error('saved-chat-member-logical-sha-mismatch'));
+        const d = input.descriptor || {};
+        /* Exactly what the real codec enforces before returning anything. */
+        if (d.sha256 !== disk.snapshotPhysicalSha256 || d.byteLength !== disk.snapshotPhysicalByteLength) {
+          return Promise.reject(new Error('saved-chat-member-physical-hash-mismatch'));
+        }
+        if (d.encoding !== disk.snapshotEncoding) {
+          return Promise.reject(new Error('saved-chat-member-unsupported-encoding'));
+        }
+        if (d.contentSha256 !== disk.logicalSnapshotSha256 || d.contentByteLength !== disk.logicalSnapshotByteLength) {
+          return Promise.reject(new Error('saved-chat-member-logical-sha-mismatch'));
+        }
+        if (opts.verifiedDeferred) return opts.verifiedDeferred.promise;
+        return Promise.resolve({ logicalBytes: enc(disk.snapshot) });
+      },
+    },
+  };
 }
 
 /* ── Synthetic archive ──────────────────────────────────────────────────────
@@ -141,12 +239,26 @@ const HASH_CUR = 'a'.repeat(64);
 const HASH_OLD = 'b'.repeat(64);
 const HASH_MID = 'd'.repeat(64);
 
+/* The trusted member anchors the Rust verifier publishes per package occupant.
+ * They are what binds rendered bytes to the inspected package state, so the
+ * fixtures carry them exactly as `package_occupant` emits them. */
+function anchors(tag, family = 'v3', encoding = 'gzip') {
+  return {
+    constructionFamily: family,
+    snapshotEncoding: encoding,
+    snapshotPhysicalSha256: 'sha256-' + tag.repeat(64),
+    snapshotPhysicalByteLength: 100 + tag.charCodeAt(0),
+    logicalSnapshotSha256: 'sha256-' + tag.toUpperCase().repeat(64).toLowerCase(),
+    logicalSnapshotByteLength: 200 + tag.charCodeAt(0),
+  };
+}
+
 const OCC = {
-  aCur: { class: 'verified-generation', name: 'chat_a.g1.h2ochat', path: 'archive/packages/chat_a.g1.h2ochat', chatId: 'chat_a', snapshotId: 's1', contentHash: HASH_CUR, savedAt: '2026-08-22T00:00:00.000Z', constructionFamily: 'v3', blockers: [] },
-  aMid: { class: 'verified-generation', name: 'chat_a.g2.h2ochat', path: 'archive/packages/chat_a.g2.h2ochat', chatId: 'chat_a', snapshotId: 's2', contentHash: HASH_MID, savedAt: '2026-08-21T00:00:00.000Z', constructionFamily: 'v3', blockers: [] },
-  aOld: { class: 'verified-generation', name: 'chat_a.g3.h2ochat', path: 'archive/packages/chat_a.g3.h2ochat', chatId: 'chat_a', snapshotId: 's3', contentHash: HASH_OLD, savedAt: '2026-08-20T00:00:00.000Z', constructionFamily: 'v3', blockers: [] },
+  aCur: { class: 'verified-generation', name: 'chat_a.g1.h2ochat', path: 'archive/packages/chat_a.g1.h2ochat', chatId: 'chat_a', snapshotId: 's1', contentHash: HASH_CUR, savedAt: '2026-08-22T00:00:00.000Z', constructionFamily: 'v3', blockers: [] , ...anchors('1', 'v3', 'gzip') },
+  aMid: { class: 'verified-generation', name: 'chat_a.g2.h2ochat', path: 'archive/packages/chat_a.g2.h2ochat', chatId: 'chat_a', snapshotId: 's2', contentHash: HASH_MID, savedAt: '2026-08-21T00:00:00.000Z', constructionFamily: 'v3', blockers: [] , ...anchors('2', 'v3', 'gzip') },
+  aOld: { class: 'verified-generation', name: 'chat_a.g3.h2ochat', path: 'archive/packages/chat_a.g3.h2ochat', chatId: 'chat_a', snapshotId: 's3', contentHash: HASH_OLD, savedAt: '2026-08-20T00:00:00.000Z', constructionFamily: 'v3', blockers: [] , ...anchors('3', 'v3', 'identity') },
   aBad: { class: 'indeterminate', reason: 'corrupt', name: 'chat_a.g4.h2ochat', path: 'archive/packages/chat_a.g4.h2ochat', chatId: 'chat_a', contentHash: '', savedAt: '', blockers: [{ code: 'generation-v3-gzip-decode-failed' }] },
-  bLegacy: { class: 'legacy-package', name: 'chat_b.legacy.h2ochat', path: 'archive/packages/chat_b.legacy.h2ochat', chatId: 'chat_b', snapshotId: 's9', contentHash: HASH_OLD, savedAt: '2026-07-01T00:00:00.000Z', constructionFamily: 'v1', blockers: [] },
+  bLegacy: { class: 'legacy-package', name: 'chat_b.legacy.h2ochat', path: 'archive/packages/chat_b.legacy.h2ochat', chatId: 'chat_b', snapshotId: 's9', contentHash: HASH_OLD, savedAt: '2026-07-01T00:00:00.000Z', constructionFamily: 'v1', blockers: [] , ...anchors('4', 'v1', 'identity') },
   reserved: { class: 'reserved-infrastructure', name: 'quarantine', path: 'archive/packages/quarantine' },
   stray: { class: 'indeterminate', reason: 'not-a-package-name', name: 'notes.txt', path: 'archive/packages/notes.txt' },
 };
@@ -202,11 +314,27 @@ function coverageA(over) {
   }, over || {});
 }
 
+/* chat_b holds a single v1 legacy package, so the v1/v2 read path can be
+ * exercised through a genuinely v1 trusted occupant rather than by overriding a
+ * v3 one. */
+function coverageB(over) {
+  const legacy = covEntry(OCC.bLegacy);
+  return Object.assign({
+    chatId: 'chat_b', complete: true, preserved: true, covered: true,
+    projection: { status: 'ok', contentHash: 'sha256-' + HASH_OLD, schemaVersion: 1 },
+    generations: [], legacy: [legacy], unusable: [],
+    fresh: [legacy], stale: [], selected: legacy,
+    bestHistorical: null, bestHistoricalTies: [], reason: '',
+  }, over || {});
+}
+
 function harness(overrides) {
   const o = overrides || {};
   const calls = { integrity: 0, coverage: 0, inspect: 0, coverageChats: [], inspectPaths: [] };
   const document = domStub();
-  const { api, ingestion } = loadUi(document);
+  const { api, ingestion, buildTurns, extractText } = loadUi(document);
+  const stub = codecStub(Object.assign({}, o.codecOptions || {}, o.disk ? { disk: o.disk } : {}));
+  calls.codec = stub.calls;
   const container = document.createElement('div');
   const card = api.renderRecoveryCenterCard(container, Object.assign({
     capable: true,
@@ -216,20 +344,30 @@ function harness(overrides) {
     describeCoverage: ({ chatId }) => {
       calls.coverage += 1; calls.coverageChats.push(chatId);
       if (o.coverageFor) return Promise.resolve(o.coverageFor(chatId));
-      return Promise.resolve(chatId === 'chat_a' ? coverageA() : coverageA({ chatId }));
+      return Promise.resolve(chatId === 'chat_b' ? coverageB() : coverageA());
     },
     describeState: ingestion.describeSavedChatArchiveStateV1,
     entryPresentation: ingestion.savedChatArchivePresentationV1.entryPresentation,
     inspectPackage: ({ packagePath }) => {
       calls.inspect += 1; calls.inspectPaths.push(packagePath);
+      if (o.inspectFor) return o.inspectFor(packagePath);
+      /* Each package reverifies to ITS OWN trusted identity, so the binding
+       * checks exercise what they claim to rather than tripping on a fixture
+       * that gives every package the same hash. */
       return Promise.resolve({
         ok: true, status: 'verified', packagePath, packageDirName: packagePath.split('/').pop(),
-        identity: { chatId: 'chat_a', snapshotId: 's1', title: 'A chat', contentHash: 'sha256-' + HASH_CUR, schemaVersion: 3, messageCount: 4 },
+        identity: {
+          chatId: 'chat_a', snapshotId: 's1', title: 'A chat',
+          contentHash: 'sha256-' + identityForPath(packagePath), schemaVersion: 3, messageCount: 4,
+        },
         checks: { archiveEnumerationComplete: true }, blockers: [], preview: '', error: null,
       });
     },
+    codec: o.noCodec ? null : stub.codec,
+    buildTurns,
+    extractText,
   }, o.options || {}));
-  return { api, ingestion, document, container, card, calls };
+  return { api, ingestion, document, container, card, calls, buildTurns, extractText };
 }
 
 console.log('── Saved Chat Recovery Center validator (T02) ─────────────────');
@@ -246,6 +384,15 @@ await checkAsync('1. the trusted archive is read ONCE per open and ONCE per refr
   assert.equal(h.calls.coverage, 1, 'coverage was called more than once for one chat selection');
   await h.card.load();
   assert.equal(h.calls.integrity, 2, 'refresh did not re-read the trusted archive');
+
+  /* Selecting a version adds exactly ONE further trusted read — the fresh
+   * enumeration that supplies the member anchors the preview is bound to. It is
+   * per SELECTION, never per row. */
+  await h.card.selectChat('chat_a');
+  const beforeSelect = h.calls.integrity;
+  await h.card.selectVersion('archive/packages/chat_a.g1.h2ochat');
+  assert.equal(h.calls.integrity, beforeSelect + 1,
+    `version selection performed ${h.calls.integrity - beforeSelect} trusted reads, expected exactly 1`);
 });
 
 /* ── Property 2 — the canonical partition is the only one ────────────────── */
@@ -506,8 +653,31 @@ check('9b. the reclamation preview is not a source for this surface', () => {
 });
 
 check('9c. no recovery, import, restore, relink or confirmation control exists', () => {
-  for (const token of ['confirm(', 'archiveImporter', 'archiveExporter', 'archiveRestore', 'archiveRelink', 'importPackage', 'restorePackage']) {
+  /* The importer NAMESPACE is legitimately referenced for exactly one thing —
+   * its PURE `buildTurnsFromPackageSnapshot` mapper, which owns the v3
+   * typed-parts vs v1/v2 scalar-text distinction. Banning the bare namespace
+   * would forbid that reuse and push this surface into re-implementing the
+   * mapping, so the ban targets the mutation ENTRY POINTS instead, and the
+   * next check pins the namespace to that single pure symbol. */
+  for (const token of [
+    'confirm(', 'archiveExporter', 'archiveRestore', 'archiveRelink',
+    'importVerifiedPackage', 'importVerifiedZip', 'dryRunImportPackage', 'dryRunImportZip',
+    'restoreVerifiedPackage', 'relinkVerifiedPackage', 'importPackage', 'restorePackage',
+  ]) {
     assert.ok(!uiCode.includes(token), `an out-of-boundary control leaked in: ${token}`);
+  }
+});
+
+check('9c-pin. the importer namespace is used ONLY for its pure turn mapper', () => {
+  const refs = uiCode.match(/archiveImporter\s*\)?\s*\.\s*([A-Za-z0-9_$]+)/g) || [];
+  const symbols = new Set(refs.map((r) => r.split('.').pop().trim()));
+  // The surface reaches the mapper through safeObject(...).archiveImporter, so
+  // also accept the plain namespace read followed by the destructured symbol.
+  const used = uiCode.includes('buildTurnsFromPackageSnapshot');
+  assert.ok(used, 'the pure turn mapper is not reused — the surface may be re-implementing it');
+  for (const sym of symbols) {
+    assert.equal(sym, 'buildTurnsFromPackageSnapshot',
+      `a non-pure importer symbol is referenced: archiveImporter.${sym}`);
   }
 });
 
@@ -617,6 +787,537 @@ await checkAsync('12. end to end: two chats, an ordered timeline, statuses and a
   assert.ok(detail.includes('sha256-' + HASH_CUR), 'the verified contentHash is missing');
   const selectedNodes = nodesWithAttr(h.container, 'data-h2o-selected', '1');
   assert.equal(selectedNodes.length, 1, 'the selected row is not marked exactly once');
+});
+
+
+/* ══ T03 — read-only version preview ═══════════════════════════════════════
+ *
+ * The preview is the first path that turns archived bytes into something an
+ * operator reads, so the properties worth proving are: it never opens content
+ * the FRESH trusted verdict did not authorize, it never renders archived markup
+ * as markup, it always goes through the governed codec seam, and a slow answer
+ * for an abandoned selection can never appear under a newer one. */
+
+async function selectVerifiedVersion(h, path = 'archive/packages/chat_a.g1.h2ochat') {
+  await h.card.load();
+  await h.card.selectChat('chat_a');
+  await h.card.selectVersion(path);
+  return h.card.getState();
+}
+
+await checkAsync('13. preview opens ONLY after a fresh trusted re-inspection', async () => {
+  const h = harness();
+  await h.card.load();
+  await h.card.selectChat('chat_a');
+  assert.equal(h.calls.inspect, 0, 'listing a chat already inspected a package');
+  assert.equal(h.calls.codec.length, 0, 'listing a chat already read package bytes');
+  await h.card.selectVersion('archive/packages/chat_a.g1.h2ochat');
+  assert.equal(h.calls.inspect, 1, 'the selected version was not re-inspected');
+  assert.ok(h.calls.codec.length > 0, 'no governed codec read happened for a verified version');
+  assert.equal(h.card.getState().previewPhase, 'ready');
+});
+
+await checkAsync('13b. a version the fresh verdict does NOT accept yields no content read', async () => {
+  const h = harness({
+    inspectFor: (packagePath) => Promise.resolve({
+      ok: false, status: 'hash-mismatch', packagePath,
+      identity: { contentHash: '' }, checks: {}, blockers: ['generation-content-hash-mismatch'], error: null,
+    }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'refused', `expected refused, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'refused content was still built');
+  assert.equal(h.calls.codec.length, 0, 'package bytes were read for a version trusted verification refused');
+});
+
+await checkAsync('14. an unusable row can neither be inspected nor previewed', async () => {
+  const h = harness();
+  await h.card.load();
+  await h.card.selectChat('chat_a');
+  await h.card.selectVersion('archive/packages/chat_a.g4.h2ochat');   // the damaged occupant
+  assert.equal(h.calls.inspect, 0, 'a damaged package reached the inspector');
+  assert.equal(h.calls.codec.length, 0, 'a damaged package reached the byte reader');
+  assert.equal(h.card.getState().previewPhase, 'idle');
+  assert.equal(h.card.getState().preview, null);
+});
+
+await checkAsync('15. an identity mismatch refuses the preview BEFORE reading any content', async () => {
+  const h = harness({
+    inspectFor: (packagePath) => Promise.resolve({
+      ok: true, status: 'verified', packagePath,
+      /* The address still resolves, but to a different generation. */
+      identity: { contentHash: 'sha256-' + HASH_OLD, schemaVersion: 3 },
+      checks: {}, blockers: [], error: null,
+    }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'stale', `expected stale, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content was built for a package whose identity changed');
+  assert.equal(h.calls.codec.length, 0, 'bytes were read from a package with a mismatched identity');
+});
+
+await checkAsync('16. the TRUSTED family decides the read path, and no manifest is consulted', async () => {
+  const v3 = harness();
+  await selectVerifiedVersion(v3);
+  const verified = v3.calls.codec.filter((c) => c.fn === 'readVerifiedPackageMember');
+  assert.equal(verified.length, 1, 'the v3 governed verified-member read was not used');
+  assert.equal(verified[0].expectedPath, 'snapshot.json');
+  /* Every descriptor field comes from the trusted occupant, not from the package. */
+  const a = anchors('1', 'v3', 'gzip');
+  assert.equal(verified[0].descriptor.sha256, a.snapshotPhysicalSha256, 'physical digest was not the trusted one');
+  assert.equal(verified[0].descriptor.byteLength, a.snapshotPhysicalByteLength);
+  assert.equal(verified[0].descriptor.encoding, a.snapshotEncoding);
+  assert.equal(verified[0].descriptor.contentSha256, a.logicalSnapshotSha256, 'logical digest was not the trusted one');
+  assert.equal(verified[0].descriptor.contentByteLength, a.logicalSnapshotByteLength);
+  assert.equal(v3.calls.codec.filter((c) => c.memberPath === 'manifest.json').length, 0,
+    'the manifest is still in the trust chain');
+
+  const v1 = harness({ disk: { snapshot: V1_SNAPSHOT, ...anchors('4', 'v1', 'identity') } });
+  await v1.card.load();
+  await v1.card.selectChat('chat_b');
+  await v1.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
+  const s1 = v1.card.getState();
+  assert.equal(v1.calls.codec.filter((c) => c.fn === 'readVerifiedPackageMember').length, 0,
+    'a v1 package was pushed through the v3 verified-member path');
+  assert.ok(v1.calls.codec.some((c) => c.fn === 'readBoundedPackageMemberBytes' && c.memberPath === 'snapshot.json'),
+    'the v1 snapshot was not read through the governed bounded reader');
+  assert.equal(s1.previewPhase, 'ready', `expected ready, got ${s1.previewPhase}`);
+  assert.equal(s1.preview.messages[0].text, 'legacy scalar body', 'the v1 scalar body was not mapped');
+});
+
+await checkAsync('17. every governed read carries a finite physical cap', async () => {
+  const h = harness();
+  await selectVerifiedVersion(h);
+  assert.ok(h.calls.codec.length > 0, 'no reads to inspect');
+  for (const call of h.calls.codec) {
+    assert.ok(Number.isFinite(call.physicalByteCap) && call.physicalByteCap > 0,
+      `${call.fn} was called without a finite physical cap`);
+    if (call.fn === 'readVerifiedPackageMember') {
+      assert.ok(Number.isFinite(call.logicalByteCap) && call.logicalByteCap > 0,
+        'the verified member read was called without a logical cap');
+    }
+  }
+});
+
+check('17b. the surface owns no filesystem read of its own', () => {
+  for (const token of ['plugin:fs', 'read_file', 'lstat', 'readDir', 'readTextFile', 'BaseDirectory', 'baseDir']) {
+    assert.ok(!uiCode.includes(token), `a direct filesystem access leaked in: ${token}`);
+  }
+});
+
+await checkAsync('18. archived HTML is reduced to TEXT by the existing sanitizer, never rendered', async () => {
+  const h = harness({ codecOptions: { manifest: V3_MANIFEST, snapshot: V3_SNAPSHOT } });
+  const s2 = await selectVerifiedVersion(h);
+  const answer = s2.preview.messages[1];
+  assert.ok(answer.text.includes('the archived answer'), 'the readable answer text was lost');
+  assert.ok(!answer.text.includes('<script'), 'archived script markup survived into the preview');
+  assert.ok(!answer.text.includes('onclick'), 'an archived event handler survived into the preview');
+  assert.ok(!/<[a-z]/i.test(answer.text), `archived markup survived as markup: ${answer.text}`);
+  // And nothing in the rendered DOM was ever produced from markup.
+  const rendered = allText(h.container);
+  assert.ok(rendered.includes('the archived answer'), 'the preview text never reached the DOM');
+  assert.ok(!rendered.includes('steal()'), 'archived script content reached the DOM');
+});
+
+check('18b. no markup sink exists in the surface at all', () => {
+  for (const token of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'eval(', 'new Function', 'createContextualFragment']) {
+    assert.ok(!uiCode.includes(token), `a markup/execution sink leaked in: ${token}`);
+  }
+});
+
+await checkAsync('19. changing the selected version clears the previous preview', async () => {
+  const h = harness();
+  await selectVerifiedVersion(h, 'archive/packages/chat_a.g1.h2ochat');
+  assert.equal(h.card.getState().previewPhase, 'ready');
+  const first = h.card.getState().preview;
+  await h.card.selectVersion('archive/packages/chat_a.g2.h2ochat');
+  const s2 = h.card.getState();
+  assert.equal(s2.selectedPackagePath, 'archive/packages/chat_a.g2.h2ochat');
+  assert.notEqual(s2.preview, first, 'the previous version preview object survived the change');
+});
+
+await checkAsync('20. changing chat clears the preview entirely', async () => {
+  const h = harness();
+  await selectVerifiedVersion(h);
+  assert.equal(h.card.getState().previewPhase, 'ready');
+  await h.card.selectChat('chat_b');
+  const s2 = h.card.getState();
+  assert.equal(s2.preview, null, 'a preview survived a chat change');
+  assert.equal(s2.previewPhase, 'idle');
+  assert.equal(s2.selectedPackagePath, '');
+});
+
+await checkAsync('21. a late result for an abandoned version cannot overwrite a newer preview', async () => {
+  /* The abandoned selection must be allowed to reach its READ before being
+   * abandoned — otherwise the token gate upstream ends it early and the late
+   * write-back this check exists to catch never becomes possible. So the hang
+   * is keyed to the first version's own path, and the selection is given a few
+   * microtask turns to arrive there before the second version is chosen. */
+  const slow = deferred();
+  const doc2 = domStub();
+  const loaded = loadUi(doc2);
+  const codec = {
+    __installed: true,
+    LOGICAL_SNAPSHOT_CAP_BYTES: 8 * 1024 * 1024,
+    readBoundedPackageMemberBytes() { return Promise.resolve({ storedBytes: enc(V3_MANIFEST) }); },
+    readVerifiedPackageMember(input) {
+      if (String(input.packagePath).endsWith('chat_a.g1.h2ochat')) return slow.promise;
+      return Promise.resolve({ logicalBytes: enc({ ...V3_SNAPSHOT, title: 'SECOND' }) });
+    },
+  };
+  const container2 = doc2.createElement('div');
+  const card2 = loaded.api.renderRecoveryCenterCard(container2, {
+    capable: true, autoLoad: false,
+    readIntegrity: () => Promise.resolve(envelope()),
+    partitionOccupants,
+    describeCoverage: () => Promise.resolve(coverageA()),
+    describeState: loaded.ingestion.describeSavedChatArchiveStateV1,
+    entryPresentation: loaded.ingestion.savedChatArchivePresentationV1.entryPresentation,
+    /* Each package reverifies to ITS OWN identity, so this check exercises the
+     * async ordering rather than accidentally tripping the mismatch guard. */
+    inspectPackage: ({ packagePath }) => Promise.resolve({
+      ok: true, status: 'verified', packagePath,
+      identity: { contentHash: 'sha256-' + identityForPath(packagePath), schemaVersion: 3 },
+      checks: {}, blockers: [], error: null,
+    }),
+    codec, buildTurns: loaded.buildTurns, extractText: loaded.extractText,
+  });
+  const flush = async () => { for (let i = 0; i < 12; i += 1) await Promise.resolve(); };
+
+  await card2.load();
+  await card2.selectChat('chat_a');
+  const abandoned = card2.selectVersion('archive/packages/chat_a.g1.h2ochat');
+  await flush();
+  assert.equal(card2.getState().previewPhase, 'loading', 'the first selection never reached its read');
+
+  await card2.selectVersion('archive/packages/chat_a.g2.h2ochat');
+  assert.equal(card2.getState().preview && card2.getState().preview.title, 'SECOND',
+    'the newer preview did not land');
+
+  slow.resolve({ logicalBytes: enc({ ...V3_SNAPSHOT, title: 'FIRST-LATE' }) });
+  await abandoned;
+  await flush();
+
+  const s2 = card2.getState();
+  assert.equal(s2.selectedPackagePath, 'archive/packages/chat_a.g2.h2ochat');
+  assert.equal(s2.preview && s2.preview.title, 'SECOND',
+    `a late result for an abandoned selection replaced the newer preview (${s2.preview && s2.preview.title})`);
+  assert.ok(!allText(container2).includes('FIRST-LATE'), 'abandoned content reached the DOM');
+});
+
+await checkAsync('22. a refresh that drops the chat clears the preview too', async () => {
+  let env = envelope();
+  const h = harness({ options: { readIntegrity: () => Promise.resolve(env) } });
+  await selectVerifiedVersion(h);
+  assert.equal(h.card.getState().previewPhase, 'ready');
+  env = envelope({ occupants: [OCC.bLegacy] });
+  await h.card.load();
+  const s2 = h.card.getState();
+  assert.equal(s2.preview, null, 'a preview survived a refresh that dropped its chat');
+  assert.equal(s2.previewPhase, 'idle');
+});
+
+await checkAsync('23. a decode failure leaves an error state and NO stale content', async () => {
+  const h = harness({
+    disk: { snapshot: V1_SNAPSHOT, ...anchors('4', 'v1', 'identity') },
+    codecOptions: { malformedSnapshot: true },
+  });
+  await h.card.load();
+  await h.card.selectChat('chat_b');
+  await h.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
+  const s2 = h.card.getState();
+  assert.equal(s2.previewPhase, 'error', `expected error, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'malformed content produced a preview');
+  assert.ok(!allText(h.container).includes('legacy scalar body'), 'stale content remained on screen');
+});
+
+await checkAsync('23b. a governed read failure surfaces as an error, not as content', async () => {
+  const h = harness({ codecOptions: { manifest: V3_MANIFEST, verifiedFails: true } });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'error');
+  assert.equal(s2.preview, null);
+});
+
+await checkAsync('24. without the governed codec there is no preview at all', async () => {
+  const h = harness({ noCodec: true });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'unsupported', `expected unsupported, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content appeared without the governed reader');
+});
+
+check('25. a long conversation is bounded and the truncation is STATED', () => {
+  const document = domStub();
+  const { api, buildTurns, extractText } = loadUi(document);
+  const many = { schemaVersion: 3, messages: [] };
+  for (let i = 0; i < 500; i += 1) {
+    many.messages.push({ role: 'user', content: [{ type: 'text', text: 'm' + i }] });
+  }
+  const preview = api.buildPreviewFromTurns(buildTurns(many), extractText);
+  assert.equal(preview.totalMessages, 500);
+  assert.ok(preview.shownMessages < 500, 'an unbounded preview was built');
+  assert.equal(preview.truncated, true, 'truncation was not stated');
+  assert.equal(preview.messages.length, preview.shownMessages);
+
+  const long = { schemaVersion: 3, messages: [{ role: 'user', content: [{ type: 'text', text: 'x'.repeat(50000) }] }] };
+  const one = api.buildPreviewFromTurns(buildTurns(long), extractText).messages[0];
+  assert.ok(one.text.length < 50000, 'an unbounded message body was built');
+  assert.equal(one.textTruncated, true, 'message truncation was not stated');
+});
+
+check('26. no preview cache, index or persistence is introduced', () => {
+  for (const token of ['localStorage', 'sessionStorage', 'indexedDB', 'previewCache', 'previewIndex', 'new Map(', 'WeakMap']) {
+    assert.ok(!uiCode.includes(token), `preview state was persisted or cached: ${token}`);
+  }
+});
+
+check('27. the preview added no new decoder, hash or verification authority', () => {
+  for (const token of ['gzip', 'inflate', 'pako', 'DecompressionStream', 'decodeGzipBounded',
+    'verifyPackageMemberBytes', 'sha256PrefixedBytes', 'createHash', 'subtle.digest']) {
+    assert.ok(!uiCode.includes(token), `a duplicate decoding/verification authority leaked in: ${token}`);
+  }
+  // The two governed entry points ARE used.
+  assert.ok(uiCode.includes('readBoundedPackageMemberBytes'), 'the governed bounded reader is not used');
+  assert.ok(uiCode.includes('readVerifiedPackageMember'), 'the governed verified-member reader is not used');
+});
+
+
+/* ══ T03 identity binding — post-inspection substitution ═══════════════════
+ *
+ * `packagePath` is an address, not proof. Between the trusted inspection and
+ * the byte read, the package at that address can change. These prove the bytes
+ * that reach the screen are bound to the state that was actually verified.
+ *
+ * Package B below is INTERNALLY CONSISTENT: its bytes match its own digests, so
+ * a check that merely re-verified B against B's own claims would pass it. */
+const PACKAGE_B_SNAPSHOT = {
+  schemaVersion: 3, title: 'SUBSTITUTED', capturedAt: '2026-09-01T00:00:00.000Z',
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'attacker content' }] }],
+};
+
+await checkAsync('28. V1/V2 — bytes substituted after inspection are refused', async () => {
+  /* The trusted occupant describes package A ('4'); the disk now holds B ('9'). */
+  const h = harness({ disk: { snapshot: PACKAGE_B_SNAPSHOT, ...anchors('9', 'v1', 'identity') } });
+  await h.card.load();
+  await h.card.selectChat('chat_b');
+  await h.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
+  const s2 = h.card.getState();
+  assert.notEqual(s2.previewPhase, 'ready', 'substituted v1 bytes were previewed');
+  assert.equal(s2.preview, null, 'substituted v1 content was built');
+  assert.ok(!allText(h.container).includes('attacker content'), 'substituted content reached the DOM');
+});
+
+await checkAsync('29. V1/V2 — a digest mismatch alone is enough to refuse', async () => {
+  /* Same byte LENGTH as the trusted anchor, only the digest differs, so the
+   * refusal cannot be attributed to the length check. */
+  const trusted = anchors('4', 'v1', 'identity');
+  const h = harness({
+    disk: {
+      snapshot: PACKAGE_B_SNAPSHOT,
+      ...trusted,
+      snapshotPhysicalSha256: 'sha256-' + '9'.repeat(64),
+    },
+  });
+  await h.card.load();
+  await h.card.selectChat('chat_b');
+  await h.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
+  const s2 = h.card.getState();
+  assert.equal(s2.previewPhase, 'error', `expected error, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null);
+});
+
+await checkAsync('30. V3 — a self-consistent substituted package is refused', async () => {
+  /* B's descriptor and bytes agree with each other. The only thing that can
+   * catch it is that the descriptor handed to the codec came from the TRUSTED
+   * scan of A, not from B. */
+  const h = harness({ disk: { snapshot: PACKAGE_B_SNAPSHOT, ...anchors('9', 'v3', 'gzip') } });
+  const s2 = await selectVerifiedVersion(h);
+  assert.notEqual(s2.previewPhase, 'ready', 'a substituted v3 package was previewed');
+  assert.equal(s2.preview, null, 'substituted v3 content was built');
+  assert.ok(!allText(h.container).includes('attacker content'), 'substituted content reached the DOM');
+  const verified = h.calls.codec.filter((c) => c.fn === 'readVerifiedPackageMember');
+  assert.equal(verified.length, 1, 'the governed verified-member path was skipped');
+  assert.equal(verified[0].descriptor.sha256, anchors('1', 'v3', 'gzip').snapshotPhysicalSha256,
+    'the descriptor was taken from the substituted package rather than the trusted scan');
+});
+
+await checkAsync('31. COPIED-CLAIM — copying the old contentHash claim does not help', async () => {
+  /* The decisive negative control. A substituted package copies A's manifest
+   * contentHash claim verbatim while carrying its own snapshot descriptor and
+   * bytes. A binding built on that single self-reported field would accept it.
+   *
+   * Here it cannot even be consulted: the manifest is not read at all, and the
+   * descriptor comes from the trusted scan of A. */
+  const h = harness({
+    disk: { snapshot: PACKAGE_B_SNAPSHOT, ...anchors('9', 'v3', 'gzip') },
+    codecOptions: { manifest: { schemaVersion: 3, contentHash: 'sha256-' + HASH_CUR,
+      files: { snapshot: { path: 'snapshot.json', encoding: 'gzip',
+        sha256: 'sha256-' + '9'.repeat(64), byteLength: 157,
+        contentSha256: 'sha256-' + '9'.repeat(64), contentByteLength: 257 } } } },
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.notEqual(s2.previewPhase, 'ready', 'the copied-claim substitution was previewed');
+  assert.equal(s2.preview, null);
+  assert.ok(!allText(h.container).includes('attacker content'), 'substituted content reached the DOM');
+  assert.equal(h.calls.codec.filter((c) => c.memberPath === 'manifest.json').length, 0,
+    'the manifest was consulted, so a copied claim is still part of the trust chain');
+});
+
+await checkAsync('32. the two trusted reads must agree on the package state', async () => {
+  /* The inspection verified one identity; the enumeration reports another for
+   * the same address. Neither is trusted over the other — the binding fails. */
+  const h = harness({
+    inspectFor: (packagePath) => Promise.resolve({
+      ok: true, status: 'verified', packagePath,
+      identity: { contentHash: 'sha256-' + 'e'.repeat(64), schemaVersion: 3 },
+      checks: {}, blockers: [], error: null,
+    }),
+    coverageFor: () => coverageA({
+      fresh: [covEntry(OCC.aCur, { contentHash: 'e'.repeat(64) })],
+      stale: [], selected: null,
+    }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'stale', `expected stale, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null);
+  assert.equal(h.calls.codec.length, 0, 'bytes were read before the two trusted reads agreed');
+});
+
+/* Both sides of that binding are TRUSTED output, so an ABSENT identity is a
+ * failure to bind rather than an absence of evidence — the opposite of the
+ * lenient selected-row comparison, where a missing row identity legitimately
+ * asserts nothing. Absence has to fail closed in BOTH directions, and neither
+ * direction is protected by the equality case above: an accepting guard makes
+ * both of these read bytes and render. */
+await checkAsync('32b. an ABSENT inspected identity fails closed', async () => {
+  const h = harness({
+    /* Verified, but the inspection carries no content identity at all. */
+    inspectFor: (packagePath) => Promise.resolve({
+      ok: true, status: 'verified', packagePath,
+      identity: { contentHash: '', schemaVersion: 3 },
+      checks: {}, blockers: [], error: null,
+    }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.notEqual(s2.previewPhase, 'ready',
+    'an absent inspected identity was treated as agreement and the preview opened');
+  assert.equal(s2.previewPhase, 'stale', `expected stale, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content was built without a proven inspected identity');
+  assert.equal(h.calls.codec.length, 0, 'bytes were read without a proven inspected identity');
+  assert.ok(!allText(h.container).includes('the archived answer'), 'content reached the DOM');
+});
+
+await checkAsync('32c. an ABSENT enumerated identity fails closed', async () => {
+  /* The mirror case: the inspection proved an identity, but the fresh trusted
+   * enumeration reports none for that occupant, so there is nothing to bind to.
+   * The selected row still carries its identity, so the lenient row comparison
+   * upstream passes and this guard is genuinely the one under test. */
+  const identityless = { ...OCC.aCur };
+  delete identityless.contentHash;
+  const h = harness({
+    envelope: envelope({ occupants: [identityless, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.notEqual(s2.previewPhase, 'ready',
+    'an absent enumerated identity was treated as agreement and the preview opened');
+  assert.equal(s2.previewPhase, 'stale', `expected stale, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content was built without a proven enumerated identity');
+  assert.equal(h.calls.codec.length, 0, 'bytes were read without a proven enumerated identity');
+  assert.ok(!allText(h.container).includes('the archived answer'), 'content reached the DOM');
+
+  /* An empty-string identity is the same absence, not a value that can match. */
+  const emptyIdentity = { ...OCC.aCur, contentHash: '' };
+  const h2 = harness({
+    envelope: envelope({ occupants: [emptyIdentity, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+  });
+  const s3 = await selectVerifiedVersion(h2);
+  assert.equal(s3.previewPhase, 'stale', `empty identity: expected stale, got ${s3.previewPhase}`);
+  assert.equal(h2.calls.codec.length, 0, 'bytes were read for an empty enumerated identity');
+});
+
+/* The case that makes the absence guard LOAD-BEARING rather than merely
+ * redundant. With one identity present the equality comparison already rejects
+ * the other's absence, so those two directions survive deleting the guard. When
+ * BOTH are absent, equality reports a match — two nothings are "equal" — and the
+ * explicit absence check is the only thing standing between an unproven package
+ * and a rendered preview. */
+await checkAsync('32d. TWO absent identities are not a match', async () => {
+  const identityless = { ...OCC.aCur };
+  delete identityless.contentHash;
+  const h = harness({
+    envelope: envelope({ occupants: [identityless, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+    inspectFor: (packagePath) => Promise.resolve({
+      ok: true, status: 'verified', packagePath,
+      identity: { contentHash: '', schemaVersion: 3 },
+      checks: {}, blockers: [], error: null,
+    }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.notEqual(s2.previewPhase, 'ready',
+    'two absent identities compared equal and the preview opened on an unproven package');
+  assert.equal(s2.previewPhase, 'stale', `expected stale, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content was built with no proven identity on either side');
+  assert.equal(h.calls.codec.length, 0, 'bytes were read with no proven identity on either side');
+  assert.ok(!allText(h.container).includes('the archived answer'), 'content reached the DOM');
+});
+
+await checkAsync('33. V3 with no governed member facts is refused, never downgraded', async () => {
+  /* A v3 occupant whose trusted member anchors are absent. The forbidden
+   * behaviour is falling through to the plain snapshot.json read. */
+  const stripped = { ...OCC.aCur };
+  delete stripped.snapshotEncoding;
+  delete stripped.snapshotPhysicalSha256;
+  delete stripped.snapshotPhysicalByteLength;
+  delete stripped.logicalSnapshotSha256;
+  delete stripped.logicalSnapshotByteLength;
+  const h = harness({
+    envelope: envelope({ occupants: [stripped, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+  });
+  const s2 = await selectVerifiedVersion(h);
+  assert.equal(s2.previewPhase, 'unbindable', `expected unbindable, got ${s2.previewPhase}`);
+  assert.equal(s2.preview, null, 'content was built without governed member facts');
+  assert.equal(h.calls.codec.length, 0, 'a v3 package fell through to an unverified read');
+
+  /* A PARTIAL anchor set is not a weaker anchor set — it is a set of checks
+   * that would silently not happen. Lengths present, digests missing: still
+   * refused, and still no read. */
+  const digestless = { ...OCC.aCur };
+  delete digestless.snapshotPhysicalSha256;
+  delete digestless.logicalSnapshotSha256;
+  const h2 = harness({
+    envelope: envelope({ occupants: [digestless, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+  });
+  const s3 = await selectVerifiedVersion(h2);
+  assert.equal(s3.previewPhase, 'unbindable', `partial anchors: expected unbindable, got ${s3.previewPhase}`);
+  assert.equal(h2.calls.codec.length, 0, 'a package with no trusted digests was read anyway');
+
+  /* And an encoding-less v3 occupant likewise. */
+  const encodingless = { ...OCC.aCur };
+  delete encodingless.snapshotEncoding;
+  const h3 = harness({
+    envelope: envelope({ occupants: [encodingless, OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }),
+  });
+  const s4 = await selectVerifiedVersion(h3);
+  assert.equal(s4.previewPhase, 'unbindable', `no encoding: expected unbindable, got ${s4.previewPhase}`);
+  assert.equal(h3.calls.codec.length, 0, 'a package with no trusted encoding was read anyway');
+});
+
+await checkAsync('34. HAPPY PATH — v3 gzip, v3 identity and v1 all still preview', async () => {
+  const gzip = harness();
+  const g = await selectVerifiedVersion(gzip, 'archive/packages/chat_a.g1.h2ochat');
+  assert.equal(g.previewPhase, 'ready', `v3 gzip: ${g.previewPhase}`);
+  assert.equal(gzip.calls.codec[0].descriptor.encoding, 'gzip');
+
+  const identity = harness({ disk: { snapshot: V3_SNAPSHOT, ...anchors('3', 'v3', 'identity') } });
+  const i = await selectVerifiedVersion(identity, 'archive/packages/chat_a.g3.h2ochat');
+  assert.equal(i.previewPhase, 'ready', `v3 identity: ${i.previewPhase}`);
+  assert.equal(identity.calls.codec[0].descriptor.encoding, 'identity');
+
+  const legacy = harness({ disk: { snapshot: V1_SNAPSHOT, ...anchors('4', 'v1', 'identity') } });
+  await legacy.card.load();
+  await legacy.card.selectChat('chat_b');
+  await legacy.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
+  assert.equal(legacy.card.getState().previewPhase, 'ready', 'v1 legacy did not preview');
+  assert.equal(legacy.card.getState().preview.messages[0].text, 'legacy scalar body');
 });
 
 console.log('');

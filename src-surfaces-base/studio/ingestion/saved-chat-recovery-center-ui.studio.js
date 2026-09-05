@@ -20,8 +20,34 @@
  *   3. describeSavedChatCoverageV1({chatId})  the per-chat version populations
  *                                             and the frozen freshness rule,
  *                                             for the SELECTED chat only;
- *   4. archiveInspector.inspectPackage()      the read-only detail view, for the
+ *   4. archiveInspector.inspectPackage()      the read-only detail view, and the
+ *                                             fresh reverification gate, for the
  *                                             SELECTED version only.
+ *
+ * The read-only PREVIEW adds two more, and still no authority of its own:
+ *
+ *   5. savedChatPackageCodec.readBoundedPackageMemberBytes()
+ *                                             the governed bounded member read —
+ *                                             package-root scope, symlink and
+ *                                             non-file refusal, physical cap
+ *                                             enforced before a byte is read;
+ *   6. savedChatPackageCodec.readVerifiedPackageMember()
+ *                                             the governed v3 path: descriptor
+ *                                             verification, bounded encoding-aware
+ *                                             decode, logical length/SHA check.
+ *
+ * The verified snapshot is turned into rows by the existing pure mapper
+ * `archiveImporter.buildTurnsFromPackageSnapshot`, which already owns the
+ * v3-typed-parts vs v1/v2 scalar-text distinction. This module therefore
+ * contains no gzip, no package or ZIP parsing, no descriptor or hash
+ * verification, and no filesystem code at all.
+ *
+ * PREVIEW IS GATED ON FRESH TRUST, NOT ON THE LIST. `packagePath` is an address,
+ * never proof. Every preview re-inspects the package through the trusted path
+ * first, requires a current `verified` verdict, and compares the reverified
+ * identity against the selected row's identity where one is available. A changed
+ * or vanished package clears the preview and says so; it never silently follows
+ * a different package and never shows stale content.
  *
  * Labels come from the shared presentation adapter, so this surface does not
  * invent a second vocabulary for "current" and "historical".
@@ -52,16 +78,26 @@
  * anything may be recovered from a version is a later Task's question, and no
  * answer to it is claimed, stored or implied here.
  *
- * BOUNDARY. Read-only. No preview of restorable content, no recovery, no
- * import, restore, relink or confirmation flow, and no DB, archive or CAS
- * mutation of any kind. There is deliberately no destructive control here, not
- * even a disabled one.
+ * ARCHIVED CONTENT IS DATA. It gains no execution authority by having come from
+ * a trusted package. Preview text is written with `textContent` only — this
+ * module never assigns `innerHTML`, never hydrates archived content into live
+ * controls, and never re-renders archived markup. Where a v3 message carries
+ * only an HTML body, the readable text is extracted with the EXISTING Studio
+ * sanitizer; no second sanitizer family is introduced, and if that sanitizer is
+ * absent the HTML is simply not rendered.
+ *
+ * BOUNDARY. Read-only inspection only. No recovery, no import, restore or relink,
+ * no confirmation flow, and no DB, archive or CAS mutation of any kind. There is
+ * deliberately no destructive control here, not even a disabled one. Recovery
+ * actions belong to later Tasks and nothing here anticipates them.
  *
  * Public API (H2O.Studio.recoveryCenterUi):
  *   mountRecoveryCenterCard(healthContainer, options)
  *   renderRecoveryCenterCard(container, options)
  *   buildChatIndex(packageOccupants) -> pure
  *   buildTimelineSections(coverage, entryPresentation) -> pure
+ *   buildPreviewFromTurns(turns) -> pure
+ *   selectionIdentityMatches(row, inspection) -> pure
  *   TEXT
  */
 (function (global) {
@@ -83,6 +119,16 @@
    * that is name-grammar authority this surface does not hold. It is shown in
    * its own clearly-labelled group instead, so it is never silently dropped. */
   var UNATTRIBUTED = ' unattributed';
+
+  /* Bounded preview. Large-chat segmentation is a deferred architecture, so a
+   * long conversation is shown honestly truncated rather than either rendered
+   * whole or silently cut. Nothing here is cached, indexed or persisted. */
+  var MAX_PREVIEW_MESSAGES = 200;
+  var MAX_PREVIEW_CHARS = 2000;
+  /* The construction families the trusted verifier reports. A v3 package must
+   * take the governed verified-member path; there is deliberately no fallback
+   * that would let a v3 package be read as though it were v1/v2. */
+  var FAMILY_V3 = 'v3';
 
   var TEXT = {
     title: 'Saved Chat Recovery Center',
@@ -119,10 +165,26 @@
     /* This is a read-only surface. The boundary is stated on screen so the
      * absence of any action is understood as deliberate. */
     readOnlyNote: 'Read-only. Nothing on this card changes the archive.',
+    previewHeading: 'Version preview',
+    previewIdle: 'Select a version to preview its saved conversation.',
+    previewLoading: 'Verifying and reading this version…',
+    previewRefused: 'Trusted verification does not currently accept this version, so its content is not shown.',
+    previewStale: 'This version changed since it was listed. Refresh to see the current archive.',
+    previewUnsupported: 'Previewing saved versions is available in Desktop Studio only.',
+    previewUnbindable: 'This version cannot be previewed: trusted verification did not supply the member facts needed to bind its content.',
+    previewError: 'This version could not be read.',
+    previewEmpty: 'This saved version contains no messages.',
+    previewTruncatedNote: 'Showing the first ',
+    previewTruncatedNoteTail: ' messages of ',
+    previewMessageTruncated: '… (message shortened for preview)',
+    previewAssets: 'attachments: ',
   };
 
+  function isObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
   function safeObject(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    return isObject(value) ? value : {};
   }
   function asArray(value) { return Array.isArray(value) ? value : []; }
   function cleanString(value) { return typeof value === 'string' ? value.trim() : ''; }
@@ -132,6 +194,27 @@
     if (text !== undefined && text !== null) node.textContent = String(text);
     if (style) node.setAttribute('style', style);
     return node;
+  }
+
+  /* The governed codec hands back bytes; turning already-verified bytes into
+   * text and then JSON is the only decoding this module does. There is no
+   * package parsing, no gzip and no encoding negotiation here — the codec
+   * performed all of that before returning. */
+  function textFromBytes(value) {
+    if (typeof value === 'string') return value;
+    var bytes = value;
+    if (bytes && !(bytes instanceof Uint8Array)) {
+      try { bytes = new Uint8Array(bytes); } catch (_) { return ''; }
+    }
+    if (!bytes) return '';
+    try { return new TextDecoder('utf-8').decode(bytes); } catch (_) { return ''; }
+  }
+
+  function jsonFromBytes(value) {
+    try {
+      var parsed = JSON.parse(textFromBytes(value));
+      return isObject(parsed) ? parsed : null;
+    } catch (_) { return null; }
   }
 
   function packageDirNameForPath(packagePath) {
@@ -267,6 +350,129 @@
     return rows;
   }
 
+  /* ── Preview: pure helpers ────────────────────────────────────────────────
+   *
+   * contentHash REPRESENTATION normalization only, exactly the convention
+   * coverage and the shared presentation adapter already use: the trusted wire
+   * carries a bare lowercase digest and the inspector re-applies the `sha256-`
+   * prefix outwardly. Nothing is recomputed here and no second stale-selection
+   * policy is introduced. */
+  function bareIdentity(value) {
+    var text = cleanString(value).toLowerCase();
+    return text.indexOf('sha256-') === 0 ? text.slice(7) : text;
+  }
+
+  /* Does the freshly reverified package still have the identity the selected row
+   * was listed with? When either side carries no identity there is nothing to
+   * compare, and this refuses to manufacture a mismatch — the trusted `verified`
+   * verdict is the gate in that case. */
+  function selectionIdentityMatches(row, inspection) {
+    var expected = bareIdentity(safeObject(row).contentHash);
+    var actual = bareIdentity(safeObject(safeObject(inspection).identity).contentHash);
+    if (!expected || !actual) return true;
+    return expected === actual;
+  }
+
+  /* Binds the two independent trusted reads — the inspection that produced the
+   * verdict, and the enumeration that produced the member anchors — to the SAME
+   * package state. Unlike the selected-row comparison above this is STRICT:
+   * both sides are trusted output, so a missing identity on either side is
+   * itself a failure to bind rather than an absence of evidence. */
+  function trustedStateMatches(inspection, occupant) {
+    var inspected = bareIdentity(safeObject(safeObject(inspection).identity).contentHash);
+    var enumerated = bareIdentity(safeObject(occupant).contentHash);
+    if (!inspected || !enumerated) return false;
+    return inspected === enumerated;
+  }
+
+  /* The trusted member anchors the verifier publishes for a package occupant.
+   *
+   * These are the load-bearing values of the whole preview: they come from the
+   * trusted scan's own read of the package, never from anything this renderer
+   * or a package file claims about itself. A substituted package can copy a
+   * manifest's `contentHash` string, but it cannot make the trusted scan report
+   * a snapshot digest it did not compute.
+   *
+   * Returned only when COMPLETE. A partial set is not silently tolerated,
+   * because every missing field is a check that would otherwise be skipped. */
+  function trustedMemberAnchors(occupant) {
+    var o = safeObject(occupant);
+    var encoding = cleanString(o.snapshotEncoding);
+    var physicalSha = cleanString(o.snapshotPhysicalSha256);
+    var logicalSha = cleanString(o.logicalSnapshotSha256);
+    var physicalLength = o.snapshotPhysicalByteLength;
+    var logicalLength = o.logicalSnapshotByteLength;
+    if (!encoding || !physicalSha || !logicalSha) return null;
+    if (typeof physicalLength !== 'number' || !isFinite(physicalLength) || physicalLength < 0) return null;
+    if (typeof logicalLength !== 'number' || !isFinite(logicalLength) || logicalLength < 0) return null;
+    return {
+      encoding: encoding,
+      physicalSha256: physicalSha,
+      physicalByteLength: physicalLength,
+      logicalSha256: logicalSha,
+      logicalByteLength: logicalLength,
+      family: cleanString(o.constructionFamily),
+    };
+  }
+
+  /* The governed member descriptor, built ENTIRELY from trusted anchors.
+   *
+   * The importer builds this from the package's own manifest, which is correct
+   * for an import that has already verified that manifest. A preview has no such
+   * verification of its own, so taking the descriptor from a freshly read
+   * manifest would let a substituted package describe — and therefore validate —
+   * itself. Sourcing every field from the trusted scan removes the manifest from
+   * the trust chain altogether. */
+  function trustedSnapshotDescriptor(anchors) {
+    var a = safeObject(anchors);
+    return {
+      path: 'snapshot.json',
+      encoding: a.encoding,
+      sha256: a.physicalSha256,
+      byteLength: a.physicalByteLength,
+      contentSha256: a.logicalSha256,
+      contentByteLength: a.logicalByteLength,
+    };
+  }
+
+  /* Readable text for one mapped turn. The v3 typed text part is preferred; an
+   * HTML-only body is reduced to text by the EXISTING Studio sanitizer. When
+   * that sanitizer is unavailable the HTML is not rendered at all rather than
+   * introducing a second sanitizer. */
+  function previewTextFor(turn, extractText) {
+    var t = safeObject(turn);
+    var text = cleanString(t.text);
+    if (text) return text;
+    var html = cleanString(t.outerHtml);
+    if (!html) return '';
+    return (typeof extractText === 'function') ? cleanString(extractText(html)) : '';
+  }
+
+  /* Pure: mapped turns -> a bounded preview model. Truncation is always stated,
+   * never silent, and no message is synthesized. */
+  function buildPreviewFromTurns(turns, extractText) {
+    var list = asArray(turns);
+    var shown = Math.min(list.length, MAX_PREVIEW_MESSAGES);
+    var messages = [];
+    for (var i = 0; i < shown; i += 1) {
+      var turn = safeObject(list[i]);
+      var text = previewTextFor(turn, extractText);
+      var tooLong = text.length > MAX_PREVIEW_CHARS;
+      messages.push({
+        role: cleanString(turn.role) || 'assistant',
+        text: tooLong ? text.slice(0, MAX_PREVIEW_CHARS) : text,
+        textTruncated: tooLong,
+        assetCount: asArray(safeObject(turn.meta).assetRefs).length,
+      });
+    }
+    return {
+      messages: messages,
+      totalMessages: list.length,
+      shownMessages: shown,
+      truncated: list.length > shown,
+    };
+  }
+
   /* ── Render ───────────────────────────────────────────────────────────── */
 
   function detectTauri() {
@@ -297,6 +503,19 @@
     var entryPresentation = typeof opts.entryPresentation === 'function'
       ? opts.entryPresentation
       : safeObject(ingestion.savedChatArchivePresentationV1).entryPresentation;
+    /* The governed codec seam already used by trusted import/restore. This
+     * module adds no reader of its own. */
+    var codec = isObject(opts.codec) ? opts.codec : ingestion.savedChatPackageCodec;
+    /* The existing PURE snapshot -> turns mapper, which owns the v3 typed-parts
+     * vs v1/v2 scalar-text distinction. */
+    var buildTurns = typeof opts.buildTurns === 'function'
+      ? opts.buildTurns
+      : safeObject(safeObject(H2O.Studio).archiveImporter).buildTurnsFromPackageSnapshot;
+    /* The existing Studio sanitizer, used only to reduce an HTML-only body to
+     * readable text. No markup from a package is ever rendered as markup. */
+    var extractText = typeof opts.extractText === 'function'
+      ? opts.extractText
+      : safeObject(safeObject(safeObject(H2O.Studio).html).sanitize).extractTextFromHtml;
 
     var capable = (opts.capable !== undefined)
       ? opts.capable === true
@@ -320,6 +539,13 @@
       selectedPackagePath: '',
       inspection: null,
       versionPhase: 'idle',
+      previewPhase: 'idle',
+      preview: null,
+      /* A single monotonically increasing token orders every asynchronous
+       * inspection and preview read. Any result whose token is no longer current
+       * is discarded, so a slow answer for an abandoned selection can never
+       * overwrite a newer one. */
+      requestToken: 0,
     };
 
     container.textContent = '';
@@ -344,6 +570,8 @@
     card.appendChild(timelineBox);
     var detailBox = el('div', null, 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)');
     card.appendChild(detailBox);
+    var previewBox = el('div', null, 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)');
+    card.appendChild(previewBox);
 
     function pill(label) {
       return el('span', label,
@@ -490,6 +718,65 @@
       }
     }
 
+    /* Archived content is DATA. Every value below is written with textContent;
+     * this function assigns no innerHTML and creates no interactive control from
+     * package content. */
+    function renderPreview() {
+      previewBox.textContent = '';
+      previewBox.appendChild(el('div', TEXT.previewHeading, 'font-weight:600;font-size:13px'));
+
+      var phase = state.previewPhase;
+      var flat = {
+        idle: TEXT.previewIdle,
+        loading: TEXT.previewLoading,
+        refused: TEXT.previewRefused,
+        stale: TEXT.previewStale,
+        unbindable: TEXT.previewUnbindable,
+        unsupported: TEXT.previewUnsupported,
+        error: TEXT.previewError,
+        empty: TEXT.previewEmpty,
+      };
+      if (Object.prototype.hasOwnProperty.call(flat, phase)) {
+        previewBox.appendChild(el('div', flat[phase], 'opacity:.8;font-size:12px;margin-top:4px'));
+        return;
+      }
+      if (phase !== 'ready') return;
+
+      var preview = safeObject(state.preview);
+      var head = el('div', null, 'font-size:12px;margin-top:4px;display:grid;gap:2px');
+      if (cleanString(preview.title)) head.appendChild(el('div', preview.title, 'font-weight:600'));
+      var meta = [];
+      if (cleanString(preview.capturedAt)) meta.push(preview.capturedAt);
+      if (preview.schemaVersion !== null && preview.schemaVersion !== undefined) meta.push('Format v' + preview.schemaVersion);
+      meta.push(preview.totalMessages + (preview.totalMessages === 1 ? ' message' : ' messages'));
+      head.appendChild(el('div', meta.join(' · '), 'opacity:.7'));
+      previewBox.appendChild(head);
+
+      if (preview.truncated) {
+        previewBox.appendChild(el('div',
+          TEXT.previewTruncatedNote + preview.shownMessages + TEXT.previewTruncatedNoteTail + preview.totalMessages + '.',
+          'font-size:12px;opacity:.8;margin-top:6px'));
+      }
+
+      var list = el('div', null, 'margin-top:8px;display:grid;gap:6px;max-height:420px;overflow:auto');
+      list.setAttribute('data-h2o-preview', 'messages');
+      asArray(preview.messages).forEach(function (message) {
+        var row = el('div', null, 'padding:6px 8px;border-radius:6px;background:rgba(255,255,255,.03)');
+        row.setAttribute('data-h2o-preview-role', message.role);
+        row.appendChild(el('div', message.role, 'font-size:11px;opacity:.65;text-transform:uppercase;letter-spacing:.04em'));
+        var body = el('div', message.text, 'font-size:12px;white-space:pre-wrap;word-break:break-word;margin-top:2px');
+        row.appendChild(body);
+        if (message.textTruncated) {
+          row.appendChild(el('div', TEXT.previewMessageTruncated, 'font-size:11px;opacity:.7;margin-top:2px'));
+        }
+        if (message.assetCount) {
+          row.appendChild(el('div', TEXT.previewAssets + message.assetCount, 'font-size:11px;opacity:.7;margin-top:2px'));
+        }
+        list.appendChild(row);
+      });
+      previewBox.appendChild(list);
+    }
+
     function render() {
       if (!capable) {
         card.textContent = '';
@@ -500,13 +787,13 @@
       refresh.disabled = state.phase === 'loading';
       if (state.phase === 'loading') {
         noticeBox.textContent = ''; chooserBox.textContent = '';
-        timelineBox.textContent = ''; detailBox.textContent = '';
+        timelineBox.textContent = ''; detailBox.textContent = ''; previewBox.textContent = '';
         timelineBox.appendChild(el('div', TEXT.loading));
         return;
       }
       if (state.phase === 'error') {
         noticeBox.textContent = ''; chooserBox.textContent = '';
-        timelineBox.textContent = ''; detailBox.textContent = '';
+        timelineBox.textContent = ''; detailBox.textContent = ''; previewBox.textContent = '';
         timelineBox.appendChild(el('div', TEXT.error + (state.error ? ' ' + state.error : '')));
         return;
       }
@@ -514,11 +801,13 @@
       renderChooser();
       renderTimeline();
       renderDetail();
+      renderPreview();
     }
 
     /* ONE trusted read per open/refresh. Rows never trigger their own. */
     function load() {
       if (!capable) { render(); return Promise.resolve(); }
+      invalidateRequests();
       state.phase = 'loading';
       state.error = '';
       render();
@@ -568,11 +857,26 @@
       state.selectedPackagePath = '';
       state.inspection = null;
       state.versionPhase = 'idle';
+      clearPreview();
     }
+
+    /* Preview content never outlives the selection that justified it. */
+    function clearPreview() {
+      state.previewPhase = 'idle';
+      state.preview = null;
+    }
+
+    /* Invalidate every in-flight inspection and preview read. */
+    function invalidateRequests() {
+      state.requestToken += 1;
+      return state.requestToken;
+    }
+    function currentToken(token) { return token === state.requestToken; }
 
     /* One coverage call per chat selection — never one per row. */
     function loadChat(chatId) {
       var id = cleanString(chatId);
+      invalidateRequests();
       if (!id) { clearChat(); render(); return Promise.resolve(); }
       state.chatPhase = 'loading';
       clearVersion();
@@ -605,7 +909,73 @@
       return loadChat(id);
     }
 
-    /* One inspection per version selection — never one per row. */
+    /* Locate the trusted occupant for exactly this package in a FRESH trusted
+     * enumeration. The canonical partition is reused, so reserved
+     * infrastructure and non-package strays can never be matched. */
+    function trustedOccupantFor(packagePath) {
+      return Promise.resolve()
+        .then(function () { return readIntegrity(); })
+        .then(function (envelope) {
+          var partition = safeObject(partitionOccupants(safeObject(envelope).occupants));
+          var found = null;
+          asArray(partition.packageOccupants).forEach(function (occupant) {
+            if (!found && cleanString(safeObject(occupant).path) === packagePath) found = safeObject(occupant);
+          });
+          return found;
+        });
+    }
+
+    /* Read the snapshot bytes BOUND to the trusted anchors.
+     *
+     * v3 goes through the governed verified-member path with a descriptor built
+     * from trusted values, so the codec's physical size/digest, encoding,
+     * bounded decode and logical size/digest checks are all made against what
+     * the trusted scan measured. A v3 package whose trusted anchors are absent
+     * is refused outright — it never falls through to the plain read, because
+     * that fallback is exactly how a v3 package could be downgraded into an
+     * unverified one.
+     *
+     * v1/v2 have no governed logical representation, so the bounded read is used
+     * and its returned physical digest and length are compared against the
+     * trusted anchors before a single byte is parsed. */
+    function readBoundSnapshot(packagePath, anchors) {
+      if (!isObject(codec) || typeof codec.readBoundedPackageMemberBytes !== 'function'
+        || typeof codec.readVerifiedPackageMember !== 'function') {
+        return Promise.reject(new Error('preview-codec-unavailable'));
+      }
+      var snapshotCap = codec.LOGICAL_SNAPSHOT_CAP_BYTES;
+      if (anchors.family === FAMILY_V3) {
+        return Promise.resolve(codec.readVerifiedPackageMember({
+          packagePath: packagePath,
+          descriptor: trustedSnapshotDescriptor(anchors),
+          expectedPath: 'snapshot.json',
+          physicalByteCap: snapshotCap,
+          logicalByteCap: snapshotCap,
+        })).then(function (verified) {
+          return jsonFromBytes(safeObject(verified).logicalBytes);
+        });
+      }
+      return Promise.resolve(codec.readBoundedPackageMemberBytes({
+        packagePath: packagePath,
+        memberPath: 'snapshot.json',
+        physicalByteCap: snapshotCap,
+      })).then(function (bounded) {
+        var read = safeObject(bounded);
+        /* The digest is RETURNED by the governed reader; nothing is recomputed
+         * here. It is compared against what the trusted scan measured, so a
+         * package substituted after inspection cannot be parsed. */
+        if (bareIdentity(read.physicalSha256) !== bareIdentity(anchors.physicalSha256)) {
+          throw new Error('preview-member-digest-mismatch');
+        }
+        if (read.physicalByteLength !== anchors.physicalByteLength) {
+          throw new Error('preview-member-length-mismatch');
+        }
+        return jsonFromBytes(read.storedBytes);
+      });
+    }
+
+    /* One inspection per version selection — never one per row — and the
+     * preview is gated on THAT fresh verdict, never on the list result. */
     function selectVersion(packagePath) {
       var path = cleanString(packagePath);
       var row = null;
@@ -615,21 +985,99 @@
       /* Selection identity is the trusted row's own archive-relative path. An
        * unknown, unscoped or non-selectable target is refused outright. */
       if (!row || !row.selectable) return Promise.resolve();
+      var token = invalidateRequests();
       state.selectedPackagePath = path;
       state.inspection = null;
       state.versionPhase = 'loading';
+      state.previewPhase = 'loading';
+      state.preview = null;
       render();
       return Promise.resolve()
         .then(function () { return inspectPackage({ packagePath: path }); })
         .then(function (result) {
-          if (state.selectedPackagePath !== path) return;
-          state.inspection = safeObject(result);
+          if (!currentToken(token)) return null;
+          var inspection = safeObject(result);
+          state.inspection = inspection;
           state.versionPhase = 'ready';
+
+          /* The list said this row was usable; only the FRESH trusted verdict
+           * may open the content. */
+          if (cleanString(inspection.status) !== 'verified') {
+            state.previewPhase = 'refused';
+            state.preview = null;
+            render();
+            return null;
+          }
+          /* The address still resolves, but to a package with a different
+           * identity: refuse rather than silently preview a different version. */
+          if (!selectionIdentityMatches(row, inspection)) {
+            state.previewPhase = 'stale';
+            state.preview = null;
+            render();
+            return null;
+          }
           render();
+
+          /* The verdict is fresh, and the selected row still names this
+           * identity. What is still unproven is that the bytes about to be read
+           * belong to the state that was just verified — so the member anchors
+           * are taken from a fresh trusted enumeration and bound to the
+           * inspection before anything is read. */
+          return trustedOccupantFor(path).then(function (occupant) {
+            if (!currentToken(token)) return;
+            if (!occupant || !trustedStateMatches(inspection, occupant)) {
+              state.previewPhase = 'stale';
+              state.preview = null;
+              render();
+              return;
+            }
+            var anchors = trustedMemberAnchors(occupant);
+            if (!anchors) {
+              /* A v3 package with no governed member facts is refused, never
+               * downgraded into the plain read. */
+              state.previewPhase = 'unbindable';
+              state.preview = null;
+              render();
+              return;
+            }
+            return readBoundSnapshot(path, anchors).then(function (snapshot) {
+              if (!currentToken(token)) return;
+              if (!isObject(snapshot)) {
+                state.previewPhase = 'error';
+                state.preview = null;
+                render();
+                return;
+              }
+              var turns = (typeof buildTurns === 'function') ? buildTurns(snapshot) : [];
+              var preview = buildPreviewFromTurns(turns, extractText);
+              preview.title = cleanString(snapshot.title)
+                || cleanString(safeObject(inspection.identity).title);
+              preview.capturedAt = cleanString(snapshot.capturedAt);
+              preview.schemaVersion = safeObject(inspection.identity).schemaVersion;
+              state.preview = preview;
+              state.previewPhase = preview.totalMessages ? 'ready' : 'empty';
+              render();
+            }, function (err) {
+              if (!currentToken(token)) return;
+              state.previewPhase = (cleanString(String(safeObject(err).message)) === 'preview-codec-unavailable')
+                ? 'unsupported' : 'error';
+              state.preview = null;
+              render();
+            });
+          }, function () {
+            if (!currentToken(token)) return;
+            /* The trusted enumeration itself failed: nothing can be bound, so
+             * nothing is shown. */
+            state.previewPhase = 'error';
+            state.preview = null;
+            render();
+          });
         })
         .catch(function () {
-          if (state.selectedPackagePath !== path) return;
+          if (!currentToken(token)) return;
           state.versionPhase = 'error';
+          state.previewPhase = 'error';
+          state.preview = null;
           render();
         });
     }
@@ -675,6 +1123,11 @@
     TEXT: TEXT,
     buildChatIndex: buildChatIndex,
     buildTimelineSections: buildTimelineSections,
+    buildPreviewFromTurns: buildPreviewFromTurns,
+    selectionIdentityMatches: selectionIdentityMatches,
+    trustedStateMatches: trustedStateMatches,
+    trustedMemberAnchors: trustedMemberAnchors,
+    trustedSnapshotDescriptor: trustedSnapshotDescriptor,
     renderRecoveryCenterCard: renderRecoveryCenterCard,
     mountRecoveryCenterCard: mountRecoveryCenterCard,
   };
