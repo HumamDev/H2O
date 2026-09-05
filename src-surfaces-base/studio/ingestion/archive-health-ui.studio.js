@@ -690,6 +690,17 @@
       }
     } catch (_) { /* reclamation card must never break the read-only health card */ }
 
+    // Recovery Center T02: mount the New-UI-only, READ-ONLY per-chat version
+    // timeline as a sibling beneath this card. It exposes no action beyond
+    // Refresh and selection, and no destructive control of any kind; this
+    // health card is unchanged and still performs no mutation.
+    try {
+      var recoveryCenterApi = H2O.Studio && H2O.Studio.recoveryCenterUi;
+      if (recoveryCenterApi && typeof recoveryCenterApi.mountRecoveryCenterCard === 'function') {
+        recoveryCenterApi.mountRecoveryCenterCard(container);
+      }
+    } catch (_) { /* recovery center card must never break the read-only health card */ }
+
     return { run: run, getState: function () { return card.state; } };
   }
 

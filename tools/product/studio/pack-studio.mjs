@@ -271,6 +271,11 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // M10 P2: pure trusted-facts -> operator-state mapping. No verification,
   // filesystem, invoke or mutation authority.
   "ingestion/saved-chat-archive-health-mapping.js",
+  // Saved Chat Recovery Center timeline surface. New-UI-only, read-only
+  // per-chat version timeline; composes trusted integrity, the canonical
+  // partition, coverage and the read-only inspector. No ordering, hashing,
+  // validity, classification or recovery-eligibility authority; no mutation.
+  "ingestion/saved-chat-recovery-center-ui.studio.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an
@@ -1416,6 +1421,11 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-renderer-hygiene.js",
   "ingestion/saved-chat-archive-health-composition.js",
   "ingestion/saved-chat-archive-health-mapping.js",
+  // Saved Chat Recovery Center timeline surface. New-UI-only, read-only
+  // per-chat version timeline; composes trusted integrity, the canonical
+  // partition, coverage and the read-only inspector. No ordering, hashing,
+  // validity, classification or recovery-eligibility authority; no mutation.
+  "ingestion/saved-chat-recovery-center-ui.studio.js",
   "ingestion/archive-health-ui.studio.js",
   // Chrome: saved-chat archive request delivery UI (Phase D.3C.2). Minimal
   // manual Settings utility card wiring the D.3C.1 delivery APIs under an

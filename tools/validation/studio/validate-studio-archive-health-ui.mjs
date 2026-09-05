@@ -47,14 +47,17 @@ const helperCode = stripComments(helperSrc);
 
 // The read-only health card delegates sibling MOUNTS (operator action / inspector /
 // importer) to their own modules. Those delegations legitimately name the sibling
-// modules (e.g. archiveImporter, mountArchiveImporterCard, importerApi) — they are
+// modules (e.g. archiveImporter, mountArchiveImporterCard, importerApi, and the
+// Recovery Center's recoveryCenterUi / mountRecoveryCenterCard / recoveryCenterApi) — they are
 // not import/mutation LOGIC in the health card itself. Neutralize ONLY those exact
 // delegation identifiers so the read-only / no-action-label scans test the health
 // card's own behavior; any other import/recover/restore/upsert token still trips.
 const helperLogic = helperCode
   .replace(/H2O\.Studio\.archive(MaterializerAction|Inspector|Importer)\b/g, 'H2O.Studio.siblingModule')
+  .replace(/H2O\.Studio\.recoveryCenterUi\b/g, 'H2O.Studio.siblingModule')
   .replace(/mountArchive(MaterializerAction|Inspector|Importer)Card/g, 'mountSiblingCard')
-  .replace(/\b(actionApi|inspectorApi|importerApi)\b/g, 'siblingApi');
+  .replace(/mountRecoveryCenterCard/g, 'mountSiblingCard')
+  .replace(/\b(actionApi|inspectorApi|importerApi|recoveryCenterApi)\b/g, 'siblingApi');
 
 function functionBlock(src, name) {
   const signature = `function ${name}`;
