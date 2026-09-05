@@ -234,6 +234,9 @@ export const ARCHIVE_WORKBENCH_SOURCE_FILES = Object.freeze([
   // Desktop-only, verification-gated import/recovery (Phase H.4). Dry-run + explicit
   // no-overwrite import-as-new (fresh ids, provenance) via the Desktop store adapters.
   "ingestion/saved-chat-archive-importer.studio.js",
+  // M10 P3.6a: thin client over the trusted native portable verifier. Owns no
+  // verification, no contentHash, and no legacy fallback.
+  "ingestion/saved-chat-portable-package-verification.tauri.js",
   // Desktop-only, verification-gated .h2ochat export/share (Phase J.2). Dry-run +
   // explicit no-overwrite manifest-driven folder copy to $HOME/H2O Studio Exports/.
   "ingestion/saved-chat-archive-exporter.studio.js",
@@ -1403,6 +1406,7 @@ export const ARCHIVE_WORKBENCH_OUT_FILES = Object.freeze([
   "ingestion/saved-chat-archive-materializer-action.studio.js",
   "ingestion/saved-chat-archive-inspector.studio.js",
   "ingestion/saved-chat-archive-importer.studio.js",
+  "ingestion/saved-chat-portable-package-verification.tauri.js",
   "ingestion/saved-chat-archive-exporter.studio.js",
   "ingestion/saved-chat-archive-restore.studio.js",
   "ingestion/saved-chat-archive-relink.studio.js",

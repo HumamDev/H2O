@@ -783,6 +783,12 @@
        adapters. Never overwrites existing rows; restore/relink deferred; mounts
        a sibling card beneath Archive Health. No Chrome authority. -->
   <script src="./ingestion/saved-chat-archive-importer.studio.js"></script>
+  <!-- M10 P3.6a trusted portable verification client. A thin session client
+       over the native portable verifier — the SAME semantic authority the
+       archive path uses — for packages that never touch the archive. It decides
+       nothing itself and has no legacy fallback, so it must load BEFORE the
+       importer and exporter that gate on it. -->
+  <script src="./ingestion/saved-chat-portable-package-verification.tauri.js"></script>
   <!-- Desktop-only: saved-chat archive export / share action (Phase J.2/M08).
        Two-step, verification-gated, NO-OVERWRITE: dry-run a .h2ochat package
        (reuses the read-only inspector), then explicitly export it by manifest-
