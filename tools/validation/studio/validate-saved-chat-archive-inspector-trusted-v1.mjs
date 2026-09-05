@@ -83,29 +83,19 @@ check('the final taxonomy is exactly the approved set', () => {
   for (const added of ['incomplete', 'unreadable', 'identity-mismatch']) {
     assert.ok(src.includes(`'${added}':`), `added label missing: ${added}`);
   }
-  /* RETIRED from the TRUSTED path. P3.5.6B restored the accepted-P3 legacy
-     mapper beside it for the M08 portable carveout, so these labels legitimately
-     survive in that one function — the property under test is that they cannot
-     reach the trusted mapper. Both views are comment-stripped: the module's own
+  /* RETIRED, now with no exception. P3.5.6B kept these labels alive inside a
+     temporary legacy mapper for the M08 portable carveout; P3.6b migrated
+     portable import to trusted native verification and deleted that bridge, so
+     the whole module must be free of them. Comment-stripped: the module's own
      prose names them to explain WHY they were retired. */
   const strip = (text) => text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
-  const trustedBody = bodyOf(src, 'mapTrustedInspectStatus');
-  const legacyBody = bodyOf(src, 'mapInspectStatus');
-  const trusted = strip(trustedBody);
+  const code = strip(src);
   for (const retired of ['missing-files', 'unsupported-version']) {
-    assert.ok(!trusted.includes(retired), `retired label still in the TRUSTED mapper: ${retired}`);
+    assert.ok(!code.includes(retired), `retired label still present: ${retired}`);
   }
   /* And no regex-derived causal classification survives (code, not prose). */
-  assert.ok(!/\/sha\|hash\/i/.test(trusted), 'no /sha|hash/i heuristic in the trusted mapper');
-  assert.ok(!/manifest\|snapshot\|markdown\|html\)-missing/.test(trusted), 'no member-missing heuristic in the trusted mapper');
-  /* The retired labels exist ONLY in the temporary legacy mapper, so no other
-     part of the module can quietly reintroduce them. */
-  const legacy = strip(legacyBody);
-  const elsewhere = strip(src.replace(trustedBody, ' ').replace(legacyBody, ' '));
-  for (const retired of ['missing-files', 'unsupported-version']) {
-    assert.ok(legacy.includes(retired), `legacy M08 mapper must keep accepted-P3 label: ${retired}`);
-    assert.ok(!elsewhere.includes(retired), `retired label leaked outside the legacy mapper: ${retired}`);
-  }
+  assert.ok(!/\/sha\|hash\/i/.test(code), 'no /sha|hash/i heuristic');
+  assert.ok(!/manifest\|snapshot\|markdown\|html\)-missing/.test(code), 'no member-missing heuristic');
 });
 
 check('every trusted-refusal label renders as a problem, never benign', () => {
@@ -240,43 +230,17 @@ check('the trusted mapper stays INTERNAL', () => {
     'mapTrustedInspectStatus must not appear on any exported object literal');
 });
 
-check('the legacy M08 mapper stays PUBLIC', () => {
+check('the temporary M08 legacy mapper is retired', () => {
+  /* P3.6b removed the last production consumer, so the bridge itself goes. The
+     Inspector now has exactly one mapper, and it speaks one trust domain. */
   const api = load();
-  assert.equal(typeof api.mapInspectStatus, 'function',
-    'the M08 portable importer calls this published symbol');
-});
-
-check('the legacy mapper speaks accepted-P3 legacy diagnostics', () => {
-  const map = load().mapInspectStatus;
-  /* Read error wins. */
-  assert.equal(map({}, 'boom'), 'read-error');
-  /* A clean legacy diagnostic verifies — the case the M08 importer depends on,
-     and precisely what the trusted mapper got wrong by returning read-error for
-     a shape carrying no `class`. */
-  assert.equal(map({ status: 'ok', schemaVersion: 2, payloadVersion: 2, blockers: [] }), 'verified');
-  assert.equal(map({ status: 'ok', schemaVersion: 1, payloadVersion: null, blockers: [] }), 'verified');
-  /* Accepted-P3 legacy vocabulary, valid ONLY here. */
-  assert.equal(map({ blockers: [{ code: 'manifest-missing' }] }), 'missing-files');
-  assert.equal(map({ blockers: [{ code: 'snapshot-missing' }] }), 'missing-files');
-  assert.equal(map({ hashChecks: { contentHashOk: false } }), 'hash-mismatch');
-  assert.equal(map({ hashChecks: { snapshotShaOk: false } }), 'hash-mismatch');
-  assert.equal(map({ assetChecks: { hashMismatches: [{}] } }), 'hash-mismatch');
-  assert.equal(map({ blockers: [{ code: 'asset-sha-mismatch' }] }), 'hash-mismatch');
-  assert.equal(map({ blockers: [{ code: 'snapshot-encoding-invalid' }] }), 'unsupported-encoding');
-  assert.equal(map({ schemaVersion: 9, payloadVersion: 9, blockers: [] }), 'unsupported-version');
-  assert.equal(map({ status: 'blocked', schemaVersion: 3, payloadVersion: 3, blockers: [] }), 'corrupted');
-});
-
-check('a legacy diagnostic never reaches the trusted mapper, and vice versa', () => {
+  assert.equal(api.mapInspectStatus, undefined, 'the legacy symbol is no longer exported');
   const src = readRepo(MODULE_REL);
-  const strip = (t) => t.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
-  const whole = strip(src);
-  /* The trusted path calls only the trusted mapper. */
-  assert.equal((whole.match(/mapTrustedInspectStatus\(/g) || []).length, 3,
-    'one definition plus exactly the two trusted call sites');
-  /* And the legacy mapper is called nowhere inside this module. */
-  assert.equal((whole.match(/[^d]mapInspectStatus\(/g) || []).length, 1,
-    'mapInspectStatus is defined here and called only by the M08 importer');
+  assert.ok(!/function mapInspectStatus\(/.test(src), 'and its definition is gone');
+  assert.ok(!/mapInspectStatus\s*:/.test(src), 'and it is on no exported object literal');
+  /* The trusted mapper survives, still internal. */
+  assert.ok(/function mapTrustedInspectStatus\(/.test(src));
+  assert.equal(api.mapTrustedInspectStatus, undefined);
 });
 
 await checkAsync('public identity.contentHash is sha256-prefixed, and nothing is hashed', async () => {

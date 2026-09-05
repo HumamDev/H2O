@@ -163,11 +163,18 @@
 
   /* members: { manifest, snapshot, markdown, html, assets: [{ key, bytes }] }
    * where every value is raw bytes already extracted from the portable
-   * container. `key` is the native member key, `asset:sha256-<hex>.<ext>`. */
+   * container. `key` is the native member key, `asset:sha256-<hex>.<ext>`.
+   *
+   * `unexpectedMembers` names persistent container entries OUTSIDE the canonical
+   * inventory. Because the container is parsed here and not natively, this list
+   * is the only way the trusted side can learn they exist — and it can only make
+   * the verdict stricter, since a non-empty list is an outright refusal. */
   async function verifySavedChatPortablePackageV1(options) {
     var opts = isObject(options) ? options : {};
     var packageDirName = cleanString(opts.packageDirName);
     var members = isObject(opts.members) ? opts.members : {};
+    var unexpectedMembers = (Array.isArray(opts.unexpectedMembers) ? opts.unexpectedMembers : [])
+      .map(cleanString).filter(Boolean);
 
     var invoke = getInvoke();
     if (!invoke) {
@@ -183,7 +190,10 @@
       queue.push({ key: cleanString(entry.key), bytes: toBytes(entry.bytes) });
     });
 
-    var begun = await callCommand(invoke, BEGIN_COMMAND, { packageDirName: packageDirName });
+    var begun = await callCommand(invoke, BEGIN_COMMAND, {
+      packageDirName: packageDirName,
+      unexpectedMembers: unexpectedMembers,
+    });
     if (!begun || begun.ok !== true || begun.token == null) {
       throw clientError(
         CODES.SESSION_REFUSED,

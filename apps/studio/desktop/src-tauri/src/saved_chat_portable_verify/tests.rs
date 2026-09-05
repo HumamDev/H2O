@@ -21,7 +21,7 @@ fn new_registry() -> Registry {
 }
 
 fn open(registry: &Registry, basename: &str) -> u64 {
-    let begun = begin(registry, basename);
+    let begun = begin(registry, basename, &[]);
     assert!(begun.ok, "begin refused: {:?}", begun.code);
     begun.token.expect("token")
 }
@@ -133,12 +133,12 @@ fn basename_must_be_a_safe_non_reserved_package_name() {
         "c:chat.h2ochat",
         ".h2ochat",
     ] {
-        let begun = begin(&registry, bad);
+        let begun = begin(&registry, bad, &[]);
         assert!(!begun.ok, "basename must be refused: {bad}");
         assert!(begun.token.is_none(), "a refused begin issues no token");
     }
     let over = format!("{}.h2ochat", "a".repeat(PORTABLE_BASENAME_CAP_BYTES));
-    assert!(!begin(&registry, &over).ok, "basename cap is enforced");
+    assert!(!begin(&registry, &over, &[]).ok, "basename cap is enforced");
 }
 
 // ── framing: declaration and append discipline ─────────────────────────────
@@ -330,7 +330,7 @@ fn package_total_cap_is_exact_and_charged_at_declaration() {
 fn only_one_session_is_live_and_a_live_one_is_never_evicted() {
     let registry = new_registry();
     let first = open(&registry, PKG);
-    let second = begin(&registry, "other-chat.h2ochat");
+    let second = begin(&registry, "other-chat.h2ochat", &[]);
     assert!(!second.ok);
     assert_eq!(second.code, Some("portable-session-busy"));
     // The refused begin must not have disturbed the live session.
@@ -349,13 +349,33 @@ fn an_idle_session_is_reclaimed_lazily_at_begin() {
         let mut inner = session.inner.lock().unwrap();
         inner.touched_at = Instant::now() - SESSION_IDLE_TIMEOUT - Duration::from_secs(1);
     }
-    let fresh = begin(&registry, "other-chat.h2ochat");
+    let fresh = begin(&registry, "other-chat.h2ochat", &[]);
     assert!(fresh.ok, "an idle session is swept, not treated as busy");
     assert_eq!(
         declare(&registry, stale, "manifest", 1).code,
         Some("portable-session-unknown"),
         "the reclaimed token is gone"
     );
+}
+
+#[test]
+fn tokens_stay_inside_the_range_javascript_represents_exactly() {
+    // The token crosses an IPC boundary as a JSON number. A 64-bit value would
+    // be rounded in the renderer, so every later call would name a session that
+    // does not exist — and the abandoned one would hold the single slot.
+    for _ in 0..64 {
+        let registry = new_registry();
+        let token = open(&registry, PKG);
+        assert!(token > 0, "a token is never zero");
+        assert!(
+            token <= (1u64 << 53) - 1,
+            "token {token} is outside the exactly-representable range"
+        );
+        assert_eq!(
+            token as f64 as u64, token,
+            "token survives a JSON round trip"
+        );
+    }
 }
 
 #[test]
@@ -393,7 +413,7 @@ fn abort_destroys_the_session_and_is_idempotent() {
     assert!(abort(&registry, token).ok);
     assert!(abort(&registry, 999_999).ok);
     // And the slot is genuinely free again.
-    assert!(begin(&registry, PKG).ok);
+    assert!(begin(&registry, PKG, &[]).ok);
 }
 
 // ── semantic delegation ────────────────────────────────────────────────────
@@ -521,6 +541,40 @@ fn asset_bytes_are_hashed_from_what_actually_arrived_not_from_the_declared_name(
     let out = verify_fixture(&registry, &pkg, &format!("{}.h2ochat", pkg.chat_id));
     assert!(!out.verified, "a corrupt asset body must not verify");
     assert_eq!(out.refusal.expect("refusal").stage, "verifier");
+}
+
+#[test]
+fn a_member_outside_the_canonical_inventory_reaches_the_verifier_as_unexpected() {
+    // ZIP parsing is deliberately not native, so the entry inventory can only
+    // come from the caller. Naming an extra persistent member must make the
+    // verification STRICTER — it can never make an invalid package valid.
+    let pkg = permanent_v3_fixture(false);
+    let basename = format!("{}.h2ochat", pkg.chat_id);
+
+    let clean = new_registry();
+    assert!(verify_fixture(&clean, &pkg, &basename).verified);
+
+    let registry = new_registry();
+    let token = begin(&registry, &basename, &["stowaway.bin".to_string()])
+        .token
+        .expect("token");
+    upload(&registry, token, &pkg);
+    let out = finish(&registry, token);
+    assert!(!out.verified, "an unexpected persistent member must refuse");
+    let refusal = out.refusal.expect("refusal");
+    assert_eq!(refusal.stage, "verifier");
+    assert_eq!(refusal.code, "generation-package-unexpected-member");
+}
+
+#[test]
+fn unexpected_member_names_are_bounded_and_path_safe() {
+    let registry = new_registry();
+    for bad in ["../escape", "/abs", String::new().as_str()] {
+        let begun = begin(&registry, PKG, &[bad.to_string()]);
+        assert!(!begun.ok, "unexpected member name must be refused: {bad}");
+    }
+    let over = "a".repeat(PORTABLE_MEMBER_PATH_CAP_BYTES + 1);
+    assert!(!begin(&registry, PKG, &[over]).ok);
 }
 
 #[test]

@@ -307,6 +307,42 @@ await check('the client is wired ahead of the importer and exporter', () => {
   );
 });
 
+await check('the importer verifies BEFORE it decodes, and refuses without decoding', () => {
+  /* The decode-order rule is the whole point of P3.6b: a package that trusted
+     native code refused must never reach the snapshot decoder. */
+  const importer = readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js');
+  const loader = importer.slice(
+    importer.indexOf('async function loadPortableCandidate('),
+    importer.indexOf('/* Shared non-mutating decision core.'),
+  );
+  assert.ok(loader.length > 0, 'the portable loader is present');
+  const verifyAt = loader.indexOf('await verify(');
+  const decodeAt = loader.indexOf('readPackageSnapshotJsonFromBytes');
+  assert.ok(verifyAt > 0, 'the loader calls the trusted verifier');
+  assert.ok(decodeAt > verifyAt, 'the snapshot decode happens only after verification');
+  /* And it is reachable only from the verified branch. */
+  const verifiedBranch = loader.slice(loader.indexOf("if (status === 'verified')"));
+  assert.ok(verifiedBranch.includes('readPackageSnapshotJsonFromBytes'),
+    'the decode lives inside the verified branch');
+  assert.ok(!loader.slice(0, loader.indexOf("if (status === 'verified')"))
+    .includes('readPackageSnapshotJsonFromBytes'), 'and nowhere before it');
+});
+
+await check('the importer keeps no legacy validity path and invents no hash specificity', () => {
+  const code = codeOnly(readRepo('src-surfaces-base/studio/ingestion/saved-chat-archive-importer.studio.js'));
+  assert.ok(code.includes('verifySavedChatPortablePackageV1'), 'it uses the trusted client');
+  for (const banned of ['validateSavedChatPackageBytesV1', 'validateSavedChatPackageV1', 'mapInspectStatus']) {
+    assert.ok(!code.includes(banned), `the importer must not reference ${banned}`);
+  }
+  /* `unsupported-version` is retired: the native verifier refuses an incoherent
+     version triple as structural incoherence, which is a different claim. */
+  assert.ok(!code.includes("'unsupported-version'"), 'unsupported-version is retired');
+  /* Nor does the importer re-specialise a trusted refusal into hash granularity
+     it does not own. */
+  assert.ok(!/hash-mismatch/.test(code.slice(code.indexOf('function portableStatusFor'), code.indexOf('async function loadPortableCandidate'))),
+    'portable status mapping invents no hash specificity');
+});
+
 console.log('');
 if (FAIL.length) {
   console.log(`[saved-chat-portable-verification-client] ${FAIL.length} failed, ${PASS.length} passed`);

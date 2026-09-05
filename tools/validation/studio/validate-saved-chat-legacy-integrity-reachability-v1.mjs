@@ -77,15 +77,13 @@ check('CLAIM 3 — Coverage and Inspector consume the trusted client and the can
   }
 });
 
-check('CLAIM 4 — the M08 portable carveout is exactly the importer and the exporter', () => {
+check('CLAIM 4 — the M08 portable carveout is down to the exporter alone', () => {
   const consumers = callersOf('validateSavedChatPackageBytesV1').sort();
-  assert.deepEqual(consumers, [
-    `${ING}saved-chat-archive-exporter.studio.js`,
-    `${ING}saved-chat-archive-importer.studio.js`,
-  ], 'exactly the two M08 portable consumers — a third would widen P3.5');
-  /* EXPLICIT CARVEOUT MARKER, so P4 cannot mistake this for dead code:
-     portable byte-source validation stays on the JS verifier until P3.6 adds a
-     trusted native byte-source command. */
+  /* M10 P3.6b migrated the IMPORTER to trusted native portable verification.
+     The exporter is the last legacy consumer and P3.6c retires it; a third
+     would mean the carveout grew instead of shrinking. */
+  assert.deepEqual(consumers, [`${ING}saved-chat-archive-exporter.studio.js`],
+    'only the exporter still uses the legacy byte validator');
 });
 
 check('CLAIM 5 — no production archive consumer reaches the filesystem package source', () => {
@@ -114,24 +112,22 @@ check('the exporter still gates on `verified` and fails closed on every new labe
   assert.ok(exporter.includes('validateSavedChatPackageBytesV1'), 'portable byte validation retained');
 });
 
-check('the importer is untouched and still uses the portable byte validator', () => {
-  const importer = readRepo(`${ING}saved-chat-archive-importer.studio.js`);
-  assert.ok(importer.includes('validateSavedChatPackageBytesV1'), 'portable byte validation retained');
-  assert.ok(!importer.includes('readSavedChatArchiveIntegrityV1'),
-    'the importer must NOT be migrated in P3.5 — that is P3.6');
+check('the importer verifies portable packages through trusted native code', () => {
+  const importer = codeOf(`${ING}saved-chat-archive-importer.studio.js`);
+  assert.ok(importer.includes('verifySavedChatPortablePackageV1'), 'trusted portable client');
+  assert.ok(!importer.includes('validateSavedChatPackageBytesV1'),
+    'M10 P3.6b retired the legacy byte validator from the importer');
+  assert.ok(!importer.includes('mapInspectStatus'), 'and the legacy mapper with it');
+  /* The archive integrity envelope is a different authority and stays out of
+     the portable path. */
+  assert.ok(!importer.includes('readSavedChatArchiveIntegrityV1'));
 });
 
 /* ── P3.5.6B: mapper trust-domain ownership ─────────────────────────────── */
 
-check('mapInspectStatus has exactly one production consumer, and it is the importer', () => {
-  const INSPECTOR = `${ING}saved-chat-archive-inspector.studio.js`;
-  /* Comment-stripped, and excluding the module that defines and exports it.
-     `[^d]` keeps mapTrustedInspectStatus from matching as a substring. */
-  const consumers = productionFiles()
-    .filter((rel) => rel !== INSPECTOR)
-    .filter((rel) => /[^d]mapInspectStatus\b/.test(codeOf(rel)));
-  assert.deepEqual(consumers, [`${ING}saved-chat-archive-importer.studio.js`],
-    'the temporary M08 legacy mapper must serve the portable importer and nothing else');
+check('mapInspectStatus is retired, with no production consumer anywhere', () => {
+  const consumers = productionFiles().filter((rel) => codeOf(rel).includes('mapInspectStatus'));
+  assert.deepEqual(consumers, [], 'the temporary M08 legacy mapper is gone from production');
 });
 
 check('mapTrustedInspectStatus is module-internal', () => {

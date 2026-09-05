@@ -32,8 +32,6 @@
  *   isDesktopCapable() -> boolean
  *   listPackages() -> Promise<[{ packagePath, packageDirName, status }]>
  *   inspectPackage({ packagePath }) -> Promise<inspection result>
- *   mapInspectStatus(diag, readError) -> status string (pure)
- *     TEMPORARY M08 compatibility pending P3.6; legacy diagnostics only.
  *   renderArchiveInspectorCard(container, options)
  *   mountArchiveInspectorCard(healthContainer, options)
  *
@@ -235,9 +233,10 @@
    * inspector's presentation vocabulary. Deterministic and total.
    *
    * INTERNAL. The trusted archive path is the only caller, and the symbol is
-   * deliberately not exported: the public `mapInspectStatus` below speaks a
-   * different trust domain, and one ambiguous dual-domain mapper is exactly the
-   * confusion that broke M08 portable import.
+   * deliberately not exported. P3.5.6B kept a public legacy-diagnostic mapper
+   * beside it as temporary M08 compatibility; P3.6b migrated portable import to
+   * trusted native verification, so that bridge is gone and this is the only
+   * mapper the Inspector has.
    *
    * Package validity is decided entirely by trusted Rust; this only chooses how
    * to name the trusted verdict. It never derives causality the trusted facts do
@@ -265,42 +264,6 @@
      * blocker, an unexpected outcome, an incoherent version triple, or an
      * admission-adapter refusal that carries no granular code. */
     return 'corrupted';
-  }
-
-  /* TEMPORARY M08 compatibility pending P3.6.
-   *
-   * The accepted-P3 mapper, restored verbatim in behaviour. It speaks the LEGACY
-   * diagnostic shape produced by the read-only package validation entry points
-   * in saved-chat-archive-diagnostics.tauri.js, and exists only because portable
-   * import remains on the approved JS byte-verification carveout. Its single
-   * intended production consumer is saved-chat-archive-importer.studio.js.
-   *
-   * These historical labels and heuristics — including `missing-files`,
-   * `unsupported-version` and the /sha|hash/i fallback — are valid ONLY here.
-   * They must never reach the trusted Archive Inspector, which uses
-   * mapTrustedInspectStatus above. P3.6 retires this function together with the
-   * legacy validity path it serves.
-   *
-   * Pure: map the read-only validator diagnostic + a read error into the
-   * inspector's granular status vocabulary (most-specific first). */
-  function mapInspectStatus(diag, readError) {
-    if (readError) return 'read-error';
-    var d = safeObject(diag);
-    var codes = blockerCodes(d);
-    var hashChecks = safeObject(d.hashChecks);
-    var assetChecks = safeObject(d.assetChecks);
-    if (codes.some(function (c) { return /^(manifest|snapshot|markdown|html)-missing$/.test(c); })) return 'missing-files';
-    if (hashChecks.contentHashOk === false || hashChecks.snapshotShaOk === false
-        || asArray(assetChecks.hashMismatches).length
-        || codes.some(function (c) { return /sha|hash/i.test(c); })) return 'hash-mismatch';
-    /* M03 T04: gzip v3 is decoded and verified by the governed codec inside
-     * diagnostics, so the pre-M03 gzip-not-enabled blocker no longer exists. Only a
-     * genuinely unsupported encoding value maps to unsupported-encoding; every
-     * governed integrity failure falls through to the hash/corrupted branches. */
-    if (codes.indexOf('snapshot-encoding-invalid') >= 0) return 'unsupported-encoding';
-    if (!isVersionSupported(d.schemaVersion, d.payloadVersion)) return 'unsupported-version';
-    if (cleanString(d.status) === 'blocked' || codes.length) return 'corrupted';
-    return 'verified';
   }
 
   function titleFromMarkdown(md) {
@@ -647,7 +610,6 @@
     isDesktopCapable: isDesktopCapable,
     listPackages: listPackages,
     inspectPackage: inspectPackage,
-    mapInspectStatus: mapInspectStatus,
     renderArchiveInspectorCard: renderArchiveInspectorCard,
     mountArchiveInspectorCard: mountArchiveInspectorCard,
   };

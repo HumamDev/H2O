@@ -211,6 +211,12 @@ struct SessionInner {
 pub struct Session {
     basename: String,
     begin_chat_id: String,
+    /// Persistent members the caller found OUTSIDE the canonical semantic
+    /// inventory. ZIP parsing is deliberately not done natively, so the entry
+    /// inventory can only come from the caller; a non-empty list can make the
+    /// verification STRICTER and never more permissive, because the verifier
+    /// refuses outright on it. No bytes are ever uploaded for these.
+    unexpected_members: Vec<String>,
     inner: Mutex<SessionInner>,
 }
 
@@ -219,11 +225,21 @@ pub struct Registry {
     next_token: AtomicU64,
 }
 
+/// Largest integer JavaScript represents exactly. The token crosses an IPC
+/// boundary as a JSON number, so a full 64-bit seed would be silently rounded
+/// in the renderer and every subsequent call would carry a token that no longer
+/// names the session. Masking keeps it exact while staying non-replaying.
+const TOKEN_MASK: u64 = (1u64 << 53) - 1;
+
+fn safe_token_seed() -> u64 {
+    (crate::archive_generation_publish::random_token_seed() & TOKEN_MASK) | 1
+}
+
 impl Default for Registry {
     fn default() -> Self {
         Self {
             map: Mutex::new(BTreeMap::new()),
-            next_token: AtomicU64::new(crate::archive_generation_publish::random_token_seed()),
+            next_token: AtomicU64::new(safe_token_seed()),
         }
     }
 }
@@ -370,7 +386,11 @@ impl VerificationResult {
 
 // ── operations ─────────────────────────────────────────────────────────────
 
-pub(crate) fn begin(registry: &Registry, basename: &str) -> BeginResult {
+pub(crate) fn begin(
+    registry: &Registry,
+    basename: &str,
+    unexpected_members: &[String],
+) -> BeginResult {
     let refuse = |code| BeginResult {
         schema: VERIFICATION_SCHEMA,
         schema_version: VERIFICATION_SCHEMA_VERSION,
@@ -382,6 +402,17 @@ pub(crate) fn begin(registry: &Registry, basename: &str) -> BeginResult {
         Ok(id) => id,
         Err(code) => return refuse(code),
     };
+    if unexpected_members.len() > PORTABLE_MEMBER_COUNT_CAP {
+        return refuse("portable-member-count-exceeded");
+    }
+    for name in unexpected_members {
+        if name.is_empty() || name.len() > PORTABLE_MEMBER_PATH_CAP_BYTES {
+            return refuse("portable-member-path-too-long");
+        }
+        if name.contains("..") || name.contains('\0') || name.starts_with('/') {
+            return refuse("portable-member-path-unsafe");
+        }
+    }
 
     let mut map = registry.lock_map();
     Registry::sweep_idle(&mut map);
@@ -394,10 +425,10 @@ pub(crate) fn begin(registry: &Registry, basename: &str) -> BeginResult {
     }
 
     // A collision must never overwrite a live session; probe forward instead.
-    let mut token = registry.next_token.fetch_add(1, Ordering::Relaxed);
+    let mut token = registry.next_token.fetch_add(1, Ordering::Relaxed) & TOKEN_MASK;
     let mut attempts = 0u32;
-    while map.contains_key(&token) {
-        token = registry.next_token.fetch_add(1, Ordering::Relaxed);
+    while map.contains_key(&token) || token == 0 {
+        token = registry.next_token.fetch_add(1, Ordering::Relaxed) & TOKEN_MASK;
         attempts += 1;
         if attempts > 64 {
             return refuse("portable-session-token-unavailable");
@@ -409,6 +440,7 @@ pub(crate) fn begin(registry: &Registry, basename: &str) -> BeginResult {
         Arc::new(Session {
             basename: basename.to_string(),
             begin_chat_id,
+            unexpected_members: unexpected_members.to_vec(),
             inner: Mutex::new(SessionInner {
                 members: BTreeMap::new(),
                 accumulated: 0,
@@ -557,9 +589,11 @@ pub(crate) fn finish(registry: &Registry, token: u64) -> VerificationResult {
             .get(&MemberKey::Html)
             .map(|m| m.bytes.as_slice()),
         assets: &assets,
-        // Every accepted key is inside the canonical semantic inventory by
-        // construction — an unknown key never got past `declare`.
-        unexpected_members: &[],
+        // Every DECLARED key is inside the canonical semantic inventory by
+        // construction — an unknown key never got past `declare`. Members the
+        // caller found outside that inventory are named at `begin` and reach
+        // the verifier here, which refuses on a non-empty list.
+        unexpected_members: &session.unexpected_members,
     };
 
     // Durable READ gate: a portable package may legitimately be any supported
@@ -602,6 +636,8 @@ fn bare_hex(value: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct BeginOptions {
     pub package_dir_name: String,
+    #[serde(default)]
+    pub unexpected_members: Vec<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -630,7 +666,11 @@ pub async fn h2o_saved_chat_portable_verify_begin(
     state: tauri::State<'_, PortableVerifyState>,
     options: BeginOptions,
 ) -> Result<BeginResult, String> {
-    Ok(begin(&registry_for(&state), &options.package_dir_name))
+    Ok(begin(
+        &registry_for(&state),
+        &options.package_dir_name,
+        &options.unexpected_members,
+    ))
 }
 
 #[tauri::command]

@@ -349,8 +349,15 @@ check('[H.2] inspector decides archive integrity from the trusted native authori
 });
 
 check('[H.2] inspector exposes the granular status vocabulary', () => {
-  for (const st of ['verified', 'corrupted', 'missing-files', 'hash-mismatch', 'unsupported-version', 'read-error']) {
+  /* M10 P3.5 replaced the legacy labels with the trusted taxonomy, and P3.6b
+     deleted the last legacy mapper: `missing-files` and `unsupported-version`
+     are retired because no trusted fact proves either claim. */
+  for (const st of ['verified', 'corrupted', 'hash-mismatch', 'read-error',
+    'incomplete', 'unreadable', 'identity-mismatch', 'unsupported-encoding']) {
     assert.ok(inspectorCode.includes("'" + st + "'"), 'inspector status missing: ' + st);
+  }
+  for (const retired of ['missing-files', 'unsupported-version']) {
+    assert.ok(!inspectorCode.includes("'" + retired + "'"), 'retired status still present: ' + retired);
   }
 });
 
@@ -453,8 +460,15 @@ check('[H.4] restore/relink deferred + import-as-new records provenance + full d
   for (const prov of ['recovered', 'originalChatId', 'originalSnapshotId', 'recoveredAt']) {
     assert.ok(importerCode.includes(prov), 'provenance field missing: ' + prov);
   }
-  for (const st of ['import-ready', 'already-imported', 'conflict-chat-id', 'conflict-snapshot-id', 'corrupted', 'unsupported-version', 'rejected', 'imported']) {
+  /* M10 P3.6b retired `unsupported-version`: portable import is decided by the
+     trusted native verifier, which refuses an incoherent version triple as
+     structural incoherence — a different claim from "version unsupported",
+     and no trusted fact proves the latter. */
+  for (const st of ['import-ready', 'already-imported', 'conflict-chat-id', 'conflict-snapshot-id', 'corrupted', 'rejected', 'imported']) {
     assert.ok(importerCode.includes(st), 'decision/state missing: ' + st);
+  }
+  assert.ok(!importerCode.includes('unsupported-version'), 'unsupported-version is retired');
+  {
   }
 });
 
