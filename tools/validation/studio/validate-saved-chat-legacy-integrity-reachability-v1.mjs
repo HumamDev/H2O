@@ -54,16 +54,37 @@ check('CLAIM 1 — zero production callers of listSavedChatArchivePackagesV1', (
     'archive discovery is trusted-only after P3.5a');
 });
 
-check('CLAIM 2 — the only remaining validateSavedChatPackageV1 call is the deliberate byte-path delegation', () => {
-  assert.deepEqual(callersOf('validateSavedChatPackageV1'), [],
-    'no production module calls the archive verifier directly');
-  /* Inside the definer, exactly one internal delegation remains: the M08 byte
-     adapter. It is the documented carveout, not an oversight. */
-  const definer = codeOf(DEFINER);
-  const bodyStart = definer.indexOf('async function validateSavedChatPackageBytesV1');
-  assert.ok(bodyStart > 0, 'the byte adapter exists');
-  const body = definer.slice(bodyStart, bodyStart + 1400);
-  assert.ok(body.includes('validateSavedChatPackageV1('), 'the byte adapter delegates to the shared verifier core');
+check('CLAIM 2 — the legacy JS package verifier is PHYSICALLY GONE', () => {
+  /* M10 P4. Production authority was already zero; this proves the
+     implementation itself no longer exists, rather than merely being
+     unexported, renamed or commented out. */
+  const definer = readRepo(DEFINER);
+  for (const symbol of [
+    'validateSavedChatPackageV1',
+    'validateSavedChatPackageBytesV1',
+    'listSavedChatArchivePackagesV1',
+    'filesystemPackageSource',
+    'memoryPackageSource',
+  ]) {
+    assert.ok(!definer.includes(symbol), `retired verifier symbol still present: ${symbol}`);
+    assert.deepEqual(callersOf(symbol), [], `retired symbol still has a consumer: ${symbol}`);
+  }
+  /* And nothing that remains can reproduce the verification rules the trusted
+     Rust verifier owns. The module no longer HASHES at all — the surviving
+     `sha256` mentions are DB/CAS field reads, never a computation — and it
+     carries none of the verifier's own rule codes. Note that
+     `trustedRowToPackageDiagnostic` still surfaces `contentHash`: that is the
+     TRUSTED value copied into the legacy row shape, not a derivation. */
+  const code = codeOf(DEFINER);
+  for (const primitive of [
+    'crypto.subtle', 'digest(', 'sha256Hex', 'sha256Prefixed', 'canonicalJson',
+    'verifyPackageMemberBytes', 'readVerifiedPackageMember',
+  ]) {
+    assert.ok(!code.includes(primitive), `diagnostics must not hash or verify: ${primitive}`);
+  }
+  for (const rule of ['snapshot-sha-mismatch', 'manifest-schema-invalid', 'content-hash-mismatch']) {
+    assert.ok(!code.includes(rule), `diagnostics must own no verifier rule code: ${rule}`);
+  }
 });
 
 check('CLAIM 3 — Coverage and Inspector consume the trusted client and the canonical partition', () => {

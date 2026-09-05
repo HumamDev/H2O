@@ -330,9 +330,14 @@ check('the extracted observation helpers are shared, not duplicated', () => {
   assert.ok(diagnostics.includes('async function liveCasPresenceForShas('), 'CAS presence extracted');
   assert.ok(diagnostics.includes('H2O.Studio.ingestion.dbDriftForIdentityV1 = dbDriftForIdentity;'));
   assert.ok(diagnostics.includes('H2O.Studio.ingestion.liveCasPresenceForShasV1 = liveCasPresenceForShas;'));
-  // The legacy wrappers delegate rather than keeping a second copy.
-  assert.ok(diagnostics.includes('await dbDriftForIdentity({'), 'legacy DB path delegates');
-  assert.ok(diagnostics.includes('await liveCasPresenceForShas(manifestAssets)'), 'legacy CAS path delegates');
+  /* M10 P4 deleted the legacy verifier that used to wrap these, so there is no
+     second caller left to delegate. What still matters is that exactly ONE
+     implementation of each exists — the extraction must not have left a copy
+     behind when the wrapper went. */
+  assert.equal((diagnostics.match(/function dbDriftForIdentity\(/g) || []).length, 1,
+    'exactly one DB-drift implementation');
+  assert.equal((diagnostics.match(/function liveCasPresenceForShas\(/g) || []).length, 1,
+    'exactly one live-CAS presence implementation');
 });
 
 console.log('');

@@ -282,9 +282,24 @@ check('[INVARIANT] scanner/materializer/writer behavior unchanged for H.1', () =
   assert.ok(writerCode.includes('writeSavedChatPackageV1'), 'writer still defines the package writer');
 });
 
-check('[INVARIANT] diagnostics still validates required files + hashes/assets, read-only', () => {
-  assert.match(diagCode, /REQUIRED_FILES/);
-  assert.match(diagCode, /sha256/);
+check('[INVARIANT] diagnostics keeps its live observations and stays read-only', () => {
+  /* M10 P4 retired the duplicate JS package verifier. What survives here is
+     everything that was never a validity decision: DB drift, live-CAS presence,
+     write residue, capability reporting, and the trusted Health facade. */
+  for (const live of [
+    'dbDriftForIdentity', 'liveCasPresenceForShas', 'residueObservationV1',
+    'diagnoseSavedChatArchiveCapabilitiesV1', 'diagnoseSavedChatArchiveV1',
+  ]) {
+    assert.match(diagCode, new RegExp(live), 'live observation missing: ' + live);
+  }
+  /* And it decides no package validity of its own any more: the verifier entry
+     points are gone and nothing left computes a hash. */
+  for (const retired of [
+    'validateSavedChatPackageV1', 'validateSavedChatPackageBytesV1',
+    'filesystemPackageSource', 'memoryPackageSource', 'sha256Hex', 'canonicalJson',
+  ]) {
+    assert.ok(!diagCode.includes(retired), 'retired verifier surface still present: ' + retired);
+  }
   for (const banned of ['plugin:fs|write', 'plugin:sql|execute', MATERIALIZE_API, 'snapshots.create', 'snapshots.upsert']) {
     assert.ok(!diagCode.includes(banned), 'diagnostics must stay read-only (found: ' + banned + ')');
   }

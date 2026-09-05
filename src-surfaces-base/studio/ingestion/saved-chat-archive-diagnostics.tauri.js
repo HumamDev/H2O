@@ -1,8 +1,22 @@
 /* H2O Studio Saved Chat Archive Diagnostics (Desktop / Tauri)
  *
- * C5.1-C5.3: read-only inventory, package hash validation, package asset
- * validation, and live-CAS presence comparison for saved-chat packages under
- * $APPLOCALDATA/archive/packages.
+ * Read-only OBSERVATIONS beside the trusted verifier — DB drift, live-CAS
+ * presence, write residue, capability reporting — plus the Archive Health
+ * facade, which is sourced entirely from trusted Rust archive integrity.
+ *
+ * M10 P4 removed this module's duplicate JavaScript package verifier. It no
+ * longer decides package validity in any form: it recomputes no member hash,
+ * no contentHash and no schema/inventory verdict, and it reads no package
+ * member. Package semantics belong to the trusted Rust verifier alone —
+ * `h2o_saved_chat_archive_integrity` for the archive and
+ * `h2o_saved_chat_portable_verify_*` for portable containers. Nothing here may
+ * grow a second opinion about validity.
+ *
+ * Public API (H2O.Studio.ingestion):
+ *   diagnoseSavedChatArchiveV1(options)            trusted Archive Health facade
+ *   diagnoseSavedChatArchiveCapabilitiesV1()       capability report
+ *   dbDriftForIdentityV1(identity, stores)         shared observation
+ *   liveCasPresenceForShasV1(assets)               shared observation
  *
  * Boundaries: Desktop-only, AppLocalData only, read-only fs calls only. This
  * module does not touch DB/store rows, mutate live CAS, Sync, Chrome,
@@ -28,17 +42,11 @@
   var PACKAGE_ROOT = 'archive/packages';
   var LIVE_CAS_ROOT = 'archive/assets';
   var DIAGNOSTIC_SCHEMA = 'h2o.savedChatArchiveDiagnostic.v1';
-  var PACKAGE_SCHEMA = 'h2o.savedChatPackage';
   var STATUS_OK = 'ok';
   var STATUS_WARNING = 'warning';
   var STATUS_BLOCKED = 'blocked';
   var STATUS_EMPTY = 'empty';
   var STATUS_PARTIAL = 'partial';
-  /* Frozen legacy inventory. V3 dispatch is additive and must not reinterpret
-   * the v1/v2 required-file contract. */
-  var REQUIRED_FILES = ['manifest.json', 'snapshot.json', 'chat.md', 'chat.html'];
-  var REQUIRED_FILES_V3 = ['manifest.json', 'snapshot.json'];
-
   var state = {
     lastRunAt: null,
     errors: [],
@@ -69,32 +77,10 @@
     return parts.join('/');
   }
 
-  /* M05 §D classification. Exact basename equality against names derived from
-   * VERIFIED identity: the verified chatId and the RECOMPUTED contentHash.
-   * A filename is never identity authority.
-   *
-   * A legitimate legacy chatId ending in `.g<64hex>` classifies as LEGACY,
-   * because its basename equals legacyExpected and can never equal
-   * generationExpected (which appends a further `.g<hex>` suffix). */
-  function classifyPackageBasenameV1(basename, verifiedChatId, recomputedContentHash) {
-    var name = cleanString(basename);
-    var chatId = cleanString(verifiedChatId);
-    var hex = cleanString(recomputedContentHash).replace(/^sha256-/, '').toLowerCase();
-    if (!name || !chatId) return 'unclassified';
-    if (name === chatId + '.h2ochat') return 'legacy';
-    if (/^[0-9a-f]{64}$/.test(hex) && name === chatId + '.g' + hex + '.h2ochat') return 'generation';
-    return 'mismatch';
-  }
-
   function packageDirNameForPath(packagePath) {
     var path = cleanString(packagePath).replace(/[\/\\]+$/g, '');
     var idx = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
     return idx >= 0 ? path.slice(idx + 1) : path;
-  }
-
-  function packagePathIsScoped(packagePath) {
-    var path = cleanString(packagePath).replace(/[\/\\]+$/g, '');
-    return path.indexOf(PACKAGE_ROOT + '/') === 0 && /\.h2ochat$/.test(packageDirNameForPath(path));
   }
 
   function packagePathForDirName(dirName) {
@@ -140,173 +126,10 @@
     return await invoke('plugin:fs|read_dir', { path: path, options: fsOptions() });
   }
 
-  function bytesFor(value) {
-    if (value instanceof Uint8Array) return value;
-    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) return new Uint8Array(value);
-    if (value && typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView && ArrayBuffer.isView(value)) {
-      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-    }
-    if (Array.isArray(value)) return Uint8Array.from(value);
-    return getTextEncoder().encode(String(value == null ? '' : value));
-  }
-
-  function getTextEncoder() {
-    if (typeof global.TextEncoder === 'function') return new global.TextEncoder();
-    if (typeof TextEncoder === 'function') return new TextEncoder();
-    throw new Error('TextEncoder unavailable');
-  }
-
-  function getTextDecoder() {
-    if (typeof global.TextDecoder === 'function') return new global.TextDecoder();
-    if (typeof TextDecoder === 'function') return new TextDecoder();
-    throw new Error('TextDecoder unavailable');
-  }
-
-  function bytesToText(value) {
-    return getTextDecoder().decode(bytesFor(value));
-  }
-
-  /* Single governed saved-chat package codec authority (M03 T02/T03). This
-   * module never implements its own gzip decoding, magic detection, physical or
-   * logical hashing; it only adapts governed codec output into diagnostics. */
-  function savedChatPackageCodecV3() {
-    var codec = H2O.Studio && H2O.Studio.ingestion && H2O.Studio.ingestion.savedChatPackageCodec;
-    if (!codec || codec.__installed !== true ||
-        typeof codec.verifyPackageMemberBytes !== 'function' ||
-        typeof codec.readBoundedPackageMemberBytes !== 'function' ||
-        !isFiniteNumber(codec.LOGICAL_SNAPSHOT_CAP_BYTES)) {
-      return null;
-    }
-    return codec;
-  }
-
-  async function fsReadBytes(path) {
-    var invoke = getInvoke();
-    if (!invoke) throw new Error('tauri invoke unavailable for fs read_file');
-    return bytesFor(await invoke('plugin:fs|read_file', { path: path, options: fsOptions() }));
-  }
-
-  /* M08: the governed verifier operates over one read-only package source.
-   * The historical filesystem adapter remains the default; the portable-ZIP
-   * adapter supplies a bounded in-memory byte map after container admission.
-   * All package semantics below stay shared. */
-  function filesystemPackageSource() {
-    return {
-      memory: false,
-      exists: fsExists,
-      readBytes: fsReadBytes,
-      readDir: fsReadDir,
-    };
-  }
-
-  function safeMemoryMemberPath(value) {
-    var path = cleanString(value);
-    var parts = path.split('/');
-    return !!path && path.charAt(0) !== '/' && path.indexOf('\\') < 0 &&
-      path.indexOf(':') < 0 && !parts.some(function (part) {
-        return !part || part === '.' || part === '..';
-      });
-  }
-
-  function memoryPackageSource(packagePath, entries) {
-    var files = Object.create(null);
-    asArray(entries).forEach(function (entry) {
-      var rel = cleanString(entry && entry.name);
-      if (!safeMemoryMemberPath(rel)) throw new Error('portable package member path is unsafe');
-      if (Object.prototype.hasOwnProperty.call(files, rel)) throw new Error('portable package member path is duplicated');
-      var source = bytesFor(entry && entry.bytes);
-      var copy = new Uint8Array(source.byteLength);
-      copy.set(source);
-      files[rel] = copy;
-    });
-    function relative(fullPath) {
-      var prefix = packagePath + '/';
-      if (fullPath === packagePath) return '';
-      if (fullPath.indexOf(prefix) !== 0) throw new Error('portable package source path escaped its root');
-      return fullPath.slice(prefix.length);
-    }
-    function exists(fullPath) {
-      var rel = relative(fullPath);
-      if (!rel) return true;
-      if (Object.prototype.hasOwnProperty.call(files, rel)) return true;
-      var prefix = rel.replace(/\/$/, '') + '/';
-      return Object.keys(files).some(function (name) { return name.indexOf(prefix) === 0; });
-    }
-    function readBytes(fullPath) {
-      var rel = relative(fullPath);
-      var value = files[rel];
-      if (!value) return Promise.reject(new Error('portable package member not found'));
-      var copy = new Uint8Array(value.byteLength);
-      copy.set(value);
-      return Promise.resolve(copy);
-    }
-    function readDir(fullPath) {
-      var rel = relative(fullPath).replace(/\/$/, '');
-      var prefix = rel ? rel + '/' : '';
-      var children = Object.create(null);
-      Object.keys(files).forEach(function (name) {
-        if (name.indexOf(prefix) !== 0) return;
-        var rest = name.slice(prefix.length);
-        if (!rest) return;
-        var slash = rest.indexOf('/');
-        var child = slash >= 0 ? rest.slice(0, slash) : rest;
-        children[child] = slash >= 0
-          ? { name: child, isDirectory: true }
-          : { name: child, isFile: true };
-      });
-      return Promise.resolve(Object.keys(children).sort().map(function (name) { return children[name]; }));
-    }
-    return { memory: true, exists: exists, readBytes: readBytes, readDir: readDir };
-  }
-
-  function bytesToHex(bytes) {
-    var out = '';
-    for (var i = 0; i < bytes.length; i += 1) {
-      var part = bytes[i].toString(16);
-      out += part.length === 1 ? '0' + part : part;
-    }
-    return out;
-  }
-
-  async function sha256Hex(value) {
-    var cryptoObj = global.crypto || {};
-    if (!cryptoObj.subtle || typeof cryptoObj.subtle.digest !== 'function') {
-      throw new Error('WebCrypto SHA-256 unavailable');
-    }
-    var digest = await cryptoObj.subtle.digest('SHA-256', bytesFor(value));
-    return bytesToHex(new Uint8Array(digest));
-  }
-
-  async function sha256Prefixed(value) {
-    return 'sha256-' + await sha256Hex(value);
-  }
-
-  function canonicalize(value) {
-    if (Array.isArray(value)) return value.map(canonicalize);
-    if (value !== null && typeof value === 'object') {
-      var out = {};
-      Object.keys(value).sort().forEach(function (key) {
-        if (typeof value[key] !== 'undefined') out[key] = canonicalize(value[key]);
-      });
-      return out;
-    }
-    return value;
-  }
-
-  function canonicalJson(value) {
-    return JSON.stringify(canonicalize(value));
-  }
-
   function makeIssue(code, message, detail) {
     var out = { code: code, message: message };
     if (typeof detail !== 'undefined') out.detail = detail;
     return out;
-  }
-
-  function statusFromIssues(blockers, warnings) {
-    if (blockers.length) return STATUS_BLOCKED;
-    if (warnings.length) return STATUS_WARNING;
-    return STATUS_OK;
   }
 
   function rootResult(generatedAt) {
@@ -487,80 +310,6 @@
     return packagePathForDirName(fallbackName);
   }
 
-  function entryIsDirectory(entry) {
-    if (!entry || typeof entry !== 'object') return false;
-    if (entry.isDirectory === true || entry.is_dir === true) return true;
-    if (entry.isFile === true || entry.is_file === true) return false;
-    if (entry.children && Array.isArray(entry.children)) return true;
-    var type = cleanString(entry.type).toLowerCase();
-    if (type === 'directory' || type === 'dir') return true;
-    if (type === 'file') return false;
-    return false;
-  }
-
-  function requiredFilesForManifest(manifest) {
-    return manifest && manifest.schemaVersion === 3 ? REQUIRED_FILES_V3 : REQUIRED_FILES;
-  }
-
-  function addMissingRequiredFileIssues(diag, requiredFiles) {
-    var required = asArray(requiredFiles);
-    if (required.indexOf('manifest.json') >= 0 && !diag.manifestPresent) {
-      diag.blockers.push(makeIssue('manifest-missing', 'manifest.json is missing'));
-    }
-    if (required.indexOf('snapshot.json') >= 0 && !diag.snapshotPresent) {
-      diag.blockers.push(makeIssue('snapshot-missing', 'snapshot.json is missing'));
-    }
-    if (required.indexOf('chat.md') >= 0 && !diag.markdownPresent) {
-      diag.blockers.push(makeIssue('markdown-missing', 'chat.md is missing'));
-    }
-    if (required.indexOf('chat.html') >= 0 && !diag.htmlPresent) {
-      diag.blockers.push(makeIssue('html-missing', 'chat.html is missing'));
-    }
-  }
-
-  async function shallowPackageEntry(packagePath, dirName) {
-    var blockers = [];
-    var warnings = [];
-    var manifestPresent = await fsExists(joinPath(packagePath, 'manifest.json'));
-    var manifest = null;
-    if (manifestPresent) {
-      try {
-        manifest = parseJsonFile(bytesToText(await fsReadBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', { blockers: blockers });
-      } catch (err) {
-        blockers.push(makeIssue('manifest-read-failed', 'manifest.json could not be read', String((err && err.message) || err)));
-      }
-    }
-    var snapshotPresent = await fsExists(joinPath(packagePath, 'snapshot.json'));
-    var markdownPresent = await fsExists(joinPath(packagePath, 'chat.md'));
-    var htmlPresent = await fsExists(joinPath(packagePath, 'chat.html'));
-    var assetsDirPresent = await fsExists(joinPath(packagePath, 'assets'));
-    var requiredDiag = {
-      manifestPresent: manifestPresent,
-      snapshotPresent: snapshotPresent,
-      markdownPresent: markdownPresent,
-      htmlPresent: htmlPresent,
-      blockers: blockers,
-    };
-    addMissingRequiredFileIssues(requiredDiag, requiredFilesForManifest(manifest));
-    var status = statusFromIssues(blockers, warnings);
-    return {
-      ok: status === STATUS_OK,
-      status: status,
-      packagePath: packagePath,
-      packageDirName: dirName || packageDirNameForPath(packagePath),
-      nameClassification: 'unclassified',
-      schemaVersion: manifest && isFiniteNumber(manifest.schemaVersion) ? manifest.schemaVersion : null,
-      payloadVersion: manifest && isFiniteNumber(manifest.payloadVersion) ? manifest.payloadVersion : null,
-      manifestPresent: manifestPresent,
-      snapshotPresent: snapshotPresent,
-      markdownPresent: markdownPresent,
-      htmlPresent: htmlPresent,
-      assetsDirPresent: assetsDirPresent,
-      blockers: blockers,
-      warnings: warnings,
-    };
-  }
-
   function updateCounts(result) {
     var packages = result.packages || [];
     var counts = {
@@ -639,116 +388,6 @@
     result.assetChecks = assetSummary;
     result.dbChecks = dbSummary;
     return result;
-  }
-
-  function setAggregateStatus(result, emptyAllowed) {
-    updateCounts(result);
-    if (emptyAllowed && result.packages.length === 0) {
-      result.status = STATUS_EMPTY;
-    } else if (result.blockers.length) {
-      result.status = STATUS_BLOCKED;
-    } else if (result.packages.length && result.counts.packagesOk !== result.packages.length) {
-      var mixedBlocked = result.counts.packagesBlocked > 0 && result.counts.packagesBlocked !== result.packages.length;
-      var mixedWarning = result.counts.packagesWarning > 0 && result.counts.packagesWarning !== result.packages.length;
-      if (mixedBlocked || mixedWarning) result.status = STATUS_PARTIAL;
-      else if (result.counts.packagesBlocked) result.status = STATUS_BLOCKED;
-      else result.status = STATUS_WARNING;
-    } else if (result.counts.packagesBlocked) {
-      result.status = STATUS_BLOCKED;
-    } else if (result.warnings.length || result.counts.packagesWarning) {
-      result.status = STATUS_WARNING;
-    } else {
-      result.status = STATUS_OK;
-    }
-    result.ok = result.status === STATUS_OK;
-    return result;
-  }
-
-  async function listSavedChatArchivePackagesV1(options) {
-    var opts = safeObject(options);
-    /* M05 G1: discovery is COMPLETE by default. The pre-M05 silent 500-entry
-     * ceiling was harmless under one-package-per-chat, but accumulating
-     * generations make it reachable — and a truncated scan must never be
-     * usable as authority for fresh-generation ABSENCE, PRESERVED, COVERED,
-     * BEST-HISTORICAL, or a dedupe/refresh decision. A caller may still bound
-     * the work explicitly, and truncation is then reported as a BLOCKER plus
-     * `complete:false`, never as a warning that a consumer could overlook. */
-    var bounded = isFiniteNumber(opts.limit) && opts.limit > 0;
-    var limit = bounded ? Math.floor(opts.limit) : Infinity;
-    var result = rootResult();
-    var stagingSource = {
-      root: PACKAGE_ROOT,
-      family: RESIDUE_STAGING_PREFIX + '*',
-      complete: false,
-      entries: [],
-      reason: '',
-    };
-    /* Probed on EVERY path, including the early returns below: a result that
-     * skipped the probe must never present itself as complete. */
-    var durableSource = await probeDurableTempResidue();
-    try {
-      var rootExists = await fsExists(PACKAGE_ROOT);
-      if (!rootExists) {
-        result.warnings.push(makeIssue('archive-packages-root-missing', 'archive package root is missing'));
-        /* A missing package root is a PROVEN absence of staging residue. */
-        stagingSource.complete = true;
-        finalizeResidue(result, [stagingSource, durableSource]);
-        return setAggregateStatus(result, true);
-      }
-      var entries = asArray(await fsReadDir(PACKAGE_ROOT));
-      for (var i = 0; i < entries.length && result.packages.length < limit; i += 1) {
-        var entry = entries[i] || {};
-        var name = entryName(entry);
-        if (!name) {
-          result.warnings.push(makeIssue('archive-entry-name-missing', 'archive package entry has no readable name'));
-          continue;
-        }
-        /* Recorded BEFORE the existing branches so residue evidence is
-         * gathered without changing which warning any entry already produced.
-         * Both reserved families are captured whether they land as a directory
-         * (staging) or a file (temp). */
-        var residueKind = residueKindForName(name);
-        if (residueKind) {
-          stagingSource.entries.push({
-            name: name,
-            path: entryPath(entry, name),
-            kind: residueKind,
-          });
-        }
-        if (!entryIsDirectory(entry)) {
-          result.warnings.push(makeIssue('archive-entry-not-directory', 'archive entry is not a package directory', { name: name }));
-          continue;
-        }
-        if (!/\.h2ochat$/.test(name)) {
-          result.warnings.push(makeIssue('archive-entry-not-package', 'archive directory does not end with .h2ochat', { name: name }));
-          continue;
-        }
-        var packagePath = entryPath(entry, name);
-        if (packagePath.indexOf(PACKAGE_ROOT + '/') !== 0) packagePath = packagePathForDirName(name);
-        result.packages.push(await shallowPackageEntry(packagePath, name));
-      }
-      if (bounded && entries.length > limit) {
-        /* BLOCKER, not a warning: a bounded scan is not evidence of absence. */
-        result.complete = false;
-        result.truncated = true;
-        result.blockers.push(makeIssue('archive-package-inventory-truncated', 'archive package inventory was bounded and did not enumerate every entry; this result must not be used to conclude a package is absent', { limit: limit, entries: entries.length }));
-      }
-      /* Residue authority is exactly the enumeration authority: a bounded walk
-       * stops early, so it cannot support a zero-residue conclusion either. */
-      stagingSource.complete = result.complete === true;
-      finalizeResidue(result, [stagingSource, durableSource]);
-      state.lastRunAt = result.generatedAt;
-      return setAggregateStatus(result, true);
-    } catch (err) {
-      recordError('listSavedChatArchivePackagesV1', err);
-      result.blockers.push(makeIssue('archive-package-list-failed', 'archive package inventory failed', String((err && err.message) || err)));
-      /* The walk threw: whatever was collected is a partial observation and
-       * must never read as authoritative zero. */
-      stagingSource.complete = false;
-      stagingSource.reason = 'enumeration-failed';
-      finalizeResidue(result, [stagingSource, durableSource]);
-      return setAggregateStatus(result, false);
-    }
   }
 
   /* Seals the residue block: deterministic order, derived count, and an
@@ -834,190 +473,12 @@
     };
   }
 
-  function parseJsonFile(text, label, diag) {
-    try { return JSON.parse(text); }
-    catch (err) {
-      diag.blockers.push(makeIssue(label + '-json-invalid', label + ' is not parseable JSON', String((err && err.message) || err)));
-      return null;
-    }
-  }
-
   function firstString() {
     for (var i = 0; i < arguments.length; i += 1) {
       var text = cleanString(arguments[i]);
       if (text) return text;
     }
     return '';
-  }
-
-  function validateManifestVersion(manifest, diag) {
-    diag.schemaVersion = isFiniteNumber(manifest && manifest.schemaVersion) ? manifest.schemaVersion : null;
-    diag.payloadVersion = isFiniteNumber(manifest && manifest.payloadVersion) ? manifest.payloadVersion : null;
-    if (diag.schemaVersion !== 1 && diag.schemaVersion !== 2 && diag.schemaVersion !== 3) {
-      diag.blockers.push(makeIssue('manifest-schema-version-invalid', 'manifest schemaVersion must be 1, 2 or 3', manifest && manifest.schemaVersion));
-      return;
-    }
-    if (diag.schemaVersion === 1 && manifest.payloadVersion != null) {
-      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v1 manifest payloadVersion must be absent', manifest.payloadVersion));
-    }
-    if (diag.schemaVersion === 2 && diag.payloadVersion !== 2) {
-      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v2 manifest payloadVersion must be 2', manifest.payloadVersion));
-    }
-    if (diag.schemaVersion === 3 && diag.payloadVersion !== 3) {
-      diag.blockers.push(makeIssue('manifest-payload-version-invalid', 'v3 manifest payloadVersion must be 3', manifest.payloadVersion));
-    }
-  }
-
-  function validSha256(value) {
-    return /^sha256-[0-9a-f]{64}$/.test(cleanString(value));
-  }
-
-  /* V1/v2 persistent renderers carry governed stored-byte descriptors in the
-   * package manifest. Verify those descriptors in this shared package
-   * authority so filesystem and portable byte-source admission cannot drift. */
-  async function verifyLegacyRendererDescriptors(packagePath, manifest, diag, packageSource) {
-    if (diag.schemaVersion !== 1 && diag.schemaVersion !== 2) return;
-    var source = packageSource || filesystemPackageSource();
-    var roles = [
-      { key: 'markdown', path: 'chat.md', present: diag.markdownPresent },
-      { key: 'html', path: 'chat.html', present: diag.htmlPresent },
-    ];
-    for (var i = 0; i < roles.length; i += 1) {
-      var role = roles[i];
-      var descriptor = safeObject(safeObject(manifest && manifest.files)[role.key]);
-      if (cleanString(descriptor.path) !== role.path) {
-        diag.blockers.push(makeIssue(role.key + '-path-invalid',
-          'files.' + role.key + '.path must be ' + role.path, descriptor.path));
-        continue;
-      }
-      if (!validSha256(descriptor.sha256)) {
-        diag.blockers.push(makeIssue(role.key + '-sha-invalid',
-          'files.' + role.key + '.sha256 must be a canonical SHA-256 identity', descriptor.sha256));
-        continue;
-      }
-      if (!Number.isSafeInteger(descriptor.byteLength) || descriptor.byteLength < 0) {
-        diag.blockers.push(makeIssue(role.key + '-byte-length-invalid',
-          'files.' + role.key + '.byteLength must be a non-negative safe integer', descriptor.byteLength));
-        continue;
-      }
-      if (!role.present) continue; /* the existing required-file blocker owns absence */
-      try {
-        var bytes = await source.readBytes(joinPath(packagePath, role.path));
-        var actualSha = await sha256Prefixed(bytes);
-        if (actualSha !== descriptor.sha256) {
-          diag.blockers.push(makeIssue(role.key + '-sha-mismatch',
-            'files.' + role.key + '.sha256 does not match stored ' + role.path + ' bytes',
-            { expected: actualSha, actual: descriptor.sha256 }));
-        }
-        if (bytes.byteLength !== descriptor.byteLength) {
-          diag.blockers.push(makeIssue(role.key + '-byte-length-mismatch',
-            'files.' + role.key + '.byteLength does not match stored ' + role.path + ' bytes',
-            { expected: descriptor.byteLength, actual: bytes.byteLength }));
-        }
-      } catch (error) {
-        diag.blockers.push(makeIssue(role.key + '-read-failed',
-          role.path + ' could not be read for descriptor verification',
-          String((error && error.message) || error)));
-      }
-    }
-  }
-
-  async function verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag) {
-    var descriptor = safeObject(manifest && manifest.files && manifest.files.snapshot);
-    var encoding = firstString(descriptor.encoding);
-    var physicalSha = firstString(descriptor.sha256);
-    var physicalLength = descriptor.byteLength;
-    var actualLength = snapshotBytes ? snapshotBytes.byteLength : 0;
-    var actualSha = snapshotBytes ? await sha256Prefixed(snapshotBytes) : '';
-    var descriptorOk = true;
-    var logicalBytes = null;
-
-    diag.hashChecks.snapshotEncoding = encoding;
-    if (firstString(descriptor.path) !== 'snapshot.json') {
-      diag.blockers.push(makeIssue('snapshot-path-invalid', 'v3 files.snapshot.path must be snapshot.json', descriptor.path));
-      descriptorOk = false;
-    }
-    if (encoding !== 'identity' && encoding !== 'gzip') {
-      diag.blockers.push(makeIssue('snapshot-encoding-invalid', 'v3 files.snapshot.encoding must be identity or gzip', descriptor.encoding));
-      descriptorOk = false;
-    }
-    if (!isFiniteNumber(physicalLength) || physicalLength < 0 || physicalLength !== actualLength) {
-      diag.blockers.push(makeIssue('snapshot-byte-length-mismatch', 'files.snapshot.byteLength does not match stored snapshot.json bytes', { expected: physicalLength, actual: actualLength }));
-      diag.hashChecks.snapshotByteLengthOk = false;
-      descriptorOk = false;
-    } else {
-      diag.hashChecks.snapshotByteLengthOk = true;
-    }
-    diag.hashChecks.snapshotShaOk = validSha256(physicalSha) && physicalSha === actualSha;
-    if (!diag.hashChecks.snapshotShaOk) {
-      diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSha, actual: physicalSha }));
-      descriptorOk = false;
-    }
-
-    var hasLogicalSha = descriptor.contentSha256 != null;
-    var hasLogicalLength = descriptor.contentByteLength != null;
-    if (encoding === 'identity') {
-      if (hasLogicalSha && firstString(descriptor.contentSha256) !== physicalSha) {
-        diag.blockers.push(makeIssue('snapshot-logical-sha-mismatch-identity', 'identity files.snapshot.contentSha256 must equal sha256', { sha256: physicalSha, contentSha256: descriptor.contentSha256 }));
-        descriptorOk = false;
-      }
-      if (hasLogicalLength && descriptor.contentByteLength !== physicalLength) {
-        diag.blockers.push(makeIssue('snapshot-logical-byte-length-mismatch-identity', 'identity files.snapshot.contentByteLength must equal byteLength', { byteLength: physicalLength, contentByteLength: descriptor.contentByteLength }));
-        descriptorOk = false;
-      }
-    } else if (encoding === 'gzip') {
-      if (!validSha256(descriptor.contentSha256)) {
-        diag.blockers.push(makeIssue('snapshot-logical-sha-invalid', 'gzip files.snapshot.contentSha256 is required and must be a SHA-256 value', descriptor.contentSha256));
-        descriptorOk = false;
-      }
-      if (!isFiniteNumber(descriptor.contentByteLength) || descriptor.contentByteLength < 0) {
-        diag.blockers.push(makeIssue('snapshot-logical-byte-length-invalid', 'gzip files.snapshot.contentByteLength is required', descriptor.contentByteLength));
-        descriptorOk = false;
-      }
-      /* DP-M03-C persisted rule: 0 < physicalByteLength < contentByteLength.
-       * This is a descriptor-shape assertion in the same role as the identity
-       * consistency checks above; gzip mechanics stay in the governed codec. */
-      if (descriptorOk && !(physicalLength > 0 && physicalLength < descriptor.contentByteLength)) {
-        diag.blockers.push(makeIssue('snapshot-gzip-physical-bound-invalid', 'gzip v3 snapshot must satisfy 0 < byteLength < contentByteLength', { byteLength: physicalLength, contentByteLength: descriptor.contentByteLength }));
-        descriptorOk = false;
-      }
-      /* Governed decode + logical verification through the single codec
-       * authority. Invoked only after the physical descriptor checks above
-       * passed, so codec failures report a distinct lower-level reason. */
-      if (descriptorOk) {
-        var codec = savedChatPackageCodecV3();
-        if (!codec) {
-          diag.blockers.push(makeIssue('snapshot-codec-unavailable', 'governed saved-chat package codec is unavailable for gzip v3 verification'));
-          descriptorOk = false;
-        } else {
-          try {
-            var verified = await codec.verifyPackageMemberBytes({
-              storedBytes: snapshotBytes,
-              descriptor: descriptor,
-              expectedPath: 'snapshot.json',
-              physicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
-              logicalByteCap: codec.LOGICAL_SNAPSHOT_CAP_BYTES,
-            });
-            logicalBytes = verified.logicalBytes;
-          } catch (err) {
-            diag.blockers.push(makeIssue('snapshot-gzip-verification-failed', 'gzip v3 snapshot failed governed member verification', firstString(err && err.code) || String((err && err.message) || err)));
-            descriptorOk = false;
-          }
-        }
-      }
-    }
-
-    /* Exact frozen normalization. Optional identity logical fields are accepted
-     * only when individually consistent with their physical counterparts. */
-    diag.hashChecks.logicalSnapshotSha = firstString(descriptor.contentSha256, physicalSha);
-    diag.hashChecks.logicalSnapshotByteLength = isFiniteNumber(descriptor.contentByteLength)
-      ? descriptor.contentByteLength : (isFiniteNumber(physicalLength) ? physicalLength : null);
-    return {
-      parseIdentity: descriptorOk && encoding === 'identity',
-      parseLogical: descriptorOk && encoding === 'gzip' && !!logicalBytes,
-      logicalBytes: logicalBytes,
-      logicalSha256: diag.hashChecks.logicalSnapshotSha,
-    };
   }
 
   function defaultAssetChecks() {
@@ -1040,189 +501,10 @@
     };
   }
 
-  function addAssetBlocker(diag, bucket, code, message, detail) {
-    var issue = makeIssue(code, message, detail);
-    if (diag.assetChecks && Array.isArray(diag.assetChecks[bucket])) diag.assetChecks[bucket].push(issue);
-    diag.blockers.push(issue);
-    return issue;
-  }
-
-  function addAssetWarning(diag, bucket, code, message, detail) {
-    var issue = makeIssue(code, message, detail);
-    if (diag.assetChecks && Array.isArray(diag.assetChecks[bucket])) diag.assetChecks[bucket].push(issue);
-    diag.warnings.push(issue);
-    return issue;
-  }
-
-  function normalizeAssetSha(shaInput) {
-    var sha = cleanString(shaInput).toLowerCase();
-    if (/^sha256-[0-9a-f]{64}$/.test(sha)) return sha;
-    if (/^[0-9a-f]{64}$/.test(sha)) return 'sha256-' + sha;
-    return '';
-  }
-
-  function normalizeAssetExt(extInput) {
-    return cleanString(extInput).toLowerCase().replace(/^\.+/, '').replace(/[^a-z0-9]/g, '');
-  }
-
-  function assetPathParts(pathInput) {
-    var path = cleanString(pathInput);
-    var match = /^assets\/(sha256-[0-9a-f]{64})\.([a-z0-9]+)$/i.exec(path);
-    if (!match) return null;
-    return { sha256: normalizeAssetSha(match[1]), ext: normalizeAssetExt(match[2]) };
-  }
-
-  function packageRelativePathIsSafe(pathInput) {
-    var path = cleanString(pathInput);
-    if (!path) return false;
-    if (path.charAt(0) === '/' || /\\/.test(path) || path.indexOf('..') >= 0 || path.indexOf(':') >= 0) return false;
-    return path.indexOf('assets/') === 0;
-  }
-
-  function assetPathMatchesDescriptor(asset, diag, index) {
-    var sha = normalizeAssetSha(asset && asset.sha256);
-    var path = cleanString(asset && asset.path);
-    var ext = normalizeAssetExt(asset && asset.ext);
-    var mimeType = cleanString(asset && asset.mimeType);
-    var byteLength = asset && asset.byteLength;
-    var detail = { index: index, sha256: sha || cleanString(asset && asset.sha256), path: path };
-    if (!sha) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-sha-invalid', 'manifest.assets[] entry has an invalid sha256', detail);
-      return null;
-    }
-    if (!path || !packageRelativePathIsSafe(path)) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-unsafe', 'manifest.assets[] path must be package-relative under assets/', detail);
-      return null;
-    }
-    var parts = assetPathParts(path);
-    if (!parts) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-invalid', 'manifest.assets[] path must match assets/sha256-<hash>.<ext>', detail);
-      return null;
-    }
-    if (parts.sha256 !== sha) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-path-sha-mismatch', 'manifest asset path sha does not match asset.sha256', detail);
-    }
-    if (!ext) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-ext-missing', 'manifest.assets[] entry is missing ext', detail);
-    } else if (parts.ext !== ext) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-ext-mismatch', 'manifest asset path extension does not match ext', Object.assign({}, detail, { ext: ext, pathExt: parts.ext }));
-    }
-    if (!mimeType) {
-      addAssetBlocker(diag, 'assetRefMismatches', 'manifest-asset-mime-missing', 'manifest.assets[] entry is missing mimeType', detail);
-    }
-    if (!isFiniteNumber(byteLength) || byteLength < 0) {
-      addAssetBlocker(diag, 'byteLengthMismatches', 'manifest-asset-byte-length-invalid', 'manifest.assets[] entry has invalid byteLength', Object.assign({}, detail, { byteLength: byteLength }));
-    }
-    if (!cleanString(asset && asset.source)) {
-      addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-source-missing', 'manifest.assets[] entry is missing source provenance', detail);
-    }
-    return {
-      index: index,
-      sha256: sha,
-      path: path,
-      ext: ext || (parts && parts.ext) || '',
-      mimeType: mimeType,
-      byteLength: isFiniteNumber(byteLength) ? byteLength : null,
-    };
-  }
-
-  function entryIsFile(entry) {
-    if (!entry || typeof entry !== 'object') return false;
-    if (entry.isFile === true || entry.is_file === true) return true;
-    if (entry.isDirectory === true || entry.is_dir === true) return false;
-    var type = cleanString(entry.type).toLowerCase();
-    return type === 'file';
-  }
-
-  async function listPackageAssetRelativePaths(packagePath, diag, packageSource) {
-    var out = [];
-    if (!diag.assetsDirPresent) return out;
-    try {
-      var source = packageSource || filesystemPackageSource();
-      var entries = asArray(await source.readDir(joinPath(packagePath, 'assets')));
-      entries.forEach(function (entry) {
-        var name = entryName(entry);
-        if (!name) return;
-        if (entryIsDirectory(entry)) {
-          addAssetWarning(diag, 'extraPackageAssets', 'nested-package-asset-entry', 'assets/ contains a nested directory that C5.3 does not recurse into', { path: 'assets/' + name });
-          return;
-        }
-        if (!entryIsFile(entry) && entryIsDirectory(entry) !== false) return;
-        out.push('assets/' + name);
-      });
-    } catch (err) {
-      addAssetWarning(diag, 'extraPackageAssets', 'assets-dir-read-failed', 'assets/ directory could not be listed', String((err && err.message) || err));
-    }
-    return out;
-  }
-
-  function collectMessageAssetRefs(snapshot) {
-    var refs = [];
-    var duplicates = [];
-    var seen = Object.create(null);
-    asArray(snapshot && snapshot.messages).forEach(function (message, messageIndex) {
-      asArray(message && message.assetRefs).forEach(function (ref, refIndex) {
-        var sha = normalizeAssetSha(typeof ref === 'string' ? ref : (ref && (ref.sha256 || ref.id || ref.assetId)));
-        if (!sha) {
-          refs.push({ sha256: '', messageIndex: messageIndex, refIndex: refIndex, invalid: true, raw: ref });
-          return;
-        }
-        if (seen[sha]) duplicates.push({ sha256: sha, messageIndex: messageIndex, refIndex: refIndex });
-        seen[sha] = true;
-        refs.push({ sha256: sha, messageIndex: messageIndex, refIndex: refIndex });
-      });
-    });
-    return { refs: refs, duplicates: duplicates };
-  }
-
-  function snapshotHtmlTexts(snapshot) {
-    var texts = [];
-    var canonicalParts = snapshot && snapshot.schemaVersion === 3;
-    asArray(snapshot && snapshot.messages).forEach(function (message, messageIndex) {
-      /* V3 scans only canonical typed HTML. V1/v2 retain the historical scalar
-       * scan followed by structured content scanning. */
-      if (!canonicalParts && typeof message.contentHtml === 'string' && message.contentHtml) {
-        texts.push({ label: 'snapshot.messages[' + messageIndex + '].contentHtml', text: message.contentHtml });
-      }
-      asArray(message && message.content).forEach(function (entry, entryIndex) {
-        if (entry && entry.type === 'html' && typeof entry.html === 'string' && entry.html) {
-          texts.push({ label: 'snapshot.messages[' + messageIndex + '].content[' + entryIndex + '].html', text: entry.html });
-        }
-      });
-    });
-    return texts;
-  }
-
-  function collectPackageAssetRefsFromHtml(text) {
-    var refs = [];
-    var seen = Object.create(null);
-    var re = /assets\/sha256-[0-9a-f]{64}\.[a-z0-9]+/ig;
-    var match;
-    while ((match = re.exec(String(text || ''))) !== null) {
-      var ref = match[0];
-      if (!seen[ref]) { seen[ref] = true; refs.push(ref); }
-    }
-    return refs;
-  }
-
-  function containsDataImage(text) {
-    return /data:image\//i.test(String(text || ''));
-  }
-
   function getAssetCas() {
     try {
       var ingestion = H2O && H2O.Studio && H2O.Studio.ingestion;
       return ingestion && ingestion.assetCas ? ingestion.assetCas : null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /* C5.4A: read-only store adapter namespace for package/DB reconciliation. */
-  function getStores() {
-    try {
-      var store = H2O && H2O.Studio && H2O.Studio.store;
-      return store || null;
     } catch (_) {
       return null;
     }
@@ -1254,16 +536,6 @@
       warnings: [],
       blockers: [],
     };
-  }
-
-  /* DB reconciliation warnings never block: package validity is structural
-   * (C5.2/C5.3). Recorded on dbChecks.warnings AND mirrored to the package
-   * warnings so the package status can degrade to "warning". */
-  function addDbWarning(diag, code, message, detail) {
-    var issue = makeIssue(code, message, detail);
-    diag.dbChecks.warnings.push(issue);
-    diag.warnings.push(issue);
-    return issue;
   }
 
   /* M10 P3a: the SAME C5.4A reconciliation, extracted so it can be driven by a
@@ -1381,147 +653,6 @@
     return { dbChecks: db, warnings: warnings };
   }
 
-  /* The legacy wrapper. It derives the asset SHA set from the manifest it has
-   * already verified and delegates to the shared helper, so the pre-P3 path
-   * behaves exactly as before. */
-  async function validateDbChecks(diag, manifest, includeDbChecks) {
-    if (includeDbChecks === false) return;
-    var manifestShas = asArray(manifest && manifest.assets).map(function (asset) {
-      return asset && asset.sha256;
-    });
-    var drift = await dbDriftForIdentity({
-      chatId: diag.chatId,
-      snapshotId: diag.snapshotId,
-      assetShas: manifestShas,
-    }, getStores());
-    diag.dbChecks = drift.dbChecks;
-    /* Mirrored to the package warnings so the package status can degrade to
-     * "warning" — exactly as the pre-extraction code did. */
-    drift.warnings.forEach(function (issue) { diag.warnings.push(issue); });
-  }
-
-  function validateManifestAssets(manifest, diag) {
-    var manifestAssets = asArray(manifest && manifest.assets);
-    var out = [];
-    var bySha = Object.create(null);
-    diag.assetChecks.manifestAssetCount = manifestAssets.length;
-    manifestAssets.forEach(function (asset, index) {
-      var desc = assetPathMatchesDescriptor(asset, diag, index);
-      if (!desc) return;
-      if (bySha[desc.sha256]) {
-        addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-duplicate', 'manifest.assets[] contains a duplicate sha256', { sha256: desc.sha256, path: desc.path, index: index });
-      } else {
-        bySha[desc.sha256] = desc;
-      }
-      out.push(desc);
-    });
-    return { list: out, bySha: bySha };
-  }
-
-  async function validatePackageAssetFiles(packagePath, manifestAssets, diag, packageSource) {
-    var source = packageSource || filesystemPackageSource();
-    var actualPaths = await listPackageAssetRelativePaths(packagePath, diag, source);
-    var manifestPathSet = Object.create(null);
-    manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
-    actualPaths.forEach(function (path) {
-      if (!manifestPathSet[path]) {
-        addAssetWarning(diag, 'extraPackageAssets', 'extra-package-asset', 'assets/ contains a file not listed in manifest.assets[]', { path: path });
-      }
-    });
-    diag.assetChecks.packageAssetCount = actualPaths.length;
-    for (var i = 0; i < manifestAssets.length; i += 1) {
-      var asset = manifestAssets[i];
-      var fullPath = joinPath(packagePath, asset.path);
-      var exists = false;
-      try { exists = await source.exists(fullPath); }
-      catch (err) {
-        addAssetBlocker(diag, 'missingPackageAssets', 'package-asset-exists-check-failed', 'package asset existence check failed', { sha256: asset.sha256, path: asset.path, error: String((err && err.message) || err) });
-        continue;
-      }
-      if (!exists) {
-        addAssetBlocker(diag, 'missingPackageAssets', 'package-asset-missing', 'package asset file is missing', { sha256: asset.sha256, path: asset.path });
-        continue;
-      }
-      var bytes = null;
-      try { bytes = await source.readBytes(fullPath); }
-      catch (err2) {
-        addAssetBlocker(diag, 'unreadablePackageAssets', 'package-asset-unreadable', 'package asset file could not be read', { sha256: asset.sha256, path: asset.path, error: String((err2 && err2.message) || err2) });
-        continue;
-      }
-      var actualSha = await sha256Prefixed(bytes);
-      if (actualSha !== asset.sha256) {
-        addAssetBlocker(diag, 'hashMismatches', 'package-asset-sha-mismatch', 'package asset bytes do not match manifest sha256', { sha256: asset.sha256, actualSha256: actualSha, path: asset.path });
-      }
-      if (isFiniteNumber(asset.byteLength) && bytes.length !== asset.byteLength) {
-        addAssetBlocker(diag, 'byteLengthMismatches', 'package-asset-byte-length-mismatch', 'package asset byte length does not match manifest byteLength', { sha256: asset.sha256, path: asset.path, expected: asset.byteLength, actual: bytes.length });
-      }
-    }
-    diag.assetChecks.packageAssetsOk =
-      diag.assetChecks.missingPackageAssets.length === 0 &&
-      diag.assetChecks.unreadablePackageAssets.length === 0 &&
-      diag.assetChecks.hashMismatches.length === 0 &&
-      diag.assetChecks.byteLengthMismatches.length === 0;
-  }
-
-  function validateSnapshotAssetRefs(snapshot, manifestAssets, diag) {
-    var refs = collectMessageAssetRefs(snapshot);
-    var manifestBySha = Object.create(null);
-    var referenced = Object.create(null);
-    manifestAssets.forEach(function (asset) { manifestBySha[asset.sha256] = asset; });
-    refs.refs.forEach(function (ref) {
-      if (ref.invalid || !ref.sha256) {
-        addAssetBlocker(diag, 'assetRefMismatches', 'snapshot-asset-ref-invalid', 'snapshot message assetRef is not a valid sha256 id', { messageIndex: ref.messageIndex, refIndex: ref.refIndex });
-        return;
-      }
-      referenced[ref.sha256] = true;
-      if (!manifestBySha[ref.sha256]) {
-        addAssetBlocker(diag, 'assetRefMismatches', 'snapshot-asset-ref-missing-manifest', 'snapshot message assetRef is not present in manifest.assets[]', { sha256: ref.sha256, messageIndex: ref.messageIndex, refIndex: ref.refIndex });
-      }
-    });
-    refs.duplicates.forEach(function (dup) {
-      addAssetWarning(diag, 'assetRefMismatches', 'snapshot-asset-ref-duplicate', 'snapshot message assetRef is duplicated', dup);
-    });
-    if (manifestAssets.length && refs.refs.length === 0) {
-      addAssetWarning(diag, 'assetRefMismatches', 'v2-assets-without-assetRefs', 'v2 package has manifest assets but no message assetRefs');
-    }
-    manifestAssets.forEach(function (asset) {
-      if (!referenced[asset.sha256]) {
-        addAssetWarning(diag, 'unreferencedManifestAssets', 'manifest-asset-unreferenced', 'manifest asset is not referenced by any snapshot message assetRefs', { sha256: asset.sha256, path: asset.path });
-      }
-    });
-  }
-
-  async function validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssets, diag, packageSource) {
-    var source = packageSource || filesystemPackageSource();
-    var manifestPathSet = Object.create(null);
-    manifestAssets.forEach(function (asset) { manifestPathSet[asset.path] = asset; });
-    var htmlTexts = snapshotHtmlTexts(snapshot);
-    if (typeof chatHtmlText === 'string') htmlTexts.push({ label: 'chat.html', text: chatHtmlText });
-    for (var i = 0; i < htmlTexts.length; i += 1) {
-      var item = htmlTexts[i];
-      if (containsDataImage(item.text)) {
-        addAssetBlocker(diag, 'dataImageResidue', 'data-image-residue-v2', 'v2 package renderer content still contains data:image', { location: item.label });
-      }
-      var refs = collectPackageAssetRefsFromHtml(item.text);
-      for (var r = 0; r < refs.length; r += 1) {
-        var refPath = refs[r];
-        if (!manifestPathSet[refPath]) {
-          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-not-in-manifest', 'renderer asset reference is not listed in manifest.assets[]', { location: item.label, path: refPath });
-          continue;
-        }
-        var exists = false;
-        try { exists = await source.exists(joinPath(packagePath, refPath)); }
-        catch (err) {
-          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-exists-check-failed', 'renderer asset reference existence check failed', { location: item.label, path: refPath, error: String((err && err.message) || err) });
-          continue;
-        }
-        if (!exists) {
-          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'renderer-asset-ref-missing-file', 'renderer asset reference does not resolve to an existing package asset', { location: item.label, path: refPath });
-        }
-      }
-    }
-  }
-
   /* M10 P3a: the SAME read-only live-CAS presence observation, extracted so it
    * can be driven by a trusted asset SHA set.
    *
@@ -1561,236 +692,6 @@
       }
     }
     return out;
-  }
-
-  /* The legacy wrapper, delegating so the pre-P3 path is unchanged. */
-  async function compareLiveCasAssets(manifestAssets, diag, includeCasChecks) {
-    if (!includeCasChecks) return;
-    var result = await liveCasPresenceForShas(manifestAssets);
-    diag.assetChecks.liveCasChecked = result.checked;
-    diag.assetChecks.liveCasAvailable = result.available;
-    result.warnings.forEach(function (entry) {
-      addAssetWarning(diag, entry.bucket, entry.issue.code, entry.issue.message, entry.issue.detail);
-    });
-  }
-
-  async function validateSavedChatPackageV1(options, packageSourceOverride) {
-    var opts = safeObject(options);
-    var packagePath = firstString(opts.packagePath, opts.path);
-    var packageSource = packageSourceOverride || filesystemPackageSource();
-    var includeCasChecks = opts.includeCasChecks !== false;
-    var includeRendererChecks = opts.includeRendererChecks !== false;
-    var includeDbChecks = opts.includeDbChecks !== false;
-    var diag = packageDiagnostic(packagePath);
-    try {
-      if (!packagePath) {
-        diag.blockers.push(makeIssue('package-path-required', 'packagePath is required'));
-        diag.status = statusFromIssues(diag.blockers, diag.warnings);
-        return diag;
-      }
-      if (!packagePathIsScoped(packagePath)) {
-        diag.blockers.push(makeIssue('package-path-out-of-scope', 'packagePath must be under archive/packages and end with .h2ochat'));
-      }
-
-      var manifest = null;
-      var snapshot = null;
-      var snapshotBytes = null;
-      var chatHtmlText = '';
-      var v3SnapshotVerification = null;
-      diag.manifestPresent = await packageSource.exists(joinPath(packagePath, 'manifest.json'));
-      if (diag.manifestPresent) {
-        manifest = parseJsonFile(bytesToText(await packageSource.readBytes(joinPath(packagePath, 'manifest.json'))), 'manifest', diag);
-      }
-      if (manifest) {
-        if (manifest.schema && manifest.schema !== PACKAGE_SCHEMA) {
-          diag.blockers.push(makeIssue('manifest-schema-invalid', 'manifest schema is not h2o.savedChatPackage', manifest.schema));
-        }
-        validateManifestVersion(manifest, diag);
-        diag.chatId = firstString(manifest.chatId);
-        diag.snapshotId = firstString(manifest.snapshotId);
-      }
-
-      /* Manifest metadata selects the required inventory. A missing or
-       * malformed manifest retains the frozen legacy fail-closed inventory. */
-      diag.snapshotPresent = await packageSource.exists(joinPath(packagePath, 'snapshot.json'));
-      diag.markdownPresent = await packageSource.exists(joinPath(packagePath, 'chat.md'));
-      diag.htmlPresent = await packageSource.exists(joinPath(packagePath, 'chat.html'));
-      diag.assetsDirPresent = await packageSource.exists(joinPath(packagePath, 'assets'));
-      addMissingRequiredFileIssues(diag, requiredFilesForManifest(manifest));
-
-      if (diag.snapshotPresent) {
-        if (diag.schemaVersion === 3 && manifest) {
-          /* M03 T04: the v3 snapshot member is obtained through the governed
-           * bounded reader, which performs filesystem metadata admission
-           * (lstat), rejects a member larger than the governed logical snapshot
-           * cap BEFORE any whole-file allocation, then returns the bounded
-           * stored bytes. The manifest descriptor is never the independent
-           * pre-read bound. Diagnostics implements none of that itself. */
-          var v3Codec = savedChatPackageCodecV3();
-          if (!v3Codec) {
-            diag.blockers.push(makeIssue('snapshot-codec-unavailable', 'governed saved-chat package codec is unavailable for v3 member reads'));
-          } else {
-            try {
-              if (packageSource.memory) {
-                snapshotBytes = bytesFor(await packageSource.readBytes(joinPath(packagePath, 'snapshot.json')));
-                if (snapshotBytes.byteLength > v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES) {
-                  throw new Error('portable v3 snapshot exceeds governed physical cap');
-                }
-              } else {
-                var boundedSnapshot = await v3Codec.readBoundedPackageMemberBytes({
-                  packagePath: packagePath,
-                  memberPath: 'snapshot.json',
-                  physicalByteCap: v3Codec.LOGICAL_SNAPSHOT_CAP_BYTES,
-                });
-                snapshotBytes = bytesFor(boundedSnapshot.storedBytes);
-              }
-            } catch (err) {
-              diag.blockers.push(makeIssue('snapshot-bounded-read-failed', 'v3 snapshot.json failed the governed bounded member read', firstString(err && err.code) || String((err && err.message) || err)));
-            }
-          }
-        } else {
-          /* Preserve the historical v1/v2 read path unchanged. */
-          snapshotBytes = await packageSource.readBytes(joinPath(packagePath, 'snapshot.json'));
-        }
-        if (diag.schemaVersion === 3 && manifest && snapshotBytes) {
-          v3SnapshotVerification = await verifyV3SnapshotDescriptor(manifest, snapshotBytes, diag);
-          /* V3 identity bytes are parsed only after stored-byte descriptor
-           * verification. Encoded stored bytes are never passed to JSON.parse;
-           * gzip parses only the governed codec's verified decoded logical
-           * bytes, after physical, encoding and logical verification passed. */
-          if (v3SnapshotVerification.parseIdentity) {
-            snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
-          } else if (v3SnapshotVerification.parseLogical) {
-            snapshot = parseJsonFile(bytesToText(v3SnapshotVerification.logicalBytes), 'snapshot', diag);
-          }
-        } else if (snapshotBytes) {
-          /* Preserve the historical v1/v2 parse path unchanged. */
-          snapshot = parseJsonFile(bytesToText(snapshotBytes), 'snapshot', diag);
-        }
-      }
-      if (includeRendererChecks && diag.htmlPresent) {
-        try { chatHtmlText = bytesToText(await packageSource.readBytes(joinPath(packagePath, 'chat.html'))); }
-        catch (err) {
-          addAssetBlocker(diag, 'rendererAssetRefMismatches', 'chat-html-unreadable', 'chat.html could not be read for renderer asset diagnostics', String((err && err.message) || err));
-        }
-      }
-      if (manifest) {
-        await verifyLegacyRendererDescriptors(packagePath, manifest, diag, packageSource);
-      }
-
-      if (snapshot) {
-        if (diag.schemaVersion === 3 && snapshot.schemaVersion !== 3) {
-          diag.blockers.push(makeIssue('snapshot-schema-version-invalid', 'v3 snapshot schemaVersion must be 3', snapshot.schemaVersion));
-        }
-        if (snapshot.chatId && diag.chatId && snapshot.chatId !== diag.chatId) {
-          diag.blockers.push(makeIssue('chat-id-mismatch', 'manifest.chatId does not match snapshot.chatId'));
-        }
-        if (snapshot.snapshotId && diag.snapshotId && snapshot.snapshotId !== diag.snapshotId) {
-          diag.blockers.push(makeIssue('snapshot-id-mismatch', 'manifest.snapshotId does not match snapshot.snapshotId'));
-        }
-        diag.chatId = firstString(diag.chatId, snapshot.chatId);
-        diag.snapshotId = firstString(diag.snapshotId, snapshot.snapshotId);
-        /* Verified snapshot metadata, surfaced for M05 §G BEST-HISTORICAL
-         * ordering. `savedAt` lives INSIDE the hashed snapshot, so it is
-         * content the package's own identity covers — unlike a filesystem
-         * mtime or manifest.generatedAt, neither of which may order anything.
-         * It is presentation metadata only and is never freshness authority. */
-        diag.savedAt = firstString(snapshot.savedAt);
-      }
-
-      if (manifest && snapshotBytes) {
-        var fileSnapshotSha = firstString(manifest.files && manifest.files.snapshot && manifest.files.snapshot.sha256);
-        if (diag.schemaVersion !== 3) {
-          var actualSnapshotSha = await sha256Prefixed(snapshotBytes);
-          diag.hashChecks.snapshotShaOk = !!fileSnapshotSha && fileSnapshotSha === actualSnapshotSha;
-          if (!diag.hashChecks.snapshotShaOk) {
-            diag.blockers.push(makeIssue('snapshot-sha-mismatch', 'files.snapshot.sha256 does not match stored snapshot.json bytes', { expected: actualSnapshotSha, actual: fileSnapshotSha }));
-          }
-          var snapshotByteLength = safeObject(safeObject(manifest.files).snapshot).byteLength;
-          diag.hashChecks.snapshotByteLengthOk = Number.isSafeInteger(snapshotByteLength) &&
-            snapshotByteLength >= 0 && snapshotByteLength === snapshotBytes.byteLength;
-          if (!diag.hashChecks.snapshotByteLengthOk) {
-            diag.blockers.push(makeIssue('snapshot-byte-length-mismatch',
-              'files.snapshot.byteLength does not match stored snapshot.json bytes',
-              { expected: snapshotByteLength, actual: snapshotBytes.byteLength }));
-          }
-        }
-        var expectedContentHash = '';
-        if (diag.schemaVersion === 1) {
-          expectedContentHash = fileSnapshotSha;
-          var assets = asArray(manifest.assets);
-          if (assets.length) diag.warnings.push(makeIssue('v1-assets-nonempty', 'v1 package manifest.assets should be empty'));
-        } else if (diag.schemaVersion === 2) {
-          var assetShas = asArray(manifest.assets).map(function (asset) {
-            return cleanString(asset && asset.sha256);
-          }).filter(Boolean).sort();
-          expectedContentHash = await sha256Prefixed(canonicalJson({ snapshot: fileSnapshotSha, assets: assetShas }));
-        } else if (diag.schemaVersion === 3) {
-          var v3AssetShas = asArray(manifest.assets).map(function (asset) {
-            return normalizeAssetSha(asset && asset.sha256);
-          }).filter(Boolean).sort();
-          var logicalSnapshotSha = v3SnapshotVerification && v3SnapshotVerification.logicalSha256;
-          if (logicalSnapshotSha) {
-            expectedContentHash = await sha256Prefixed(canonicalJson({
-              payloadVersion: 3,
-              snapshot: logicalSnapshotSha,
-              assets: v3AssetShas,
-            }));
-          }
-        }
-        diag.hashChecks.expectedContentHash = expectedContentHash;
-        diag.hashChecks.actualContentHash = firstString(manifest.contentHash);
-        diag.hashChecks.contentHashOk = !!expectedContentHash && expectedContentHash === diag.hashChecks.actualContentHash;
-        if (!diag.hashChecks.contentHashOk) {
-          diag.blockers.push(makeIssue('content-hash-mismatch', 'manifest.contentHash does not match expected package content hash', { expected: expectedContentHash, actual: diag.hashChecks.actualContentHash }));
-        }
-
-        /* M05 §D: the basename is DISCOVERY INPUT ONLY. Identity is the join of
-         * the verified chatId with the RECOMPUTED contentHash — never the raw
-         * manifest.contentHash string, and never a filename parse. This
-         * supersedes the pre-M05 `package-dirname-chat-id-mismatch` blocker,
-         * which required `<chatId>.h2ochat` and therefore blocked every
-         * generation name. */
-        if (diag.chatId && expectedContentHash) {
-          diag.nameClassification = classifyPackageBasenameV1(diag.packageDirName, diag.chatId, expectedContentHash);
-          if (diag.nameClassification === 'mismatch') {
-            diag.blockers.push(makeIssue('package-name-identity-mismatch', 'package basename matches neither the legacy nor the generation name for its verified identity', { basename: diag.packageDirName }));
-          }
-        }
-      }
-
-      if (manifest) {
-        if (diag.schemaVersion === 1) {
-          diag.assetChecks.manifestAssetCount = asArray(manifest.assets).length;
-          if (diag.assetsDirPresent) {
-            addAssetWarning(diag, 'extraPackageAssets', 'unexpected-assets-dir-v1', 'v1 asset-less package should normally omit assets/');
-            diag.assetChecks.packageAssetCount = (await listPackageAssetRelativePaths(packagePath, diag, packageSource)).length;
-          }
-          diag.assetChecks.packageAssetsOk = true;
-        } else if (diag.schemaVersion === 2 || diag.schemaVersion === 3) {
-          var manifestAssetInfo = validateManifestAssets(manifest, diag);
-          await validatePackageAssetFiles(packagePath, manifestAssetInfo.list, diag, packageSource);
-          if (snapshot) validateSnapshotAssetRefs(snapshot, manifestAssetInfo.list, diag);
-          if (includeRendererChecks && snapshot) await validateRendererAssetRefs(packagePath, snapshot, chatHtmlText, manifestAssetInfo.list, diag, packageSource);
-          if (manifestAssetInfo.list.length) await compareLiveCasAssets(manifestAssetInfo.list, diag, includeCasChecks);
-        }
-      }
-
-      /* C5.4A: read-only DB reconciliation (warnings only; never blocks). Runs
-       * after package identity is resolved so chatId/snapshotId are available. */
-      await validateDbChecks(diag, manifest, includeDbChecks);
-
-      diag.status = statusFromIssues(diag.blockers, diag.warnings);
-      diag.ok = diag.status === STATUS_OK;
-      state.lastRunAt = nowIso();
-      return diag;
-    } catch (err) {
-      recordError('validateSavedChatPackageV1', err);
-      diag.blockers.push(makeIssue('package-validation-failed', 'saved chat package validation failed', String((err && err.message) || err)));
-      diag.status = statusFromIssues(diag.blockers, diag.warnings);
-      diag.ok = false;
-      return diag;
-    }
   }
 
   /* M10 P3b: the six P2 operator states, expressed in the legacy status
@@ -1852,8 +753,8 @@
    * Operational rollback is reverting this commit, not a hidden second
    * authority.
    *
-   * Coverage and the package Inspector still use the legacy exports; migrating
-   * them is P3.5, and duplicate integrity code is retired only in P4. */
+   * M10 P4 removed the duplicate JS verifier entirely: this module no longer
+   * contains a package-validity implementation to fall back to. */
   function composeTrustedArchiveHealth() {
     var compose = H2O.Studio.ingestion.composeSavedChatArchiveHealthV1;
     if (typeof compose !== 'function') {
@@ -1959,36 +860,6 @@
     return result;
   }
 
-  /* M08 read-only byte-source adapter. The portable container has already
-   * bounded and normalized every entry, but this entry point still copies the
-   * byte map and runs the exact same verifier core used for archive paths. */
-  async function validateSavedChatPackageBytesV1(options) {
-    var opts = safeObject(options);
-    var packageDirName = cleanString(opts.packageDirName);
-    var virtualPath = joinPath(PACKAGE_ROOT, packageDirName);
-    if (!/^[A-Za-z0-9._-]+\.h2ochat$/.test(packageDirName) ||
-        packageDirName === '.h2ochat' || packageDirName.indexOf('..') >= 0) {
-      var invalid = packageDiagnostic(virtualPath);
-      invalid.blockers.push(makeIssue('package-byte-source-invalid', 'portable packageDirName is not a safe .h2ochat basename'));
-      invalid.status = statusFromIssues(invalid.blockers, invalid.warnings);
-      return invalid;
-    }
-    try {
-      var source = memoryPackageSource(virtualPath, opts.entries);
-      return validateSavedChatPackageV1({
-        packagePath: virtualPath,
-        includeCasChecks: false,
-        includeDbChecks: false,
-        includeRendererChecks: opts.includeRendererChecks !== false,
-      }, source);
-    } catch (error) {
-      var diag = packageDiagnostic(virtualPath);
-      diag.blockers.push(makeIssue('package-byte-source-invalid', 'portable package byte source is invalid', String((error && error.message) || error)));
-      diag.status = statusFromIssues(diag.blockers, diag.warnings);
-      return diag;
-    }
-  }
-
   function diagnoseSavedChatArchiveCapabilitiesV1() {
     return {
       installed: true,
@@ -2000,12 +871,9 @@
         packages: PACKAGE_ROOT,
         liveCas: LIVE_CAS_ROOT,
       },
-      requiredFs: ['exists', 'read_dir', 'read_file'],
+      requiredFs: ['exists', 'read_dir'],
       api: [
         'diagnoseSavedChatArchiveCapabilitiesV1',
-        'listSavedChatArchivePackagesV1',
-        'validateSavedChatPackageV1',
-        'validateSavedChatPackageBytesV1',
         'diagnoseSavedChatArchiveV1',
       ],
       boundaries: {
@@ -2032,15 +900,6 @@
   H2O.Studio.ingestion.dbDriftForIdentityV1 = dbDriftForIdentity;
   H2O.Studio.ingestion.liveCasPresenceForShasV1 = liveCasPresenceForShas;
   H2O.Studio.ingestion.diagnoseSavedChatArchiveCapabilitiesV1 = diagnoseSavedChatArchiveCapabilitiesV1;
-  H2O.Studio.ingestion.listSavedChatArchivePackagesV1 = function (options) {
-    return listSavedChatArchivePackagesV1(options);
-  };
-  H2O.Studio.ingestion.validateSavedChatPackageV1 = function (options) {
-    return validateSavedChatPackageV1(options);
-  };
-  H2O.Studio.ingestion.validateSavedChatPackageBytesV1 = function (options) {
-    return validateSavedChatPackageBytesV1(options);
-  };
   H2O.Studio.ingestion.diagnoseSavedChatArchiveV1 = function (options) {
     return diagnoseSavedChatArchiveV1(options);
   };

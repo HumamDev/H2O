@@ -1227,8 +1227,9 @@ checkAsync('M03 T04: behavior harness executes the real governed codec before Di
   assert.equal(typeof codec.readBoundedPackageMemberBytes, 'function');
   assert.equal(typeof codec.verifyPackageMemberBytes, 'function');
   /* Diagnostics loads after the codec and therefore resolves it rather than
-   * failing closed with snapshot-codec-unavailable. */
-  assert.equal(typeof runtime.H2O?.Studio?.ingestion?.validateSavedChatPackageV1, 'function');
+   * failing closed with snapshot-codec-unavailable. M10 P4 retired the legacy
+   * verifier, so the surviving facade is what proves the module loaded. */
+  assert.equal(typeof runtime.H2O?.Studio?.ingestion?.diagnoseSavedChatArchiveV1, 'function');
   /* The harness must never substitute its own compression path for the codec. */
   assert.doesNotMatch(readRepo(DIAGNOSTICS), /DecompressionStream|CompressionStream/);
 });
@@ -1307,9 +1308,11 @@ checkAsync('M02 T05 v3 export regenerates deterministic renderers without mutati
   const before = mem.inventory(mem.APP, sourceRoot);
   assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.md`));
   assert.ok(!mem.exists(mem.APP, `${sourceRoot}/chat.html`));
-  const diag = await ingestion.validateSavedChatPackageV1({ packagePath: sourceRoot, includeCasChecks: false, includeDbChecks: false });
-  assert.equal(diag.status, 'ok');
-  assert.equal(diag.hashChecks.contentHashOk, true);
+  /* Pre-condition probe through the TRUSTED Inspector; M10 P4 removed the
+     legacy JS verifier this used to ask. */
+  const inspected = await runtime.H2O.Studio.archiveInspector.inspectPackage({ packagePath: sourceRoot });
+  assert.equal(inspected.status, 'verified');
+  assert.equal(inspected.identity.contentHashVerified, true);
 
   const first = await exporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't05-v3-first.h2ochat' });
   const second = await exporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't05-v3-second.h2ochat' });
@@ -1500,9 +1503,12 @@ checkAsync('M03 T04 exports a valid gzip-v3 package, preserving the durable memb
   const runtime = loadBehaviorRuntime(mem);
   const sourceBefore = mem.inventory(mem.APP, sourceRoot);
 
-  const diag = await runtime.H2O.Studio.ingestion.validateSavedChatPackageV1({ packagePath: sourceRoot, includeCasChecks: false, includeDbChecks: false });
-  assert.equal(diag.status, 'ok', JSON.stringify(diag.blockers));
-  assert.equal(diag.hashChecks.snapshotEncoding, 'gzip');
+  /* Pre-condition probe through the TRUSTED envelope; M10 P4 removed the
+     legacy JS verifier this used to ask. */
+  const envelope = await runtime.H2O.Studio.ingestion.readSavedChatArchiveIntegrityV1();
+  const occupant = envelope.occupants.find((o) => o.path === sourceRoot);
+  assert.equal(occupant.class, 'legacy-package', JSON.stringify(occupant));
+  assert.equal(occupant.snapshotEncoding, 'gzip');
 
   const result = await runtime.H2O.Studio.archiveExporter.exportVerifiedPackage({ packagePath: sourceRoot, exportName: 't04-v3-gzip.h2ochat' });
   assert.equal(result.status, 'exported', result.reason);
