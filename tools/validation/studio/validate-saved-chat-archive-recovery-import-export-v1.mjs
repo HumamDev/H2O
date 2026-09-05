@@ -86,6 +86,24 @@ const FORBIDDEN_IMPORTER_NAMES = [
 // module — never leaked into the writer/diagnostics/inspector/scanner/materializer
 // or the Chrome reader.
 const IMPORTER_ENTRY_NAMES = ['dryRunImportPackage', 'importVerifiedPackage'];
+/* The import entry points are CALLER-CONFINED. They were confined to the
+ * importer alone; the Recovery Center is now the one admitted caller, because
+ * T04 wires Recover-as-New through exactly these governed entry points rather
+ * than acquiring write authority of its own.
+ *
+ * This is a topology change, not an authority change, so the allowlist is an
+ * exact path set with a pinned size — a third caller cannot appear silently —
+ * and the admitted caller is additionally pinned to the exact importer symbols
+ * it may name. */
+const RECOVERY_CENTER_REL = 'src-surfaces-base/studio/ingestion/saved-chat-recovery-center-ui.studio.js';
+const IMPORTER_ENTRY_CALLERS = new Set([IMPORTER_REL, RECOVERY_CENTER_REL]);
+/* Everything the Recovery Center may name on the importer: the two T04 entry
+ * points plus the pure snapshot mapper accepted at T03. */
+const RECOVERY_CENTER_IMPORTER_SYMBOLS = new Set([
+  'dryRunImportPackage',
+  'importVerifiedPackage',
+  'buildTurnsFromPackageSnapshot',
+]);
 // Broad/placeholder .h2ochat EXPORT / share entry points remain forbidden. J.2
 // allows only the bounded Desktop archiveExporter module with these explicit
 // names.
@@ -242,15 +260,44 @@ check('[INVARIANT] .h2ochat referenced only by writer/diagnostics/inspector/impo
       assert.ok(!code.includes(name), 'unexpected legacy import entry-point name: ' + name + ' in ' + path.relative(REPO_ROOT, abs));
     }
   }
-  // The real H.4 import entry points may live ONLY in the importer module.
+  // The real H.4 import entry points may live ONLY in the importer module and,
+  // since T04, in the Recovery Center that requests recovery through them.
+  const observedCallers = [];
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {
     const rel = path.relative(REPO_ROOT, abs);
-    if (rel === IMPORTER_REL) continue;
     const code = stripComments(fs.readFileSync(abs, 'utf8'));
-    for (const name of IMPORTER_ENTRY_NAMES) {
-      assert.ok(!code.includes(name), 'import entry point leaked outside the importer module: ' + name + ' in ' + rel);
+    const names = IMPORTER_ENTRY_NAMES.filter((name) => code.includes(name));
+    if (names.length) observedCallers.push(rel);
+    if (IMPORTER_ENTRY_CALLERS.has(rel)) continue;
+    for (const name of names) {
+      assert.ok(false, 'import entry point leaked outside the admitted callers: ' + name + ' in ' + rel);
     }
   }
+  /* The allowlist is EXACTLY two paths and cannot grow silently. */
+  assert.equal(IMPORTER_ENTRY_CALLERS.size, 2, 'the admitted importer-caller set changed size');
+  assert.ok(IMPORTER_ENTRY_CALLERS.has(IMPORTER_REL), 'the importer itself must remain admitted');
+  assert.ok(IMPORTER_ENTRY_CALLERS.has(RECOVERY_CENTER_REL), 'the Recovery Center must be the only other admitted caller');
+  for (const rel of [IMPORTER_REL, RECOVERY_CENTER_REL]) {
+    assert.ok(fs.existsSync(path.join(REPO_ROOT, rel)), 'an admitted caller does not exist: ' + rel);
+  }
+  /* Both admitted callers must actually be observed, so the allowlist can never
+   * quietly carry a path that no longer participates. */
+  assert.deepEqual(observedCallers.slice().sort(), [IMPORTER_REL, RECOVERY_CENTER_REL].slice().sort(),
+    'observed importer-entry callers differ from the admitted set: ' + observedCallers.join(', '));
+
+  /* The admitted caller may name ONLY the governed T04 entry points and the pure
+   * mapper. A fourth importer symbol in the Recovery Center would be new reach
+   * into that module regardless of what it is called. */
+  const rcCode = stripComments(readRepo(RECOVERY_CENTER_REL));
+  const rcSymbols = new Set(
+    (rcCode.match(/archiveImporter\s*\)?\s*\.\s*([A-Za-z0-9_$]+)/g) || [])
+      .map((m) => m.split('.').pop().trim()),
+  );
+  for (const sym of rcSymbols) {
+    assert.ok(RECOVERY_CENTER_IMPORTER_SYMBOLS.has(sym),
+      'Recovery Center names a non-admitted importer symbol: archiveImporter.' + sym);
+  }
+  assert.equal(RECOVERY_CENTER_IMPORTER_SYMBOLS.size, 3, 'the admitted Recovery Center symbol set changed size');
   // The planned K restore/relink entry points may live ONLY in their dedicated
   // modules. This keeps importer/exporter/restore roles separated.
   for (const abs of walkJs(path.join(REPO_ROOT, STUDIO_DIR_REL))) {

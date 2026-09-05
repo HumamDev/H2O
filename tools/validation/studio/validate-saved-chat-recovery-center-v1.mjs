@@ -330,7 +330,7 @@ function coverageB(over) {
 
 function harness(overrides) {
   const o = overrides || {};
-  const calls = { integrity: 0, coverage: 0, inspect: 0, coverageChats: [], inspectPaths: [] };
+  const calls = { integrity: 0, coverage: 0, inspect: 0, coverageChats: [], inspectPaths: [], dryRun: [], execute: [] };
   const document = domStub();
   const { api, ingestion, buildTurns, extractText } = loadUi(document);
   const stub = codecStub(Object.assign({}, o.codecOptions || {}, o.disk ? { disk: o.disk } : {}));
@@ -366,6 +366,19 @@ function harness(overrides) {
     codec: o.noCodec ? null : stub.codec,
     buildTurns,
     extractText,
+    dryRunImport: (input) => {
+      calls.dryRun.push(input);
+      if (o.dryRunFails) return Promise.reject(new Error('dry-run threw'));
+      if (o.dryRunDeferred) return o.dryRunDeferred.promise;
+      return Promise.resolve(o.dryRunResult || { ok: true, decision: 'import-ready', status: 'import-ready',
+        packagePath: input.packagePath, mutated: false, reason: '' });
+    },
+    executeImport: (input) => {
+      calls.execute.push(input);
+      if (o.executeFails) return Promise.reject(new Error('import threw'));
+      return Promise.resolve(o.executeResult || { ok: true, status: 'imported', decision: 'import-ready',
+        packagePath: input.packagePath, recovered: { chatId: 'recovered_abc' }, reason: '' });
+    },
   }, o.options || {}));
   return { api, ingestion, document, container, card, calls, buildTurns, extractText };
 }
@@ -659,25 +672,34 @@ check('9c. no recovery, import, restore, relink or confirmation control exists',
    * would forbid that reuse and push this surface into re-implementing the
    * mapping, so the ban targets the mutation ENTRY POINTS instead, and the
    * next check pins the namespace to that single pure symbol. */
+  /* T04 wires Recover-as-New through the governed importer, so its two entry
+   * points are no longer banned here — they are pinned instead, by the symbol
+   * check below and by the caller allowlist in the recovery-import-export
+   * invariant. Everything else stays banned, including the ZIP entry points, the
+   * whole restore/relink family, and every native confirmation dialog. */
   for (const token of [
     'confirm(', 'archiveExporter', 'archiveRestore', 'archiveRelink',
-    'importVerifiedPackage', 'importVerifiedZip', 'dryRunImportPackage', 'dryRunImportZip',
-    'restoreVerifiedPackage', 'relinkVerifiedPackage', 'importPackage', 'restorePackage',
+    'importVerifiedZip', 'dryRunImportZip',
+    'restoreVerifiedPackage', 'relinkVerifiedPackage', 'dryRunRestorePackage',
+    'importPackage', 'restorePackage', 'restore-current', 'overwrite-existing',
   ]) {
     assert.ok(!uiCode.includes(token), `an out-of-boundary control leaked in: ${token}`);
   }
 });
 
-check('9c-pin. the importer namespace is used ONLY for its pure turn mapper', () => {
+check('9c-pin. the importer namespace is pinned to exactly three admitted symbols', () => {
+  /* One pure mapper (T03) and the two governed T04 entry points. A fourth symbol
+   * would be new reach into the importer whatever it is named, so the set is
+   * pinned by size as well as by membership. */
+  const ADMITTED = new Set(['buildTurnsFromPackageSnapshot', 'dryRunImportPackage', 'importVerifiedPackage']);
   const refs = uiCode.match(/archiveImporter\s*\)?\s*\.\s*([A-Za-z0-9_$]+)/g) || [];
   const symbols = new Set(refs.map((r) => r.split('.').pop().trim()));
-  // The surface reaches the mapper through safeObject(...).archiveImporter, so
-  // also accept the plain namespace read followed by the destructured symbol.
-  const used = uiCode.includes('buildTurnsFromPackageSnapshot');
-  assert.ok(used, 'the pure turn mapper is not reused — the surface may be re-implementing it');
+  assert.equal(ADMITTED.size, 3, 'the admitted importer symbol set changed size');
+  for (const sym of ADMITTED) {
+    assert.ok(uiCode.includes(sym), `an admitted importer symbol is not actually used: ${sym}`);
+  }
   for (const sym of symbols) {
-    assert.equal(sym, 'buildTurnsFromPackageSnapshot',
-      `a non-pure importer symbol is referenced: archiveImporter.${sym}`);
+    assert.ok(ADMITTED.has(sym), `a non-admitted importer symbol is referenced: archiveImporter.${sym}`);
   }
 });
 
@@ -687,8 +709,42 @@ await checkAsync('9d. only Refresh and version-selection controls are rendered',
   await h.card.selectChat('chat_a');
   const actions = nodesWithAttr(h.container, 'data-h2o-action').map((n) => n.attributes['data-h2o-action']);
   assert.ok(actions.length > 1, 'no controls rendered at all — the check would pass vacuously');
-  const allowed = new Set(['recovery-center-refresh', 'recovery-center-select-version']);
+  /* Exactly the T02 refresh, the T02/T03 version selector, and the two T04
+   * steps. No T05 action, and no disabled placeholder for one. */
+  const allowed = new Set([
+    'recovery-center-refresh',
+    'recovery-center-select-version',
+    'recovery-center-prepare-recover-as-new',
+    'recovery-center-recover-as-new',
+  ]);
   for (const a of actions) assert.ok(allowed.has(a), `an unexpected control is present: ${a}`);
+  for (const banned of ['recovery-center-restore-original', 'recovery-center-relink', 'recovery-center-restore-current']) {
+    assert.ok(!uiCode.includes(banned), `a T05 control leaked in: ${banned}`);
+  }
+});
+
+/* ── G01 topology: one governed mutation request, nothing beneath it ────── */
+check('9e. the ONLY mutation-capable call is the governed importer execution', () => {
+  /* Direct writer primitives stay categorically absent — the symbol pin above
+   * proves what is reached, and this proves nothing is reached around it. */
+  for (const token of [
+    'plugin:sql', 'INSERT ', 'UPDATE ', 'DELETE ', 'execute(', 'snapshots.create', 'chats.upsert', 'upsert(',
+    'plugin:fs', 'writeTextFile', 'writeFile', 'removeFile', 'remove(', 'mkdir',
+    'invoke(', '__TAURI__.invoke',
+    'h2o_archive_reclamation_execute', 'h2o_archive_occupant_quarantine', 'h2o_archive_generation_publish',
+    'putAssetBytes', 'deleteAsset', 'publishGeneration',
+  ]) {
+    assert.ok(!uiCode.includes(token), `a direct mutation primitive leaked in: ${token}`);
+  }
+  /* Exactly one execution entry point, and it is the governed importer's. */
+  const execRefs = (uiCode.match(/importVerifiedPackage/g) || []).length;
+  assert.ok(execRefs >= 1, 'the governed importer execution is not wired');
+  assert.ok(uiCode.includes('dryRunImportPackage'), 'the governed non-mutating dry-run is not wired');
+  /* The execution call site passes only the address and the importer's mode. */
+  assert.ok(/executeImport\(\{ packagePath: path, mode: IMPORT_MODE \}\)/.test(uiCode),
+    'the execution call does not use the minimal { packagePath, mode } contract');
+  assert.ok(/dryRunImport\(\{ packagePath: path \}\)/.test(uiCode),
+    'the dry-run call does not use the minimal { packagePath } contract');
 });
 
 /* ── Property 10 — refresh invalidates a stale selection ─────────────────── */
@@ -1318,6 +1374,242 @@ await checkAsync('34. HAPPY PATH — v3 gzip, v3 identity and v1 all still previ
   await legacy.card.selectVersion('archive/packages/chat_b.legacy.h2ochat');
   assert.equal(legacy.card.getState().previewPhase, 'ready', 'v1 legacy did not preview');
   assert.equal(legacy.card.getState().preview.messages[0].text, 'legacy scalar body');
+});
+
+
+/* ══ T04 — Recover as New ═══════════════════════════════════════════════════
+ *
+ * This surface can request exactly one mutation and owns none of it. What must
+ * be proved is that nothing requests it implicitly, that the request carries no
+ * authority of its own, and that an approval prepared for one version can never
+ * be spent on another. */
+
+async function previewed(h, path = 'archive/packages/chat_a.g1.h2ochat') {
+  await h.card.load();
+  await h.card.selectChat('chat_a');
+  await h.card.selectVersion(path);
+  return h.card.getState();
+}
+
+await checkAsync('35. selection and preview alone request nothing', async () => {
+  const h = harness();
+  await h.card.load();
+  await h.card.selectChat('chat_a');
+  assert.equal(h.calls.dryRun.length, 0, 'listing a chat ran a dry-run');
+  assert.equal(h.calls.execute.length, 0, 'listing a chat imported');
+  const s2 = await previewed(h);
+  assert.equal(s2.previewPhase, 'ready', 'fixture no longer previews');
+  assert.equal(h.calls.dryRun.length, 0, 'a successful preview ran a dry-run on its own');
+  assert.equal(h.calls.execute.length, 0, 'a successful preview imported on its own');
+  assert.equal(s2.recoverPhase, 'idle');
+});
+
+await checkAsync('36. mount, refresh and remount never request anything', async () => {
+  const document = domStub();
+  const loaded = loadUi(document);
+  const parent = document.createElement('div');
+  const health = document.createElement('div');
+  parent.appendChild(health);
+  const seen = { dryRun: 0, execute: 0 };
+  const opts = {
+    capable: true, autoLoad: true,
+    readIntegrity: () => Promise.resolve(envelope()),
+    partitionOccupants,
+    describeCoverage: () => Promise.resolve(coverageA()),
+    dryRunImport: () => { seen.dryRun += 1; return Promise.resolve({ decision: 'import-ready' }); },
+    executeImport: () => { seen.execute += 1; return Promise.resolve({ ok: true, status: 'imported' }); },
+  };
+  loaded.api.mountRecoveryCenterCard(health, opts);
+  loaded.api.mountRecoveryCenterCard(health, opts);
+  const card = loaded.api.mountRecoveryCenterCard(health, opts);
+  await card.load();
+  assert.equal(seen.dryRun, 0, 'mount/remount/refresh ran a dry-run');
+  assert.equal(seen.execute, 0, 'mount/remount/refresh imported');
+});
+
+await checkAsync('37. the first operator step runs exactly one dry-run and imports nothing', async () => {
+  const h = harness();
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  assert.equal(h.calls.dryRun.length, 1, `expected 1 dry-run, saw ${h.calls.dryRun.length}`);
+  assert.deepEqual(Object.keys(h.calls.dryRun[0]).sort(), ['packagePath'],
+    'the dry-run received more than the package address');
+  assert.equal(h.calls.dryRun[0].packagePath, 'archive/packages/chat_a.g1.h2ochat');
+  assert.equal(h.calls.execute.length, 0, 'the first step imported');
+  assert.equal(h.card.getState().recoverPhase, 'ready-to-confirm');
+});
+
+await checkAsync('38. an import-ready verdict offers the second step and still imports nothing', async () => {
+  const h = harness();
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  const confirmBtns = nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new');
+  assert.equal(confirmBtns.length, 1, 'the confirming control is not offered after an import-ready verdict');
+  assert.equal(h.calls.execute.length, 0, 'offering the control already imported');
+  assert.ok(allText(h.container).includes('import-ready'), "the importer's own verdict is not shown");
+});
+
+await checkAsync('39. the second step requests exactly one import, carrying no authority', async () => {
+  const h = harness();
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 1, `expected 1 import, saw ${h.calls.execute.length}`);
+  const sent = h.calls.execute[0];
+  assert.deepEqual(Object.keys(sent).sort(), ['mode', 'packagePath'],
+    'the execution carried fields beyond the address and mode: ' + Object.keys(sent).join(', '));
+  assert.equal(sent.packagePath, 'archive/packages/chat_a.g1.h2ochat', 'the selected trusted row was not the target');
+  assert.equal(sent.mode, 'import-as-new', "the importer's own mode was not used");
+  for (const forbidden of ['dryRun', 'decision', 'eligible', 'eligibility', 'contentHash', 'snapshotId',
+    'chatId', 'identity', 'provenance', 'recoveredId', 'preview']) {
+    assert.ok(!(forbidden in sent), `caller-supplied authority reached the importer: ${forbidden}`);
+  }
+  assert.equal(h.card.getState().recoverPhase, 'success');
+});
+
+await checkAsync('40. a refused dry-run offers no mutation and imports nothing', async () => {
+  for (const decision of ['conflict-chat-id', 'conflict-snapshot-id', 'corrupted', 'rejected', 'already-imported']) {
+    const h = harness({ dryRunResult: { ok: decision === 'already-imported', decision, status: decision, reason: 'r' } });
+    await previewed(h);
+    await h.card.prepareRecoverAsNew();
+    const s2 = h.card.getState();
+    assert.equal(s2.recoverPhase, 'refused', `${decision}: expected refused, got ${s2.recoverPhase}`);
+    assert.equal(nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new').length, 0,
+      `${decision}: a mutation control was offered`);
+    await h.card.recoverAsNew();
+    assert.equal(h.calls.execute.length, 0, `${decision}: an import happened anyway`);
+    assert.ok(allText(h.container).includes(decision), `${decision}: the verdict was not shown honestly`);
+  }
+});
+
+await checkAsync('41. a dry-run error imports nothing and offers nothing', async () => {
+  const h = harness({ dryRunFails: true });
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  assert.equal(h.card.getState().recoverPhase, 'error');
+  assert.equal(nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new').length, 0);
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 0, 'an import followed a failed dry-run');
+});
+
+await checkAsync('42. changing version invalidates a prepared confirmation', async () => {
+  const h = harness();
+  await previewed(h, 'archive/packages/chat_a.g1.h2ochat');
+  await h.card.prepareRecoverAsNew();
+  assert.equal(h.card.getState().recoverPhase, 'ready-to-confirm');
+  await h.card.selectVersion('archive/packages/chat_a.g2.h2ochat');
+  const s2 = h.card.getState();
+  assert.notEqual(s2.recoverPhase, 'ready-to-confirm', 'an approval survived a version change');
+  assert.equal(s2.recoverForPath, '', 'the approval stayed bound to a path');
+  assert.equal(nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new').length, 0);
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 0, 'a stale approval was spent on another version');
+});
+
+await checkAsync('43. changing chat invalidates a prepared confirmation', async () => {
+  const h = harness();
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  await h.card.selectChat('chat_b');
+  const s2 = h.card.getState();
+  assert.equal(s2.recoverPhase, 'idle', 'an approval survived a chat change');
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 0, 'an import followed a chat change');
+});
+
+await checkAsync('44. refresh invalidates a prepared confirmation', async () => {
+  let env = envelope();
+  const h = harness({ options: { readIntegrity: () => Promise.resolve(env) } });
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  assert.equal(h.card.getState().recoverPhase, 'ready-to-confirm');
+  env = envelope({ occupants: [OCC.bLegacy] });   // the chat disappears
+  await h.card.load();
+  const s2 = h.card.getState();
+  assert.equal(s2.recoverPhase, 'idle', 'an approval survived a refresh that dropped its chat');
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 0, 'an import followed a refresh');
+});
+
+await checkAsync('45. a late dry-run for an abandoned version cannot arm a newer one', async () => {
+  const slow = deferred();
+  const h = harness({ dryRunDeferred: slow });
+  await previewed(h, 'archive/packages/chat_a.g1.h2ochat');
+  const abandoned = h.card.prepareRecoverAsNew();
+  assert.equal(h.card.getState().recoverPhase, 'preflighting');
+  await h.card.selectVersion('archive/packages/chat_a.g2.h2ochat');
+  slow.resolve({ ok: true, decision: 'import-ready', status: 'import-ready' });
+  await abandoned;
+  for (let i = 0; i < 12; i += 1) await Promise.resolve();
+  const s2 = h.card.getState();
+  assert.notEqual(s2.recoverPhase, 'ready-to-confirm',
+    'a late dry-run for an abandoned version armed the newly selected one');
+  assert.equal(nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new').length, 0);
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 0, 'the late verdict enabled an import');
+});
+
+await checkAsync('46. an unreadable preview can never reach recovery', async () => {
+  for (const [label, opts] of [
+    ['refused', { inspectFor: (packagePath) => Promise.resolve({ ok: false, status: 'hash-mismatch', packagePath, identity: {}, checks: {}, blockers: [] }) }],
+    ['stale', { inspectFor: (packagePath) => Promise.resolve({ ok: true, status: 'verified', packagePath, identity: { contentHash: 'sha256-' + HASH_OLD }, checks: {}, blockers: [] }) }],
+    ['error', { codecOptions: { verifiedFails: true } }],
+    ['unbindable', { envelope: envelope({ occupants: [(() => { const o = { ...OCC.aCur }; delete o.snapshotPhysicalSha256; return o; })(), OCC.aMid, OCC.aOld, OCC.aBad, OCC.bLegacy] }) }],
+  ]) {
+    const h = harness(opts);
+    const s2 = await previewed(h);
+    assert.notEqual(s2.previewPhase, 'ready', `${label}: fixture no longer models an unreadable preview`);
+    assert.equal(nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-prepare-recover-as-new').length, 0,
+      `${label}: the recovery step was offered for an unreadable preview`);
+    await h.card.prepareRecoverAsNew();
+    assert.equal(h.calls.dryRun.length, 0, `${label}: a dry-run ran for an unreadable preview`);
+    await h.card.recoverAsNew();
+    assert.equal(h.calls.execute.length, 0, `${label}: an import ran for an unreadable preview`);
+  }
+});
+
+await checkAsync('47. an authoritative import rejection is shown, with no retry or fallback', async () => {
+  const h = harness({ executeResult: { ok: false, status: 'rejected', decision: 'import-ready',
+    packagePath: 'archive/packages/chat_a.g1.h2ochat', recovered: null, reason: 'package no longer verified at write time' } });
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  await h.card.recoverAsNew();
+  const s2 = h.card.getState();
+  assert.equal(s2.recoverPhase, 'refused', `expected refused, got ${s2.recoverPhase}`);
+  assert.equal(h.calls.execute.length, 1, 'the refusal was retried');
+  const text = allText(h.container);
+  assert.ok(text.includes('rejected'), 'the refusal status was not shown');
+  assert.ok(text.includes('no longer verified'), "the importer's reason was not shown");
+  assert.ok(!text.includes('Recovered as a new chat'), 'a refusal was presented as success');
+});
+
+await checkAsync('48. a successful import is reported from the importer result only', async () => {
+  const h = harness();
+  await previewed(h);
+  await h.card.prepareRecoverAsNew();
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 1, 'exactly one mutation request expected');
+  const text = allText(h.container);
+  assert.ok(text.includes('Recovered as a new chat'), 'success was not shown');
+  assert.ok(text.includes('recovered_abc'), 'the recovered identity the importer returned was not shown');
+  /* And a second click does not re-request: the approval was spent. */
+  await h.card.recoverAsNew();
+  assert.equal(h.calls.execute.length, 1, 'the spent approval requested a second import');
+});
+
+await checkAsync('49. archived content cannot create or trigger a recovery control', async () => {
+  const hostile = {
+    schemaVersion: 3, title: '<button data-h2o-action="recovery-center-recover-as-new">go</button>',
+    messages: [{ role: 'user', content: [{ type: 'html',
+      html: '<button data-h2o-action="recovery-center-recover-as-new" onclick="x()">Recover</button>' }] }],
+  };
+  const h = harness({ disk: { snapshot: hostile, ...anchors('1', 'v3', 'gzip') } });
+  await previewed(h);
+  assert.equal(h.card.getState().previewPhase, 'ready');
+  const controls = nodesWithAttr(h.container, 'data-h2o-action', 'recovery-center-recover-as-new');
+  assert.equal(controls.length, 0, 'archived content produced a mutation control');
+  assert.equal(h.calls.dryRun.length, 0, 'archived content triggered a dry-run');
+  assert.equal(h.calls.execute.length, 0, 'archived content triggered an import');
 });
 
 console.log('');

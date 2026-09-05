@@ -86,10 +86,23 @@
  * sanitizer; no second sanitizer family is introduced, and if that sanitizer is
  * absent the HTML is simply not rendered.
  *
- * BOUNDARY. Read-only inspection only. No recovery, no import, restore or relink,
- * no confirmation flow, and no DB, archive or CAS mutation of any kind. There is
- * deliberately no destructive control here, not even a disabled one. Recovery
- * actions belong to later Tasks and nothing here anticipates them.
+ * RECOVER AS NEW is the one mutation this surface can REQUEST, and it owns none
+ * of it. The operator must act twice: once to prepare — which runs the existing
+ * importer's own non-mutating dry-run and shows its verdict verbatim — and once
+ * to confirm, which calls the existing `importVerifiedPackage`. Nothing is
+ * prepared or executed by selecting, previewing, refreshing or mounting.
+ *
+ * The importer re-runs its own dry-run and re-verifies the package at the write
+ * gate, allocates the fresh recovered identity, writes the provenance and decides
+ * every refusal. A dry-run verdict held here is PRESENTATION state that gates a
+ * button; it is never sent back, and there is no argument by which this surface
+ * could tell the importer that something is permitted. UI MAY REQUEST; IMPORTER
+ * DECIDES.
+ *
+ * BOUNDARY. No restore-original-identity, no relink, no restore-current or
+ * overwrite-existing, and no control for any of them — not even a disabled one.
+ * This surface holds no direct write authority of any kind: no SQL, no store
+ * write, no filesystem write, no archive or CAS mutation, no native command.
  *
  * Public API (H2O.Studio.recoveryCenterUi):
  *   mountRecoveryCenterCard(healthContainer, options)
@@ -129,6 +142,17 @@
    * take the governed verified-member path; there is deliberately no fallback
    * that would let a v3 package be read as though it were v1/v2. */
   var FAMILY_V3 = 'v3';
+
+  /* The importer's own default and only accepted mode. Passed explicitly so the
+   * request is legible at the call site rather than relying on a default. */
+  var IMPORT_MODE = 'import-as-new';
+  /* The importer's own verdict that opens the confirmation. Every other verdict
+   * — including its other `ok` value, `already-imported` — is shown as-is and
+   * leaves the mutation action unavailable. */
+  var IMPORT_READY = 'import-ready';
+  /* A preview that actually loaded. Recovery cannot be prepared for a version the
+   * operator was never able to read. */
+  var PREVIEWED_PHASES = ['ready', 'empty'];
 
   var TEXT = {
     title: 'Saved Chat Recovery Center',
@@ -178,6 +202,20 @@
     previewTruncatedNoteTail: ' messages of ',
     previewMessageTruncated: '… (message shortened for preview)',
     previewAssets: 'attachments: ',
+    recoverHeading: 'Recover as new chat',
+    recoverIntro: 'Recovering copies this saved version into a brand-new chat. Nothing existing is changed or overwritten.',
+    recoverPrepareButton: 'Review recovery…',
+    recoverConfirmButton: 'Recover as new chat',
+    recoverPreflighting: 'Checking whether this version can be recovered…',
+    recoverExecuting: 'Recovering…',
+    recoverReadyToConfirm: 'This version can be recovered as a new chat. Confirm to proceed.',
+    recoverRefused: 'This version cannot be recovered right now.',
+    recoverError: 'The recovery check could not be completed.',
+    recoverStale: 'The selection changed. Review recovery again.',
+    recoverSuccess: 'Recovered as a new chat.',
+    recoverDecision: 'Result: ',
+    recoverReason: 'Reason: ',
+    recoverNewChat: 'New chat: ',
   };
 
   function isObject(value) {
@@ -516,6 +554,15 @@
     var extractText = typeof opts.extractText === 'function'
       ? opts.extractText
       : safeObject(safeObject(safeObject(H2O.Studio).html).sanitize).extractTextFromHtml;
+    /* The two governed importer entry points, and nothing else from that module
+     * beyond the pure mapper resolved above. The dry-run is non-mutating; the
+     * execution is the single mutation this surface can request. */
+    var dryRunImport = typeof opts.dryRunImport === 'function'
+      ? opts.dryRunImport
+      : safeObject(safeObject(H2O.Studio).archiveImporter).dryRunImportPackage;
+    var executeImport = typeof opts.executeImport === 'function'
+      ? opts.executeImport
+      : safeObject(safeObject(H2O.Studio).archiveImporter).importVerifiedPackage;
 
     var capable = (opts.capable !== undefined)
       ? opts.capable === true
@@ -541,6 +588,12 @@
       versionPhase: 'idle',
       previewPhase: 'idle',
       preview: null,
+      /* T04 request state. `recoverForPath` pins a prepared confirmation to the
+       * exact version it was prepared for, so it can never be spent on another. */
+      recoverPhase: 'idle',
+      recoverDryRun: null,
+      recoverResult: null,
+      recoverForPath: '',
       /* A single monotonically increasing token orders every asynchronous
        * inspection and preview read. Any result whose token is no longer current
        * is discarded, so a slow answer for an abandoned selection can never
@@ -572,6 +625,8 @@
     card.appendChild(detailBox);
     var previewBox = el('div', null, 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)');
     card.appendChild(previewBox);
+    var recoverBox = el('div', null, 'margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08)');
+    card.appendChild(recoverBox);
 
     function pill(label) {
       return el('span', label,
@@ -777,6 +832,74 @@
       previewBox.appendChild(list);
     }
 
+    /* The recovery request area. It appears only once a version has actually
+     * been previewed, and the confirming control appears only while a current
+     * import-ready verdict belongs to the selected version. Both controls are
+     * ordinary buttons — there is no native confirm dialog and no generic
+     * confirmation framework. */
+    function renderRecover() {
+      recoverBox.textContent = '';
+      if (!state.selectedPackagePath || !previewIsReadable()) return;
+
+      recoverBox.appendChild(el('div', TEXT.recoverHeading, 'font-weight:600;font-size:13px'));
+      recoverBox.appendChild(el('div', TEXT.recoverIntro, 'opacity:.8;font-size:12px;margin-top:2px'));
+
+      var busy = state.recoverPhase === 'preflighting' || state.recoverPhase === 'executing';
+      var controls = el('div', null, 'display:flex;gap:8px;flex-wrap:wrap;margin-top:8px');
+      var prepare = el('button', TEXT.recoverPrepareButton);
+      prepare.setAttribute('type', 'button');
+      prepare.setAttribute('data-h2o-action', 'recovery-center-prepare-recover-as-new');
+      prepare.disabled = busy;
+      prepare.addEventListener('click', function () { prepareRecoverAsNew(); });
+      controls.appendChild(prepare);
+
+      /* The mutation control EXISTS only while a current confirmation stands. */
+      if (recoverConfirmable()) {
+        var confirmBtn = el('button', TEXT.recoverConfirmButton);
+        confirmBtn.setAttribute('type', 'button');
+        confirmBtn.setAttribute('data-h2o-action', 'recovery-center-recover-as-new');
+        confirmBtn.disabled = busy;
+        confirmBtn.addEventListener('click', function () { executeRecoverAsNew(); });
+        controls.appendChild(confirmBtn);
+      }
+      recoverBox.appendChild(controls);
+
+      var status = {
+        preflighting: TEXT.recoverPreflighting,
+        executing: TEXT.recoverExecuting,
+        'ready-to-confirm': TEXT.recoverReadyToConfirm,
+        refused: TEXT.recoverRefused,
+        error: TEXT.recoverError,
+        stale: TEXT.recoverStale,
+        success: TEXT.recoverSuccess,
+      };
+      if (Object.prototype.hasOwnProperty.call(status, state.recoverPhase)) {
+        recoverBox.appendChild(el('div', status[state.recoverPhase], 'font-size:12px;margin-top:8px'));
+      }
+
+      /* The importer's own verdict, reported as it stated it. Nothing here
+       * re-derives recoverability, conflicts, verification or refusal meaning. */
+      var dry = safeObject(state.recoverDryRun);
+      if (cleanString(dry.decision)) {
+        recoverBox.appendChild(el('div', TEXT.recoverDecision + dry.decision, 'font-size:12px;opacity:.85;margin-top:4px'));
+        if (cleanString(dry.reason)) {
+          recoverBox.appendChild(el('div', TEXT.recoverReason + dry.reason, 'font-size:12px;opacity:.75'));
+        }
+      }
+      var done = safeObject(state.recoverResult);
+      if (cleanString(done.status)) {
+        recoverBox.appendChild(el('div', TEXT.recoverDecision + done.status, 'font-size:12px;opacity:.85;margin-top:4px'));
+        if (cleanString(done.reason)) {
+          recoverBox.appendChild(el('div', TEXT.recoverReason + done.reason, 'font-size:12px;opacity:.75'));
+        }
+        /* Only what the importer itself returned about the recovered chat. */
+        var recovered = safeObject(done.recovered);
+        if (cleanString(recovered.chatId)) {
+          recoverBox.appendChild(el('div', TEXT.recoverNewChat + recovered.chatId, 'font-size:12px;opacity:.85'));
+        }
+      }
+    }
+
     function render() {
       if (!capable) {
         card.textContent = '';
@@ -788,12 +911,14 @@
       if (state.phase === 'loading') {
         noticeBox.textContent = ''; chooserBox.textContent = '';
         timelineBox.textContent = ''; detailBox.textContent = ''; previewBox.textContent = '';
+        recoverBox.textContent = '';
         timelineBox.appendChild(el('div', TEXT.loading));
         return;
       }
       if (state.phase === 'error') {
         noticeBox.textContent = ''; chooserBox.textContent = '';
         timelineBox.textContent = ''; detailBox.textContent = ''; previewBox.textContent = '';
+        recoverBox.textContent = '';
         timelineBox.appendChild(el('div', TEXT.error + (state.error ? ' ' + state.error : '')));
         return;
       }
@@ -802,6 +927,7 @@
       renderTimeline();
       renderDetail();
       renderPreview();
+      renderRecover();
     }
 
     /* ONE trusted read per open/refresh. Rows never trigger their own. */
@@ -864,6 +990,32 @@
     function clearPreview() {
       state.previewPhase = 'idle';
       state.preview = null;
+      clearRecover();
+    }
+
+    /* A prepared confirmation is discarded whenever anything it depended on
+     * moves. It is presentation state, so losing it costs only a click; keeping
+     * it would let an operator spend one version's approval on another. */
+    function clearRecover() {
+      state.recoverPhase = 'idle';
+      state.recoverDryRun = null;
+      state.recoverResult = null;
+      state.recoverForPath = '';
+    }
+
+    /* The preview actually loaded for the version now selected. */
+    function previewIsReadable() {
+      return PREVIEWED_PHASES.indexOf(state.previewPhase) >= 0;
+    }
+
+    /* A confirmation may be spent only on the version it was prepared for, only
+     * while that version is still selected and still readable. */
+    function recoverConfirmable() {
+      return state.recoverPhase === 'ready-to-confirm'
+        && !!state.recoverForPath
+        && state.recoverForPath === state.selectedPackagePath
+        && isScopedPackagePath(state.selectedPackagePath)
+        && previewIsReadable();
     }
 
     /* Invalidate every in-flight inspection and preview read. */
@@ -991,6 +1143,10 @@
       state.versionPhase = 'loading';
       state.previewPhase = 'loading';
       state.preview = null;
+      /* Any approval prepared for the previous version dies here. The path pin
+       * already makes it unspendable, but leaving the phase behind would show a
+       * confirmed-looking state for a version nobody approved. */
+      clearRecover();
       render();
       return Promise.resolve()
         .then(function () { return inspectPackage({ packagePath: path }); })
@@ -1082,6 +1238,76 @@
         });
     }
 
+    /* STEP ONE — non-mutating. Runs the importer's OWN dry-run and shows its
+     * verdict. Nothing here interprets that verdict beyond deciding whether to
+     * offer the second action. */
+    function prepareRecoverAsNew() {
+      if (typeof dryRunImport !== 'function') return Promise.resolve();
+      var path = cleanString(state.selectedPackagePath);
+      if (!path || !isScopedPackagePath(path) || !previewIsReadable()) return Promise.resolve();
+      if (state.recoverPhase === 'preflighting' || state.recoverPhase === 'executing') return Promise.resolve();
+      var token = invalidateRequests();
+      clearRecover();
+      state.recoverPhase = 'preflighting';
+      render();
+      return Promise.resolve()
+        .then(function () { return dryRunImport({ packagePath: path }); })
+        .then(function (result) {
+          if (!currentToken(token) || state.selectedPackagePath !== path) return;
+          var dry = safeObject(result);
+          state.recoverDryRun = dry;
+          if (cleanString(dry.decision) === IMPORT_READY) {
+            state.recoverPhase = 'ready-to-confirm';
+            state.recoverForPath = path;
+          } else {
+            /* Every other verdict — including the importer's other `ok` value —
+             * is reported as the importer stated it, with no action offered. */
+            state.recoverPhase = 'refused';
+            state.recoverForPath = '';
+          }
+          render();
+        })
+        .catch(function () {
+          if (!currentToken(token) || state.selectedPackagePath !== path) return;
+          state.recoverPhase = 'error';
+          state.recoverDryRun = null;
+          state.recoverForPath = '';
+          render();
+        });
+    }
+
+    /* STEP TWO — the single mutation this surface can request. It sends the
+     * trusted row's own archive-relative path and the importer's mode, and
+     * nothing else: no dry-run result, no eligibility, no identity, no hash. The
+     * importer re-runs its dry-run, re-verifies at the write gate, allocates the
+     * fresh recovered identity and decides the outcome. */
+    function executeRecoverAsNew() {
+      if (typeof executeImport !== 'function') return Promise.resolve();
+      if (!recoverConfirmable()) return Promise.resolve();
+      var path = cleanString(state.selectedPackagePath);
+      var token = invalidateRequests();
+      state.recoverPhase = 'executing';
+      state.recoverResult = null;
+      render();
+      return Promise.resolve()
+        .then(function () { return executeImport({ packagePath: path, mode: IMPORT_MODE }); })
+        .then(function (result) {
+          if (!currentToken(token) || state.selectedPackagePath !== path) return;
+          var imported = safeObject(result);
+          state.recoverResult = imported;
+          state.recoverPhase = imported.ok === true ? 'success' : 'refused';
+          state.recoverForPath = '';
+          render();
+        })
+        .catch(function () {
+          if (!currentToken(token) || state.selectedPackagePath !== path) return;
+          state.recoverPhase = 'error';
+          state.recoverResult = null;
+          state.recoverForPath = '';
+          render();
+        });
+    }
+
     refresh.addEventListener('click', function () { load(); });
 
     render();
@@ -1092,6 +1318,8 @@
       load: load,
       selectChat: selectChat,
       selectVersion: selectVersion,
+      prepareRecoverAsNew: prepareRecoverAsNew,
+      recoverAsNew: executeRecoverAsNew,
     };
   }
 
